@@ -1,0 +1,95 @@
+# synthmon config. Copy to config.toml (or run `python -m synthmon setup`).
+# Read-only: there is no setting for a private key or seed phrase, and the
+# monitor refuses to start if it finds anything shaped like one.
+
+[bot]
+handle = "bojjibot"
+# The synth's PUBLIC wallet address (0x + 40 hex). Env: SYNTHMON_WALLET.
+wallet = ""
+# The coin the bot launched. Blank = newest coin from the synth's "launched" list.
+own_coin = ""
+
+[poll]
+interval_seconds = 60
+max_backoff_seconds = 900
+timeout_seconds = 20
+
+[storage]
+db_path = "synthmon.sqlite3"
+# Keep every distinct synths.lol response body, so data can be re-parsed later.
+keep_raw_responses = true
+
+[synths]
+enabled = true
+base_url = "https://synths.lol"
+# "auto" | "wei" | "eth"
+eth_unit = "auto"
+# "auto" | "fraction" | "percent"
+progress_scale = "auto"
+
+# Fill these from discovery/suggested_config.toml after `python -m synthmon discover`.
+# Placeholders: {handle} {wallet} {coin}. Leave one blank to use the chain for that data.
+[synths.endpoints]
+profile = ""
+posts = ""
+trades = ""
+bags = ""
+launched = ""
+coin = ""
+holders = ""
+leaderboard = ""
+
+# Pin field paths when the built-in guesses miss, e.g.:
+# [synths.fields.trades]
+# eth_amount = "amounts.eth"
+# side = "direction"
+
+[chain]
+name = "Robinhood Chain"
+chain_id = 4663
+# Block explorer API, Etherscan-compatible (Blockscout: https://<explorer-host>/api).
+explorer_api_url = ""
+explorer_api_key = ""
+# JSON-RPC URL. Blank = Alchemy (robinhood-mainnet) when ALCHEMY_API_KEY is set.
+rpc_url = ""
+alchemy_network = "robinhood-mainnet"
+weth = ["0x0bd7d308f8e1639fab988df18a8011f41eacad73"]
+# First block to scan for the wallet's history. 0 = from genesis.
+start_block = 0
+token_decimals = 18
+
+[coin]
+open_threshold_eth = 0.5
+# Optional: the bonding-curve contract holding your coin's raised ETH, used for
+# progress when synths.lol's coin endpoint is unavailable.
+curve_address = ""
+
+[alerts]
+discord_webhook_url = ""
+telegram_bot_token = ""
+telegram_chat_id = ""
+progress_thresholds_pct = [50, 90]
+wallet_drop_pct = 15.0
+wallet_drop_rearm_pct = 10.0
+# "total" = ETH + bags, "eth" = ETH balance only
+wallet_metric = "total"
+# 0 = the first value observed
+baseline_eth = 0.0
+no_trade_hours = 2.0
+
+[fees]
+# Platform trading fee for the fee estimate, in basis points (100 = 1%).
+# Not verified against synths.lol; set it to their published fee.
+protocol_fee_bps = 100
+
+[exits]
+# Extra regexes per exit type, tried before the built-in ones.
+take_profit = []
+stop_loss = []
+timer = []
+ai = []
+match_before_minutes = 15
+match_after_minutes = 30
+
+[roundtrips]
+dust_fraction = 0.005

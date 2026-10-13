@@ -1,0 +1,7 @@
+config.toml
+*.sqlite3
+*.sqlite3-*
+discovery/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

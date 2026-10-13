@@ -1,0 +1,5 @@
+requests>=2.31
+# Only needed for `synthmon discover` (captures synths.lol's JSON endpoints in a real browser).
+playwright>=1.45
+# Tests
+pytest>=8
