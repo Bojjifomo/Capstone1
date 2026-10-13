@@ -27,11 +27,26 @@ For the on-chain fallback, set `ALCHEMY_API_KEY`, `chain.rpc_url` or `chain.expl
 With no synths endpoints configured, the monitor runs on chain data alone. Posts and
 exit types need synths.lol, because posts only exist there.
 
+## Which address to monitor
+
+A synth has its **own account**, a contract created when the synth is registered. That
+account holds the synth's ETH and trades. It isn't the wallet that created the synth.
+`setup` and `find-synth` look the account up from the owner wallet, using the registry's
+creation event:
+
+```bash
+python -m synthmon find-synth --owner 0xYourWallet
+# @yoursynth  account 0x…  created 2026-10-13 03:06 UTC  block …  tx …
+```
+
+Put the account in `bot.wallet`, and optionally the owner in `bot.owner`.
+
 ## Commands
 
 | command | what it does |
 |---|---|
-| `setup` | Prompts for the wallet address (rejects 64-hex input), handle and webhook. Writes `config.toml` with mode 600. |
+| `setup` | Prompts for the wallet address (rejects 64-hex input), handle and webhook. If the address created the synth, offers to monitor the synth's account instead. Writes `config.toml` with mode 600. |
+| `find-synth --owner 0x…` | Lists the synths a wallet created, with each one's account, model and strategy prompt. |
 | `discover [--headful]` | Opens synths.lol in Chromium: home, the synth's profile (clicks Posts / Bags / Trades / Launched), a coin page and the leaderboard. Records every JSON fetch/XHR into `discovery/`. |
 | `poll` | One poll, then exits. Prints the sources used and any errors. |
 | `run [--no-webhook]` | Polls every `poll.interval_seconds`. Refuses to start without a wallet, and without a webhook unless `--no-webhook` is passed. |
@@ -51,6 +66,10 @@ exit types need synths.lol, because posts only exist there.
 | own coin: holders, buys/sells, progress | synths `coin` (+ `holders`) | the coin's Transfer history on-chain; fills fields synths left empty |
 | launched coins / own coin | synths `launched`, or `bot.own_coin` | none |
 | leaderboard rank | synths `leaderboard` | none |
+
+JSON-RPC calls are batched. On a rate limit, such as Alchemy's free tier, the batch
+size halves and the call retries after a pause. That makes a long first backfill slower
+but lets it finish: 5 days of a busy synth took about 5 minutes.
 
 Each source has its own exponential backoff with jitter: base = the poll interval,
 doubling up to `max_backoff_seconds`, with `Retry-After` honoured on 429. While one
@@ -84,6 +103,13 @@ a mapping fix.
   block, plus the gas it paid (from the receipt). When two wallet transactions share a
   block, only the visible external and WETH legs are counted, and the trade is flagged
   `approximate` in its `raw` column.
+
+This is what synth trading looks like on-chain (checked on a running synth, 600 trades):
+the synths backend's operator sends a call to the synth's account, which swaps through a
+Uniswap v4 pool with a synths hook. ETH moves as internal transfers, so on the RPC
+backend the balance-change method prices every trade, and gas shows as unknown because
+the operator pays it. Synths also sell leftover dust, down to 1 wei of a token; that sell
+is folded into the round trip it follows.
 
 WETH (`0x0bd7…ad73` on Robinhood Chain) counts as ETH. One token in and ETH out is a
 **buy**. Token out and ETH in is a **sell**. Token movements with no ETH leg are
@@ -142,10 +168,13 @@ seconds (UTC), and amounts are in ETH.
 
 ## What has and hasn't been verified
 
-* **Tested against live Robinhood Chain mainnet** (chain id 4663, via Alchemy) on a
-  public wallet that is actively trading. In one poll it rebuilt 91 trades into 46
-  round trips. On the 4 trades spot-checked, the ETH amounts matched the WETH transfers
-  in the swap's own logs. A token with 23k transfers synced in two polls.
+* **Tested against live Robinhood Chain mainnet** (chain id 4663, via Alchemy):
+  * A public wallet that is actively trading: one poll rebuilt 91 trades into 46 round
+    trips. On the 4 trades spot-checked, the ETH amounts matched the WETH transfers in
+    the swap's own logs. A token with 23k transfers synced in two polls.
+  * A running synth ("tenner"): 600 trades over 5 days became 145 round trips, with win
+    rate, average win/loss and hold times.
+  * `find-synth` found a newly created synth's registration and account from its owner wallet.
 * **Not yet seen: synths.lol's real API.** This build environment's network policy
   blocked synths.lol, so `discover` has only run against a local stand-in app. The
   field heuristics are guesses until `discover` runs against the real site.

@@ -52,6 +52,7 @@ def test_own_coin_sells_known_at_start_are_not_sent(db, cfg):
     assert row["delivered"] == 2  # recorded as history, never sent
     # A sell that happened after monitoring started but was indexed late still alerts.
     db.upsert_trade(trade("late", T0 + 5, "sell", 0.1, 10, coin=OWN))
+    db.upsert_trade(trade("sweep", T0 + 6, "transfer_out", None, 1e-18, coin=OWN))  # 1-wei dust sweep
     assert [a.key for a in alerts.evaluate(db, cfg, T0 + 600) if a.kind == "own_coin_sell"] == ["own_sell:late"]
 
 

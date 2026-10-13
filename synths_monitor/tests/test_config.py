@@ -57,3 +57,12 @@ def test_example_config_loads():
 
     cfg = load_config(Path(__file__).resolve().parent.parent / "config.example.toml", env={})
     assert cfg["bot"]["handle"] == "bojjibot"
+
+
+def test_redact_hides_secrets():
+    from synthmon.http import redact
+
+    assert redact("https://discord.com/api/webhooks/123/SECRET-token_x") == "https://discord.com/api/webhooks/123/***"
+    assert redact("https://api.telegram.org/bot123:ABC/sendMessage") == "https://api.telegram.org/bot***/sendMessage"
+    assert redact("https://robinhood-mainnet.g.alchemy.com/v2/KEY123") == "https://robinhood-mainnet.g.alchemy.com/v2/***"
+    assert redact("https://x/api?module=a&apikey=K&b=1") == "https://x/api?module=a&apikey=***&b=1"

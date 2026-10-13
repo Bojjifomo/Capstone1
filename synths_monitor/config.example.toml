@@ -4,8 +4,12 @@
 
 [bot]
 handle = "bojjibot"
-# The synth's PUBLIC wallet address (0x + 40 hex). Env: SYNTHMON_WALLET.
+# The synth's own account: its PUBLIC address (0x + 40 hex), where its ETH sits and it
+# trades from. This is not the wallet that created the synth; `find-synth --owner` looks it up.
+# Env: SYNTHMON_WALLET.
 wallet = ""
+# The wallet that created the synth (informational).
+owner = ""
 # The coin the bot launched. Blank = newest coin from the synth's "launched" list.
 own_coin = ""
 

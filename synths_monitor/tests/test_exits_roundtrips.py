@@ -102,3 +102,14 @@ def test_missing_token_amounts_each_sell_closes():
               t("s2", 12, "sell", 0.05, None)]
     trips = build_round_trips(trades)
     assert [round(r.pnl_eth, 4) for r in trips] == [0.1, -0.05]
+
+
+def test_dust_sell_after_close_joins_the_round_trip():
+    trades = [t("b", 0, "buy", 0.1, 1_000_000), t("s1", 10, "sell", 0.12, 999_999.9995),
+              t("dust", 20, "sell", 1e-12, 0.0005), t("b2", 30, "buy", 0.05, 10)]
+    trips = build_round_trips(trades, {"s1": ("take_profit", None)})
+    assert len(trips) == 2
+    first = trips[0]
+    assert first.n_sells == 2 and "dust" in first.trade_ids and first.exit_type == "take_profit"
+    assert first.close_ts == 10 and first.pnl_eth == pytest.approx(0.02 + 1e-12)
+    assert trips[1].status == "open"

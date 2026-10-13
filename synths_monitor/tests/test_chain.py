@@ -19,6 +19,7 @@ def test_trades_from_activity():
         TxActivity("0xa", 30, 300, {COIN_B: 5.0}, eth_delta=0.0),  # airdrop / launch allocation
         TxActivity("0xb", 40, 400, {WETH: 1.0}, eth_delta=1.0),  # wrapping is not a trade
         TxActivity("0xc", 50, 500, {COIN_A: -10.0, COIN_B: 20.0}, eth_delta=-0.01),  # token-for-token
+        TxActivity("0xd", 60, 600, {COIN_A: -0.0005}, eth_delta=6.8e-13),  # dust sold for a fraction of a gwei
     ]
     trades = trades_from_activity(acts, [WETH], "chain:test")
     got = [(tr.coin, tr.side, tr.eth_amount, tr.token_amount) for tr in trades]
@@ -28,6 +29,7 @@ def test_trades_from_activity():
         (COIN_B, "transfer_in", None, 5.0),
         (COIN_A, "transfer_out", None, 10.0),
         (COIN_B, "transfer_in", None, 20.0),
+        (COIN_A, "sell", pytest.approx(6.8e-13), 0.0005),
     ]
     assert trades[0].gas_fee_eth == 0.0001 and trades[0].id == f"tx:{TX_BUY}:{COIN_A}"
 

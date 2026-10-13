@@ -25,9 +25,11 @@ from ..http import Http, RateLimited, SourceError
 from ..models import TokenTransfer, Trade
 from ..util import WEI, ZERO_ADDRESS, norm_addr, to_ts
 
-RATE_LIMIT_PAUSES = (1.0, 2.0, 4.0, 8.0)
+RATE_LIMIT_PAUSES = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-ETH_EPSILON = 1e-9  # below this an ETH leg counts as zero
+# Below this an ETH leg counts as zero. Balance changes are exact to the wei, and synths sell
+# dust remainders for well under a gwei, so this is only a guard against float noise.
+ETH_EPSILON = 1e-15
 
 
 @dataclass
@@ -67,6 +69,10 @@ def trades_from_activity(activity: list[TxActivity], weth: list[str], source: st
     return trades
 
 
+def _hex_int(value: str | None) -> int:
+    return int(value, 16) if value and value != "0x" else 0
+
+
 def _rate_limited(exc: Exception) -> bool:
     text = str(exc).lower()
     return isinstance(exc, RateLimited) or any(w in text for w in ("429", "rate limit", "exceeded", "too many"))
@@ -93,22 +99,30 @@ class RpcChain:
             raise SourceError(f"{method}: {err.get('message', err) if isinstance(err, dict) else err}")
         return body.get("result")
 
-    def batch(self, calls: list[tuple[str, list[Any]]], chunk: int = 25) -> list[Any]:
+    def batch(self, calls: list[tuple[str, list[Any]]], chunk: int = 20) -> list[Any]:
         """Several calls per HTTP request (JSON-RPC batch); results in call order.
 
-        A chunk that hits the provider's rate limit is retried after a pause.
+        Providers meter compute per second, and a big batch alone can exceed a free
+        tier's budget. On a rate limit the chunk size halves (it stays smaller for the
+        rest of this call) and the chunk is retried after a growing pause.
         """
         results: list[Any] = []
-        for i in range(0, len(calls), chunk):
+        i = 0
+        strikes = 0
+        while i < len(calls):
             part = calls[i:i + chunk]
-            for attempt in range(len(RATE_LIMIT_PAUSES) + 1):
-                try:
-                    results.extend(self._batch_once(part))
-                    break
-                except SourceError as exc:
-                    if attempt == len(RATE_LIMIT_PAUSES) or not _rate_limited(exc):
-                        raise
-                    self.sleep(RATE_LIMIT_PAUSES[attempt])
+            try:
+                results.extend(self._batch_once(part))
+            except SourceError as exc:
+                if not _rate_limited(exc) or strikes >= len(RATE_LIMIT_PAUSES):
+                    raise
+                retry_after = exc.retry_after if isinstance(exc, RateLimited) else None
+                self.sleep(max(RATE_LIMIT_PAUSES[strikes], retry_after or 0))
+                strikes += 1
+                chunk = max(1, chunk // 2)
+                continue
+            i += len(part)
+            strikes = 0
         return results
 
     def _batch_once(self, part: list[tuple[str, list[Any]]]) -> list[Any]:
@@ -138,7 +152,7 @@ class RpcChain:
     def erc20_balance(self, token: str, holder: str) -> float:
         data = "0x70a08231" + holder[2:].rjust(64, "0")
         raw = self.call("eth_call", [{"to": token, "data": data}, "latest"])
-        return int(raw or "0x0", 16) / 10 ** self.decimals(token)
+        return _hex_int(raw) / 10 ** self.decimals(token)
 
     def decimals(self, token: str) -> int:
         if token not in self._decimals:
@@ -162,7 +176,7 @@ class RpcChain:
         res = self.call("alchemy_getTokenBalances", [address, "erc20"]) or {}
         out = {}
         for entry in res.get("tokenBalances", []):
-            raw = int(entry.get("tokenBalance") or "0x0", 16)
+            raw = _hex_int(entry.get("tokenBalance"))
             token = norm_addr(entry.get("contractAddress"))
             if raw and token:
                 out[token] = raw / 10 ** self.decimals(token)
@@ -187,7 +201,7 @@ class RpcChain:
     def _amount(t: dict) -> float:
         rc = t.get("rawContract") or {}
         if rc.get("value") and rc.get("decimal"):
-            return int(rc["value"], 16) / 10 ** int(rc["decimal"], 16)
+            return _hex_int(rc["value"]) / 10 ** int(rc["decimal"], 16)
         return float(t.get("value") or 0.0)
 
     def wallet_activity(self, wallet: str, from_block: int, to_block: int, weth: list[str]) -> list[TxActivity]:
@@ -388,7 +402,7 @@ class ExplorerChain:
                     uid=uid, coin=token, block=block, ts=to_ts(log.get("timeStamp")),
                     tx_hash=log["transactionHash"].lower(), from_addr="0x" + topics[1][-40:].lower(),
                     to_addr="0x" + topics[2][-40:].lower(),
-                    amount=int(log.get("data") or "0x0", 16) / 10 ** self.decimals_default,
+                    amount=_hex_int(log.get("data")) / 10 ** self.decimals_default,
                 )
             if len(logs) < self.page_size:
                 return sorted(out.values(), key=lambda t: (t.block, t.uid)), to_block + 1

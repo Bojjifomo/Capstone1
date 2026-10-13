@@ -18,6 +18,8 @@ from .util import fmt_duration, fmt_ts, now
 
 log = logging.getLogger("synthmon.alerts")
 MAX_ATTEMPTS = 5
+# Synths sweep leftover dust (often 1 wei of a token) after selling; that is not news.
+OWN_COIN_DUST_TOKENS = 1e-6
 
 
 @dataclass
@@ -85,7 +87,8 @@ def evaluate(db: DB, cfg: dict[str, Any], ts: int | None = None) -> list[Alert]:
     own = db.get_state("own_coin") or cfg["bot"]["own_coin"]
     if own:
         for row in db.query(
-            "SELECT * FROM trades WHERE coin = ? AND side IN ('sell', 'transfer_out') ORDER BY ts", (own,)
+            "SELECT * FROM trades WHERE coin = ? AND side IN ('sell', 'transfer_out') AND COALESCE(token_amount, 1) >= ? "
+            "ORDER BY ts", (own, OWN_COIN_DUST_TOKENS),
         ):
             what = "SOLD" if row["side"] == "sell" else "moved out"
             sym = row["symbol"] or own[:10]

@@ -1,4 +1,4 @@
-"""Command line: setup, discover, poll, run, report, roundtrips, test-alert, reset-baseline."""
+"""Command line: setup, find-synth, discover, poll, run, report, roundtrips, test-alert, reset-baseline."""
 
 from __future__ import annotations
 
@@ -39,6 +39,11 @@ def cmd_setup(args: argparse.Namespace) -> None:
         else:
             print("Expected 0x followed by 40 hex characters.")
     handle = input("Synth handle [bojjibot]: ").strip().lstrip("@") or "bojjibot"
+    owner = ""
+    synth = _lookup_synth(wallet.lower(), handle)
+    if synth and input(f"{wallet} created synth @{synth.handle}, whose own account is {synth.account}. "
+                       "Monitor that account? [Y/n] ").strip().lower() in ("", "y", "yes"):
+        owner, wallet = wallet.lower(), synth.account
     discord = input("Discord webhook URL (blank to skip): ").strip()
     tg_token = tg_chat = ""
     if not discord:
@@ -50,6 +55,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     if path.exists() and input(f"{path} exists. Overwrite? [y/N] ").strip().lower() != "y":
         raise SystemExit("left existing config untouched")
     text = (text.replace('wallet = ""', f"wallet = {_toml_str(wallet.lower())}", 1)
+                .replace('owner = ""', f"owner = {_toml_str(owner)}", 1)
                 .replace('handle = "bojjibot"', f"handle = {_toml_str(handle)}", 1)
                 .replace('discord_webhook_url = ""', f"discord_webhook_url = {_toml_str(discord)}", 1)
                 .replace('telegram_bot_token = ""', f"telegram_bot_token = {_toml_str(tg_token)}", 1)
@@ -58,6 +64,42 @@ def cmd_setup(args: argparse.Namespace) -> None:
     path.chmod(0o600)  # it holds the webhook URL
     load_config(path)
     print(f"wrote {path}. Next: `python -m synthmon discover`, paste the endpoints in, then `python -m synthmon run`.")
+
+
+def _lookup_synth(owner: str, handle: str | None):
+    """The synth this wallet created (matching `handle` when given), if an RPC is configured."""
+    from .http import Http, SourceError
+    from .registry import find_synths
+    from .sources.chain import RpcChain
+
+    url = rpc_url(load_config(None))
+    if not url:
+        return None
+    try:
+        found = find_synths(RpcChain(url, Http()), owner)
+    except SourceError:
+        return None
+    matches = [r for r in found if not handle or (r.handle or "").lower() == handle.lower()]
+    return matches[-1] if matches else None
+
+
+def cmd_find_synth(args: argparse.Namespace) -> None:
+    from .http import Http
+    from .registry import find_synths
+    from .sources.chain import RpcChain
+
+    cfg = _load(args)
+    url = rpc_url(cfg)
+    if not url:
+        raise SystemExit("needs chain.rpc_url or ALCHEMY_API_KEY")
+    if not is_address(args.owner):
+        raise SystemExit("--owner must be a 0x address")
+    found = find_synths(RpcChain(url, Http()), args.owner)
+    if not found:
+        print(f"no synths created by {args.owner} (through registry calls sent from that wallet)")
+    for r in found:
+        print(f"@{r.handle}  account {r.account}  created {fmt_ts(r.ts)}  block {r.block}  tx {r.tx_hash}")
+        print(f"    details: {r.strings}")
 
 
 def cmd_discover(args: argparse.Namespace) -> None:
@@ -142,7 +184,10 @@ def cmd_test_alert(args: argparse.Namespace) -> None:
     n = Notifier(cfg)
     if not n.enabled:
         raise SystemExit("no webhook configured")
-    n.send(f"✅ synthmon test alert for @{cfg['bot']['handle']} at {fmt_ts(now())}")
+    try:
+        n.send(f"✅ synthmon test alert for @{cfg['bot']['handle']} at {fmt_ts(now())}")
+    except RuntimeError as exc:
+        raise SystemExit(f"test alert failed: {exc}") from None
     print("sent")
 
 
@@ -161,6 +206,9 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("setup", help="ask for the wallet address and webhook, write config.toml").set_defaults(fn=cmd_setup)
+    p = sub.add_parser("find-synth", help="find the synth account(s) a wallet created on synths.lol")
+    p.add_argument("--owner", required=True, help="the wallet that created the synth")
+    p.set_defaults(fn=cmd_find_synth)
     p = sub.add_parser("discover", help="capture the JSON endpoints synths.lol calls (Playwright)")
     p.add_argument("--handle")
     p.add_argument("--out", default="discovery")

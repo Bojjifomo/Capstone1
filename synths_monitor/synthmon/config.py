@@ -14,7 +14,10 @@ from .util import is_address, norm_addr
 DEFAULTS: dict[str, Any] = {
     "bot": {
         "handle": "bojjibot",
+        # The synth's own account (its trading wallet), not the owner's wallet. See `find-synth`.
         "wallet": "",
+        # The wallet that created the synth. Informational only.
+        "owner": "",
         # Coin the bot launched. Empty = take the newest coin from the synth's "launched" list.
         "own_coin": "",
     },
@@ -167,6 +170,10 @@ def load_config(path: str | os.PathLike | None, env: dict[str, str] | None = Non
     if wallet and not is_address(wallet):
         raise ConfigError(f"bot.wallet must be a 0x address (42 characters), got {wallet!r}")
     cfg["bot"]["wallet"] = norm_addr(wallet) or ""
+    owner = cfg["bot"]["owner"].strip()
+    if owner and not is_address(owner):
+        raise ConfigError(f"bot.owner must be a 0x address, got {owner!r}")
+    cfg["bot"]["owner"] = norm_addr(owner) or ""
     own = cfg["bot"]["own_coin"].strip()
     if own and not is_address(own):
         raise ConfigError(f"bot.own_coin must be a 0x token address, got {own!r}")

@@ -68,8 +68,19 @@ def build_round_trips(
     for coin, coin_trades in by_coin.items():
         track_tokens = all(t.token_amount is not None for t in coin_trades)
         rt: RoundTrip | None = None
+        last_closed: RoundTrip | None = None
         position = 0.0
         for t in coin_trades:
+            if (rt is None and last_closed is not None and track_tokens and t.side in ("sell", "transfer_out")
+                    and (t.token_amount or 0.0) <= last_closed.peak_tokens * dust_fraction):
+                # Selling the dust left after a round trip closed belongs to that round trip.
+                last_closed.trade_ids.append(t.id)
+                last_closed.tokens_sold += t.token_amount or 0.0
+                last_closed.gas_eth += t.gas_fee_eth or 0.0
+                if t.side == "sell":
+                    last_closed.n_sells += 1
+                    last_closed.sell_eth += t.eth_amount or 0.0
+                continue
             if rt is None:
                 rt = RoundTrip(coin=coin, symbol=t.symbol, open_ts=t.ts)
                 position = 0.0
@@ -107,7 +118,7 @@ def build_round_trips(
                 else:
                     rt.exit_type = "transfer"
                 result.append(rt)
-                rt = None
+                last_closed, rt = rt, None
         if rt is not None:
             result.append(rt)
     return sorted(result, key=lambda r: (r.open_ts, r.coin))
