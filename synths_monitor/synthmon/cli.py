@@ -40,6 +40,9 @@ def cmd_setup(args: argparse.Namespace) -> None:
             print("Expected 0x followed by 40 hex characters.")
     handle = input("Synth handle [bojjibot]: ").strip().lstrip("@") or "bojjibot"
     owner = ""
+    if not rpc_url(load_config(None)):
+        print("Note: ALCHEMY_API_KEY is not set, so I can't check whether this is the synth's own account. If it is the "
+              "wallet you created the synth with, set the key and run setup again (or use `find-synth`).")
     synth = _lookup_synth(wallet.lower(), handle)
     if synth and input(f"{wallet} created synth @{synth.handle}, whose own account is {synth.account}. "
                        "Monitor that account? [Y/n] ").strip().lower() in ("", "y", "yes"):
@@ -125,8 +128,12 @@ def _context(args: argparse.Namespace, require_webhook: bool):
     if require_webhook and not has_webhook(cfg) and not args.no_webhook:
         raise SystemExit("no alert webhook configured. Run `python -m synthmon setup`, or pass --no-webhook to only log alerts.")
     if not any(cfg["synths"]["endpoints"].values()) and not (cfg["chain"]["explorer_api_url"] or rpc_url(cfg)):
-        raise SystemExit("no data source: add synths endpoints (see `discover`), chain.explorer_api_url, "
-                         "chain.rpc_url or ALCHEMY_API_KEY.")
+        raise SystemExit(
+            "no data source yet. Easiest: get a free API key at alchemy.com (with Robinhood Chain enabled), then\n"
+            "    export ALCHEMY_API_KEY=your-key\n"
+            "and run this again. You can also run `python -m synthmon discover` and copy the [synths.endpoints] "
+            "it suggests into config.toml."
+        )
     db = DB(cfg["storage"]["db_path"])
     return build_context(cfg, db)
 
