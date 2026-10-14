@@ -173,12 +173,13 @@ a:hover { text-decoration: underline; }
         <div><b>Sync copy-trade</b><span>Isi wallet kamu, lalu lihat per pool: BELUM COPY, SYNC, atau LEADER SUDAH CLOSE. Alert ikut memberi tahu.</span></div>
         <div><b>Wallet manager</b><span>Mendeteksi wallet yang menandatangani trade vault (wallet manager-nya), dan bisa dilacak juga.</span></div>
         <div><b>Wallet kembar</b><span>Mencari wallet biasa yang membuka posisi sama seperti vault di waktu berdekatan, supaya bisa di-copy pakai tools copytrade lain.</span></div>
+        <div><b>Bot copytrade</b><span>Opsional. Membuka posisi di wallet bot setiap vault membuka posisi, dan menutupnya saat vault menutup. Ada mode DRY RUN (simulasi) dan LIVE, dengan batas ukuran dan pengaman harga.</span></div>
         <div><b>Riwayat aktivitas</b><span>Semua open, close, rebalance, limit order, dan swap vault, dengan link ke transaksinya di Solscan.</span></div>
         <div><b>Jalan sendiri</b><span>Start/Stop dari halaman ini. Pengaturan tersimpan. Transaksi yang terlewat saat laptop mati tetap diproses begitu jalan lagi.</span></div>
         <div><b>Jaga laptop menyala</b><span>Mencegah sleep selama tracker jalan (macOS/Windows), selama laptop dicolok dan layarnya terbuka.</span></div>
         <div><b>Buka dari HP</b><span>Dengan <code>--host 0.0.0.0</code> dan link bertoken, halaman ini bisa dibuka dari HP di Wi-Fi yang sama.</span></div>
       </div>
-      <p class="muted">Yang tidak dilakukan: tool ini tidak membuka atau menutup posisi untuk kamu dan tidak butuh private key. Kamu tetap klik sendiri di Meteora.</p>
+      <p class="muted">Tanpa bot copytrade, tool ini tidak membuka atau menutup posisi untuk kamu dan tidak butuh private key. Bot copytrade baru bertransaksi kalau kamu memilih mode LIVE dan memberi file keypair wallet bot.</p>
     </details>
 
     <details class="gsec">
@@ -250,6 +251,27 @@ a:hover { text-decoration: underline; }
         <li>Salin alamatnya ke tools copytrade lain. Cek dulu riwayatnya di Solscan.</li>
       </ol>
       <p class="muted">Kalau tidak ada yang konsisten, perbesar jendela (misalnya 1800 detik) atau jumlah posisi yang dicek. Bisa juga memang tidak ada wallet lain yang meniru vault ini. Lewat terminal: <code>python3 -m vault_tracker mirrors</code>.</p>
+    </details>
+
+    <details class="gsec">
+      <summary>Bot copytrade otomatis</summary>
+      <ol>
+        <li>Buat wallet khusus bot di terminal: <code>python3 -m vault_tracker copy-wallet new</code>. Alamatnya tampil di layar, dan file keypair-nya otomatis tercatat di Pengaturan. Wallet lama dari Phantom juga bisa dipakai lewat <code>copy-wallet import</code>, tapi wallet baru lebih aman.</li>
+        <li>Kirim SOL secukupnya ke wallet bot: modal, ditambah sekitar 0.2 SOL untuk fee dan rent. Rent posisi (~0.057 SOL) kembali saat posisi ditutup.</li>
+        <li>Di kartu Copytrade bot, pilih <b>DRY RUN</b>, atur ukuran dan batas, Simpan, lalu Start. Setiap vault membuka posisi, Log bot menampilkan rencana dan hasil simulasinya, tanpa transaksi.</li>
+        <li>Kalau rencananya sudah masuk akal, ganti ke <b>LIVE</b> dengan ukuran kecil. Bot akan swap lewat Jupiter, membuka posisi, dan menutupnya saat vault menutup, tanpa menunggu persetujuan kamu.</li>
+        <li>Pantau Log bot dan alert Telegram. Tombol Tutup di Posisi bot menutup satu posisi secara manual.</li>
+      </ol>
+      <table>
+        <tr><th>Pengaman</th><th>Fungsinya</th></tr>
+        <tr><td>Ukuran per posisi / batas maksimal</td><td>Membatasi uang yang dipakai per posisi</td></tr>
+        <tr><td>Maksimal posisi bot terbuka</td><td>Membatasi total eksposur</td></tr>
+        <tr><td>Cadangan SOL</td><td>SOL yang tidak pernah dipakai, untuk fee</td></tr>
+        <tr><td>Batal kalau harga sudah bergerak</td><td>Tidak mengejar harga yang sudah lari</td></tr>
+        <tr><td>Batal kalau posisi vault sudah lama</td><td>Tidak meng-copy posisi lama setelah laptop mati</td></tr>
+        <tr><td>3 kali gagal berturut-turut</td><td>Bot dijeda sampai kamu klik Lanjutkan bot</td></tr>
+      </table>
+      <p class="muted">Yang tidak di-copy otomatis: limit order, rebalance, dan tambah/tarik likuiditas sebagian. Bot hanya menutup posisi yang dibukanya sendiri. Risiko: bot ikut masuk ke token apa pun yang dibeli vault, termasuk yang bisa langsung jatuh. Pakai dana yang siap hilang.</p>
     </details>
 
     <details class="gsec">
@@ -351,6 +373,60 @@ a:hover { text-decoration: underline; }
     <h2>Sync copy-trade</h2>
     <div class="tablewrap"><table id="sync"></table></div>
   </section>
+
+  <details class="card" id="copyCard">
+    <summary><h2>Copytrade bot</h2><span class="badge" id="copyBadge" style="margin-left:10px">OFF</span>
+      <span class="chev" id="copyChev">klik untuk buka</span></summary>
+    <p class="muted" style="margin:12px 0 6px">Setiap vault membuka posisi DLMM baru, bot membuka posisi di wallet bot kamu dengan "Range kamu". Saat vault menutup posisi itu, bot ikut menutup. Mulai dari <b>DRY RUN</b>: bot hanya membuat rencana dan menyimulasikannya di chain, tanpa mengirim transaksi.</p>
+    <div id="copyWallet" class="muted" style="margin-bottom:6px"></div>
+    <div class="actions" style="margin-top:6px"><button type="button" id="copyResume" class="primary" hidden>Lanjutkan bot</button></div>
+    <form id="copyForm" autocomplete="off">
+      <div class="grid">
+        <div class="field"><label for="COPY_RUN">Mode bot</label>
+          <select id="COPY_RUN"><option value="off">OFF: mati</option><option value="dry">DRY RUN: rencana + simulasi, tanpa transaksi</option><option value="live">LIVE: kirim transaksi sungguhan</option></select>
+          <div class="hint">Perubahan berlaku setelah Simpan. Tracker restart otomatis kalau sedang jalan.</div></div>
+        <div class="field"><label for="COPY_KEYPAIR">File keypair wallet bot</label>
+          <input type="text" id="COPY_KEYPAIR" spellcheck="false" placeholder="~/.config/vault_tracker/copy-wallet.json">
+          <div class="hint">Buat dengan <code>python3 -m vault_tracker copy-wallet new</code>. Private key tidak pernah ditampilkan di halaman ini.</div></div>
+        <div class="field"><label for="COPY_SIZE_USD">Ukuran per posisi (USD)</label>
+          <input type="number" id="COPY_SIZE_USD" min="1" step="any"></div>
+        <div class="field"><label for="COPY_MAX_USD">Batas maksimal per posisi (USD)</label>
+          <input type="number" id="COPY_MAX_USD" min="1" step="any"></div>
+        <div class="field"><label for="COPY_SIZE_RATIO">Rasio terhadap posisi vault (0 = pakai ukuran tetap)</label>
+          <input type="number" id="COPY_SIZE_RATIO" min="0" step="any">
+          <div class="hint">Misalnya 0.1: posisi vault $500 dicopy $50, tetap dibatasi maksimal di atas.</div></div>
+        <div class="field"><label for="COPY_MAX_OPEN">Maksimal posisi bot terbuka</label>
+          <input type="number" id="COPY_MAX_OPEN" min="1" max="20" step="1"></div>
+        <div class="field"><label for="COPY_BUDGET">Modal bot</label>
+          <select id="COPY_BUDGET"><option value="SOL">SOL</option><option value="USDC">USDC</option></select>
+          <div class="hint">Token yang dipakai untuk beli token pool, dan tujuan swap balik setelah close.</div></div>
+        <div class="field"><label for="COPY_RESERVE_SOL">Cadangan SOL yang tidak dipakai</label>
+          <input type="number" id="COPY_RESERVE_SOL" min="0.02" step="any"></div>
+        <div class="field"><label for="COPY_MAX_PRICE_MOVE">Batal kalau harga sudah bergerak lebih dari (%)</label>
+          <input type="number" id="COPY_MAX_PRICE_MOVE" min="0.1" max="50" step="any"></div>
+        <div class="field"><label for="COPY_MAX_EVENT_AGE">Batal kalau posisi vault dibuka lebih dari (detik) lalu</label>
+          <input type="number" id="COPY_MAX_EVENT_AGE" min="30" max="3600" step="1"></div>
+        <div class="field"><label for="COPY_STRATEGY">Bentuk likuiditas</label>
+          <select id="COPY_STRATEGY"><option value="spot">Spot</option><option value="curve">Curve</option><option value="bidask">Bid-Ask</option></select></div>
+        <div class="field"><label for="COPY_SLIPPAGE_BPS">Slippage swap (bps, 100 = 1%)</label>
+          <input type="number" id="COPY_SLIPPAGE_BPS" min="1" max="1000" step="1"></div>
+        <div class="field"><label for="COPY_PRIORITY">Priority fee (micro-lamports per CU)</label>
+          <input type="number" id="COPY_PRIORITY" min="0" step="1000"></div>
+        <div class="field"><label for="COPY_MAX_NEW_BIN_ARRAYS">Maks bin array baru (~0.07 SOL masing-masing)</label>
+          <input type="number" id="COPY_MAX_NEW_BIN_ARRAYS" min="0" max="3" step="1"></div>
+      </div>
+      <div class="field" style="margin-top:12px"><div class="checks">
+        <label><input type="checkbox" id="COPY_EXIT_SWAP"> Swap token kembali ke modal bot setelah posisi ditutup</label></div></div>
+      <div class="actions">
+        <button type="submit" class="primary">Simpan pengaturan bot</button>
+        <span class="muted" id="copyMsg"></span>
+      </div>
+    </form>
+    <h2 style="margin-top:18px">Posisi bot</h2>
+    <div class="tablewrap"><table id="copyPos"></table></div>
+    <h2 style="margin-top:18px">Log bot</h2>
+    <ul class="events" id="copyLog"></ul>
+  </details>
 
   <section class="card">
     <h2>Aktivitas terbaru</h2>
@@ -464,7 +540,78 @@ function loadForm(cfg) {
     ? "Laptop harus dicolok dan layarnya terbuka. MacBook yang ditutup tetap tidur dan tracker berhenti mengecek."
     : "Di sistem ini fitur ini tidak tersedia. Matikan sleep di pengaturan sistem kalau perlu.";
   $("settings").open = !cfg.VAULT_ADDRESS;
+  loadCopyForm(cfg);
   formLoaded = true;
+}
+const COPY_FIELDS = ["COPY_RUN", "COPY_KEYPAIR", "COPY_SIZE_USD", "COPY_MAX_USD", "COPY_SIZE_RATIO", "COPY_MAX_OPEN",
+  "COPY_BUDGET", "COPY_RESERVE_SOL", "COPY_MAX_PRICE_MOVE", "COPY_MAX_EVENT_AGE", "COPY_STRATEGY", "COPY_SLIPPAGE_BPS",
+  "COPY_PRIORITY", "COPY_MAX_NEW_BIN_ARRAYS"];
+function loadCopyForm(cfg) {
+  for (const k of COPY_FIELDS) $(k).value = (cfg[k] || "").toString();
+  $("COPY_RUN").value = (cfg.COPY_RUN || "off").toLowerCase();
+  $("COPY_BUDGET").value = (cfg.COPY_BUDGET || "SOL").toUpperCase();
+  $("COPY_STRATEGY").value = (cfg.COPY_STRATEGY || "spot").toLowerCase();
+  $("COPY_EXIT_SWAP").checked = cfg.COPY_EXIT_SWAP !== "0";
+}
+$("copyForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const d = {};
+  for (const k of COPY_FIELDS) d[k] = $(k).value.trim();
+  d.COPY_EXIT_SWAP = $("COPY_EXIT_SWAP").checked ? "1" : "0";
+  if (d.COPY_RUN === "live" && (S.config.COPY_RUN || "off") !== "live") {
+    const ok = confirm("Mode LIVE: bot akan mengirim transaksi sungguhan dari wallet bot (swap, buka posisi, tutup posisi) " +
+      "tanpa menunggu persetujuan kamu.\n\nPakai wallet khusus dengan dana kecil. Copy-trade bisa rugi, dan vault bisa membuka " +
+      "posisi di token yang langsung turun.\n\nLanjut ke LIVE?");
+    if (!ok) return;
+  }
+  $("copyMsg").textContent = "menyimpan…";
+  try {
+    const r = await api("/api/config", d);
+    showFieldErrors(r.errors);
+    if (r.ok) { $("copyMsg").textContent = r.restarted ? "Tersimpan. Tracker restart dengan pengaturan bot baru." : "Tersimpan. Klik Start untuk menjalankan.";
+      formLoaded = false; await refresh(); }
+    else $("copyMsg").textContent = "Periksa isian yang ditandai merah.";
+  } catch (err) { $("copyMsg").textContent = "Gagal menyimpan: " + err.message; }
+});
+$("copyResume").addEventListener("click", async () => {
+  const r = await api("/api/copy/resume");
+  $("copyMsg").textContent = r.ok ? "Bot dilanjutkan." : r.error;
+  await refresh();
+});
+$("copyCard").addEventListener("toggle", () => { $("copyChev").textContent = $("copyCard").open ? "" : "klik untuk buka"; });
+function renderCopy() {
+  const run = (S.config.COPY_RUN || "off").toLowerCase();
+  const c = S.view && S.view.copier;
+  const badge = $("copyBadge");
+  badge.textContent = { off: "OFF", dry: "DRY RUN", live: "LIVE" }[run] || run.toUpperCase();
+  badge.className = "badge " + (run === "live" ? "bad" : run === "dry" ? "warn" : "");
+  if (c && c.paused) { badge.textContent += " · DIJEDA"; badge.className = "badge bad"; }
+  $("copyResume").hidden = !(c && c.paused);
+  const w = $("copyWallet"); w.replaceChildren();
+  if (run === "off") w.append("Bot mati. Pilih DRY RUN dulu untuk melihat apa yang akan dilakukan bot tanpa risiko.");
+  else if (!c) w.append(["running", "syncing", "starting"].includes(S.status) ? "Menyiapkan bot…" : "Klik Start (kanan atas) untuk menjalankan bot.");
+  else {
+    w.append("Wallet bot: ", solscan("account", c.wallet) || c.wallet);
+    if (c.balances) w.append(` · ${c.balances.SOL.toFixed(4)} SOL · ${c.balances.USDC.toFixed(2)} USDC`);
+    if (run === "dry") w.append(" · mode simulasi: tidak ada transaksi yang dikirim");
+  }
+  const t = $("copyPos"); t.replaceChildren(el("tr", {}, ["Pool", "Range bin", "Ukuran", "Dibuka", ""].map((h) => el("th", {}, h))));
+  const ps = c ? c.positions : [];
+  if (!ps.length) t.append(el("tr", {}, el("td", { colspan: 5, class: "empty" }, "Belum ada posisi yang dibuka bot.")));
+  for (const p of ps) {
+    t.append(el("tr", {}, el("td", {}, el("b", {}, p.pair), el("div", { class: "l2" }, solscan("account", p.position))),
+      el("td", {}, `${p.lower} … ${p.upper}`), el("td", {}, fmtUsd(p.usd)), el("td", {}, dstr(p.opened_at)),
+      el("td", {}, el("button", { type: "button", class: "small danger", onclick: async () => {
+        if (!confirm(`Tutup posisi bot ${p.pair} sekarang?` + (run === "live" ? " Ini mengirim transaksi sungguhan." : " (simulasi)"))) return;
+        const r = await api("/api/copy/close", { position: p.position });
+        $("copyMsg").textContent = r.ok ? "Sedang diproses, hasilnya muncul di Log bot." : r.error;
+      } }, "Tutup"))));
+  }
+  const ul = $("copyLog"); ul.replaceChildren();
+  const log = c ? c.log.slice(0, 15) : [];
+  if (!log.length) ul.append(el("li", { class: "empty", style: "display:block" }, "Belum ada aktivitas bot."));
+  for (const e of log) ul.append(el("li", {}, el("div", { class: "t" }, dstr(e.ts)),
+    el("div", {}, el("div", { class: "h" }, e.title), ...e.lines.map((l) => el("div", { class: "d" }, l)))));
 }
 function modeUi() {
   const m = $("mode").value;
@@ -716,7 +863,7 @@ $("guide").addEventListener("toggle", () => { $("guideChev").textContent = $("gu
 function render() {
   if (!S) return;
   if (!formLoaded) loadForm(S.config);
-  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderEvents(); renderMirrors(); renderManagers(); renderFoot();
+  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderCopy(); renderEvents(); renderMirrors(); renderManagers(); renderFoot();
 }
 async function refresh() {
   try {

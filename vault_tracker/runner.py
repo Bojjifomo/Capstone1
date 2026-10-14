@@ -2,6 +2,7 @@
 
 from . import copytrade
 from .alerts import AlertFormatter, Notifier, fmt_usd
+from .copier import Copier, load_keypair
 from .prices import PriceOracle
 from .rpc import Rpc
 from .tokens import TokenRegistry
@@ -11,7 +12,7 @@ from .vault import VaultTracker
 class Session:
     def __init__(self, vault, follower=None, rpc_url=None, rpc_delay=0.05, copy_mode="mirror",
                  history=300, use_gpa=False, state_dir=".vault_tracker", alert_types=None, min_usd=5.0,
-                 name=None):
+                 name=None, copy_settings=None, copy_keypair=None):
         copytrade.parse_mode(copy_mode)  # raises ValueError on a bad mode
         self.copy_mode = copy_mode
         self.history = history
@@ -29,6 +30,11 @@ class Session:
         self.trackers = [t for t in (self.follower, self.leader) if t]
         self.notifier = Notifier(alert_types, min_usd=min_usd)
         self.formatter = AlertFormatter(self.leader, self.follower, copy_mode)
+        self.copier = None
+        if copy_settings and copy_settings.get("run", "off") != "off":
+            kp = load_keypair(copy_keypair) if copy_keypair else None
+            self.copier = Copier(self.rpc, tokens, prices, copy_settings, copy_mode, state_dir,
+                                 keypair=kp, sim_wallet=follower)
 
     @property
     def follower_label(self):
@@ -53,6 +59,10 @@ class Session:
                 continue
             self.notifier.send(title, lines, ev)
             sent.append((title, lines, ev))
+        if self.copier:  # copy the leader's opens / closes into the bot wallet
+            for title, lines in self.copier.handle(pending, self.leader):
+                self.notifier.send(title, lines, {"type": "COPY"})
+                sent.append((title, lines, {"type": "COPY"}))
         return sent
 
     def announce(self):
@@ -62,5 +72,7 @@ class Session:
         self.notifier.send("👀 Vault tracker aktif", [
             f"{self.leader.display}: {self.leader.address}",
             f"Copy mode: {self.copy_mode}",
+            f"Copytrade bot: {self.copier.s['run'].upper() if self.copier else 'OFF'}"
+            + (f" · wallet {self.copier.wallet}" if self.copier and self.copier.wallet else ""),
             f"Posisi terbuka: {len(snap['positions'])} · nilai {fmt_usd(snap['total_usd'])}",
         ])

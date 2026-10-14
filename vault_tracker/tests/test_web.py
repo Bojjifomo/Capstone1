@@ -22,7 +22,8 @@ class EnvFile(unittest.TestCase):
 
     def test_save_keeps_other_lines(self):
         config.save({"VAULT_ADDRESS": VAULT, "COPY_MODE": "pct:-5,5"}, self.path)
-        text = open(self.path).read()
+        with open(self.path) as f:
+            text = f.read()
         self.assertIn("# my notes\n", text)
         self.assertIn("OTHER=keep\n", text)
         self.assertIn(f"VAULT_ADDRESS={VAULT}\n", text)

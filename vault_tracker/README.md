@@ -189,6 +189,56 @@ vault membuka. Wallet yang konsisten diberi label:
 Kecocokan sekali dengan overlap kecil disembunyikan (`--all` untuk melihat). Di website,
 fitur ini ada di kartu "Wallet kembar".
 
+## Bot copytrade (otomatis)
+
+Bot ini membuka posisi DLMM di **wallet bot kamu** setiap vault membuka posisi baru
+(memakai "Range kamu" dari copy mode), lalu menutupnya saat vault menutup posisi itu.
+
+Mode `COPY_RUN`:
+
+| Mode | Yang terjadi |
+|---|---|
+| `off` (default) | Bot mati. |
+| `dry` | Bot membuat rencana (ukuran, range, swap yang dibutuhkan) dan menyimulasikan transaksinya di chain. Tidak ada yang ditandatangani atau dikirim. |
+| `live` | Bot swap lewat Jupiter, membuka posisi, dan menutupnya **tanpa menunggu persetujuan**. |
+
+Mulai:
+
+```bash
+python -m vault_tracker copy-wallet new      # buat wallet bot baru (atau: copy-wallet import)
+python -m vault_tracker copy-wallet show     # alamat + saldo
+```
+
+Kirim SOL secukupnya ke alamat wallet bot: modal, ditambah sekitar 0.2 SOL untuk fee dan rent
+(rent posisi ~0.057 SOL kembali saat posisi ditutup). Lalu di website, buka kartu
+**Copytrade bot**, pilih **DRY RUN**, Simpan, dan Start. Kalau rencana dan simulasi di log
+bot sudah masuk akal, baru ganti ke **LIVE**. Bisa juga lewat terminal:
+`python -m vault_tracker watch --copy dry`.
+
+Pengaman yang selalu aktif:
+
+- Ukuran per posisi (`COPY_SIZE_USD`, atau `COPY_SIZE_RATIO` × nilai posisi vault) dan batas
+  maksimal `COPY_MAX_USD`.
+- Maksimal posisi bot terbuka `COPY_MAX_OPEN`, cadangan SOL `COPY_RESERVE_SOL` yang tidak dipakai.
+- Batal kalau harga sudah bergerak lebih dari `COPY_MAX_PRICE_MOVE` % sejak vault membuka, atau
+  posisi vault dibuka lebih dari `COPY_MAX_EVENT_AGE` detik lalu (misalnya setelah laptop mati).
+- Batal kalau perlu membuat lebih dari `COPY_MAX_NEW_BIN_ARRAYS` bin array baru (~0.07 SOL
+  masing-masing), kalau range kamu lebih dari 70 bins, atau kalau token memakai transfer hook.
+- Bot hanya menutup posisi yang dibukanya sendiri.
+- Tiga kegagalan berturut-turut: bot dijeda sampai kamu klik **Lanjutkan bot**
+  (atau `python -m vault_tracker copy-resume`).
+
+Yang tidak di-copy otomatis: limit order, rebalance, dan tambah/tarik likuiditas sebagian. Bot
+mengirim pemberitahuan supaya kamu bisa mengikutinya manual.
+
+Perintah lain: `copy-status` (posisi + log bot), `copy-close <alamat_posisi>` (tutup satu posisi bot).
+
+Risiko: bot ikut masuk ke token apa pun yang dibeli vault, termasuk token yang bisa langsung jatuh.
+Pakai wallet khusus dengan dana yang siap hilang. Private key hanya disimpan di file keypair
+(izin 600) dan tidak pernah dikirim ke mana pun, termasuk ke halaman web. Swap Jupiter dan
+pengiriman transaksi live belum pernah diuji dengan dana sungguhan oleh pembuat tool ini.
+Jalankan DRY RUN dulu, lalu LIVE dengan ukuran kecil.
+
 ## Alert Telegram
 
 1. Chat [@BotFather](https://t.me/BotFather), kirim `/newbot`, lalu salin token-nya ke `TELEGRAM_BOT_TOKEN`.

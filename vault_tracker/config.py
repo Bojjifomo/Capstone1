@@ -18,6 +18,22 @@ FIELDS = {
     "TELEGRAM_CHAT_ID": ("", False),
     "DISCORD_WEBHOOK_URL": ("", True),
     "JUPITER_API_KEY": ("", True),
+    # copytrade bot (see copier.py); the private key itself never goes in .env, only its file path
+    "COPY_RUN": ("off", False),
+    "COPY_KEYPAIR": ("", False),
+    "COPY_BUDGET": ("SOL", False),
+    "COPY_SIZE_USD": ("20", False),
+    "COPY_SIZE_RATIO": ("0", False),
+    "COPY_MAX_USD": ("100", False),
+    "COPY_MAX_OPEN": ("3", False),
+    "COPY_RESERVE_SOL": ("0.1", False),
+    "COPY_MAX_PRICE_MOVE": ("2", False),
+    "COPY_MAX_EVENT_AGE": ("180", False),
+    "COPY_STRATEGY": ("spot", False),
+    "COPY_SLIPPAGE_BPS": ("100", False),
+    "COPY_EXIT_SWAP": ("1", False),
+    "COPY_PRIORITY": ("50000", False),
+    "COPY_MAX_NEW_BIN_ARRAYS": ("1", False),
 }
 SECRETS = {k for k, (_, secret) in FIELDS.items() if secret}
 

@@ -24,6 +24,7 @@ from solders.pubkey import Pubkey
 
 from . import config, copytrade, dashboard
 from .alerts import DEFAULT_TYPES, Notifier, plain
+from .copier import load_keypair, settings_from_config
 from .runner import Session
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
@@ -95,6 +96,43 @@ def validate(cfg):
     bad = [t for t in (cfg.get("ALERT_TYPES") or "").split(",") if t and t not in ALL_TYPES]
     if bad:
         errors["ALERT_TYPES"] = f"tipe tidak dikenal: {', '.join(bad)}"
+    errors.update(validate_copy(cfg))
+    return errors
+
+
+def validate_copy(cfg):
+    errors = {}
+    run = (cfg.get("COPY_RUN") or "off").lower()
+    if run not in ("off", "dry", "live"):
+        errors["COPY_RUN"] = "harus off, dry, atau live"
+    keypair = cfg.get("COPY_KEYPAIR") or ""
+    if keypair:
+        try:
+            load_keypair(keypair)
+        except Exception:
+            errors["COPY_KEYPAIR"] = "file keypair tidak ditemukan atau tidak valid"
+    if run == "live" and not keypair:
+        errors["COPY_KEYPAIR"] = "mode live butuh file keypair wallet bot (python3 -m vault_tracker copy-wallet new)"
+    if run == "dry" and not keypair and not cfg.get("FOLLOWER_ADDRESS"):
+        errors["COPY_RUN"] = "dry run butuh file keypair atau Wallet kamu (untuk simulasi)"
+    if (cfg.get("COPY_BUDGET") or "SOL").upper() not in ("SOL", "USDC"):
+        errors["COPY_BUDGET"] = "pilih SOL atau USDC"
+    if (cfg.get("COPY_STRATEGY") or "spot").lower() not in ("spot", "curve", "bidask"):
+        errors["COPY_STRATEGY"] = "pilih spot, curve, atau bidask"
+    for key, lo, hi in (("COPY_SIZE_USD", 1, None), ("COPY_SIZE_RATIO", 0, None), ("COPY_MAX_USD", 1, None),
+                        ("COPY_MAX_OPEN", 1, 20), ("COPY_RESERVE_SOL", 0.02, None), ("COPY_MAX_PRICE_MOVE", 0.1, 50),
+                        ("COPY_MAX_EVENT_AGE", 30, 3600), ("COPY_SLIPPAGE_BPS", 1, 1000), ("COPY_PRIORITY", 0, 10_000_000),
+                        ("COPY_MAX_NEW_BIN_ARRAYS", 0, 3)):
+        raw = cfg.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            v = float(raw)
+        except ValueError:
+            errors[key] = "harus angka"
+            continue
+        if v < lo or (hi is not None and v > hi):
+            errors[key] = f"harus antara {lo} dan {hi}" if hi is not None else f"minimal {lo}"
     return errors
 
 
@@ -169,6 +207,7 @@ def build_view(sess):
         "rpc_host": urlparse(sess.rpc.url).hostname,
         "channels": sess.notifier.channels,
         "copy_mode": sess.copy_mode,
+        "copier": sess.copier.status() if sess.copier else None,
     }
 
 
@@ -265,7 +304,8 @@ class Controller:
                 rpc_url=cfg.get("SOLANA_RPC_URL") or None, copy_mode=cfg.get("COPY_MODE") or "mirror",
                 history=int(float(cfg.get("HISTORY_LIMIT") or 300)), state_dir=self.state_dir,
                 alert_types=set(cfg["ALERT_TYPES"].split(",")) if cfg.get("ALERT_TYPES") else None,
-                min_usd=float(cfg.get("MIN_ALERT_USD") or 5), name=cfg.get("TRACKER_NAME") or None)
+                min_usd=float(cfg.get("MIN_ALERT_USD") or 5), name=cfg.get("TRACKER_NAME") or None,
+                copy_settings=settings_from_config(cfg), copy_keypair=cfg.get("COPY_KEYPAIR") or None)
             self.session = sess
             interval = max(5, int(float(cfg.get("POLL_INTERVAL") or 30)))
             self.status, self.message = "syncing", "baca histori transaksi…"
@@ -321,6 +361,42 @@ class Controller:
             "view": view,
             "mirrors": self.mirrors,
         }
+
+    def _copier(self):
+        sess = self.session
+        if not (self.running and sess and sess.copier):
+            return None
+        return sess.copier
+
+    def copy_close(self, position):
+        copier = self._copier()
+        if not copier:
+            return {"ok": False, "error": "Bot copytrade tidak jalan (mode off atau tracker belum Start)."}
+        if position not in copier.state["positions"]:
+            return {"ok": False, "error": "Itu bukan posisi yang dibuka bot."}
+
+        def job():
+            try:
+                title, lines = copier.close_position(position)
+                self.session.notifier.send(title, lines, {"type": "COPY"})
+            except Exception as e:
+                copier._note("error", "❌ COPY GAGAL: tutup manual", [f"{type(e).__name__}: {e}"])
+                copier.save()
+            view = build_view(self.session)
+            with self.lock:
+                self.view = view
+        threading.Thread(target=job, daemon=True).start()
+        return {"ok": True}
+
+    def copy_resume(self):
+        copier = self._copier()
+        if not copier:
+            return {"ok": False, "error": "Bot copytrade tidak jalan."}
+        copier.resume()
+        view = build_view(self.session)
+        with self.lock:
+            self.view = view
+        return {"ok": True}
 
     def find_mirrors(self, body):
         from .mirrors import find_mirrors
@@ -418,6 +494,10 @@ def make_handler(ctrl, allowed_hosts, token):
                 return self._send(200, ctrl.test_alert())
             if path == "/api/mirrors":
                 return self._send(200, ctrl.find_mirrors(body if isinstance(body, dict) else {}))
+            if path == "/api/copy/close":
+                return self._send(200, ctrl.copy_close(str((body or {}).get("position", ""))))
+            if path == "/api/copy/resume":
+                return self._send(200, ctrl.copy_resume())
             self._send(404, {"error": "not found"})
 
     return Handler

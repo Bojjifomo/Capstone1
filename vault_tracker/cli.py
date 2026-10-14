@@ -8,10 +8,12 @@ import time
 
 from rich.console import Console
 from rich.live import Live
+from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
-from . import copytrade, dashboard
+from . import config, copytrade, dashboard
 from .alerts import DEFAULT_TYPES, AlertFormatter, Notifier, plain
+from .copier import Copier, load_keypair, save_keypair, settings_from_config
 from .prices import PriceOracle
 from .rpc import Rpc
 from .runner import Session
@@ -117,10 +119,12 @@ def cmd_watch(args):
                           rpc_url=args.rpc, rpc_delay=args.rpc_delay, copy_mode=args.copy_mode,
                           history=args.history, use_gpa=args.gpa, state_dir=args.state_dir,
                           alert_types=set(args.alerts.split(",")) if args.alerts else None,
-                          min_usd=args.min_usd, name=args.name)
-    except ValueError as e:
+                          min_usd=args.min_usd, name=args.name, **_copy_kwargs(args))
+    except (ValueError, OSError) as e:
         sys.exit(str(e))
     leader, follower, notifier = session.leader, session.follower, session.notifier
+    if session.copier:
+        console.print(f"[bold]Copytrade bot: {session.copier.s['run'].upper()}[/] · wallet {session.copier.wallet}")
 
     def cycle(first=False):
         if first:
@@ -227,6 +231,99 @@ def cmd_mirrors(args):
         print(json.dumps({"rows": rows, "info": info}, indent=2))
 
 
+DEFAULT_KEYPAIR = "~/.config/vault_tracker/copy-wallet.json"
+
+
+def _copy_kwargs(args):
+    cfg = config.load()
+    settings = settings_from_config(cfg)
+    if getattr(args, "copy", None):
+        settings["run"] = args.copy
+    return {"copy_settings": settings, "copy_keypair": cfg.get("COPY_KEYPAIR") or None}
+
+
+def _copier(args):
+    cfg = config.load()
+    settings = settings_from_config(cfg)
+    if settings["run"] == "off":
+        settings["run"] = "dry"  # status / close still work, as a simulation
+    kp = load_keypair(cfg["COPY_KEYPAIR"]) if cfg.get("COPY_KEYPAIR") else None
+    rpc = Rpc(args.rpc)
+    tokens = TokenRegistry(rpc)
+    prices = PriceOracle(rpc, tokens)
+    prices.refresh(set())
+    return Copier(rpc, tokens, prices, settings, cfg.get("COPY_MODE") or "mirror", args.state_dir, keypair=kp,
+                  sim_wallet=cfg.get("FOLLOWER_ADDRESS") or None)
+
+
+def cmd_copy_wallet(args):
+    path = os.path.abspath(os.path.expanduser(args.path))
+    if args.action in ("new", "import"):
+        if os.path.exists(path):
+            sys.exit(f"{path} sudah ada. Pakai --path lain supaya wallet lama tidak tertimpa.")
+        if args.action == "new":
+            kp = Keypair()
+        else:
+            import getpass
+            secret = getpass.getpass("Tempel private key wallet bot (base58 dari Phantom, atau array JSON): ").strip()
+            try:
+                kp = (Keypair.from_bytes(bytes(json.loads(secret))) if secret.startswith("[")
+                      else Keypair.from_base58_string(secret))
+            except Exception:
+                sys.exit("Private key tidak valid.")
+        save_keypair(kp, path)
+        updates = {"COPY_KEYPAIR": path}
+        if not config.load().get("FOLLOWER_ADDRESS"):
+            updates["FOLLOWER_ADDRESS"] = str(kp.pubkey())
+        config.save(updates)
+        print(f"Wallet bot: {kp.pubkey()}")
+        print(f"Keypair disimpan di {path} (hanya bisa dibaca user ini). COPY_KEYPAIR di .env sudah diisi.")
+        print("Jangan bagikan file itu. Isi wallet ini dengan dana kecil secukupnya: SOL untuk fee/rent + modal.")
+        return
+    cfg = config.load()
+    if not cfg.get("COPY_KEYPAIR"):
+        sys.exit("COPY_KEYPAIR belum diisi. Jalankan dulu: python3 -m vault_tracker copy-wallet new")
+    kp = load_keypair(cfg["COPY_KEYPAIR"])
+    rpc = Rpc(args.rpc)
+    print(f"Wallet bot: {kp.pubkey()}")
+    print(f"SOL: {rpc.get_balance(str(kp.pubkey())) / 1e9:.4f}")
+    for ta in rpc.get_token_accounts(str(kp.pubkey())):
+        info = ta["account"]["data"]["parsed"]["info"]
+        print(f"  {info['mint']}: {info['tokenAmount']['uiAmountString']}")
+
+
+def cmd_copy_status(args):
+    st = _copier(args).status()
+    console.print(f"[bold]Copytrade bot[/] · mode {st['run'].upper()} · wallet {st['wallet']}"
+                  + (" · [red]DIJEDA[/]" if st["paused"] else ""))
+    if st.get("balances"):
+        console.print(f"Saldo: {st['balances']['SOL']:.4f} SOL · {st['balances']['USDC']:.2f} USDC")
+    console.print(f"Posisi bot terbuka: {len(st['positions'])}")
+    for p in st["positions"]:
+        opened = time.strftime("%d/%m %H:%M", time.localtime(p["opened_at"]))
+        console.print(f"  {p['position']}  {p['pair']}  bins {p['lower']}..{p['upper']}  "
+                      f"{dashboard.fmt_usd(p['usd'])}  dibuka {opened}", highlight=False)
+    for e in st["log"][:args.limit]:
+        console.print(f"[grey58]{time.strftime('%d/%m %H:%M', time.localtime(e['ts']))}[/] {e['title']}")
+        for line in e["lines"]:
+            console.print(f"    {line}", highlight=False)
+
+
+def cmd_copy_close(args):
+    try:
+        title, lines = _copier(args).close_position(args.position)
+    except Exception as e:
+        sys.exit(f"Gagal: {e}")
+    console.print(f"[bold]{title}[/]")
+    for line in lines:
+        console.print(f"    {line}", highlight=False)
+
+
+def cmd_copy_resume(args):
+    _copier(args).resume()
+    print("Copytrade dilanjutkan (penghitung gagal di-reset).")
+
+
 def cmd_test_alert(args):
     n = Notifier()
     if not n.channels:
@@ -272,6 +369,7 @@ def main(argv=None):
                    help="abaikan alert add/remove/swap/claim di bawah nilai ini (USD), default 5")
     w.add_argument("--no-dashboard", action="store_true", help="tanpa dashboard, cuma print alert (untuk server)")
     w.add_argument("--fullscreen", action="store_true")
+    w.add_argument("--copy", choices=("off", "dry", "live"), help="mode bot copytrade (default: COPY_RUN di .env)")
     w.set_defaults(fn=cmd_watch)
 
     s = sub.add_parser("snapshot", help="tampilkan allocation + posisi sekali")
@@ -308,6 +406,25 @@ def main(argv=None):
     wb.add_argument("--start", action="store_true", help="langsung start tracker kalau pengaturan sudah lengkap")
     wb.add_argument("--state-dir", default=".vault_tracker")
     wb.set_defaults(fn=cmd_web)
+
+    cw = sub.add_parser("copy-wallet", help="wallet bot copytrade: new | import | show")
+    cw.add_argument("action", choices=("new", "import", "show"))
+    cw.add_argument("--path", default=DEFAULT_KEYPAIR, help=f"lokasi file keypair (default {DEFAULT_KEYPAIR})")
+    cw.add_argument("--rpc", default=None)
+    cw.set_defaults(fn=cmd_copy_wallet)
+
+    for name, fn, helptext in (("copy-status", cmd_copy_status, "posisi dan log bot copytrade"),
+                               ("copy-resume", cmd_copy_resume, "lanjutkan bot yang dijeda")):
+        sp = sub.add_parser(name, help=helptext)
+        sp.add_argument("--rpc", default=None)
+        sp.add_argument("--state-dir", default=".vault_tracker")
+        sp.add_argument("--limit", type=int, default=15)
+        sp.set_defaults(fn=fn)
+    cc = sub.add_parser("copy-close", help="tutup satu posisi bot (simulasi kalau mode bukan live)")
+    cc.add_argument("position")
+    cc.add_argument("--rpc", default=None)
+    cc.add_argument("--state-dir", default=".vault_tracker")
+    cc.set_defaults(fn=cmd_copy_close)
 
     t = sub.add_parser("test-alert", help="kirim pesan test ke Telegram/Discord")
     t.set_defaults(fn=cmd_test_alert)
