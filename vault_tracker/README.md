@@ -52,7 +52,10 @@ python -m vault_tracker web
 Browser terbuka di `http://127.0.0.1:8787`. Dari halaman itu kamu bisa mengisi
 Pengaturan (alamat vault, wallet kamu, copy mode, Telegram, RPC), klik **Start/Stop**,
 dan melihat Allocation, posisi & limit order, sync copy-trade, aktivitas, dan wallet
-manager. Halamannya refresh sendiri tiap 2 detik.
+manager. Halamannya refresh sendiri tiap 2 detik. Tombol **Panduan** di kanan atas
+membuka checklist "Mulai cepat" (tercentang otomatis sesuai pengaturanmu), daftar fitur,
+dan panduan singkat: cari alamat vault, copy di Meteora, copy mode, arti alert, wallet
+manager, akses dari HP, dan masalah umum.
 
 - Pengaturan disimpan ke `.env`, jadi perintah CLI di bawah memakai pengaturan yang sama.
 - Server web hanya bisa dibuka dari komputer ini. Untuk membuka dari HP di Wi-Fi yang

@@ -112,6 +112,30 @@ a:hover { text-decoration: underline; }
 .pill.good { background: var(--badge-good-bg); color: var(--good); }
 .pill.warn { background: var(--badge-warn-bg); color: var(--warn); }
 .pill.bad { background: var(--badge-bad-bg); color: var(--bad); }
+.guide .gsec { border-top: 1px solid var(--border); padding: 11px 0; }
+.guide .gsec:first-of-type { border-top: 0; }
+.guide .gsec > summary { font-weight: 600; display: flex; justify-content: space-between; gap: 12px; }
+.guide .gsec > summary::after { content: "+"; color: var(--faint); font-weight: 400; }
+.guide .gsec[open] > summary::after { content: "–"; }
+.guide .gsec[open] > summary { margin-bottom: 8px; }
+.guide p { margin: 6px 0; }
+.guide ul, .guide ol { margin: 6px 0; padding-left: 20px; }
+.guide li { margin: 3px 0; }
+.guide code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--card-2); border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; overflow-wrap: anywhere; }
+.guide table { margin: 6px 0; }
+.guide td, .guide th { padding: 7px 10px 7px 0; }
+.qs { list-style: none; padding: 0 !important; margin: 4px 0 !important; }
+.qs li { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; margin: 0 !important; }
+.qs .mark { flex: 0 0 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--border-2); display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--faint); }
+.qs .done .mark { background: var(--good); border-color: var(--good); color: #fff; }
+.qs .what { min-width: 0; overflow-wrap: anywhere; }
+.qs .done .what { color: var(--muted); }
+.guide { overflow-wrap: anywhere; }
+.qs .opt { font-size: 11.5px; color: var(--faint); margin-left: 6px; }
+.feat { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 22px; margin: 6px 0; }
+@media (max-width: 720px) { .feat { grid-template-columns: 1fr; } }
+.feat div b { display: block; }
+.feat div span { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -122,12 +146,124 @@ a:hover { text-decoration: underline; }
       <div class="sub" id="sub">memuat…</div>
     </div>
     <div class="hright">
+      <button type="button" id="helpBtn">Panduan</button>
       <span class="badge" id="badge">…</span>
       <button class="primary" id="toggle" disabled>Start</button>
     </div>
   </header>
 
   <div class="banner" id="banner"></div>
+
+  <details class="card guide" id="guide">
+    <summary><h2>Panduan &amp; fitur</h2><span class="chev" id="guideChev">klik untuk buka</span></summary>
+
+    <details class="gsec" id="gQuick" open>
+      <summary>Mulai cepat</summary>
+      <ol class="qs" id="qs"></ol>
+    </details>
+
+    <details class="gsec" id="gFeat">
+      <summary>Apa saja fiturnya</summary>
+      <div class="feat">
+        <div><b>Allocation live</b><span>Isi vault seperti di Hedgin: SOL idle, posisi DLMM, limit order, token spot, nilai USD dan persentase. Bisa by position atau by token.</span></div>
+        <div><b>Posisi &amp; limit order</b><span>Range harga, status in/out of range, isi token, nilai, fee yang belum diklaim, umur posisi, dan berapa persen limit order sudah terisi.</span></div>
+        <div><b>Range kamu</b><span>Saran range untuk copy sesuai copy mode (mirror, pct, scale), token yang perlu didepositkan, dan link langsung ke pool di Meteora.</span></div>
+        <div><b>Alert Telegram / Discord</b><span>Posisi baru, ditutup, tambah/tarik likuiditas, rebalance, out of range, limit order baru/terisi/ditutup, dan swap spot lengkap dengan mint tokennya.</span></div>
+        <div><b>Sync copy-trade</b><span>Isi wallet kamu, lalu lihat per pool: BELUM COPY, SYNC, atau LEADER SUDAH CLOSE. Alert ikut memberi tahu.</span></div>
+        <div><b>Wallet manager</b><span>Mendeteksi wallet yang menandatangani trade vault (wallet manager-nya), dan bisa dilacak juga.</span></div>
+        <div><b>Riwayat aktivitas</b><span>Semua open, close, rebalance, limit order, dan swap vault, dengan link ke transaksinya di Solscan.</span></div>
+        <div><b>Jalan sendiri</b><span>Start/Stop dari halaman ini. Pengaturan tersimpan. Transaksi yang terlewat saat laptop mati tetap diproses begitu jalan lagi.</span></div>
+        <div><b>Jaga laptop menyala</b><span>Mencegah sleep selama tracker jalan (macOS/Windows), selama laptop dicolok dan layarnya terbuka.</span></div>
+        <div><b>Buka dari HP</b><span>Dengan <code>--host 0.0.0.0</code> dan link bertoken, halaman ini bisa dibuka dari HP di Wi-Fi yang sama.</span></div>
+      </div>
+      <p class="muted">Yang tidak dilakukan: tool ini tidak membuka atau menutup posisi untuk kamu dan tidak butuh private key. Kamu tetap klik sendiri di Meteora.</p>
+    </details>
+
+    <details class="gsec">
+      <summary>Cari alamat vault</summary>
+      <p>Isi alamat on-chain vault (32–44 karakter base58). Slug <code>0xmegumii-9</code> dari URL Hedgin tidak bisa dipakai.</p>
+      <ol>
+        <li>Di Hedgin, buka tab Overview vault lalu klik + di "More about this vault". Cari alamat vault atau link Solscan.</li>
+        <li>Atau buka transaksi deposit kamu ke vault itu di Solscan. Salin akun yang namanya mengandung "vault" pada instruksi program Hedgin.</li>
+        <li>Cek: setelah Start, Allocation di halaman ini harus mirip panel Allocation di Hedgin. Kalau kosong atau beda total, alamatnya salah.</li>
+      </ol>
+    </details>
+
+    <details class="gsec">
+      <summary>Cara copy posisi di Meteora</summary>
+      <ol>
+        <li>Tunggu alert "POSISI BARU" atau "LIMIT ORDER BARU", atau lihat tabel Posisi &amp; limit order.</li>
+        <li>Klik link Meteora di baris itu dan connect wallet kamu. Pastikan pasangan token dan bin step sama.</li>
+        <li>Isi Min Price dan Max Price dengan angka di kolom "Range kamu".</li>
+        <li>Isi jumlah token sesuai "deposit": dua token kalau range melingkupi harga, satu token kalau range di bawah atau di atas harga.</li>
+        <li>Pilih bentuk distribusi (Spot, Curve, Bid-Ask) sesukamu. Tool tidak bisa membaca bentuk yang dipakai vault.</li>
+        <li>Sebelum konfirmasi, cek harga sekarang masih di dalam range yang kamu isi. Alert datang sekitar 15–30 detik setelah transaksi vault, ditambah interval cek.</li>
+      </ol>
+      <p>Limit order: buka pool dari link yang sama, pilih menu limit order, lalu pasang order jual atau beli di harga yang disarankan.</p>
+    </details>
+
+    <details class="gsec">
+      <summary>Copy mode: range kamu sendiri</summary>
+      <table>
+        <tr><th>Mode</th><th>Hasil</th><th>Cocok untuk</th></tr>
+        <tr><td><b>mirror</b></td><td>Range sama persis dengan vault</td><td>Ikut persis, fee maksimal, paling cepat out of range</td></tr>
+        <tr><td><b>pct</b> (mis. -10 dan 10)</td><td>Dari -10% sampai +10% dari harga sekarang</td><td>Range tetap di sekitar harga, apa pun yang dipakai vault</td></tr>
+        <tr><td><b>scale</b> (mis. 2)</td><td>Range vault dilebarkan 2× dengan bentuk sama</td><td>Mengikuti gaya vault tapi lebih lebar (F &gt; 1) atau lebih sempit (F &lt; 1)</td></tr>
+      </table>
+      <p class="muted">Kalau vault pasang posisi satu sisi di bawah harga (beli saat turun), <b>scale</b> mempertahankan bentuk itu. <b>pct</b> dengan batas negatif dan positif menjadikannya dua sisi.</p>
+    </details>
+
+    <details class="gsec">
+      <summary>Arti alert</summary>
+      <table>
+        <tr><th>Alert</th><th>Yang kamu lakukan</th></tr>
+        <tr><td>POSISI BARU</td><td>Buka posisi di pool yang sama dengan "Range kamu"</td></tr>
+        <tr><td>LIMIT ORDER BARU</td><td>Pasang order di pool yang sama, di harga yang disarankan</td></tr>
+        <tr><td>LIMIT ORDER TERISI</td><td>Cek order kamu sendiri</td></tr>
+        <tr><td>Tambah / Tarik likuiditas</td><td>Opsional: ikut tambah atau kurangi</td></tr>
+        <tr><td>REBALANCE</td><td>Pertimbangkan pindah range juga</td></tr>
+        <tr><td>OUT OF RANGE / IN RANGE</td><td>Tunggu, atau rebalance sendiri</td></tr>
+        <tr><td>POSISI / LIMIT ORDER DITUTUP</td><td>Pertimbangkan close posisi kamu di pool itu</td></tr>
+        <tr><td>Swap spot</td><td>Opsional: alert berisi mint token yang dibeli atau dijual</td></tr>
+      </table>
+      <p class="muted">Alert add/remove/swap di bawah batas USD di Pengaturan tidak dikirim, supaya auto-compound kecil tidak bikin ramai.</p>
+    </details>
+
+    <details class="gsec">
+      <summary>Melacak wallet manager</summary>
+      <p>Trade vault Hedgin ditandatangani wallet manager. Tabel Wallet manager di bawah mengurutkan penanda tangan berdasarkan jumlah trade, dan yang teratas hampir pasti manager-nya.</p>
+      <ul>
+        <li>Tombol <b>Lacak</b> memindahkan alamat itu ke Pengaturan. Setelah kamu klik Simpan, halaman ini berganti melacak wallet tersebut.</li>
+        <li>Mau dua-duanya sekaligus? Biarkan halaman ini melacak vault. Di terminal lain jalankan <code>python3 -m vault_tracker watch --vault &lt;WALLET_MANAGER&gt; --name MANAGER</code>.</li>
+        <li>Tidak ada jaminan itu wallet pribadi. Bisa saja hot wallet khusus vault.</li>
+      </ul>
+    </details>
+
+    <details class="gsec">
+      <summary>Buka dari HP dan jaga laptop menyala</summary>
+      <ol>
+        <li>Matikan web (Ctrl+C di terminal), lalu jalankan <code>python3 -m vault_tracker web --host 0.0.0.0</code>.</li>
+        <li>Buka link <code>http://&lt;ip&gt;:&lt;port&gt;/?token=…</code> yang tampil di terminal, di browser HP yang terhubung ke Wi-Fi yang sama.</li>
+        <li>Jangan bagikan link bertoken itu. Siapa pun yang memegangnya bisa mengubah pengaturan.</li>
+      </ol>
+      <p>Centang "Jaga komputer tetap menyala" di Pengaturan. Laptop harus dicolok dan layarnya terbuka. MacBook yang ditutup tetap tidur dan tidak mengecek apa-apa. Kalau terminal web ditutup, halaman ini dan semua alert ikut berhenti.</p>
+    </details>
+
+    <details class="gsec">
+      <summary>Masalah umum</summary>
+      <table>
+        <tr><th>Masalah</th><th>Solusi</th></tr>
+        <tr><td>"bukan alamat Solana yang valid"</td><td>Isi alamat base58 lengkap, bukan slug Hedgin</td></tr>
+        <tr><td>Allocation kosong atau beda total</td><td>Cek alamat vault, atau naikkan "Transaksi lama yang dibaca" ke 2000 lalu Start ulang</td></tr>
+        <tr><td>Lambat atau error rate limit</td><td>Isi Solana RPC URL dari Helius atau Alchemy (gratis), naikkan "Cek tiap"</td></tr>
+        <tr><td>Nilai token tampil $?</td><td>Harga dari Jupiter tidak bisa diambil. Token di pool DLMM tetap dihargai dari pool-nya</td></tr>
+        <tr><td>Telegram tidak masuk</td><td>Klik Tes alert dan baca pesannya. Pastikan sudah kirim pesan ke bot dulu</td></tr>
+        <tr><td>Badge OFFLINE</td><td>Terminal yang menjalankan web sudah ditutup. Jalankan lagi <code>python3 -m vault_tracker web</code></td></tr>
+        <tr><td>"Port sudah dipakai"</td><td>Jalankan dengan port lain, misalnya <code>--port 8790</code>, atau tambahkan <code>WEB_PORT=8790</code> di file .env</td></tr>
+      </table>
+      <p class="muted">Risiko: copy-trade DLMM tetap bisa rugi (impermanent loss, harga bergerak sebelum kamu copy, token kecil bisa turun tajam). Ini alat bantu memantau, bukan saran finansial.</p>
+    </details>
+  </details>
 
   <details class="card" id="settings">
     <summary><h2>Pengaturan</h2><span class="chev" id="chev">klik untuk buka</span></summary>
@@ -486,10 +622,44 @@ function renderFoot() {
   const foot = $("foot"); foot.replaceChildren(bits.join(" · "));
   for (const e of S.errors || []) foot.append(el("div", { class: "bad" }, tstr(e.ts) + " · " + e.text));
 }
+let guideInit = false;
+function openField(id) {
+  $("settings").open = true;
+  const f = $(id);
+  if (f) { f.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => f.focus(), 300); }
+}
+function renderGuide() {
+  const c = S.config, st = S.status;
+  if (!guideInit) { $("guide").open = !c.VAULT_ADDRESS; guideInit = true; }
+  $("guideChev").textContent = $("guide").open ? "" : "klik untuk buka";
+  const steps = [
+    { done: !!c.VAULT_ADDRESS, what: "Isi Alamat vault di Pengaturan, lalu klik Simpan.", tag: "wajib", field: "VAULT_ADDRESS" },
+    { done: !!(c.TELEGRAM_BOT_TOKEN && c.TELEGRAM_CHAT_ID), what: "Isi Telegram bot token dan chat id, Simpan, lalu klik Tes alert. Token dari @BotFather; chat id dari https://api.telegram.org/bot<TOKEN>/getUpdates setelah kamu kirim pesan ke bot.", tag: "disarankan", field: "TELEGRAM_BOT_TOKEN" },
+    { done: !!c.SOLANA_RPC_URL, what: "Isi Solana RPC URL gratis dari Helius atau Alchemy. Tanpa ini dipakai RPC publik yang cepat kena rate limit.", tag: "disarankan", field: "SOLANA_RPC_URL" },
+    { done: ["running", "syncing"].includes(st), what: "Klik Start di kanan atas. Pertama kali butuh 1–3 menit untuk membaca histori vault.", tag: "wajib", start: true },
+    { done: !!(S.view && st === "running"), what: "Cocokkan Allocation di bawah dengan panel Allocation di Hedgin. Kalau beda total, cek lagi alamat vault.", tag: "cek" },
+  ];
+  const ol = $("qs"); ol.replaceChildren();
+  steps.forEach((x, i) => {
+    let action = null;
+    if (!x.done && x.field) action = el("button", { type: "button", class: "small", onclick: () => openField(x.field) }, "Isi sekarang");
+    if (!x.done && x.start && c.VAULT_ADDRESS && !["running", "syncing", "starting", "stopping"].includes(st))
+      action = el("button", { type: "button", class: "small primary", onclick: () => $("toggle").click() }, "Start");
+    ol.append(el("li", { class: x.done ? "done" : "" }, el("span", { class: "mark" }, x.done ? "✓" : String(i + 1)),
+      el("div", { class: "what" }, x.what, el("span", { class: "opt" }, x.tag), action ? el("div", { style: "margin-top:6px" }, action) : null)));
+  });
+}
+$("helpBtn").addEventListener("click", () => {
+  const g = $("guide");
+  g.open = true;
+  renderGuide();
+  g.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+$("guide").addEventListener("toggle", () => { $("guideChev").textContent = $("guide").open ? "" : "klik untuk buka"; });
 function render() {
   if (!S) return;
   if (!formLoaded) loadForm(S.config);
-  renderHeader(); renderAlloc(); renderPositions(); renderSync(); renderEvents(); renderManagers(); renderFoot();
+  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderEvents(); renderManagers(); renderFoot();
 }
 async function refresh() {
   try {
