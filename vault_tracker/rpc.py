@@ -91,6 +91,22 @@ class Rpc:
             "commitment": "confirmed",
         }])
 
+    def get_transactions(self, signatures, workers=4):
+        """Fetch many transactions concurrently. Returns {signature: tx or None}."""
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        local = threading.local()
+
+        def one(sig):
+            if not hasattr(local, "rpc"):
+                local.rpc = Rpc(self.url, self.min_interval * workers, self.retries, self.timeout)
+            try:
+                return sig, local.rpc.get_transaction(sig)
+            except Exception:
+                return sig, None
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            return dict(ex.map(one, list(signatures)))
+
     def get_balance(self, address):
         return self.call("getBalance", [address])["value"]
 

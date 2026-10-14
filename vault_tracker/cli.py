@@ -191,6 +191,42 @@ def cmd_web(args):
           state_dir=args.state_dir)
 
 
+def cmd_mirrors(args):
+    from .mirrors import find_mirrors
+    rpc, leader, _ = build(args)
+    sync(leader, args.history)
+    leader.save()
+    with console.status("cari wallet kembar…") as status:
+        def progress(i, n, ev):
+            status.update(f"posisi vault {i}/{n}: baca transaksi pool di sekitar waktu buka…")
+        rows, info = find_mirrors(leader, window=args.window, max_events=args.events, max_txs=args.max_txs,
+                                  on_progress=progress)
+    leader.save()
+    console.print(f"Dicek {info['vault_opens']} posisi yang dibuka vault, {info['txs_scanned']} transaksi pool "
+                  f"(±{info['window_s']} detik dari tiap open).")
+    console.print("Alamat pemilik posisi vault: " + ", ".join(info["position_owners"]), highlight=False)
+    if not rows:
+        console.print("Tidak ada wallet lain yang membuka posisi mirip di waktu yang sama. "
+                      "Coba --window 1800 atau --events 30.")
+        return
+    strong = [r for r in rows if r["strong"]]
+    shown = rows if args.all else strong
+    if not shown:
+        console.print(f"Tidak ada wallet yang konsisten membuka posisi mirip vault ({len(rows)} kecocokan lemah/"
+                      "kebetulan). Tambah --all untuk melihatnya, atau coba --events 30 --window 1800.")
+    for r in shown[:args.limit]:
+        d = r["median_delay_s"]
+        delay = f"{abs(d)} dtk {'sebelum' if d < 0 else 'setelah'} vault"
+        console.print(f"\n[bold]{r['wallet']}[/]", highlight=False)
+        console.print(f"  cocok {r['matches']}/{r['events']} posisi · range sama persis {r['exact']}x · "
+                      f"overlap rata-rata {r['avg_overlap'] * 100:.0f}% · jeda median {delay}", highlight=False)
+        console.print(f"  {r['label']}", style="green" if r["strong"] else "grey58", highlight=False)
+    if shown and not args.all and len(rows) > len(strong):
+        console.print(f"\n(+{len(rows) - len(strong)} kecocokan lemah disembunyikan, tambah --all untuk melihat)")
+    if args.json:
+        print(json.dumps({"rows": rows, "info": info}, indent=2))
+
+
 def cmd_test_alert(args):
     n = Notifier()
     if not n.channels:
@@ -248,6 +284,16 @@ def main(argv=None):
     h.add_argument("--limit", type=int, default=100)
     h.add_argument("--all", action="store_true", help="termasuk add/remove/claim/transfer")
     h.set_defaults(fn=cmd_history)
+
+    mr = sub.add_parser("mirrors", help="cari wallet lain yang membuka posisi sama persis seperti vault")
+    common(mr, follower=False)
+    mr.add_argument("--window", type=int, default=600, help="detik sebelum/sesudah tiap open vault (default 600)")
+    mr.add_argument("--events", type=int, default=15, help="jumlah posisi vault terakhir yang dicek")
+    mr.add_argument("--max-txs", type=int, default=400, help="maks transaksi pool per sisi per posisi")
+    mr.add_argument("--limit", type=int, default=15)
+    mr.add_argument("--json", action="store_true")
+    mr.add_argument("--all", action="store_true", help="tampilkan juga kecocokan lemah")
+    mr.set_defaults(fn=cmd_mirrors)
 
     sg = sub.add_parser("signers", help="cari wallet manager yang menandatangani trade vault")
     common(sg, follower=False)

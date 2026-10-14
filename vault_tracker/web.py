@@ -187,6 +187,8 @@ class Controller:
         self.view = None
         self.awake = KeepAwake()
         self.started_at = None
+        self.session = None
+        self.mirrors = {"status": "idle"}
 
     # ---- settings -------------------------------------------------------------
 
@@ -264,6 +266,7 @@ class Controller:
                 history=int(float(cfg.get("HISTORY_LIMIT") or 300)), state_dir=self.state_dir,
                 alert_types=set(cfg["ALERT_TYPES"].split(",")) if cfg.get("ALERT_TYPES") else None,
                 min_usd=float(cfg.get("MIN_ALERT_USD") or 5), name=cfg.get("TRACKER_NAME") or None)
+            self.session = sess
             interval = max(5, int(float(cfg.get("POLL_INTERVAL") or 30)))
             self.status, self.message = "syncing", "baca histori transaksi…"
 
@@ -316,7 +319,33 @@ class Controller:
             "alert_types": ALL_TYPES, "default_alert_types": sorted(DEFAULT_TYPES),
             "keep_awake": {"supported": KeepAwake.supported, "active": self.awake.active},
             "view": view,
+            "mirrors": self.mirrors,
         }
+
+    def find_mirrors(self, body):
+        from .mirrors import find_mirrors
+        if self.mirrors.get("status") == "running":
+            return {"ok": False, "error": "Pencarian masih berjalan."}
+        sess = self.session
+        if not (self.running and sess and sess.leader.bootstrapped):
+            return {"ok": False, "error": "Klik Start dulu dan tunggu sampai RUNNING."}
+        try:
+            window = max(60, min(7200, int(body.get("window") or 600)))
+            events = max(1, min(50, int(body.get("events") or 15)))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "window dan events harus angka"}
+        self.mirrors = {"status": "running", "progress": "mulai…", "window": window}
+
+        def job():
+            try:
+                def progress(i, n, ev):
+                    self.mirrors["progress"] = f"posisi vault {i}/{n}: baca transaksi pool di sekitar waktu buka…"
+                rows, info = find_mirrors(sess.leader, window=window, max_events=events, on_progress=progress)
+                self.mirrors = {"status": "done", "rows": rows[:30], "info": info, "finished": time.time()}
+            except Exception as e:
+                self.mirrors = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+        threading.Thread(target=job, daemon=True).start()
+        return {"ok": True}
 
     def test_alert(self):
         n = Notifier(log_path=None)
@@ -387,6 +416,8 @@ def make_handler(ctrl, allowed_hosts, token):
                 return self._send(200, ctrl.save_config(body if isinstance(body, dict) else {}))
             if path == "/api/test-alert":
                 return self._send(200, ctrl.test_alert())
+            if path == "/api/mirrors":
+                return self._send(200, ctrl.find_mirrors(body if isinstance(body, dict) else {}))
             self._send(404, {"error": "not found"})
 
     return Handler

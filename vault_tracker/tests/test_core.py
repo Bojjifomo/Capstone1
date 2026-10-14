@@ -224,3 +224,29 @@ class LimitOrders(unittest.TestCase):
     def test_order_copy_deposit(self):
         row = dict(_row(5, 6, 0), kind="order", side="ask")
         self.assertEqual(copytrade.suggest_range(row, "mirror")["deposit"], "SOL")
+
+
+class Mirrors(unittest.TestCase):
+    def test_overlap(self):
+        from vault_tracker.mirrors import _overlap
+        self.assertEqual(_overlap((0, 9), (0, 9)), 1.0)
+        self.assertEqual(_overlap((0, 9), (10, 19)), 0.0)
+        self.assertAlmostEqual(_overlap((0, 9), (5, 14)), 5 / 15)
+
+    def test_score_ranks_consistent_copier_first(self):
+        from vault_tracker.mirrors import score
+        hits = {
+            "COPIER": {0: (1.0, 40, "P", "a", (0, 9)), 1: (1.0, 25, "P", "b", (0, 9)), 2: (0.9, 60, "Q", "c", (0, 9))},
+            "SOURCE": {0: (0.8, -120, "P", "d", (0, 9)), 1: (0.7, -90, "P", "e", (0, 9))},
+            "NOISE": {3: (0.1, 200, "P", "f", (0, 9))},
+            "MGR": {1: (0.5, 5, "P", "g", (0, 9))},
+        }
+        rows = score(hits, 4, signers={"MGR"})
+        by = {r["wallet"]: r for r in rows}
+        self.assertEqual(rows[0]["wallet"], "COPIER")
+        self.assertIn("SETELAH", by["COPIER"]["label"])
+        self.assertEqual(by["COPIER"]["exact"], 2)
+        self.assertIn("SEBELUM", by["SOURCE"]["label"])
+        self.assertFalse(by["NOISE"]["strong"])
+        self.assertIn("manager", by["MGR"]["label"])
+        self.assertEqual(rows[-1]["wallet"], "NOISE")

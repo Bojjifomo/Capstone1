@@ -167,6 +167,28 @@ bertanda `[MANAGER]`, bukan `[LEADER]`). Kalau manager juga trading
 pakai dana pribadi, posisinya muncul di situ. Tapi tidak ada jaminan: wallet signer
 bisa saja hot wallet khusus vault yang tidak punya posisi pribadi.
 
+## Wallet kembar (untuk tools copytrade lain)
+
+Banyak tools copytrade hanya bisa mengikuti wallet biasa, bukan vault. Perintah ini
+mencari wallet yang membuka posisi di pool dan range yang sama dengan vault, di sekitar
+waktu vault membuka:
+
+```bash
+python -m vault_tracker mirrors --window 600 --events 15
+```
+
+Untuk tiap posisi yang dibuka vault, tool membaca transaksi pool ±`--window` detik,
+mengumpulkan posisi yang dibuat wallet lain, lalu menilai tiap wallet: berapa kali cocok,
+berapa kali range-nya sama persis, overlap range rata-rata, dan jeda median dari waktu
+vault membuka. Wallet yang konsisten diberi label:
+
+- **SETELAH vault**: kemungkinan orang lain yang sudah copy vault ini.
+- **SEBELUM vault**: membuka lebih dulu. Bisa jadi sumber sinyal atau wallet pribadi manager.
+- **manager**: wallet itu juga menandatangani transaksi vault.
+
+Kecocokan sekali dengan overlap kecil disembunyikan (`--all` untuk melihat). Di website,
+fitur ini ada di kartu "Wallet kembar".
+
 ## Alert Telegram
 
 1. Chat [@BotFather](https://t.me/BotFather), kirim `/newbot`, lalu salin token-nya ke `TELEGRAM_BOT_TOKEN`.

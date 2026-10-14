@@ -195,6 +195,7 @@ class VaultTracker:
         ts = tx.get("blockTime") or _now()
         out = []
         dlmm_events = dlmm.tx_dlmm_events(tx)
+        inits = dlmm.tx_position_inits(tx) if dlmm_events else {}
         for e in dlmm_events:
             pos = e["position"]
             base = {"sig": sig, "ts": ts, "position": pos, "wallet": self.label}
@@ -207,7 +208,8 @@ class VaultTracker:
                 # PDA positions can be re-created at the same address after a close.
                 p.update(status="open", opened_sig=sig, opened_at=ts, closed_sig=None, closed_at=None)
                 if not known_open:  # else: already alerted when discovered via getProgramAccounts
-                    out.append({**base, "type": "OPEN", "lb_pair": e["lb_pair"]})
+                    out.append({**base, "type": "OPEN", "lb_pair": e["lb_pair"],
+                                "range": list(inits[pos]) if pos in inits else None})
             elif e["event"] == "PositionClose":
                 p = self._register_position(pos, owner=e["owner"])
                 already = p["status"] == "closed"  # refresh() saw the account vanish first

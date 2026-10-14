@@ -429,6 +429,46 @@ def decode_event(data):
     return None
 
 
+# initialize_position* instructions: discriminator -> index of the position account; args = (lower_bin_id, width)
+POSITION_INIT_IXS = {
+    bytes([219, 192, 234, 71, 190, 191, 102, 80]): 1,   # initialize_position
+    bytes([143, 19, 242, 145, 213, 15, 104, 115]): 1,   # initialize_position2
+    bytes([46, 82, 125, 146, 85, 141, 228, 153]): 2,    # initialize_position_pda
+    bytes([251, 189, 190, 244, 117, 254, 35, 148]): 2,  # initialize_position_by_operator
+}
+
+
+def _tx_dlmm_ixs(tx):
+    keys = tx_account_keys(tx)
+    msg = tx["transaction"]["message"]
+    meta = tx.get("meta") or {}
+    ixs = list(msg.get("instructions", []))
+    for inner in meta.get("innerInstructions") or []:
+        ixs.extend(inner.get("instructions", []))
+    for ix in ixs:
+        pid = ix.get("programIdIndex")
+        if pid is None or pid >= len(keys) or keys[pid] != DLMM_PROGRAM:
+            continue
+        try:
+            yield keys, ix, base58.b58decode(ix["data"])
+        except (KeyError, ValueError):
+            continue
+
+
+def tx_position_inits(tx):
+    """{position: (lower_bin_id, upper_bin_id)} for positions created in this transaction."""
+    out = {}
+    for keys, ix, data in _tx_dlmm_ixs(tx):
+        idx = POSITION_INIT_IXS.get(bytes(data[:8]))
+        if idx is None or len(data) < 16:
+            continue
+        accs = ix.get("accounts") or []
+        if idx < len(accs) and accs[idx] < len(keys):
+            lower, width = _i(data, 8, 4), _i(data, 12, 4)
+            out[keys[accs[idx]]] = (lower, lower + width - 1)
+    return out
+
+
 def tx_account_keys(tx):
     msg = tx["transaction"]["message"]
     keys = [k if isinstance(k, str) else k["pubkey"] for k in msg["accountKeys"]]
@@ -438,21 +478,8 @@ def tx_account_keys(tx):
 
 def tx_dlmm_events(tx):
     """All DLMM position events in a transaction (top-level and inner), in order."""
-    keys = tx_account_keys(tx)
-    msg = tx["transaction"]["message"]
-    meta = tx.get("meta") or {}
-    ixs = list(msg.get("instructions", []))
-    for inner in meta.get("innerInstructions") or []:
-        ixs.extend(inner.get("instructions", []))
     events = []
-    for ix in ixs:
-        pid = ix.get("programIdIndex")
-        if pid is None or pid >= len(keys) or keys[pid] != DLMM_PROGRAM:
-            continue
-        try:
-            data = base58.b58decode(ix["data"])
-        except (KeyError, ValueError):
-            continue
+    for _, _, data in _tx_dlmm_ixs(tx):
         ev = decode_event(data)
         if ev:
             events.append(ev)

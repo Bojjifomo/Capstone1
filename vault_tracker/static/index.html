@@ -66,6 +66,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .inline { display: flex; gap: 8px; align-items: center; }
 .inline > * { flex: 1; }
 .inline > .sm { flex: 0 0 90px; }
+.ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .checks label { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--text); cursor: pointer; }
 .actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
@@ -171,6 +172,7 @@ a:hover { text-decoration: underline; }
         <div><b>Alert Telegram / Discord</b><span>Posisi baru, ditutup, tambah/tarik likuiditas, rebalance, out of range, limit order baru/terisi/ditutup, dan swap spot lengkap dengan mint tokennya.</span></div>
         <div><b>Sync copy-trade</b><span>Isi wallet kamu, lalu lihat per pool: BELUM COPY, SYNC, atau LEADER SUDAH CLOSE. Alert ikut memberi tahu.</span></div>
         <div><b>Wallet manager</b><span>Mendeteksi wallet yang menandatangani trade vault (wallet manager-nya), dan bisa dilacak juga.</span></div>
+        <div><b>Wallet kembar</b><span>Mencari wallet biasa yang membuka posisi sama seperti vault di waktu berdekatan, supaya bisa di-copy pakai tools copytrade lain.</span></div>
         <div><b>Riwayat aktivitas</b><span>Semua open, close, rebalance, limit order, dan swap vault, dengan link ke transaksinya di Solscan.</span></div>
         <div><b>Jalan sendiri</b><span>Start/Stop dari halaman ini. Pengaturan tersimpan. Transaksi yang terlewat saat laptop mati tetap diproses begitu jalan lagi.</span></div>
         <div><b>Jaga laptop menyala</b><span>Mencegah sleep selama tracker jalan (macOS/Windows), selama laptop dicolok dan layarnya terbuka.</span></div>
@@ -237,6 +239,17 @@ a:hover { text-decoration: underline; }
         <li>Mau dua-duanya sekaligus? Biarkan halaman ini melacak vault. Di terminal lain jalankan <code>python3 -m vault_tracker watch --vault &lt;WALLET_MANAGER&gt; --name MANAGER</code>.</li>
         <li>Tidak ada jaminan itu wallet pribadi. Bisa saja hot wallet khusus vault.</li>
       </ul>
+    </details>
+
+    <details class="gsec">
+      <summary>Wallet kembar (untuk tools copytrade lain)</summary>
+      <p>Banyak tools copytrade cuma bisa mengikuti wallet biasa, bukan vault. Kartu Wallet kembar mencari wallet yang membuka posisi di pool dan range yang sama dengan vault, di sekitar waktu vault membuka.</p>
+      <ol>
+        <li>Pastikan tracker RUNNING, lalu klik Cari di kartu Wallet kembar. Butuh 1–5 menit.</li>
+        <li>Lihat wallet berlabel hijau. "SETELAH vault" berarti kemungkinan orang lain yang sudah copy vault ini. "SEBELUM vault" berarti wallet itu membuka lebih dulu, bisa jadi sumber sinyal atau wallet pribadi manager.</li>
+        <li>Salin alamatnya ke tools copytrade lain. Cek dulu riwayatnya di Solscan.</li>
+      </ol>
+      <p class="muted">Kalau tidak ada yang konsisten, perbesar jendela (misalnya 1800 detik) atau jumlah posisi yang dicek. Bisa juga memang tidak ada wallet lain yang meniru vault ini. Lewat terminal: <code>python3 -m vault_tracker mirrors</code>.</p>
     </details>
 
     <details class="gsec">
@@ -342,6 +355,20 @@ a:hover { text-decoration: underline; }
   <section class="card">
     <h2>Aktivitas terbaru</h2>
     <ul class="events" id="events"></ul>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2 style="margin:0">Wallet kembar</h2>
+      <div class="ctrl">
+        <label class="muted" for="mWin" style="font-size:12.5px">jendela (detik)</label>
+        <input type="number" id="mWin" value="600" min="60" step="60" style="width:90px">
+        <label class="muted" for="mEv" style="font-size:12.5px">posisi</label>
+        <input type="number" id="mEv" value="15" min="1" max="50" style="width:70px">
+        <button type="button" id="mGo">Cari</button>
+      </div></div>
+    <div class="muted" style="margin:10px 0 8px">Wallet biasa yang berkali-kali membuka posisi di pool dan range yang sama dengan vault, di waktu yang berdekatan. Alamatnya bisa dipakai di tools copytrade lain. Butuh 1–5 menit.</div>
+    <div id="mStatus" class="muted"></div>
+    <div class="tablewrap"><table id="mir"></table></div>
   </section>
 
   <section class="card">
@@ -615,6 +642,36 @@ function renderManagers() {
         $("formMsg").textContent = "Alamat manager diisi. Klik Simpan untuk melacaknya (vault berhenti dilacak di jendela ini)."; } }, "Lacak"))));
   }
 }
+function renderMirrors() {
+  const m = S.mirrors || { status: "idle" }, t = $("mir"), st = $("mStatus");
+  $("mGo").disabled = m.status === "running";
+  t.replaceChildren();
+  if (m.status === "idle") { st.textContent = ""; return; }
+  if (m.status === "running") { st.textContent = "Mencari… " + (m.progress || ""); return; }
+  if (m.status === "error") { st.textContent = "Gagal: " + m.error; return; }
+  const strong = m.rows.filter((r) => r.strong);
+  st.textContent = `Dicek ${m.info.vault_opens} posisi vault dan ${m.info.txs_scanned} transaksi pool (±${m.info.window_s} dtk). ` +
+    (strong.length ? `${strong.length} wallet konsisten.` : "Tidak ada wallet yang konsisten membuka posisi mirip vault.") +
+    (m.rows.length > strong.length ? ` ${m.rows.length - strong.length} kecocokan lemah ditampilkan abu-abu.` : "");
+  if (!m.rows.length) return;
+  t.append(el("tr", {}, ["Wallet", "Cocok", "Range sama", "Overlap", "Jeda median", "Catatan", ""].map((x) => el("th", {}, x))));
+  for (const r of m.rows) {
+    const d = r.median_delay_s, cls = r.strong ? "" : "faint";
+    t.append(el("tr", { class: cls }, el("td", { class: "mono" }, solscan("account", r.wallet) ? el("a", { href: `https://solscan.io/account/${r.wallet}`, target: "_blank", rel: "noopener" }, r.wallet) : r.wallet),
+      el("td", {}, `${r.matches}/${r.events}`), el("td", {}, r.exact), el("td", {}, Math.round(r.avg_overlap * 100) + "%"),
+      el("td", {}, `${Math.abs(d)} dtk ${d < 0 ? "sebelum" : "setelah"}`),
+      el("td", {}, el("span", { class: "pill " + (r.strong ? "good" : "") }, r.label)),
+      el("td", {}, el("button", { class: "small", type: "button", onclick: () => navigator.clipboard && navigator.clipboard.writeText(r.wallet) }, "Salin"))));
+  }
+}
+$("mGo").addEventListener("click", async () => {
+  $("mStatus").textContent = "memulai…";
+  try {
+    const r = await api("/api/mirrors", { window: $("mWin").value, events: $("mEv").value });
+    if (!r.ok) $("mStatus").textContent = r.error;
+    await refresh();
+  } catch (err) { $("mStatus").textContent = "Gagal: " + err.message; }
+});
 function renderFoot() {
   const v = S.view, bits = [];
   if (v) bits.push("RPC " + v.rpc_host, "harga: " + v.price_source, "alert: " + (v.channels.length ? v.channels.join(", ") : "belum diset (isi Telegram/Discord)"));
@@ -659,7 +716,7 @@ $("guide").addEventListener("toggle", () => { $("guideChev").textContent = $("gu
 function render() {
   if (!S) return;
   if (!formLoaded) loadForm(S.config);
-  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderEvents(); renderManagers(); renderFoot();
+  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderEvents(); renderMirrors(); renderManagers(); renderFoot();
 }
 async function refresh() {
   try {
