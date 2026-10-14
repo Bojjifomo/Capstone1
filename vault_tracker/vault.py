@@ -65,6 +65,7 @@ class VaultTracker:
         self.prices = prices
         self.address = address
         self.label = label
+        self.display = label.upper()  # name shown in alerts and the dashboard
         self.use_gpa = use_gpa
         self.state_path = os.path.join(state_dir, f"{label}-{address}.json")
         self.state = self._load_state()

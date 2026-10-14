@@ -101,12 +101,12 @@ def allocation_panel(tracker, by="position", width=100, show_dust=False):
     head = Text(f"Live value {fmt_usd(total)}", style="bold")
     head.append(f"   by {by}", style="grey58")
     return Panel(Group(head, Text(), _bar(rows, total, max(10, width - 6)), Text(), tbl),
-                 title=f"Allocation — {tracker.label.upper()} {short(tracker.address)}", border_style="grey50")
+                 title=f"Allocation — {tracker.display} {short(tracker.address)}", border_style="grey50")
 
 
 def positions_table(tracker, copy_mode=None, follower=None):
     snap = tracker.snapshot
-    tbl = Table(title=f"Posisi & limit order DLMM — {tracker.label.upper()}", expand=True, border_style="grey35",
+    tbl = Table(title=f"Posisi & limit order DLMM — {tracker.display}", expand=True, border_style="grey35",
                 title_justify="left")
     tbl.add_column("Pool", ratio=3)
     tbl.add_column("Range", ratio=3)

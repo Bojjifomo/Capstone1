@@ -90,7 +90,7 @@ class AlertFormatter:
     def format(self, ev):
         """Returns (title, body_lines) for an event."""
         tr = self._tracker(ev)
-        who = "KAMU" if tr is self.follower else "LEADER"
+        who = "KAMU" if tr is self.follower else tr.display
         kind = ev["type"]
         icon = ICONS.get(kind, "•")
         row = self._row(tr, ev.get("position")) if ev.get("position") else None

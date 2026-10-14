@@ -50,6 +50,8 @@ def build(args):
     prices = PriceOracle(rpc, tokens)
     leader = VaultTracker(rpc, tokens, prices, check_address(args.vault, "vault"), "leader",
                           args.state_dir, use_gpa=args.gpa)
+    if getattr(args, "name", None):
+        leader.display = args.name.upper()
     follower = None
     if getattr(args, "follower", None):
         follower = VaultTracker(rpc, tokens, prices, check_address(args.follower, "follower"), "follower",
@@ -179,7 +181,7 @@ def cmd_signers(args):
     top = next((m for m in rows if m["trades"]), None)
     if top:
         console.print(f"\nKemungkinan wallet manager: [bold]{top['address']}[/]")
-        console.print(f"Lacak juga: python -m vault_tracker watch --vault {top['address']}",
+        console.print(f"Lacak juga: python -m vault_tracker watch --vault {top['address']} --name MANAGER",
                       highlight=False)
 
 
@@ -214,6 +216,8 @@ def main(argv=None):
                         help="jumlah tx histori yang dibaca saat pertama jalan")
         sp.add_argument("--gpa", action="store_true", help="juga scan posisi via getProgramAccounts (Helius/QuickNode)")
         sp.add_argument("--state-dir", default=".vault_tracker")
+        sp.add_argument("--name", default=os.environ.get("TRACKER_NAME"),
+                        help="nama di alert/dashboard, default LEADER (mis. --name MANAGER)")
         sp.add_argument("--by", choices=("position", "token"), default="position")
         sp.add_argument("--show-dust", action="store_true", help="tampilkan semua token spot (termasuk spam/tanpa harga)")
 

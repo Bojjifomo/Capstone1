@@ -137,7 +137,8 @@ jumlah transaksi trade yang mereka tanda tangani. Urutan teratas hampir pasti
 manager-nya. Dashboard `watch` juga menampilkan baris ini.
 
 Wallet itu bisa kamu lacak di terminal kedua:
-`python -m vault_tracker watch --vault <WALLET_MANAGER>`. Kalau manager juga trading
+`python -m vault_tracker watch --vault <WALLET_MANAGER> --name MANAGER` (alertnya jadi
+bertanda `[MANAGER]`, bukan `[LEADER]`). Kalau manager juga trading
 pakai dana pribadi, posisinya muncul di situ. Tapi tidak ada jaminan: wallet signer
 bisa saja hot wallet khusus vault yang tidak punya posisi pribadi.
 
