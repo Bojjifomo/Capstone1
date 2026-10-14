@@ -1,0 +1,5 @@
+.env
+.vault_tracker/
+__pycache__/
+*.pyc
+watch.log
