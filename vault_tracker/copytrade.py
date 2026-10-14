@@ -14,14 +14,14 @@ def parse_mode(mode):
     if kind == "pct":
         lo, hi = (float(v) for v in arg.split(","))
         if lo >= hi:
-            raise ValueError("pct mode needs LOW < HIGH, e.g. pct:-10,10")
+            raise ValueError("mode pct butuh LOW < HIGH, misalnya pct:-10,10")
         return "pct", (lo, hi)
     if kind == "scale":
         f = float(arg)
         if f <= 0:
-            raise ValueError("scale factor must be > 0")
+            raise ValueError("faktor scale harus > 0")
         return "scale", (f,)
-    raise ValueError(f"unknown copy mode {mode!r} (use mirror, pct:LOW,HIGH or scale:F)")
+    raise ValueError(f"copy mode {mode!r} tidak dikenal (pakai mirror, pct:LOW,HIGH, atau scale:F)")
 
 
 def suggest_range(row, mode="mirror"):

@@ -43,6 +43,28 @@ Cara ini jalan di RPC biasa (Alchemy free, public RPC) karena tidak butuh
 `getProgramAccounts`. Kalau RPC kamu mengizinkan `getProgramAccounts` (Helius, QuickNode),
 tambahkan `--gpa` sebagai cara deteksi kedua.
 
+## Cara termudah: lewat website (lokal)
+
+```bash
+python -m vault_tracker web
+```
+
+Browser terbuka di `http://127.0.0.1:8787`. Dari halaman itu kamu bisa mengisi
+Pengaturan (alamat vault, wallet kamu, copy mode, Telegram, RPC), klik **Start/Stop**,
+dan melihat Allocation, posisi & limit order, sync copy-trade, aktivitas, dan wallet
+manager. Halamannya refresh sendiri tiap 2 detik.
+
+- Pengaturan disimpan ke `.env`, jadi perintah CLI di bawah memakai pengaturan yang sama.
+- Server web hanya bisa dibuka dari komputer ini. Untuk membuka dari HP di Wi-Fi yang
+  sama, jalankan `python -m vault_tracker web --host 0.0.0.0`, lalu buka link
+  `http://<ip>:8787/?token=…` yang tampil di terminal. Tanpa token, halaman menolak akses.
+- "Jaga komputer tetap menyala" mencegah sleep selama tracker jalan (macOS lewat
+  `caffeinate`, Windows lewat `SetThreadExecutionState`). Laptop harus dicolok dan layar
+  terbuka. MacBook yang ditutup tetap tidur.
+- `--start` langsung menjalankan tracker saat server dinyalakan. `--port` mengganti port.
+- Website ini jalan di komputer kamu sendiri. Kalau terminalnya ditutup, website dan
+  alert ikut berhenti.
+
 ## Install
 
 ```bash

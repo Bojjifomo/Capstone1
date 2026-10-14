@@ -14,6 +14,7 @@ from . import copytrade, dashboard
 from .alerts import DEFAULT_TYPES, AlertFormatter, Notifier, plain
 from .prices import PriceOracle
 from .rpc import Rpc
+from .runner import Session
 from .tokens import TokenRegistry
 from .vault import VaultTracker
 
@@ -108,40 +109,38 @@ def cmd_history(args):
 
 
 def cmd_watch(args):
-    rpc, leader, follower = build(args)
-    copytrade.parse_mode(args.copy_mode)  # validate early
-    trackers = [t for t in (follower, leader) if t]  # follower first so leader alerts see it
-    types = set(args.alerts.split(",")) if args.alerts else None
-    notifier = Notifier(types, min_usd=args.min_usd)
-    formatter = AlertFormatter(leader, follower, args.copy_mode)
+    if not args.vault:
+        sys.exit("vault belum diisi (pakai --vault atau env VAULT_ADDRESS)")
+    try:
+        session = Session(check_address(args.vault, "vault"),
+                          check_address(args.follower, "follower") if args.follower else None,
+                          rpc_url=args.rpc, rpc_delay=args.rpc_delay, copy_mode=args.copy_mode,
+                          history=args.history, use_gpa=args.gpa, state_dir=args.state_dir,
+                          alert_types=set(args.alerts.split(",")) if args.alerts else None,
+                          min_usd=args.min_usd, name=args.name)
+    except ValueError as e:
+        sys.exit(str(e))
+    leader, follower, notifier = session.leader, session.follower, session.notifier
 
     def cycle(first=False):
-        pending = []
-        for t in trackers:
-            pending += sync(t, args.history) if first else t.poll_transactions()
-        for t in trackers:
-            _, ev = t.refresh(emit=not first)
-            pending += ev
-            t.save()
-        for ev in sorted(pending, key=lambda e: e.get("ts") or 0):
-            title, lines = formatter.format(ev)
-            if not notifier.wants(ev, follower.label if follower else None):
-                continue
-            notifier.send(title, lines, ev)
-            if args.no_dashboard:
+        if first:
+            with console.status("baca histori transaksi…") as status:
+                sent = session.cycle(first=True, on_progress=lambda t, i, n: status.update(
+                    f"[{t.label}] baca histori transaksi {i}/{n}…"))
+        else:
+            sent = session.cycle()
+        if args.no_dashboard:
+            for title, lines, _ in sent:
                 console.print(f"[bold]{title}[/]")
                 for l in lines:
                     console.print(f"    {plain(l)}", highlight=False)
 
     cycle(first=True)
-    if notifier.channels:
-        notifier.send("👀 Vault tracker aktif",
-                      [f"Leader: {leader.address}", f"Copy mode: {args.copy_mode}",
-                       f"Posisi terbuka: {len(leader.snapshot['positions'])} · nilai {dashboard.fmt_usd(leader.snapshot['total_usd'])}"])
+    session.announce()
 
     def view(next_poll):
-        return dashboard.render(leader, follower, formatter, notifier, rpc, args.by, args.copy_mode,
-                                args.interval, next_poll, console.width, args.show_dust)
+        return dashboard.render(leader, follower, session.formatter, notifier, session.rpc, args.by,
+                                args.copy_mode, args.interval, next_poll, console.width, args.show_dust)
 
     next_poll = time.time() + args.interval
     if args.no_dashboard:
@@ -184,6 +183,12 @@ def cmd_signers(args):
         console.print(f"\nKemungkinan wallet manager: [bold]{top['address']}[/]")
         console.print(f"Lacak juga: python -m vault_tracker watch --vault {top['address']} --name MANAGER",
                       highlight=False)
+
+
+def cmd_web(args):
+    from .web import serve
+    serve(args.host, args.port, open_browser=not args.no_browser, autostart=args.start,
+          state_dir=args.state_dir)
 
 
 def cmd_test_alert(args):
@@ -248,6 +253,15 @@ def main(argv=None):
     common(sg, follower=False)
     sg.add_argument("--limit", type=int, default=10)
     sg.set_defaults(fn=cmd_signers)
+
+    wb = sub.add_parser("web", help="buka dashboard di browser: start/stop, pengaturan, posisi, alert")
+    wb.add_argument("--port", type=int, default=int(os.environ.get("WEB_PORT", "8787")))
+    wb.add_argument("--host", default="127.0.0.1",
+                    help="default hanya komputer ini; 0.0.0.0 = bisa dibuka dari HP di Wi-Fi yang sama (pakai token)")
+    wb.add_argument("--no-browser", action="store_true", help="jangan buka browser otomatis")
+    wb.add_argument("--start", action="store_true", help="langsung start tracker kalau pengaturan sudah lengkap")
+    wb.add_argument("--state-dir", default=".vault_tracker")
+    wb.set_defaults(fn=cmd_web)
 
     t = sub.add_parser("test-alert", help="kirim pesan test ke Telegram/Discord")
     t.set_defaults(fn=cmd_test_alert)
