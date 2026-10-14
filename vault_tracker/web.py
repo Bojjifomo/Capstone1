@@ -5,6 +5,7 @@ access token printed at startup.
 """
 
 import ctypes
+import errno
 import http.server
 import ipaddress
 import json
@@ -391,6 +392,17 @@ def make_handler(ctrl, allowed_hosts, token):
     return Handler
 
 
+def _already_running(port):
+    """True when a Vault Tracker web server already answers on this port."""
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/api/state", timeout=2) as r:
+            return "status" in json.loads(r.read())
+    except Exception:
+        return False
+
+
 def _lan_ip():
     """This computer's address on the local network (what a phone on the same Wi-Fi uses)."""
     import socket
@@ -411,7 +423,22 @@ def serve(host="127.0.0.1", port=8787, open_browser=True, autostart=False, env_p
         loopback = host == "localhost"
     token = None if loopback else secrets.token_urlsafe(18)
     allowed = {f"127.0.0.1:{port}", f"localhost:{port}"} if loopback else None
-    httpd = http.server.ThreadingHTTPServer((host, port), make_handler(ctrl, allowed, token))
+    try:
+        httpd = http.server.ThreadingHTTPServer((host, port), make_handler(ctrl, allowed, token))
+    except OSError as e:
+        if e.errno not in (errno.EADDRINUSE, 10048):  # 10048 = WSAEADDRINUSE on Windows
+            raise
+        local = f"http://127.0.0.1:{port}/"
+        if _already_running(port):
+            print(f"Vault Tracker web sudah jalan di {local} (dari terminal lain). Membuka browser ke sana.")
+            print("Untuk mematikannya, tekan Ctrl+C di terminal yang menjalankannya.")
+            if open_browser:
+                webbrowser.open(local)
+            sys.exit(0)
+        print(f"Port {port} sudah dipakai program lain (atau Vault Tracker lain dengan --host).")
+        print(f"Pakai port lain, misalnya: python3 -m vault_tracker web --port {port + 3}")
+        print(f"Atau lihat program yang memakainya: lsof -i :{port}")
+        sys.exit(1)
     url = f"http://127.0.0.1:{port}/" if loopback else f"http://{_lan_ip()}:{port}/?token={token}"
     print(f"Vault Tracker web jalan di {url}")
     if not loopback:
