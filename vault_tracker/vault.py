@@ -53,6 +53,8 @@ def _merge_same_tx(events):
             if key in index:
                 src = merged[index[key]]
                 e["amount_x"], e["amount_y"] = src["amount_x"], src["amount_y"]
+                if src.get("active_bin_id") is not None:
+                    e["active_bin_id"] = src["active_bin_id"]
                 absorbed.add(index[key])
     return [e for i, e in enumerate(merged) if i not in absorbed]
 
