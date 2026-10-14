@@ -149,3 +149,78 @@ class AlertFilter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _limit_order_bytes(bins):
+    buf = bytearray(dlmm.LIMIT_ORDER_BASE_SIZE + len(bins) * dlmm.LIMIT_ORDER_BIN_DATA_SIZE)
+    buf[0:8] = dlmm.DISC_LIMIT_ORDER
+    buf[40:72] = bytes(range(32))
+    _put(buf, 72, len(bins), 2)
+    for i, (amount, age, bin_id, is_ask) in enumerate(bins):
+        o = dlmm.LIMIT_ORDER_BASE_SIZE + i * dlmm.LIMIT_ORDER_BIN_DATA_SIZE
+        _put(buf, o, amount, 8)
+        _put(buf, o + 8, age, 4)
+        _put(buf, o + 16, bin_id, 4, signed=True)
+        buf[o + 20] = 1 if is_ask else 0
+    return bytes(buf)
+
+
+class LimitOrders(unittest.TestCase):
+    ONE = 1 << 64
+
+    def _bin(self, **kw):
+        base = dict(amount_x=0, amount_y=0, liquidity_supply=0, fee_x_per_token=0, fee_y_per_token=0,
+                    price=2 * self.ONE)
+        base.update(kw)
+        return dlmm.Bin(**base)
+
+    def test_decode(self):
+        lo = dlmm.decode_limit_order("L", _limit_order_bytes([(100, 3, -5, True), (50, 3, -4, True)]))
+        self.assertEqual((lo.lower_bin_id, lo.upper_bin_id, lo.is_ask), (-5, -4, True))
+        self.assertEqual([b.amount for b in lo.bins], [100, 50])
+        self.assertEqual(lo.owner, dlmm._pk(bytes(range(32))))
+
+    def test_fill_states_ask(self):
+        lo = dlmm.decode_limit_order("L", _limit_order_bytes([(100, 3, 1, True), (100, 3, 2, True), (100, 3, 3, True)]))
+        bins = {
+            1: self._bin(order_age=3),                                          # not filled
+            2: self._bin(order_age=4, open_order_amount=0, processed_order_remaining_amount=40,
+                         total_processing_order_amount=100),                    # 60% filled
+            3: self._bin(order_age=5, fulfilled_x=100, lo_fee_ask=10),          # fully filled
+        }
+        am = dlmm.limit_order_amounts(lo, bins)
+        self.assertEqual(am.deposit_x, 300)
+        self.assertEqual(am.unfilled_x, 100 + 40)
+        self.assertEqual(am.swapped_y, (60 + 100) * 2)   # price 2 Y per X
+        self.assertEqual(am.fee_y, 10)
+        self.assertAlmostEqual(am.filled_fraction, 160 / 300)
+
+    def test_bid_receives_x(self):
+        lo = dlmm.decode_limit_order("L", _limit_order_bytes([(400, 0, 7, False)]))
+        am = dlmm.limit_order_amounts(lo, {7: self._bin(order_age=2)})
+        self.assertEqual((am.unfilled_y, am.swapped_x, am.total_x), (0, 200, 200))
+
+    def test_place_event(self):
+        p = bytearray(dlmm.EVENT_IX_TAG + bytes([43, 79, 27, 169, 244, 28, 225, 63]))
+        p += bytes([1]) * 32 + bytes([2]) * 32 + bytes([3]) * 32 + bytes([4]) * 32
+        p += (-10).to_bytes(4, "little", signed=True) + bytes([1]) + bytes(16)
+        p += bytes([1]) + (-10).to_bytes(4, "little", signed=True) + (3).to_bytes(4, "little")
+        p += (2).to_bytes(4, "little")
+        p += (-8).to_bytes(4, "little", signed=True) + (500).to_bytes(8, "little")
+        p += (-7).to_bytes(4, "little", signed=True) + (250).to_bytes(8, "little")
+        ev = dlmm.decode_event(bytes(p))
+        self.assertEqual(ev["event"], "PlaceLimitOrder")
+        self.assertTrue(ev["is_ask"])
+        self.assertEqual(ev["bins"], [(-8, 500), (-7, 250)])
+        self.assertEqual(ev["position"], dlmm._pk(bytes([4]) * 32))
+        self.assertEqual(ev["owner"], dlmm._pk(bytes([3]) * 32))
+
+    def test_cancel_absorbs_close(self):
+        out = _merge_same_tx([{"type": "ORDER_CANCEL", "position": "L", "amount_x": 1, "amount_y": 2},
+                              {"type": "ORDER_CLOSE", "position": "L"}])
+        self.assertEqual([e["type"] for e in out], ["ORDER_CANCEL"])
+        self.assertTrue(out[0]["closed"])
+
+    def test_order_copy_deposit(self):
+        row = dict(_row(5, 6, 0), kind="order", side="ask")
+        self.assertEqual(copytrade.suggest_range(row, "mirror")["deposit"], "SOL")

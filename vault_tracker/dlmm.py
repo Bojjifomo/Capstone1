@@ -22,6 +22,7 @@ SCALE_OFFSET = 64
 DISC_LB_PAIR = bytes([33, 11, 49, 98, 181, 101, 177, 13])
 DISC_POSITION_V2 = bytes([117, 176, 212, 199, 245, 180, 133, 182])
 DISC_BIN_ARRAY = bytes([92, 142, 92, 220, 5, 148, 70, 181])
+DISC_LIMIT_ORDER = bytes([137, 183, 212, 91, 115, 29, 141, 227])
 
 # Anchor emit_cpi! events arrive as a self-invoke whose data starts with this tag.
 EVENT_IX_TAG = bytes.fromhex("e445a52e51cb9a1d")
@@ -32,11 +33,17 @@ EVENTS = {
     bytes([116, 244, 97, 232, 103, 31, 152, 58]): "RemoveLiquidity",
     bytes([0, 109, 117, 179, 61, 91, 199, 200]): "Rebalancing",
     bytes([75, 122, 154, 48, 140, 74, 123, 163]): "ClaimFee",
+    bytes([43, 79, 27, 169, 244, 28, 225, 63]): "PlaceLimitOrder",
+    bytes([131, 234, 194, 133, 9, 14, 189, 209]): "CancelLimitOrder",
+    bytes([142, 135, 8, 76, 92, 63, 118, 83]): "CloseLimitOrder",
 }
 
 POSITION_BASE_SIZE = 8120
 POSITION_BIN_DATA_SIZE = 112
 BIN_SIZE = 144
+LIMIT_ORDER_BASE_SIZE = 120
+LIMIT_ORDER_BIN_DATA_SIZE = 32
+FUNCTION_TYPE_LIMIT_ORDER = 2
 
 
 def _pk(b):
@@ -71,6 +78,8 @@ class LbPair:
     token_y_mint: str
     reserve_x: str
     reserve_y: str
+    function_type: int = 0
+    collect_fee_mode: int = 0
 
 
 def decode_lb_pair(address, data):
@@ -85,6 +94,8 @@ def decode_lb_pair(address, data):
         token_y_mint=_pk(data[120:152]),
         reserve_x=_pk(data[152:184]),
         reserve_y=_pk(data[184:216]),
+        function_type=data[35],
+        collect_fee_mode=data[36],
     )
 
 
@@ -160,6 +171,15 @@ class Bin:
     liquidity_supply: int
     fee_x_per_token: int
     fee_y_per_token: int
+    price: int = 0  # Q64.64, raw Y per raw X
+    fulfilled_x: int = 0
+    fulfilled_y: int = 0
+    lo_fee_ask: int = 0
+    lo_fee_bid: int = 0
+    open_order_amount: int = 0
+    total_processing_order_amount: int = 0
+    processed_order_remaining_amount: int = 0
+    order_age: int = 0
 
 
 def decode_bin_array(data):
@@ -176,8 +196,128 @@ def decode_bin_array(data):
             liquidity_supply=_u(data, o + 32, 16),
             fee_x_per_token=_u(data, o + 80, 16),
             fee_y_per_token=_u(data, o + 96, 16),
+            price=_u(data, o + 16, 16),
+            fulfilled_x=_u(data, o + 48, 8),
+            fulfilled_y=_u(data, o + 56, 8),
+            lo_fee_ask=_u(data, o + 64, 8),
+            lo_fee_bid=_u(data, o + 72, 8),
+            open_order_amount=_u(data, o + 112, 8),
+            total_processing_order_amount=_u(data, o + 120, 8),
+            processed_order_remaining_amount=_u(data, o + 128, 8),
+            order_age=_u(data, o + 136, 4),
         )
     return index, out
+
+
+# ---- limit orders ---------------------------------------------------------------
+
+@dataclass
+class LimitOrderBin:
+    amount: int
+    age: int
+    bin_id: int
+    is_ask: bool
+
+
+@dataclass
+class LimitOrder:
+    address: str
+    lb_pair: str
+    owner: str
+    bins: list = field(default_factory=list)
+
+    @property
+    def lower_bin_id(self):
+        return min(b.bin_id for b in self.bins) if self.bins else 0
+
+    @property
+    def upper_bin_id(self):
+        return max(b.bin_id for b in self.bins) if self.bins else 0
+
+    @property
+    def is_ask(self):
+        return bool(self.bins) and self.bins[0].is_ask
+
+
+def decode_limit_order(address, data):
+    if data is None or data[:8] != DISC_LIMIT_ORDER:
+        raise ValueError(f"{address} is not a DLMM LimitOrder")
+    count = _u(data, 72, 2)
+    bins = []
+    for i in range(count):
+        o = LIMIT_ORDER_BASE_SIZE + i * LIMIT_ORDER_BIN_DATA_SIZE
+        if o + LIMIT_ORDER_BIN_DATA_SIZE > len(data):
+            break
+        bins.append(LimitOrderBin(amount=_u(data, o, 8), age=_u(data, o + 8, 4),
+                                  bin_id=_i(data, o + 16, 4), is_ask=bool(data[o + 20])))
+    return LimitOrder(address=address, lb_pair=_pk(data[8:40]), owner=_pk(data[40:72]), bins=bins)
+
+
+@dataclass
+class LimitOrderAmounts:
+    deposit_x: int = 0
+    deposit_y: int = 0
+    unfilled_x: int = 0
+    unfilled_y: int = 0
+    swapped_x: int = 0   # received from fills
+    swapped_y: int = 0
+    fee_x: int = 0
+    fee_y: int = 0
+
+    @property
+    def total_x(self):
+        return self.unfilled_x + self.swapped_x + self.fee_x
+
+    @property
+    def total_y(self):
+        return self.unfilled_y + self.swapped_y + self.fee_y
+
+    @property
+    def filled_fraction(self):
+        dep = self.deposit_x + self.deposit_y
+        return 0.0 if not dep else 1 - (self.unfilled_x + self.unfilled_y) / dep
+
+
+def limit_order_amounts(order, bins_by_id, collect_fee_mode=0):
+    """Mirrors DLMM SDK LimitOrderV1Wrapper.parseInfo (status, fill, swapped amount, fee)."""
+    out = LimitOrderAmounts()
+    for lb in order.bins:
+        b = bins_by_id.get(lb.bin_id)
+        if b is None or (lb.amount == 0 and lb.age == 0):
+            continue
+        # status: 0 not filled, 1 partially filled, 2 fully filled
+        if lb.age == b.order_age:
+            status = 0
+        elif lb.age + 1 == b.order_age:
+            status = 2 if (b.open_order_amount == 0 and b.processed_order_remaining_amount == 0) else 1
+        else:
+            status = 2
+        if status == 0:
+            unfilled = lb.amount
+        elif status == 1 and b.total_processing_order_amount:
+            unfilled = (lb.amount * b.processed_order_remaining_amount
+                        + b.total_processing_order_amount - 1) // b.total_processing_order_amount
+        else:
+            unfilled = 0
+        filled = lb.amount - unfilled
+        if lb.is_ask:   # sells X at this bin, receives Y
+            swapped = (filled * b.price) >> SCALE_OFFSET
+            out.deposit_x += lb.amount
+            out.unfilled_x += unfilled
+            out.swapped_y += swapped
+        else:           # buys X with Y at this bin
+            swapped = (filled << SCALE_OFFSET) // b.price if b.price else 0
+            out.deposit_y += lb.amount
+            out.unfilled_y += unfilled
+            out.swapped_x += swapped
+        total_filled = b.fulfilled_x if lb.is_ask else b.fulfilled_y
+        if filled and total_filled:
+            fee = (b.lo_fee_ask if lb.is_ask else b.lo_fee_bid) * filled // total_filled
+            if collect_fee_mode == 1 or lb.is_ask:   # OnlyY, or InputOnly on the ask side
+                out.fee_y += fee
+            else:
+                out.fee_x += fee
+    return out
 
 
 # ---- PDAs -----------------------------------------------------------------------
@@ -271,6 +411,21 @@ def decode_event(data):
     if name == "ClaimFee":
         return {"event": name, "lb_pair": _pk(p[0:32]), "position": _pk(p[32:64]), "owner": _pk(p[64:96]),
                 "fee_x": _u(p, 96, 8), "fee_y": _u(p, 104, 8)}
+    if name == "PlaceLimitOrder":
+        # lb_pair, sender, owner, limit_order, active_id, params{is_ask, pad[16], Option<RelativeBin>, Vec<{id,amount}>}
+        is_ask = bool(p[132])
+        off = 149
+        off += 1 + (8 if p[off] == 1 else 0)
+        n = _u(p, off, 4)
+        off += 4
+        bins = [(_i(p, off + 12 * k, 4), _u(p, off + 12 * k + 4, 8)) for k in range(n)]
+        return {"event": name, "lb_pair": _pk(p[0:32]), "owner": _pk(p[64:96]), "position": _pk(p[96:128]),
+                "active_bin_id": _i(p, 128, 4), "is_ask": is_ask, "bins": bins}
+    if name == "CancelLimitOrder":
+        return {"event": name, "lb_pair": _pk(p[0:32]), "position": _pk(p[64:96]),
+                "amount_x": _u(p, 96, 8), "amount_y": _u(p, 104, 8), "active_bin_id": _i(p, 112, 4)}
+    if name == "CloseLimitOrder":
+        return {"event": name, "lb_pair": _pk(p[0:32]), "owner": _pk(p[32:64]), "position": _pk(p[64:96])}
     return None
 
 

@@ -10,10 +10,12 @@ import requests
 from . import copytrade, dlmm
 from .tokens import SOL_MINT, STABLES
 
-DEFAULT_TYPES = {"OPEN", "CLOSE", "ADD", "REMOVE", "REBALANCE", "SWAP", "OUT_OF_RANGE", "IN_RANGE"}
-FOLLOWER_TYPES = {"OPEN", "CLOSE", "OUT_OF_RANGE", "IN_RANGE"}
+DEFAULT_TYPES = {"OPEN", "CLOSE", "ADD", "REMOVE", "REBALANCE", "SWAP", "OUT_OF_RANGE", "IN_RANGE",
+                 "ORDER_PLACE", "ORDER_CANCEL", "ORDER_CLOSE", "ORDER_FILL"}
+FOLLOWER_TYPES = {"OPEN", "CLOSE", "OUT_OF_RANGE", "IN_RANGE", "ORDER_FILL"}
 ICONS = {"OPEN": "🟢", "CLOSE": "🔴", "ADD": "➕", "REMOVE": "➖", "REBALANCE": "🔁", "CLAIM": "💰",
-         "SWAP": "💱", "TRANSFER_IN": "📥", "TRANSFER_OUT": "📤", "OUT_OF_RANGE": "⚠️", "IN_RANGE": "✅"}
+         "SWAP": "💱", "TRANSFER_IN": "📥", "TRANSFER_OUT": "📤", "OUT_OF_RANGE": "⚠️", "IN_RANGE": "✅",
+         "ORDER_PLACE": "📌", "ORDER_CANCEL": "✖️", "ORDER_CLOSE": "✖️", "ORDER_FILL": "🎯"}
 
 
 BASE_MINTS = STABLES | {SOL_MINT}
@@ -167,6 +169,41 @@ class AlertFormatter:
                 traded = [m for m in list(ev.get("received", {})) + list(ev.get("sent", {}))
                           if m not in BASE_MINTS]
                 lines += [f"Token: {tr.tokens.get(m).symbol} <code>{m}</code>" for m in dict.fromkeys(traded)]
+        elif kind == "ORDER_PLACE":
+            verb = "TAMBAH LIMIT ORDER" if ev.get("added_to_existing") else "LIMIT ORDER BARU"
+            side = "JUAL" if ev.get("is_ask") else "BELI"
+            title = f"{icon} [{who}] {verb} ({side}): {name.replace(' order', '')}"
+            if tx:
+                tok = tx if ev.get("is_ask") else ty
+                lines.append(f"Jumlah: {fmt_num(tok.ui(ev['amount']))} {tok.symbol} di {len(ev.get('bins', []))} bin")
+                bins = ev.get("bins") or []
+                if bins:
+                    lo_p = dlmm.bin_price(min(bins), pair.bin_step, tx.decimals, ty.decimals)
+                    hi_p = dlmm.bin_price(max(bins), pair.bin_step, tx.decimals, ty.decimals)
+                    now_p = dlmm.bin_price(ev["active_bin_id"], pair.bin_step, tx.decimals, ty.decimals)
+                    lines.append(f"Harga order: {fmt_num(lo_p)} – {fmt_num(hi_p)} {ty.symbol} per {tx.symbol} "
+                                 f"({(lo_p / now_p - 1) * 100:+.1f}% / {(hi_p / now_p - 1) * 100:+.1f}% dari harga saat order)")
+            if row and tr is self.leader:
+                lines += self._copy_lines(row)
+        elif kind in ("ORDER_CANCEL", "ORDER_CLOSE"):
+            title = f"{icon} [{who}] LIMIT ORDER DITUTUP: {name.replace(' order', '')}"
+            if tx and "amount_x" in ev:
+                ax, ay = tx.ui(ev["amount_x"]), ty.ui(ev["amount_y"])
+                usd = [tr.prices.usd(tx.mint, ax), tr.prices.usd(ty.mint, ay)]
+                lines.append(f"Ditarik: {fmt_num(ax)} {tx.symbol} + {fmt_num(ay)} {ty.symbol} "
+                             f"(≈ {fmt_usd(None if None in usd else sum(usd))})")
+            elif kind == "ORDER_CLOSE":
+                st = tr.state["positions"].get(ev["position"], {})
+                lines.append(f"Nilai terakhir ≈ {fmt_usd(st.get('last_value_usd'))}")
+            if tr is self.leader and self.follower and pair:
+                mine = copytrade.follower_positions_in_pool(self.follower.snapshot, pair.address)
+                if mine:
+                    lines.append(f"⚠️ Kamu masih punya {len(mine)} posisi/order di pool ini")
+        elif kind == "ORDER_FILL":
+            title = f"{icon} [{who}] LIMIT ORDER TERISI {ev.get('filled_pct', 0):.0f}%: {name.replace(' order', '')}"
+            if row:
+                lines.append(f"Sisa: {fmt_num(row['unfilled_x'])} {row['symbol_x']} + {fmt_num(row['unfilled_y'])} "
+                             f"{row['symbol_y']} · nilai ≈ {fmt_usd(row['value_usd'])}")
         elif kind in ("OUT_OF_RANGE", "IN_RANGE"):
             title = (f"{icon} [{who}] {name} OUT OF RANGE" if kind == "OUT_OF_RANGE"
                      else f"{icon} [{who}] {name} kembali IN RANGE")
@@ -175,13 +212,17 @@ class AlertFormatter:
         else:
             title = f"{icon} [{who}] {kind}"
 
-        if kind in ("OPEN", "ADD", "REBALANCE") and row:
+        if kind in ("OPEN", "ADD", "REBALANCE", "ORDER_PLACE") and row:
             lines.append(f"🔗 Meteora: https://app.meteora.ag/dlmm/{row['lb_pair']}")
         if ev.get("sig"):
             lines.append(f"🔍 Tx: {tx_url(ev['sig'])}")
         return title, lines
 
     def _range_lines(self, row):
+        if row.get("kind") == "order":
+            side = "jual" if row["side"] == "ask" else "beli"
+            return [f"Limit order {side}: {fmt_num(row['price_lower'])} – {fmt_num(row['price_upper'])} "
+                    f"{row['symbol_y']} per {row['symbol_x']} · {row['filled_pct']:.0f}% terisi"]
         pl = (row["price_lower"] / row["price"] - 1) * 100
         pu = (row["price_upper"] / row["price"] - 1) * 100
         status = "IN RANGE" if row["in_range"] else "OUT OF RANGE"

@@ -18,6 +18,8 @@ from .tokens import SOL_MINT
 
 MAX_EVENTS_KEPT = 300
 POSITION_DISC_B58 = base58.b58encode(dlmm.DISC_POSITION_V2).decode()
+LIMIT_ORDER_DISC_B58 = base58.b58encode(dlmm.DISC_LIMIT_ORDER).decode()
+ORDER_FILL_STEP = 0.05  # alert again every +5% filled
 SOL_DUST = 0.005  # ignore SOL deltas below this (rent for ATAs, fees)
 
 
@@ -29,7 +31,8 @@ def _merge_same_tx(events):
     """One tx often emits several AddLiquidity/RemoveLiquidity/ClaimFee events for the same
     position (one per bin-array chunk). Collapse them into a single event."""
     merged, index = [], {}
-    sums = {"ADD": ("amount_x", "amount_y"), "REMOVE": ("amount_x", "amount_y"), "CLAIM": ("fee_x", "fee_y")}
+    sums = {"ADD": ("amount_x", "amount_y"), "REMOVE": ("amount_x", "amount_y"), "CLAIM": ("fee_x", "fee_y"),
+            "ORDER_PLACE": ("amount",), "ORDER_CANCEL": ("amount_x", "amount_y")}
     for e in events:
         key = (e["type"], e.get("position"))
         if e["type"] in sums and key in index:
@@ -41,7 +44,10 @@ def _merge_same_tx(events):
         merged.append(dict(e))
     # Fold the deposit of an OPEN / the withdrawal of a CLOSE in the same tx into that event.
     absorbed = set()
-    for e in merged:
+    for i, e in enumerate(merged):
+        if e["type"] == "ORDER_CLOSE" and ("ORDER_CANCEL", e["position"]) in index:
+            merged[index[("ORDER_CANCEL", e["position"])]]["closed"] = True
+            absorbed.add(i)
         if e["type"] in ("OPEN", "CLOSE"):
             key = ("ADD" if e["type"] == "OPEN" else "REMOVE", e["position"])
             if key in index:
@@ -148,11 +154,12 @@ class VaultTracker:
                 events.extend(self._process_tx(s["signature"], tx))
         return events
 
-    def _register_position(self, position, lb_pair=None, owner=None, sig=None, ts=None, opened=False):
+    def _register_position(self, position, lb_pair=None, owner=None, sig=None, ts=None, opened=False,
+                           kind="position"):
         p = self.state["positions"].get(position)
         if p is None:
             p = self.state["positions"][position] = {
-                "lb_pair": lb_pair, "owner": owner, "status": "open",
+                "kind": kind, "lb_pair": lb_pair, "owner": owner, "status": "open",
                 "opened_sig": sig if opened else None, "opened_at": ts if opened else None,
                 "closed_sig": None, "closed_at": None, "in_range": None,
             }
@@ -161,6 +168,27 @@ class VaultTracker:
         if owner and owner not in self.state["holders"]:
             self.state["holders"].append(owner)
         return p
+
+    def _record_signers(self, tx, ts, traded):
+        """Remember who signs this wallet's transactions. For a Hedgin vault the key that signs
+        the DLMM / swap transactions is the manager's own wallet."""
+        msg = tx["transaction"]["message"]
+        n = (msg.get("header") or {}).get("numRequiredSignatures", 1)
+        keys = dlmm.tx_account_keys(tx)
+        signers = self.state.setdefault("signers", {})
+        for k in keys[:n]:
+            if k in self.state["holders"]:
+                continue
+            s = signers.setdefault(k, {"txs": 0, "trades": 0, "fee_payer": 0, "last_ts": None})
+            s["txs"] += 1
+            s["trades"] += 1 if traded else 0
+            s["fee_payer"] += 1 if k == keys[0] else 0
+            s["last_ts"] = max(s["last_ts"] or 0, ts)
+
+    def managers(self):
+        """Signers ranked by how many DLMM/swap transactions they signed."""
+        rows = [{"address": k, **v} for k, v in self.state.get("signers", {}).items()]
+        return sorted(rows, key=lambda r: (-r["trades"], -r["fee_payer"], -r["txs"]))
 
     def _process_tx(self, sig, tx):
         ts = tx.get("blockTime") or _now()
@@ -200,10 +228,29 @@ class VaultTracker:
                 self._register_position(pos, e["lb_pair"])
                 out.append({**base, "type": "CLAIM", "lb_pair": e["lb_pair"],
                             "fee_x": e["fee_x"], "fee_y": e["fee_y"]})
-        if not dlmm_events:
-            swap = self._balance_change_event(sig, ts, tx)
-            if swap:
-                out.append(swap)
+            elif e["event"] == "PlaceLimitOrder":
+                prev = self.state["positions"].get(pos)
+                fresh = prev is None or prev["status"] != "open"
+                p = self._register_position(pos, e["lb_pair"], e["owner"], sig, ts, opened=True, kind="order")
+                if fresh:
+                    p.update(status="open", opened_sig=sig, opened_at=ts, closed_sig=None, closed_at=None)
+                out.append({**base, "type": "ORDER_PLACE", "lb_pair": e["lb_pair"], "is_ask": e["is_ask"],
+                            "amount": sum(a for _, a in e["bins"]), "bins": [b for b, _ in e["bins"]],
+                            "active_bin_id": e["active_bin_id"], "added_to_existing": not fresh})
+            elif e["event"] == "CancelLimitOrder":
+                self._register_position(pos, e["lb_pair"], kind="order")
+                out.append({**base, "type": "ORDER_CANCEL", "lb_pair": e["lb_pair"],
+                            "amount_x": e["amount_x"], "amount_y": e["amount_y"]})
+            elif e["event"] == "CloseLimitOrder":
+                p = self._register_position(pos, e["lb_pair"], e["owner"], kind="order")
+                already = p["status"] == "closed"
+                p.update(status="closed", closed_sig=sig, closed_at=ts)
+                if not already:
+                    out.append({**base, "type": "ORDER_CLOSE", "lb_pair": e["lb_pair"]})
+        swap = None if dlmm_events else self._balance_change_event(sig, ts, tx)
+        if swap:
+            out.append(swap)
+        self._record_signers(tx, ts, traded=bool(dlmm_events) or (swap or {}).get("type") == "SWAP")
         return _merge_same_tx(out)
 
     def _balance_change_event(self, sig, ts, tx):
@@ -246,20 +293,21 @@ class VaultTracker:
 
     def _discover_gpa(self):
         found = []
-        for holder in self.state["holders"]:
-            try:
-                res = self.rpc.call("getProgramAccounts", [dlmm.DLMM_PROGRAM, {
-                    "encoding": "base64", "dataSlice": {"offset": 8, "length": 32},
-                    "filters": [{"memcmp": {"offset": 0, "bytes": POSITION_DISC_B58}},
-                                {"memcmp": {"offset": 40, "bytes": holder}}]}], retries=2)
-            except Exception:
-                self.use_gpa = False  # RPC does not allow it; rely on tx history only
-                return found
-            for a in res:
-                if a["pubkey"] not in self.state["positions"]:
-                    lb_pair = dlmm._pk(account_bytes(a["account"]))
-                    self._register_position(a["pubkey"], lb_pair, holder)
-                    found.append(a["pubkey"])
+        for holder in list(self.state["holders"]):
+            for disc, kind in ((POSITION_DISC_B58, "position"), (LIMIT_ORDER_DISC_B58, "order")):
+                try:
+                    res = self.rpc.call("getProgramAccounts", [dlmm.DLMM_PROGRAM, {
+                        "encoding": "base64", "dataSlice": {"offset": 8, "length": 32},
+                        "filters": [{"memcmp": {"offset": 0, "bytes": disc}},
+                                    {"memcmp": {"offset": 40, "bytes": holder}}]}], retries=2)
+                except Exception:
+                    self.use_gpa = False  # RPC does not allow it; rely on tx history only
+                    return found
+                for a in res:
+                    if a["pubkey"] not in self.state["positions"]:
+                        lb_pair = dlmm._pk(account_bytes(a["account"]))
+                        self._register_position(a["pubkey"], lb_pair, holder, kind=kind)
+                        found.append(a["pubkey"])
         return found
 
     def _free_lamports(self, address):
@@ -274,6 +322,35 @@ class VaultTracker:
             self._rent_cache[space] = self.rpc.call("getMinimumBalanceForRentExemption", [space])
         return max(0, acc["lamports"] - self._rent_cache[space])
 
+    def _order_row(self, o, pair, bins):
+        tx, ty = self.tokens.get(pair.token_x_mint), self.tokens.get(pair.token_y_mint)
+        am = dlmm.limit_order_amounts(o, bins, pair.collect_fee_mode)
+        ax, ay = tx.ui(am.total_x), ty.ui(am.total_y)
+        fx, fy = tx.ui(am.fee_x), ty.ui(am.fee_y)
+        usd = [self.prices.usd(tx.mint, ax), self.prices.usd(ty.mint, ay)]
+        fusd = [self.prices.usd(tx.mint, fx), self.prices.usd(ty.mint, fy)]
+        lower, upper = o.lower_bin_id, o.upper_bin_id
+        return {
+            "kind": "order", "address": o.address, "lb_pair": o.lb_pair, "owner": o.owner,
+            "pair": f"{tx.symbol}-{ty.symbol} order", "x": tx.mint, "y": ty.mint,
+            "symbol_x": tx.symbol, "symbol_y": ty.symbol,
+            "lower_bin": lower, "upper_bin": upper, "active_bin": pair.active_id,
+            "bin_step": pair.bin_step, "width": upper - lower + 1, "order_bins": len(o.bins),
+            "price_lower": dlmm.bin_price(lower, pair.bin_step, tx.decimals, ty.decimals),
+            "price_upper": dlmm.bin_price(upper, pair.bin_step, tx.decimals, ty.decimals),
+            "price": dlmm.bin_price(pair.active_id, pair.bin_step, tx.decimals, ty.decimals),
+            "decimals_x": tx.decimals, "decimals_y": ty.decimals,
+            "in_range": None, "side": "ask" if o.is_ask else "bid",
+            "amount_x": ax, "amount_y": ay, "fee_x": fx, "fee_y": fy,
+            "deposit_x": tx.ui(am.deposit_x), "deposit_y": ty.ui(am.deposit_y),
+            "unfilled_x": tx.ui(am.unfilled_x), "unfilled_y": ty.ui(am.unfilled_y),
+            "filled_pct": round(am.filled_fraction * 100, 1),
+            "value_usd": None if None in usd else sum(usd),
+            "fees_usd": None if None in fusd else sum(fusd),
+            "has_liquidity": bool(am.total_x or am.total_y),
+            "opened_at": self.state["positions"][o.address].get("opened_at"),
+        }
+
     def refresh(self, emit=True):
         """Read live on-chain state. Returns (snapshot, state-derived events)."""
         events = []
@@ -281,30 +358,37 @@ class VaultTracker:
             for pk in self._discover_gpa():
                 if emit and self.bootstrapped:
                     p = self.state["positions"][pk]
-                    events.append({"type": "OPEN", "ts": _now(), "sig": None, "position": pk,
+                    events.append({"type": "ORDER_PLACE" if p.get("kind") == "order" else "OPEN",
+                                   "ts": _now(), "sig": None, "position": pk,
                                    "lb_pair": p["lb_pair"], "wallet": self.label, "discovered": True})
 
         open_keys = [k for k, p in self.state["positions"].items() if p["status"] == "open"]
         accs = self.rpc.get_multiple_accounts(open_keys) if open_keys else []
-        positions = []
+        positions, orders = [], []
         for key, acc in zip(open_keys, accs):
             data = account_bytes(acc)
             if data is None or acc.get("owner") != dlmm.DLMM_PROGRAM:
                 p = self.state["positions"][key]
                 p.update(status="closed", closed_at=p.get("closed_at") or _now())
                 if emit:
-                    events.append({"type": "CLOSE", "ts": _now(), "sig": None, "position": key,
+                    events.append({"type": "ORDER_CLOSE" if p.get("kind") == "order" else "CLOSE",
+                                   "ts": _now(), "sig": None, "position": key,
                                    "lb_pair": p.get("lb_pair"), "wallet": self.label, "detected": True})
                 continue
             try:
-                pos = dlmm.decode_position(key, data)
+                if data[:8] == dlmm.DISC_LIMIT_ORDER:
+                    item = dlmm.decode_limit_order(key, data)
+                    orders.append(item)
+                    self.state["positions"][key]["kind"] = "order"
+                else:
+                    item = dlmm.decode_position(key, data)
+                    positions.append(item)
             except ValueError:
                 continue
-            positions.append(pos)
-            if pos.owner not in self.state["holders"]:
-                self.state["holders"].append(pos.owner)
+            if item.owner not in self.state["holders"]:
+                self.state["holders"].append(item.owner)
 
-        pair_keys = sorted({p.lb_pair for p in positions})
+        pair_keys = sorted({p.lb_pair for p in positions + orders})
         pairs = {}
         for k, acc in zip(pair_keys, self.rpc.get_multiple_accounts(pair_keys) if pair_keys else []):
             if acc:
@@ -313,6 +397,9 @@ class VaultTracker:
         bin_keys = []
         for p in positions:
             bin_keys.extend(dlmm.bin_arrays_for_range(p.lb_pair, p.lower_bin_id, p.upper_bin_id))
+        for o in orders:
+            for idx in sorted({dlmm.bin_array_index(b.bin_id) for b in o.bins}):
+                bin_keys.append(dlmm.bin_array_address(o.lb_pair, idx))
         bin_keys = list(dict.fromkeys(bin_keys))
         bins_by_pair = {}
         for acc in (self.rpc.get_multiple_accounts(bin_keys) if bin_keys else []):
@@ -359,7 +446,7 @@ class VaultTracker:
             else:
                 side = "around"
             row = {
-                "address": p.address, "lb_pair": p.lb_pair, "owner": p.owner,
+                "kind": "position", "address": p.address, "lb_pair": p.lb_pair, "owner": p.owner,
                 "pair": f"{tx.symbol}-{ty.symbol}", "x": tx.mint, "y": ty.mint,
                 "symbol_x": tx.symbol, "symbol_y": ty.symbol,
                 "lower_bin": p.lower_bin_id, "upper_bin": p.upper_bin_id, "active_bin": pair.active_id,
@@ -382,6 +469,24 @@ class VaultTracker:
                                "position": p.address, "lb_pair": p.lb_pair, "wallet": self.label})
             st.update(in_range=in_range, lower=p.lower_bin_id, upper=p.upper_bin_id,
                       pair=row["pair"], last_value_usd=row["value_usd"])
+
+        for o in orders:
+            pair = pairs.get(o.lb_pair)
+            if pair is None or not o.bins:
+                continue
+            row = self._order_row(o, pair, bins_by_pair.get(o.lb_pair, {}))
+            pos_rows.append(row)
+            st = self.state["positions"][o.address]
+            prev = st.get("filled")
+            now_f = row["filled_pct"] / 100
+            if emit and prev is not None and now_f > prev and (now_f - prev >= ORDER_FILL_STEP or now_f >= 0.999):
+                events.append({"type": "ORDER_FILL", "ts": _now(), "sig": None, "position": o.address,
+                               "lb_pair": o.lb_pair, "wallet": self.label, "filled_pct": row["filled_pct"]})
+                st["filled"] = now_f
+            elif prev is None or now_f < prev:
+                st["filled"] = now_f
+            st.update(lower=row["lower_bin"], upper=row["upper_bin"], pair=row["pair"],
+                      last_value_usd=row["value_usd"], side=row["side"])
 
         spot_rows = []
         for mint, amt in spot.items():

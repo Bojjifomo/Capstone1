@@ -29,7 +29,8 @@ def allocation_rows(tracker, by="position"):
             agg.setdefault(sp["mint"], [sp["symbol"], 0.0])[1] += sp["amount"]
         return [{"label": sym, "tag": "token", "amount": amt, "value": tracker.prices.usd(mint, amt),
                  "in_range": None} for mint, (sym, amt) in agg.items()]
-    rows = [{"label": p["pair"], "tag": "DLMM", "value": p["value_usd"], "amount": None,
+    rows = [{"label": p["pair"], "tag": "limit order" if p.get("kind") == "order" else "DLMM",
+             "value": p["value_usd"], "amount": None,
              "in_range": p["in_range"] if p["has_liquidity"] else None} for p in snap["positions"]]
     rows += [{"label": sp["symbol"], "tag": "spot", "value": sp["value_usd"], "amount": sp["amount"],
               "in_range": None} for sp in snap["spot"]]
@@ -40,7 +41,7 @@ def collapse_dust(rows, show_dust=False, keep=12):
     """Hide unpriced / sub-cent spot tokens (airdrop spam) behind one summary row."""
     if show_dust:
         return rows
-    main = [r for r in rows if r["tag"] == "DLMM" or (r["value"] or 0) >= 0.01]
+    main = [r for r in rows if r["tag"] in ("DLMM", "limit order") or (r["value"] or 0) >= 0.01]
     dust = [r for r in rows if r not in main]
     main, extra = main[:keep], main[keep:]
     dust += extra
@@ -93,7 +94,7 @@ def allocation_panel(tracker, by="position", width=100, show_dust=False):
         if r["in_range"] is not None:
             label.append("  in range" if r["in_range"] else "  OUT OF RANGE",
                          style="green" if r["in_range"] else "bold red")
-        if r["amount"] is not None and r["tag"] not in ("DLMM", "dust"):
+        if r["amount"] is not None and r["tag"] not in ("DLMM", "limit order", "dust"):
             label.append(f"  {fmt_num(r['amount'])}", style="grey58")
         pct = (r["value"] or 0) / total * 100 if total else 0
         tbl.add_row(dot, label, fmt_usd(r["value"]), f"{pct:.1f}%")
@@ -105,7 +106,7 @@ def allocation_panel(tracker, by="position", width=100, show_dust=False):
 
 def positions_table(tracker, copy_mode=None, follower=None):
     snap = tracker.snapshot
-    tbl = Table(title=f"Posisi DLMM — {tracker.label.upper()}", expand=True, border_style="grey35",
+    tbl = Table(title=f"Posisi & limit order DLMM — {tracker.label.upper()}", expand=True, border_style="grey35",
                 title_justify="left")
     tbl.add_column("Pool", ratio=3)
     tbl.add_column("Range", ratio=3)
@@ -120,7 +121,10 @@ def positions_table(tracker, copy_mode=None, follower=None):
     for r in sorted(snap["positions"], key=lambda r: -(r["value_usd"] or 0)):
         pl = (r["price_lower"] / r["price"] - 1) * 100
         pu = (r["price_upper"] / r["price"] - 1) * 100
-        if not r["has_liquidity"]:
+        if r.get("kind") == "order":
+            status = Text("ORDER " + ("JUAL" if r["side"] == "ask" else "BELI"), style="cyan")
+            status.append(f"\n{r['filled_pct']:.0f}% terisi", style="grey58")
+        elif not r["has_liquidity"]:
             status = Text("kosong", style="grey58")
         elif r["in_range"]:
             status = Text("IN RANGE", style="green")
@@ -129,7 +133,8 @@ def positions_table(tracker, copy_mode=None, follower=None):
         status.append(f"\nharga {fmt_num(r['price'])}\n{r['symbol_y']} per {r['symbol_x']}", style="grey58")
         age = fmt_age(time.time() - r["opened_at"]) if r.get("opened_at") else "?"
         pool = Text(r["pair"], style="bold")
-        pool.append(f"\nstep {r['bin_step']} · {r['width']} bins\n{short(r['address'])} · umur {age}", style="grey58")
+        bins_txt = f"{r['order_bins']} bin order" if r.get("kind") == "order" else f"{r['width']} bins"
+        pool.append(f"\nstep {r['bin_step']} · {bins_txt}\n{short(r['address'])} · umur {age}", style="grey58")
         cells = [
             pool,
             f"{fmt_num(r['price_lower'])} – {fmt_num(r['price_upper'])}\n({pl:+.1f}% / {pu:+.1f}%)",
@@ -198,6 +203,21 @@ def events_panel(formatter, events, limit=12, notifier=None):
     return Panel(t, title="Aktivitas terbaru", border_style="grey50")
 
 
+def managers_text(tracker, limit=3):
+    """Wallets that sign this vault's trades: for a Hedgin vault, the manager's own key."""
+    rows = [m for m in tracker.managers() if m["trades"]][:limit]
+    t = Text("Wallet yang menandatangani trade vault: ", style="grey58")
+    if not rows:
+        t.append("belum terdeteksi (vault belum trade di histori yang dibaca)", style="grey58")
+        return t
+    for i, m in enumerate(rows):
+        if i:
+            t.append(" · ", style="grey58")
+        t.append(m["address"], style="bold")
+        t.append(f" ({m['trades']} trade tx)", style="grey58")
+    return t
+
+
 def footer(rpc, notifier, trackers, interval, next_poll):
     host = urlparse(rpc.url).hostname
     ch = ", ".join(notifier.channels) or "console saja (set TELEGRAM_* / DISCORD_WEBHOOK_URL)"
@@ -216,5 +236,5 @@ def render(leader, follower, formatter, notifier, rpc, by, copy_mode, interval, 
         parts += [positions_table(follower), sync_table(leader, follower)]
     events = sorted(leader.state["events"] + (follower.state["events"] if follower else []),
                     key=lambda e: e.get("ts") or 0)
-    parts += [events_panel(formatter, events, notifier=notifier), footer(rpc, notifier, [leader], interval, next_poll)]
+    parts += [events_panel(formatter, events, notifier=notifier), managers_text(leader), footer(rpc, notifier, [leader], interval, next_poll)]
     return Group(*parts)

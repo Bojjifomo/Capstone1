@@ -86,6 +86,7 @@ def cmd_snapshot(args):
         console.print(dashboard.positions_table(follower))
         console.print(dashboard.sync_table(leader, follower))
     console.print(dashboard.events_panel(formatter, leader.state["events"], notifier=Notifier(min_usd=5)))
+    console.print(dashboard.managers_text(leader))
 
 
 def cmd_history(args):
@@ -162,6 +163,26 @@ def cmd_watch(args):
             live.update(view(next_poll))
 
 
+def cmd_signers(args):
+    rpc, leader, _ = build(args)
+    sync(leader, args.history)
+    leader.save()
+    rows = leader.managers()
+    if not rows:
+        print("Belum ada signer lain yang terdeteksi. Coba naikkan --history.")
+        return
+    console.print("[bold]Wallet yang menandatangani transaksi vault[/] (urut dari jumlah trade DLMM/swap)")
+    for m in rows[:args.limit]:
+        last = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["last_ts"])) if m["last_ts"] else "?"
+        console.print(f"  {m['address']}  trade tx: {m['trades']:>4}  semua tx: {m['txs']:>4}  "
+                      f"fee payer: {m['fee_payer']:>4}  terakhir: {last}", highlight=False)
+    top = next((m for m in rows if m["trades"]), None)
+    if top:
+        console.print(f"\nKemungkinan wallet manager: [bold]{top['address']}[/]")
+        console.print(f"Lacak juga: python -m vault_tracker watch --vault {top['address']}",
+                      highlight=False)
+
+
 def cmd_test_alert(args):
     n = Notifier()
     if not n.channels:
@@ -217,6 +238,11 @@ def main(argv=None):
     h.add_argument("--limit", type=int, default=100)
     h.add_argument("--all", action="store_true", help="termasuk add/remove/claim/transfer")
     h.set_defaults(fn=cmd_history)
+
+    sg = sub.add_parser("signers", help="cari wallet manager yang menandatangani trade vault")
+    common(sg, follower=False)
+    sg.add_argument("--limit", type=int, default=10)
+    sg.set_defaults(fn=cmd_signers)
 
     t = sub.add_parser("test-alert", help="kirim pesan test ke Telegram/Discord")
     t.set_defaults(fn=cmd_test_alert)

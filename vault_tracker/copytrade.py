@@ -43,7 +43,12 @@ def suggest_range(row, mode="mirror"):
         if upper < lower:
             lower, upper = upper, lower
     width = upper - lower + 1
-    if upper < active:
+    if row.get("kind") == "order":
+        if row["side"] == "ask":
+            deposit, shape = row["symbol_x"], f"limit order jual {row['symbol_x']} (ask)"
+        else:
+            deposit, shape = row["symbol_y"], f"limit order beli {row['symbol_x']} pakai {row['symbol_y']} (bid)"
+    elif upper < active:
         deposit = row["symbol_y"]
         shape = f"one-sided {row['symbol_y']} (bid di bawah harga)"
     elif lower > active:
@@ -89,7 +94,8 @@ def sync_status(leader_snap, follower_snap):
         else:
             continue
         p["status"] = status
-        p["follower_in_range"] = all(r["in_range"] for r in foll) if foll else None
+        ranged = [r for r in foll if r.get("kind") != "order"]
+        p["follower_in_range"] = all(r["in_range"] for r in ranged) if ranged else None
         out.append(p)
     order = {"LEADER SUDAH CLOSE": 0, "BELUM COPY": 1, "SYNC": 2}
     return sorted(out, key=lambda p: order[p["status"]])

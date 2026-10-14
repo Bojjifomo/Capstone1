@@ -1,7 +1,7 @@
 # Vault Tracker — live posisi + alert copy-trade (Hedgin / Meteora DLMM)
 
-Tool ini memantau sebuah vault Hedgin (atau wallet Solana mana pun) yang LP di
-**Meteora DLMM**, menampilkan isi vault seperti panel **Allocation** di Hedgin, dan
+Tool ini memantau sebuah vault Hedgin (atau wallet Solana mana pun) yang LP atau
+pasang limit order di **Meteora DLMM**, menampilkan isi vault seperti panel **Allocation** di Hedgin, dan
 mengirim **alert setiap kali leader buka / tutup / ubah posisi**. Jadi kamu bisa
 copy posisinya dengan **range LP kamu sendiri**.
 
@@ -29,12 +29,13 @@ jadi tetap jalan walaupun web Hedgin down atau berubah.
 
 1. Baca histori transaksi alamat vault (`getSignaturesForAddress` + `getTransaction`).
 2. Di tiap transaksi, decode event program DLMM (`PositionCreate`, `AddLiquidity`,
-   `RemoveLiquidity`, `Rebalancing`, `PositionClose`, `ClaimFee`). Transaksi tanpa
+   `RemoveLiquidity`, `Rebalancing`, `PositionClose`, `ClaimFee`, `PlaceLimitOrder`,
+   `CancelLimitOrder`, `CloseLimitOrder`). Transaksi tanpa
    event DLMM tapi saldo tokennya berubah dicatat sebagai swap (biasanya lewat Jupiter)
    atau transfer.
-3. Baca akun posisi, pool, dan bin array yang masih terbuka, lalu hitung isi token,
-   fee yang belum diklaim, range harga, dan status in/out of range. Rumusnya sama
-   dengan SDK resmi `@meteora-ag/dlmm`.
+3. Baca akun posisi, limit order, pool, dan bin array yang masih terbuka, lalu hitung
+   isi token, fee yang belum diklaim, range harga, status in/out of range, dan berapa
+   persen limit order sudah terisi. Rumusnya sama dengan SDK resmi `@meteora-ag/dlmm`.
 4. Ulangi tiap N detik. Kalau ada event baru, alert dikirim ke Telegram, Discord,
    dan/atau console.
 
@@ -79,6 +80,9 @@ python -m vault_tracker watch --vault <ALAMAT_VAULT> --follower <WALLET_KAMU>
 # riwayat open/close/rebalance/swap leader
 python -m vault_tracker history --vault <ALAMAT_VAULT> --history 1000
 
+# cari wallet manager (wallet asli yang menandatangani trade vault)
+python -m vault_tracker signers --vault <ALAMAT_VAULT> --history 1000
+
 # untuk server / VPS (tanpa dashboard, cuma alert)
 nohup python -m vault_tracker watch --no-dashboard > tracker.log 2>&1 &
 ```
@@ -120,7 +124,22 @@ private key.
 | 🔁 `REBALANCE` | Range posisi leader dipindah. |
 | 💱 `SWAP` | Leader beli/jual token spot. Alert berisi mint token-nya. |
 | ⚠️ `OUT_OF_RANGE` / ✅ `IN_RANGE` | Harga keluar atau masuk lagi ke range posisi (leader dan kamu). |
+| 📌 `ORDER_PLACE` | Leader memasang limit order (jual/beli) di pool DLMM. Alert berisi harga order dan saran untuk kamu. |
+| 🎯 `ORDER_FILL` | Limit order leader terisi, dicek tiap kenaikan 5% dan saat penuh. |
+| ✖️ `ORDER_CANCEL` / `ORDER_CLOSE` | Limit order dibatalkan/ditutup, lengkap dengan jumlah yang ditarik. |
 | `CLAIM`, `TRANSFER_IN`, `TRANSFER_OUT` | Mati secara default. Nyalakan lewat `--alerts`. |
+
+## Wallet manager (wallet asli di balik vault)
+
+Setiap transaksi trade vault Hedgin (DLMM, swap) ditandatangani wallet manager.
+Perintah `signers` mengurutkan semua penanda tangan transaksi vault berdasarkan
+jumlah transaksi trade yang mereka tanda tangani. Urutan teratas hampir pasti
+manager-nya. Dashboard `watch` juga menampilkan baris ini.
+
+Wallet itu bisa kamu lacak di terminal kedua:
+`python -m vault_tracker watch --vault <WALLET_MANAGER>`. Kalau manager juga trading
+pakai dana pribadi, posisinya muncul di situ. Tapi tidak ada jaminan: wallet signer
+bisa saja hot wallet khusus vault yang tidak punya posisi pribadi.
 
 ## Alert Telegram
 
@@ -152,6 +171,10 @@ Untuk Discord, isi `DISCORD_WEBHOOK_URL`. Semua alert juga dicatat di
 - Alert datang setelah transaksi leader final (sekitar 15–30 detik ditambah interval
   polling). Harga di pool bisa sudah bergerak saat kamu copy.
 - Ini alat bantu monitoring, bukan saran finansial. DLMM bisa kena impermanent loss.
+
+- Limit order baru diuji dengan data sintetis yang mengikuti layout IDL dan rumus SDK
+  Meteora. Perhitungan nilai limit order yang terisi sebagian belum dicek terhadap
+  order asli. Bandingkan dengan angka di Hedgin saat pertama kali dipakai.
 
 ## Test
 
