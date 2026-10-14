@@ -98,7 +98,8 @@ def cmd_history(args):
     leader.save()
     formatter = AlertFormatter(leader, None, args.copy_mode)
     for ev in leader.state["events"][-args.limit:]:
-        if ev["type"] not in ("OPEN", "CLOSE", "REBALANCE", "SWAP") and not args.all:
+        if ev["type"] not in ("OPEN", "CLOSE", "REBALANCE", "SWAP", "ORDER_PLACE", "ORDER_CANCEL",
+                              "ORDER_CLOSE") and not args.all:
             continue
         title, lines = formatter.format(ev)
         console.print(f"[grey58]{time.strftime('%Y-%m-%d %H:%M', time.localtime(ev['ts']))}[/] [bold]{title}[/]")
