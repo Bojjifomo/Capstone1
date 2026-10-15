@@ -47,12 +47,17 @@ MAX_BODY = 32 * 1024 * 1024
 USER_AGENT = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
               "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Scriptable")
 SECRET_NAMES = {"rh secrets", "rhsecrets"}
+BUNDLED = os.path.join(HERE, "scripts")
 
 
 def scripts_dir():
     env = os.environ.get("LP_SCRIPTS_DIR")
     if env:
         return os.path.abspath(os.path.expanduser(env))
+    # A shared bundle (build_bundle.py) carries its scripts in scripts/ next
+    # to this file; that copy wins over iCloud so the bundle is self-contained.
+    if os.path.isdir(BUNDLED):
+        return BUNDLED
     if os.path.isdir(ICLOUD_SCRIPTABLE):
         return ICLOUD_SCRIPTABLE
     return os.path.join(LOCAL, "scripts")
@@ -111,10 +116,15 @@ def find_script(name):
         return None
     d = scripts_dir()
     _fetch_from_icloud(os.path.join(d, name + ".js"))
-    for cand in (os.path.join(d, name + ".js"), os.path.join(LOCAL, "scripts", name + ".js")):
+    bases = [d, os.path.join(LOCAL, "scripts")]
+    if name.lower() in SECRET_NAMES:
+        # A bundle keeps RH Secrets.js at its top level, where it is easy to find.
+        bases.insert(0, HERE)
+    for base in bases:
+        cand = os.path.join(base, name + ".js")
         if os.path.isfile(cand):
             return cand
-    for base in (d, os.path.join(LOCAL, "scripts")):
+    for base in bases:
         try:
             for f in os.listdir(base):
                 if f.lower() == name.lower() + ".js":

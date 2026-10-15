@@ -73,4 +73,19 @@ LP_SCRIPTS_DIR=~/folder/script python3 lp_web/server.py
 | `static/scriptable.js` | API Scriptable versi browser. |
 | `static/run.html`, `static/index.html`, `static/style.css` | Halaman. |
 | `Buka LP Web.command` | Double-click untuk start. |
+| `build_bundle.py` | Bikin ZIP siap kirim (lihat bagian di atas). |
 | `tests/test_server.py` | Tes guard server: `python3 -m unittest lp_web/tests/test_server.py` |
+
+## Bikin paket buat dikirim ke orang lain
+
+```bash
+python3 lp_web/build_bundle.py \
+  --scripts "path/RH Pool.js" "path/RH Portfolio.js" \
+  --secrets "path/RH Secrets.js" --out "LP Web.zip"
+```
+
+Hasilnya satu ZIP berisi web + script + `RH Secrets.js`. Penerima tinggal unzip,
+isi `RH Secrets.js`, terus double-click `Buka LP Web.command` (Mac) atau
+`Buka LP Web.bat` (Windows). Script di dalam ZIP (`scripts/`) yang dipake, bukan
+iCloud. Build-nya nolak jalan kalau ada key yang keisi di secrets atau di script,
+atau kalau `PRACTICE_MODE` di secrets bukan `true`.

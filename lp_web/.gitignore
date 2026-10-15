@@ -1,3 +1,3 @@
-# Caches the scripts write, and any scripts or secrets copied here by hand.
 local/
+scripts/
 __pycache__/
