@@ -6,7 +6,7 @@ from .copier import Copier, load_keypair
 from .prices import PriceOracle
 from .rpc import Rpc
 from .tokens import TokenRegistry
-from .vault import VaultTracker
+from .vault import VaultTracker, resolve_vault
 
 
 class Session:
@@ -17,6 +17,7 @@ class Session:
         self.copy_mode = copy_mode
         self.history = history
         self.rpc = Rpc(rpc_url, min_interval=rpc_delay)
+        vault, self.vault_note = resolve_vault(self.rpc, vault)
         tokens = TokenRegistry(self.rpc)
         prices = PriceOracle(self.rpc, tokens)
         self.leader = VaultTracker(self.rpc, tokens, prices, vault, "leader", state_dir, use_gpa=use_gpa)

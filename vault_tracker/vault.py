@@ -21,10 +21,28 @@ POSITION_DISC_B58 = base58.b58encode(dlmm.DISC_POSITION_V2).decode()
 LIMIT_ORDER_DISC_B58 = base58.b58encode(dlmm.DISC_LIMIT_ORDER).decode()
 ORDER_FILL_STEP = 0.05  # alert again every +5% filled
 SOL_DUST = 0.005  # ignore SOL deltas below this (rent for ATAs, fees)
+HEDGIN_PROGRAM = "r2ahBQ6gbPCJ9FxBymYcXuwXi8NmenRry7SE7QR7FAt"
 
 
 def _now():
     return int(time.time())
+
+
+def resolve_vault(rpc, address):
+    """A Hedgin share token mint is easy to paste instead of the vault: map it to the vault
+    (its mint authority). Returns (address, note); note is None when nothing changed."""
+    acc = rpc.call("getAccountInfo", [address, {"encoding": "jsonParsed"}])["value"]
+    data = (acc or {}).get("data")
+    if not isinstance(data, dict) or data.get("parsed", {}).get("type") != "mint":
+        return address, None
+    authority = data["parsed"].get("info", {}).get("mintAuthority")
+    owner = authority and ((rpc.call("getAccountInfo", [authority, {"encoding": "base64"}])["value"] or {})
+                           .get("owner"))
+    if owner != HEDGIN_PROGRAM:
+        raise ValueError(f"{address} adalah alamat token (mint), bukan vault atau wallet. "
+                         "Isi alamat vault, lihat \"Cari alamat vault\" di panduan.")
+    return authority, (f"{address[:4]}…{address[-4:]} adalah token share vault, bukan vault-nya. "
+                       f"Dipakai alamat vault: {authority}")
 
 
 def _merge_same_tx(events):

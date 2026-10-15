@@ -18,7 +18,7 @@ from .prices import PriceOracle
 from .rpc import Rpc
 from .runner import Session
 from .tokens import TokenRegistry
-from .vault import VaultTracker
+from .vault import VaultTracker, resolve_vault
 
 console = Console()
 
@@ -47,12 +47,22 @@ def check_address(addr, what):
     return addr
 
 
+def resolve(rpc, vault):
+    try:
+        vault, note = resolve_vault(rpc, vault)
+    except ValueError as e:
+        sys.exit(str(e))
+    if note:
+        console.print(f"[yellow]{note}[/]", highlight=False)
+    return vault
+
+
 def build(args):
     rpc = Rpc(args.rpc, min_interval=args.rpc_delay)
     tokens = TokenRegistry(rpc)
     prices = PriceOracle(rpc, tokens)
-    leader = VaultTracker(rpc, tokens, prices, check_address(args.vault, "vault"), "leader",
-                          args.state_dir, use_gpa=args.gpa)
+    vault = resolve(rpc, check_address(args.vault, "vault"))
+    leader = VaultTracker(rpc, tokens, prices, vault, "leader", args.state_dir, use_gpa=args.gpa)
     if getattr(args, "name", None):
         leader.display = args.name.upper()
     follower = None
@@ -123,6 +133,8 @@ def cmd_watch(args):
     except (ValueError, OSError) as e:
         sys.exit(str(e))
     leader, follower, notifier = session.leader, session.follower, session.notifier
+    if session.vault_note:
+        console.print(f"[yellow]{session.vault_note}[/]", highlight=False)
     if session.copier:
         console.print(f"[bold]Copytrade bot: {session.copier.s['run'].upper()}[/] · wallet {session.copier.wallet}")
 

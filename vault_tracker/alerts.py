@@ -249,6 +249,38 @@ class AlertFormatter:
 SIZED_TYPES = {"ADD", "REMOVE", "CLAIM", "SWAP", "TRANSFER_IN", "TRANSFER_OUT"}
 
 
+def telegram_hint(status, text):
+    text = (text or "").lower()
+    if status == 401 or "unauthorized" in text:
+        return " → bot token salah, salin ulang dari @BotFather"
+    if "chat not found" in text:
+        return " → chat id salah: kirim /start ke bot kamu, lalu klik \"Cari otomatis\" di samping chat id"
+    if status == 403 or "can't initiate" in text or "blocked" in text:
+        return " → buka bot kamu di Telegram dan kirim /start dulu"
+    return ""
+
+
+def telegram_chats(token):
+    """Chats that recently messaged the bot, newest first: [{"id", "name", "type"}]."""
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates", timeout=15)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Telegram tidak bisa dihubungi: {type(e).__name__}: {str(e).replace(token, '***')[:160]}")
+    if not r.ok:
+        raise RuntimeError(f"Telegram {r.status_code}: {r.text[:120]}" + telegram_hint(r.status_code, r.text))
+    chats = {}
+    for upd in r.json().get("result", []):
+        for key in ("message", "edited_message", "channel_post", "my_chat_member"):
+            chat = (upd.get(key) or {}).get("chat")
+            if chat and "id" in chat:
+                name = chat.get("title") or " ".join(filter(None, (chat.get("first_name"), chat.get("last_name"))))
+                if chat.get("username"):
+                    name = f"{name} (@{chat['username']})" if name else f"@{chat['username']}"
+                chats.pop(chat["id"], None)  # re-insert so the newest ends up last
+                chats[chat["id"]] = {"id": str(chat["id"]), "name": name or "?", "type": chat.get("type", "?")}
+    return list(reversed(chats.values()))
+
+
 class Notifier:
     def __init__(self, types=None, follower_types=None, min_usd=0.0, log_path=".vault_tracker/alerts.jsonl"):
         self.types = set(types) if types else set(DEFAULT_TYPES)
@@ -292,7 +324,7 @@ class Notifier:
                     "chat_id": self.tg_chat, "text": text, "parse_mode": "HTML",
                     "disable_web_page_preview": True})
                 if not r.ok:
-                    self.errors.append(f"telegram {r.status_code}: {r.text[:120]}")
+                    self.errors.append(f"telegram {r.status_code}: {r.text[:120]}" + telegram_hint(r.status_code, r.text))
             except requests.RequestException as e:
                 self.errors.append(f"telegram: {type(e).__name__}: {str(e).replace(self.tg_token, '***')[:160]}")
         if self.discord:

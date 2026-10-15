@@ -66,6 +66,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .inline { display: flex; gap: 8px; align-items: center; }
 .inline > * { flex: 1; }
 .inline > .sm { flex: 0 0 90px; }
+.inline > button { flex: 0 0 auto; white-space: nowrap; }
 .ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .checks label { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--text); cursor: pointer; }
@@ -188,6 +189,7 @@ a:hover { text-decoration: underline; }
       <ol>
         <li>Di Hedgin, buka tab Overview vault lalu klik + di "More about this vault". Cari alamat vault atau link Solscan.</li>
         <li>Atau buka transaksi deposit kamu ke vault itu di Solscan. Salin akun yang namanya mengandung "vault" pada instruksi program Hedgin.</li>
+        <li>Alamat token share vault (token yang masuk ke wallet kamu setelah deposit) juga boleh dipakai. Saat Start, tool otomatis menggantinya dengan alamat vault.</li>
         <li>Cek: setelah Start, Allocation di halaman ini harus mirip panel Allocation di Hedgin. Kalau kosong atau beda total, alamatnya salah.</li>
       </ol>
     </details>
@@ -306,7 +308,7 @@ a:hover { text-decoration: underline; }
       <div class="grid">
         <div class="field"><label for="VAULT_ADDRESS">Alamat vault (wajib)</label>
           <input type="text" id="VAULT_ADDRESS" spellcheck="false" placeholder="alamat base58 vault Hedgin">
-          <div class="hint">Bukan slug seperti 0xmegumii-9. Lihat bagian "Cari alamat vault" di panduan.</div></div>
+          <div class="hint">Bukan slug seperti 0xmegumii-9. Alamat token share vault juga boleh, otomatis diganti ke alamat vault saat Start.</div></div>
         <div class="field"><label for="FOLLOWER_ADDRESS">Wallet kamu (opsional)</label>
           <input type="text" id="FOLLOWER_ADDRESS" spellcheck="false" placeholder="alamat publik, bukan private key">
           <div class="hint">Untuk status sudah copy / belum per pool.</div></div>
@@ -333,7 +335,11 @@ a:hover { text-decoration: underline; }
         <div class="field"><label for="TELEGRAM_BOT_TOKEN">Telegram bot token</label>
           <input type="password" id="TELEGRAM_BOT_TOKEN" spellcheck="false" placeholder="dari @BotFather"></div>
         <div class="field"><label for="TELEGRAM_CHAT_ID">Telegram chat id</label>
-          <input type="text" id="TELEGRAM_CHAT_ID" spellcheck="false" placeholder="angka chat.id"></div>
+          <div class="inline">
+            <input type="text" id="TELEGRAM_CHAT_ID" spellcheck="false" placeholder="angka, misalnya 123456789">
+            <button type="button" id="tgFind">Cari otomatis</button>
+          </div>
+          <div class="hint" id="tgHint">Bukan nama bot. Kirim /start ke bot kamu di Telegram, lalu klik Cari otomatis.</div></div>
         <div class="field"><label for="DISCORD_WEBHOOK_URL">Discord webhook (opsional)</label>
           <input type="password" id="DISCORD_WEBHOOK_URL" spellcheck="false"></div>
         <div class="field"><label for="JUPITER_API_KEY">Jupiter API key (opsional)</label>
@@ -471,7 +477,7 @@ const FIELDS = ["VAULT_ADDRESS", "FOLLOWER_ADDRESS", "TRACKER_NAME", "POLL_INTER
   "SOLANA_RPC_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "JUPITER_API_KEY"];
 const SECRET = new Set(["SOLANA_RPC_URL", "TELEGRAM_BOT_TOKEN", "DISCORD_WEBHOOK_URL", "JUPITER_API_KEY"]);
 const $ = (id) => document.getElementById(id);
-let S = null, by = "position", formLoaded = false, clockSkew = 0, busy = false;
+let S = null, by = "position", formLoaded = false, clockSkew = 0, busy = false, lastNotice = null;
 
 function el(tag, props, ...kids) {
   const n = document.createElement(tag);
@@ -535,6 +541,11 @@ function loadForm(cfg) {
     const on = chosen.size ? chosen.has(t) : S.default_alert_types.includes(t);
     box.append(el("label", {}, el("input", { type: "checkbox", value: t, checked: on ? "" : null }), TYPE_LABELS[t] || t));
   }
+  const chat = cfg.TELEGRAM_CHAT_ID || "", tgHint = $("tgHint");
+  const badChat = chat && !/^(-?\d{3,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/.test(chat);
+  tgHint.className = badChat ? "hint bad" : "hint";
+  tgHint.textContent = badChat ? `"${chat}" bukan chat id (itu nama bot?). Chat id itu angka: kirim /start ke bot kamu, lalu klik Cari otomatis.`
+    : "Bukan nama bot. Kirim /start ke bot kamu di Telegram, lalu klik Cari otomatis.";
   $("KEEP_AWAKE").checked = cfg.KEEP_AWAKE !== "0";
   $("awakeHint").textContent = S.keep_awake.supported
     ? "Laptop harus dicolok dan layarnya terbuka. MacBook yang ditutup tetap tidur dan tracker berhenti mengecek."
@@ -650,7 +661,8 @@ $("form").addEventListener("submit", async (e) => {
   try {
     const r = await api("/api/config", formData());
     showFieldErrors(r.errors);
-    if (r.ok) { $("formMsg").textContent = r.restarted ? "Tersimpan. Tracker di-restart dengan pengaturan baru." : "Tersimpan.";
+    if (r.ok) { $("formMsg").textContent = r.restarted ? "Tersimpan. Tracker di-restart dengan pengaturan baru."
+        : ["running", "syncing", "starting"].includes(S.status) ? "Tersimpan." : "Tersimpan. Klik Start (kanan atas) untuk mulai melacak.";
       formLoaded = false; await refresh(); }
     else $("formMsg").textContent = "Periksa isian yang ditandai merah.";
   } catch (err) { $("formMsg").textContent = "Gagal menyimpan: " + err.message; }
@@ -660,6 +672,17 @@ $("test").addEventListener("click", async () => {
   try { const r = await api("/api/test-alert");
     $("formMsg").textContent = r.ok ? "Terkirim ke " + r.channels.join(", ") + "." : "Gagal: " + r.error;
   } catch (err) { $("formMsg").textContent = "Gagal: " + err.message; }
+});
+$("tgFind").addEventListener("click", async () => {
+  const hint = $("tgHint");
+  hint.textContent = "mencari chat yang mengirim pesan ke bot…";
+  try {
+    const r = await api("/api/telegram/chat-id", { token: $("TELEGRAM_BOT_TOKEN").value.trim() });
+    if (!r.ok) { hint.textContent = r.error; return; }
+    $("TELEGRAM_CHAT_ID").value = r.chats[0].id;
+    hint.textContent = `Ketemu: ${r.chats[0].name} (${r.chats[0].type}). Klik Simpan, lalu Tes alert.` +
+      (r.chats.length > 1 ? " Chat lain: " + r.chats.slice(1).map((c) => `${c.name} = ${c.id}`).join(", ") : "");
+  } catch (err) { hint.textContent = "Gagal: " + err.message; }
 });
 $("toggle").addEventListener("click", async () => {
   if (busy) return;
@@ -699,7 +722,9 @@ function renderHeader() {
   if (st === "error") { b.className = "banner show err"; b.textContent = "Tracker berhenti karena error: " + S.message; }
   else if (S.message && st !== "running") { b.className = "banner show info"; b.textContent = S.message; }
   else if (!addr) { b.className = "banner show info"; b.textContent = "Isi alamat vault di Pengaturan, Simpan, lalu klik Start."; }
+  else if (S.notice) { b.className = "banner show info"; b.textContent = S.notice; }
   else b.className = "banner";
+  if (S.notice && S.notice !== lastNotice) { lastNotice = S.notice; $("VAULT_ADDRESS").value = S.config.VAULT_ADDRESS || ""; }
 }
 function renderAlloc() {
   const v = S.view;
@@ -838,7 +863,7 @@ function renderGuide() {
   $("guideChev").textContent = $("guide").open ? "" : "klik untuk buka";
   const steps = [
     { done: !!c.VAULT_ADDRESS, what: "Isi Alamat vault di Pengaturan, lalu klik Simpan.", tag: "wajib", field: "VAULT_ADDRESS" },
-    { done: !!(c.TELEGRAM_BOT_TOKEN && c.TELEGRAM_CHAT_ID), what: "Isi Telegram bot token dan chat id, Simpan, lalu klik Tes alert. Token dari @BotFather; chat id dari https://api.telegram.org/bot<TOKEN>/getUpdates setelah kamu kirim pesan ke bot.", tag: "disarankan", field: "TELEGRAM_BOT_TOKEN" },
+    { done: !!(c.TELEGRAM_BOT_TOKEN && c.TELEGRAM_CHAT_ID), what: "Isi Telegram bot token (dari @BotFather), kirim /start ke bot kamu, klik Cari otomatis di samping chat id, Simpan, lalu klik Tes alert.", tag: "disarankan", field: "TELEGRAM_BOT_TOKEN" },
     { done: !!c.SOLANA_RPC_URL, what: "Isi Solana RPC URL gratis dari Helius atau Alchemy. Tanpa ini dipakai RPC publik yang cepat kena rate limit.", tag: "disarankan", field: "SOLANA_RPC_URL" },
     { done: ["running", "syncing"].includes(st), what: "Klik Start di kanan atas. Pertama kali butuh 1–3 menit untuk membaca histori vault.", tag: "wajib", start: true },
     { done: !!(S.view && st === "running"), what: "Cocokkan Allocation di bawah dengan panel Allocation di Hedgin. Kalau beda total, cek lagi alamat vault.", tag: "cek" },

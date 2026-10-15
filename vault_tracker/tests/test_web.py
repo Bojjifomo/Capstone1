@@ -82,5 +82,61 @@ class RpcUrl(unittest.TestCase):
         self.assertIn("SOLANA_RPC_URL", validate({**base, "SOLANA_RPC_URL": "abc"}))
 
 
+class TelegramChatId(unittest.TestCase):
+    def test_validate(self):
+        base = {"VAULT_ADDRESS": VAULT}
+        self.assertIn("TELEGRAM_CHAT_ID", validate({**base, "TELEGRAM_CHAT_ID": "pantauanvaultbot"}))
+        for ok in ("123456789", "-1001234567890", "@my_channel"):
+            self.assertNotIn("TELEGRAM_CHAT_ID", validate({**base, "TELEGRAM_CHAT_ID": ok}))
+
+    def test_chats_from_updates(self):
+        from unittest import mock
+
+        from vault_tracker import alerts
+        updates = {"ok": True, "result": [
+            {"message": {"chat": {"id": 111, "first_name": "Andi", "username": "andi", "type": "private"}}},
+            {"my_chat_member": {"chat": {"id": -100222, "title": "Grup Vault", "type": "supergroup"}}},
+            {"message": {"chat": {"id": 111, "first_name": "Andi", "username": "andi", "type": "private"}}},
+        ]}
+        resp = mock.Mock(ok=True, status_code=200, json=lambda: updates)
+        with mock.patch.object(alerts.requests, "get", return_value=resp):
+            chats = alerts.telegram_chats("TOKEN")
+        self.assertEqual([c["id"] for c in chats], ["111", "-100222"])  # newest first
+        self.assertEqual(chats[0]["name"], "Andi (@andi)")
+        bad = mock.Mock(ok=False, status_code=401, text='{"description":"Unauthorized"}')
+        with mock.patch.object(alerts.requests, "get", return_value=bad):
+            with self.assertRaisesRegex(RuntimeError, "token salah"):
+                alerts.telegram_chats("TOKEN")
+
+
+class ResolveVault(unittest.TestCase):
+    class FakeRpc:
+        def __init__(self, accounts):
+            self.accounts = accounts
+
+        def call(self, method, params):
+            return {"value": self.accounts.get(params[0])}
+
+    def mint(self, authority):
+        return {"owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "data": {"program": "spl-token", "parsed": {"type": "mint", "info": {"mintAuthority": authority}}}}
+
+    def test_share_mint_maps_to_vault(self):
+        from vault_tracker.vault import HEDGIN_PROGRAM, resolve_vault
+        rpc = self.FakeRpc({"MINT": self.mint("VAULT"), "VAULT": {"owner": HEDGIN_PROGRAM, "data": ["", "base64"]}})
+        addr, note = resolve_vault(rpc, "MINT")
+        self.assertEqual(addr, "VAULT")
+        self.assertIn("token share", note)
+
+    def test_wallet_unchanged_and_other_mint_rejected(self):
+        from vault_tracker.vault import resolve_vault
+        rpc = self.FakeRpc({"W": {"owner": "11111111111111111111111111111111", "data": ["", "base64"]},
+                            "USDC": self.mint("SOMEONE"), "SOMEONE": {"owner": "11111111111111111111111111111111"}})
+        self.assertEqual(resolve_vault(rpc, "W"), ("W", None))
+        self.assertEqual(resolve_vault(rpc, "NEW"), ("NEW", None))  # account not created yet
+        with self.assertRaises(ValueError):
+            resolve_vault(rpc, "USDC")
+
+
 if __name__ == "__main__":
     unittest.main()

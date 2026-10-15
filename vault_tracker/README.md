@@ -88,7 +88,9 @@ Ada beberapa cara mendapatkannya:
   adalah alamat yang dipakai.
 
 Kalau yang kamu masukkan alamat state vault, tool otomatis ikut melacak alamat owner
-posisi DLMM-nya (PDA vault).
+posisi DLMM-nya (PDA vault). Kalau yang kamu masukkan alamat **token share** vault
+(token yang kamu terima setelah deposit), tool menggantinya dengan alamat vault
+(mint authority token itu) dan menyimpannya di Pengaturan.
 
 ## Pakai
 
@@ -242,9 +244,11 @@ Jalankan DRY RUN dulu, lalu LIVE dengan ukuran kecil.
 ## Alert Telegram
 
 1. Chat [@BotFather](https://t.me/BotFather), kirim `/newbot`, lalu salin token-nya ke `TELEGRAM_BOT_TOKEN`.
-2. Kirim pesan apa saja ke bot kamu, lalu buka
-   `https://api.telegram.org/bot<TOKEN>/getUpdates` dan salin `chat.id` ke `TELEGRAM_CHAT_ID`.
-3. Jalankan `python -m vault_tracker test-alert`.
+2. Buka bot kamu di Telegram dan kirim `/start`. Di halaman web, klik **Cari otomatis** di
+   samping Telegram chat id, lalu Simpan. Tanpa web: buka
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` dan salin angka `chat.id` ke `TELEGRAM_CHAT_ID`.
+   Chat id itu angka (misalnya `123456789`), bukan nama atau username bot.
+3. Klik **Tes alert** di web, atau jalankan `python -m vault_tracker test-alert`.
 
 Untuk Discord, isi `DISCORD_WEBHOOK_URL`. Semua alert juga dicatat di
 `.vault_tracker/alerts.jsonl`.

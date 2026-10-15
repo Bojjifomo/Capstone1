@@ -10,6 +10,7 @@ import http.server
 import ipaddress
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -23,13 +24,14 @@ from urllib.parse import parse_qs, urlparse
 from solders.pubkey import Pubkey
 
 from . import config, copytrade, dashboard
-from .alerts import DEFAULT_TYPES, Notifier, plain
+from .alerts import DEFAULT_TYPES, Notifier, plain, telegram_chats
 from .copier import load_keypair, settings_from_config
 from .rpc import normalize_rpc_url
 from .runner import Session
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
 ALL_TYPES = sorted(DEFAULT_TYPES | {"CLAIM", "TRANSFER_IN", "TRANSFER_OUT"})
+TG_CHAT = re.compile(r"^(-?\d{3,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$")  # numeric id, or @channel
 
 
 class StopRequested(Exception):
@@ -97,6 +99,10 @@ def validate(cfg):
     bad = [t for t in (cfg.get("ALERT_TYPES") or "").split(",") if t and t not in ALL_TYPES]
     if bad:
         errors["ALERT_TYPES"] = f"tipe tidak dikenal: {', '.join(bad)}"
+    chat = (cfg.get("TELEGRAM_CHAT_ID") or "").strip()
+    if chat and not TG_CHAT.match(chat):
+        errors["TELEGRAM_CHAT_ID"] = ("chat id itu angka (misalnya 123456789), bukan nama/username bot. "
+                                      "Kirim /start ke bot kamu di Telegram, lalu klik Cari otomatis.")
     rpc_url = normalize_rpc_url(cfg.get("SOLANA_RPC_URL"))
     if rpc_url and not rpc_url.startswith(("http://", "https://")):
         errors["SOLANA_RPC_URL"] = ("isi URL lengkap, misalnya https://mainnet.helius-rpc.com/?api-key=KEY_KAMU "
@@ -232,6 +238,7 @@ class Controller:
         self.awake = KeepAwake()
         self.started_at = None
         self.session = None
+        self.notice = None
         self.mirrors = {"status": "idle"}
 
     # ---- settings -------------------------------------------------------------
@@ -278,10 +285,11 @@ class Controller:
             return {"ok": True}
         cfg = config.load(self.env_path)
         errors = validate(cfg)
+        errors.pop("TELEGRAM_CHAT_ID", None)  # a bad alert setting should not stop the tracking itself
         if errors:
             return {"ok": False, "errors": errors}
         self.stop_evt.clear()
-        self.errors = []
+        self.errors, self.notice = [], None
         self.status, self.message, self.started_at = "starting", "menyiapkan…", time.time()
         self.thread = threading.Thread(target=self._run, args=(cfg,), daemon=True)
         self.thread.start()
@@ -312,6 +320,9 @@ class Controller:
                 min_usd=float(cfg.get("MIN_ALERT_USD") or 5), name=cfg.get("TRACKER_NAME") or None,
                 copy_settings=settings_from_config(cfg), copy_keypair=cfg.get("COPY_KEYPAIR") or None)
             self.session = sess
+            if sess.vault_note:  # share mint pasted: keep the real vault address from now on
+                config.save({"VAULT_ADDRESS": sess.leader.address}, self.env_path)
+                self.notice = sess.vault_note + " (sudah disimpan di Pengaturan)."
             interval = max(5, int(float(cfg.get("POLL_INTERVAL") or 30)))
             self.status, self.message = "syncing", "baca histori transaksi…"
 
@@ -358,6 +369,7 @@ class Controller:
         return {
             "status": self.status if (self.running or self.status == "error") else "stopped",
             "message": self.message,
+            "notice": self.notice,
             "last_check": self.last_check, "next_check": self.next_check, "now": time.time(),
             "errors": self.errors[-5:],
             "config": self.public_config(),
@@ -435,6 +447,22 @@ class Controller:
         n.send("✅ Test alert vault tracker", ["Kalau pesan ini masuk, alert sudah siap."])
         return {"ok": not n.errors, "error": " | ".join(n.errors) or None, "channels": n.channels}
 
+    def telegram_chat_id(self, body):
+        """Find the chat id from the bot's recent messages (the user sends /start to the bot first)."""
+        token = str(body.get("token") or "").strip()
+        if not token or token == _mask("TELEGRAM_BOT_TOKEN", "x"):
+            token = config.load(self.env_path).get("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            return {"ok": False, "error": "Isi Telegram bot token dulu (dari @BotFather)."}
+        try:
+            chats = telegram_chats(token)
+        except RuntimeError as e:
+            return {"ok": False, "error": str(e)}
+        if not chats:
+            return {"ok": False, "error": "Belum ada pesan ke bot. Buka bot kamu di Telegram, kirim /start, "
+                                          "lalu klik Cari otomatis lagi."}
+        return {"ok": True, "chats": chats[:5]}
+
 
 def make_handler(ctrl, allowed_hosts, token):
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -497,6 +525,8 @@ def make_handler(ctrl, allowed_hosts, token):
                 return self._send(200, ctrl.save_config(body if isinstance(body, dict) else {}))
             if path == "/api/test-alert":
                 return self._send(200, ctrl.test_alert())
+            if path == "/api/telegram/chat-id":
+                return self._send(200, ctrl.telegram_chat_id(body if isinstance(body, dict) else {}))
             if path == "/api/mirrors":
                 return self._send(200, ctrl.find_mirrors(body if isinstance(body, dict) else {}))
             if path == "/api/copy/close":
