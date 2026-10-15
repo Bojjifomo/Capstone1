@@ -131,6 +131,16 @@ class Comparator:
             return self._held(other, e["lb_pair"], t - w, t + w)
         return self._held(me, e["lb_pair"], t, t + w, skip=e["position"])
 
+    def _apart_since(self, lb_pair, holder, other, now):
+        """When the holder started being alone in the pool: its current entry, or the moment the
+        other side left, whichever is later (so a restart does not reset the clock)."""
+        opened = [p.get("opened_at") for p in holder.state["positions"].values()
+                  if p.get("lb_pair") == lb_pair and p.get("status") == "open" and p.get("opened_at")]
+        left = [p.get("closed_at") for p in other.state["positions"].values()
+                if p.get("lb_pair") == lb_pair and p.get("closed_at")]
+        times = [t for t in (min(opened) if opened else None, max(left) if left else None) if t]
+        return min(now, max(times)) if times else now
+
     def _holdings(self, tracker):
         return {r["lb_pair"]: r for r in (tracker.snapshot or {}).get("positions", [])
                 if r.get("kind") == "position" and r.get("has_liquidity") and self._wanted(r["lb_pair"])}
@@ -212,7 +222,8 @@ class Comparator:
                 st.clear()
             else:
                 if st.get("status") != status:
-                    st.update(status=status, since=now, alerted=False)
+                    holder, other = (self.a, self.b) if ra else (self.b, self.a)
+                    st.update(status=status, since=self._apart_since(lb, holder, other, now), alerted=False)
                 recent = now - self.state["pool_alerts"].get(lb, 0) < 2 * self.window
                 if not st["alerted"] and now - st["since"] > self.window and not first:
                     st["alerted"] = True

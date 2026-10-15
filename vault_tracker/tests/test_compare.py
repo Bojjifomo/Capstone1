@@ -31,12 +31,14 @@ class FakeTracker:
 
     def open(self, pos, lb, ts, rng=(0, 10)):
         self.state["events"].append({"type": "OPEN", "position": pos, "lb_pair": lb, "ts": ts, "range": list(rng)})
-        self.state["positions"][pos] = {"lb_pair": lb, "opened_at": ts, "closed_at": None, "lower": rng[0], "upper": rng[1]}
+        self.state["positions"][pos] = {"lb_pair": lb, "opened_at": ts, "closed_at": None, "lower": rng[0], "upper": rng[1],
+                                        "status": "open"}
 
     def close(self, pos, ts):
         p = self.state["positions"][pos]
         self.state["events"].append({"type": "CLOSE", "position": pos, "lb_pair": p["lb_pair"], "ts": ts})
         p["closed_at"] = ts
+        p["status"] = "closed"
 
     def hold(self, *pools):
         self.snapshot = {"positions": [{"kind": "position", "lb_pair": lb, "has_liquidity": True, "lower_bin": 0,
@@ -101,6 +103,17 @@ class Compare(unittest.TestCase):
         self.a.hold()
         notes = c.update(self.now + 2200)
         self.assertTrue(any("SAMA LAGI" in n[0] for n in notes))
+
+    def test_restart_keeps_how_long_they_differ(self):
+        t = self.now - 20_000
+        self.a.open("A1", "BORDR", t); self.b.open("B1", "BORDR", t + 30)
+        self.b.close("B1", self.now - 3600)            # B left an hour ago, A still holds
+        self.a.hold("BORDR"); self.b.hold()
+        c = self.cmp()
+        notes = c.update(self.now)
+        self.assertEqual(c.view["verdict"], "BEDA")    # known from history, no waiting after a restart
+        self.assertEqual(c.view["pools"][0]["since"], self.now - 3600)
+        self.assertIn("BEDA", notes[0][1][0])
 
     def test_moving_a_range_is_not_beda(self):
         t = self.now - 7200
