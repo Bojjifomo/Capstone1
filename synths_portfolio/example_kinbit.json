@@ -1,0 +1,14 @@
+{
+  "name": "Kinbit",
+  "wallet_eth": 0.014,
+  "total_pnl_eth": 0.000046379,
+  "funded_eth": null,
+  "withdrawn_eth": 0,
+  "take_profit_pct": 6,
+  "stop_loss_pct": 6,
+  "bags": [
+    {"coin": "MOTHMAN", "value_eth": 0.0017, "upnl_eth": 0.000035698},
+    {"coin": "KELV",    "value_eth": 0.0019, "upnl_eth": -0.000051456},
+    {"coin": "GRONAUT", "value_eth": 0.0023, "upnl_eth": 0.000062137}
+  ]
+}
