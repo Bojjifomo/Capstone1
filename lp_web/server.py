@@ -356,10 +356,24 @@ def main():
 
     os.makedirs(os.path.join(LOCAL, "files"), exist_ok=True)
     os.makedirs(os.path.join(LOCAL, "scripts"), exist_ok=True)
-    Handler.port = a.port
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    # Another app (or an LP Web left running) may hold the port already, so
+    # walk up to the next free one rather than stopping with a traceback.
+    srv = None
+    for port in range(a.port, a.port + 20):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            continue
+    if srv is None:
+        sys.exit("No free port between %d and %d. Try --port with another number."
+                 % (a.port, a.port + 19))
+    port = srv.server_address[1]
+    Handler.port = port
     srv.daemon_threads = True
-    url = "http://127.0.0.1:%d/" % a.port
+    url = "http://127.0.0.1:%d/" % port
+    if port != a.port:
+        print("Port %d is in use, using %d instead." % (a.port, port))
     print("LP Web running at %s" % url)
     print("Scripts folder: %s" % scripts_dir())
     found = list_scripts()
