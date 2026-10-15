@@ -3,38 +3,160 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0E1517">
 <title>LP Web</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230E1517'/%3E%3Cpath d='M16 6l9 10-9 10-9-10z' fill='%236FD3C1'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="lp-bar">
-  <a href="/">‹ Scripts</a>
-  <span class="lp-name" id="lp-name"></span>
-  <span class="lp-spacer"></span>
-  <button type="button" id="lp-reload" title="Run the script again">Reload</button>
-  <button type="button" id="lp-log-toggle">Log</button>
+<div class="lp-shell">
+  <aside class="lp-side">
+    <div class="lp-brand">
+      <a class="lp-brand-mark" href="/">◆ LP WEB</a>
+      <span class="lp-tag">Robinhood Chain</span>
+    </div>
+    <div>
+      <div class="lp-label">Scripts</div>
+      <nav class="lp-nav" id="lp-nav"></nav>
+    </div>
+    <div class="lp-side-mode">
+      <div class="lp-label">Mode</div>
+      <div class="lp-chip" id="lp-mode">Checking RH Secrets…</div>
+    </div>
+    <div class="lp-side-keys">
+      <div class="lp-label">Keys in RH Secrets</div>
+      <ul class="lp-keys" id="lp-keys"><li>—</li></ul>
+    </div>
+    <div class="lp-side-tips">
+      <div class="lp-label">Tips</div>
+      <ul class="lp-tips">
+        <li>Click a row to open it on DexScreener.</li>
+        <li>Click the coloured status line to refresh.</li>
+        <li>Every zap or close asks first. Red buttons send for real.</li>
+        <li>Keys: <b>R</b> reload, <b>L</b> log.</li>
+      </ul>
+    </div>
+    <div class="lp-side-foot" id="lp-foot"></div>
+  </aside>
+
+  <main class="lp-main">
+    <div class="lp-inner">
+      <div class="lp-head">
+        <div>
+          <div class="lp-eyebrow" id="lp-eyebrow">◆ LP</div>
+          <h1 id="lp-h1">Loading…</h1>
+          <p id="lp-desc"></p>
+        </div>
+        <div class="lp-actions">
+          <button type="button" class="lp-ghost" id="lp-reload" title="Run the script again (R)">Reload<kbd>R</kbd></button>
+          <button type="button" class="lp-ghost" id="lp-log-toggle" title="Script log (L)">Log<kbd>L</kbd></button>
+        </div>
+      </div>
+      <div id="lp-app" class="lp-card"><div class="lp-loading"><div class="lp-spinner"></div>Starting the script…</div></div>
+    </div>
+  </main>
 </div>
-<div id="lp-app"><div class="lp-loading">Loading…</div></div>
+
 <div class="lp-log" id="lp-log">
   <div class="lp-log-head"><span>Script log</span><button type="button" id="lp-log-close">Close</button></div>
   <div id="lp-log-body"></div>
 </div>
+
 <script>window.LP_TOKEN = "__LP_TOKEN__";</script>
 <script src="/static/scriptable.js"></script>
 <script>
 (async () => {
+  const META = {
+    "RH Portfolio": { icon: "📊", eyebrow: "Portfolio", h1: "Your LP positions",
+      desc: "Value, PnL and fees per token. Close, claim or re-enter from each row.", short: "positions · close · claim" },
+    "RH Pool": { icon: "⚡", eyebrow: "Pool finder", h1: "Find a pool and zap",
+      desc: "USDG pools on Uniswap V4 ranked by fee yield. ⚡ opens a single-sided USDG position.", short: "find pools · zap" },
+    "RH Wallet": { icon: "👛", eyebrow: "Wallet", h1: "Wallet", desc: "", short: "wallet view" },
+  };
+  const ORDER = ["RH Portfolio", "RH Pool", "RH Wallet"];
+  const $ = (id) => document.getElementById(id);
   const name = decodeURIComponent(location.pathname.replace(/^\/run\//, ""));
   const query = Object.fromEntries(new URLSearchParams(location.search));
-  document.getElementById("lp-name").textContent = name;
-  document.getElementById("lp-reload").onclick = () => location.reload();
-  const log = document.getElementById("lp-log");
-  document.getElementById("lp-log-toggle").onclick = () => log.classList.toggle("open");
-  document.getElementById("lp-log-close").onclick = () => log.classList.remove("open");
+  const meta = META[name] || { eyebrow: "Script", h1: name, desc: "" };
+  $("lp-eyebrow").textContent = "◆ " + meta.eyebrow;
+  $("lp-h1").textContent = meta.h1;
+  $("lp-desc").textContent = meta.desc;
+  document.title = name + " · LP Web";
+
+  // Mode and key status, from the flags scriptable.js announces when the
+  // script loads RH Secrets. "found" wins over a later miss on the old name.
+  let secrets = null;
+  const showSecrets = () => {
+    const mode = $("lp-mode"), keys = $("lp-keys");
+    if (!secrets) return;
+    if (!secrets.found) {
+      mode.className = "lp-chip";
+      mode.innerHTML = "RH Secrets not found";
+      keys.innerHTML = "<li>No RH Secrets file next to the scripts.</li>";
+      return;
+    }
+    const k = secrets.keys;
+    if (!k.PRIVATE_KEY) {
+      mode.className = "lp-chip";
+      mode.innerHTML = "<span>View only<small>no private key in RH Secrets</small></span>";
+    } else if (secrets.practice) {
+      mode.className = "lp-chip practice";
+      mode.innerHTML = "<span>Practice mode<small>simulates, sends nothing</small></span>";
+    } else {
+      mode.className = "lp-chip live";
+      mode.innerHTML = "<span>LIVE<small>buttons send real transactions</small></span>";
+    }
+    const row = (label, on, opt) =>
+      `<li><span>${label}</span><b class="${on ? "on" : "off"}">${on ? "set" : opt ? "not set" : "missing"}</b></li>`;
+    keys.innerHTML = row("Alchemy", k.ALCHEMY_API_KEY) + row("Private key", k.PRIVATE_KEY)
+      + row("Blockscout", k.BLOCKSCOUT_API_KEY, true) + row("Uniswap", k.UNISWAP_API_KEY, true)
+      + (secrets.presets ? `<li><span>Zap presets</span><b class="on">${secrets.presets}</b></li>` : "");
+  };
+  window.addEventListener("lp:secrets", (e) => {
+    if (secrets && secrets.found && !e.detail.found) return;
+    secrets = e.detail; showSecrets();
+  });
+  setTimeout(() => { if (!secrets) { $("lp-mode").textContent = "This script does not read RH Secrets"; $("lp-keys").innerHTML = "<li>—</li>"; } }, 4000);
+
+  const log = $("lp-log");
+  const toggleLog = () => log.classList.toggle("open");
+  $("lp-reload").onclick = () => location.reload();
+  $("lp-log-toggle").onclick = toggleLog;
+  $("lp-log-close").onclick = () => log.classList.remove("open");
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (document.querySelector(".lp-alert-overlay")) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "")) return;
+    if (e.key === "r" || e.key === "R") location.reload();
+    else if (e.key === "l" || e.key === "L") toggleLog();
+  });
+
+  // Script list for the sidebar.
+  LPWeb.apiFetch("/api/scripts").then((j) => {
+    const nav = $("lp-nav");
+    const names = j.scripts.slice().sort((a, b) => {
+      const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+    });
+    for (const n of names) {
+      const a = document.createElement("a");
+      a.href = "/run/" + encodeURIComponent(n);
+      if (n === name) a.className = "active";
+      const b = document.createElement("b");
+      b.textContent = ((META[n] && META[n].icon) ? META[n].icon + "  " : "") + n;
+      a.appendChild(b);
+      if (META[n] && META[n].short) { const s = document.createElement("span"); s.textContent = META[n].short; a.appendChild(s); }
+      nav.appendChild(a);
+    }
+    $("lp-foot").textContent = "Scripts from " + j.dir;
+  }).catch(() => {});
+
   try {
     await LPWeb.runScript(name, query);
   } catch (e) {
     console.error(e);
-    const app = document.getElementById("lp-app");
+    const app = $("lp-app");
+    app.querySelectorAll(".lp-loading").forEach((x) => x.remove());
     const d = document.createElement("div");
     d.className = "lp-error";
     d.textContent = "The script stopped with an error:\n\n" + ((e && (e.stack || e.message)) || e);

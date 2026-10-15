@@ -68,6 +68,22 @@
   };
 
   // ---------------------------------------------------------- basic value types
+  const rgb = (h) => [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  const ACCENT = rgb("6FD3C1");
+  const THEME = {
+    F5F5FF: rgb("E6EEEF"),   // text
+    "9595B2": rgb("8C9DA0"), // muted
+    "6C6C89": rgb("5E6F72"), // faint
+    "0A84FF": ACCENT,        // iOS system blue
+    "007AFF": ACCENT,
+    FF007A: ACCENT,          // Uniswap pink
+    "8E8E93": rgb("5A6E72"), // divider grey
+    "30D158": rgb("3DD68C"), // green
+    "34C759": rgb("3DD68C"),
+    FF453A: rgb("F0605A"),   // red
+    FF3B30: rgb("F0605A"),
+    F5BD00: rgb("E8B931"),   // yellow
+  };
   class Color {
     constructor(hex, alpha) {
       let h = String(hex || "000000").replace(/^#/, "");
@@ -81,6 +97,10 @@
       this.alpha = alpha == null ? a : Number(alpha);
     }
     get _css() {
+      // The scripts' palette (iOS system colours, Uniswap pink) is mapped onto
+      // the page theme; alpha is kept, so tints and dividers still work.
+      const t = THEME[this.hex];
+      if (t) return `rgba(${t[0]},${t[1]},${t[2]},${this.alpha})`;
       return `rgba(${Math.round(this.red * 255)},${Math.round(this.green * 255)},${Math.round(this.blue * 255)},${this.alpha})`;
     }
     static dynamic(light, dark) { return dark || light; }
@@ -108,8 +128,8 @@
     }
     get _css() {
       const fam = this.mono
-        ? `ui-monospace, "SF Mono", Menlo, monospace`
-        : `-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif`;
+        ? `ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace`
+        : `-apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
       return `${this.italic ? "italic " : ""}${this.weight} ${this.size}px ${fam}`;
     }
     static systemFont(s) { return new Font("system", s, 400); }
@@ -452,9 +472,12 @@
         overlay.remove();
         resolve(idx);
       };
+      // A lone confirm button is the primary one; a list of choices stays even.
+      const single = this._actions.length === 1;
       const mk = (title, kind, idx) => {
         const b = document.createElement("button");
-        b.type = "button"; b.textContent = title; b.className = "lp-alert-btn lp-" + kind;
+        b.type = "button"; b.textContent = title;
+        b.className = "lp-alert-btn lp-" + kind + (single && kind === "normal" ? " lp-primary" : "");
         b.onclick = () => done(idx);
         return b;
       };
@@ -543,7 +566,7 @@
     }
     if (c._type === "button") {
       const b = document.createElement("button");
-      b.type = "button"; b.className = "lp-btn"; b.textContent = c.title;
+      b.type = "button"; b.className = "lp-btn" + (c.titleColor ? " lp-plain" : ""); b.textContent = c.title;
       if (c.titleFont) b.style.font = c.titleFont._css;
       if (c.titleColor) b.style.color = c.titleColor._css;
       b.disabled = !c.onTap;
@@ -695,10 +718,29 @@
     return new Function(...API_NAMES,
       `return (async () => {\n${src}\n})();\n//# sourceURL=${encodeURIComponent(name)}.js`);
   }
+  const SECRET_NAMES = ["rh secrets", "rhsecrets"];
+  // Tells the page which keys RH Secrets has filled in and whether practice
+  // mode is on. Only yes/no flags leave here, never a value.
+  function announceSecrets(found, exp) {
+    const has = (k) => !!(exp && typeof exp[k] === "string" && exp[k].trim());
+    const detail = found ? {
+      found: true,
+      practice: !!(exp && exp.PRACTICE_MODE === true),
+      keys: {
+        ALCHEMY_API_KEY: has("ALCHEMY_API_KEY"), PRIVATE_KEY: has("PRIVATE_KEY"),
+        BLOCKSCOUT_API_KEY: has("BLOCKSCOUT_API_KEY"), UNISWAP_API_KEY: has("UNISWAP_API_KEY"),
+      },
+      presets: Array.isArray(exp && exp.ZAP_PRESETS) ? exp.ZAP_PRESETS.length : 0,
+    } : { found: false };
+    window.dispatchEvent(new CustomEvent("lp:secrets", { detail }));
+  }
   function importModule(n, parentScope) {
     n = String(n).replace(/\.js$/i, "").split("/").pop();
     if (moduleCache.has(n.toLowerCase())) return moduleCache.get(n.toLowerCase());
-    const j = apiSync("/api/script?" + qs({ name: n }));
+    const isSecrets = SECRET_NAMES.includes(n.toLowerCase());
+    let j;
+    try { j = apiSync("/api/script?" + qs({ name: n })); }
+    catch (e) { if (isSecrets) announceSecrets(false); throw e; }
     const scope = { ...parentScope, module: { filename: j.name + ".js", exports: {} } };
     scope.exports = scope.module.exports;
     // A module runs synchronously in Scriptable, so only its synchronous part
@@ -706,6 +748,7 @@
     const fn = new Function(...API_NAMES, `${j.source}\n//# sourceURL=${encodeURIComponent(j.name)}.js`);
     fn(...API_NAMES.map((k) => scope[k]));
     moduleCache.set(n.toLowerCase(), scope.module.exports);
+    if (isSecrets) announceSecrets(true, scope.module.exports);
     return scope.module.exports;
   }
 
