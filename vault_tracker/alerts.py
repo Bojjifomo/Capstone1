@@ -255,6 +255,8 @@ def telegram_hint(status, text):
         return " → bot token salah, salin ulang dari @BotFather"
     if "chat not found" in text:
         return " → chat id salah: kirim /start ke bot kamu, lalu klik \"Cari otomatis\" di samping chat id"
+    if status == 409 or "conflict" in text:
+        return " → bot sedang dibaca program lain (tracker yang jalan menerima perintah Telegram); Stop tracker dulu"
     if status == 403 or "can't initiate" in text or "blocked" in text:
         return " → buka bot kamu di Telegram dan kirim /start dulu"
     return ""

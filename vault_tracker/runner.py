@@ -5,6 +5,7 @@ from .alerts import AlertFormatter, Notifier, fmt_usd
 from .copier import Copier, load_keypair
 from .prices import PriceOracle
 from .rpc import Rpc
+from .tgcontrol import TelegramControl
 from .tokens import TokenRegistry
 from .vault import VaultTracker, resolve_vault
 
@@ -32,10 +33,18 @@ class Session:
         self.notifier = Notifier(alert_types, min_usd=min_usd)
         self.formatter = AlertFormatter(self.leader, self.follower, copy_mode)
         self.copier = None
+        self.tg_control = None
         if copy_settings and copy_settings.get("run", "off") != "off":
             kp = load_keypair(copy_keypair) if copy_keypair else None
             self.copier = Copier(self.rpc, tokens, prices, copy_settings, copy_mode, state_dir,
                                  keypair=kp, sim_wallet=follower)
+            if self.copier.s["tg_commands"] and self.notifier.tg_token and self.notifier.tg_chat:
+                self.tg_control = TelegramControl(self.copier, self.notifier.tg_token, self.notifier.tg_chat)
+                self.tg_control.start()
+
+    def close(self):
+        if self.tg_control:
+            self.tg_control.stop()
 
     @property
     def follower_label(self):
@@ -60,8 +69,8 @@ class Session:
                 continue
             self.notifier.send(title, lines, ev)
             sent.append((title, lines, ev))
-        if self.copier:  # copy the leader's opens / closes into the bot wallet
-            for title, lines in self.copier.handle(pending, self.leader):
+        if self.copier:  # copy the leader into the bot wallet, then your own exits (TP / SL / out of range)
+            for title, lines in self.copier.handle(pending, self.leader) + self.copier.check():
                 self.notifier.send(title, lines, {"type": "COPY"})
                 sent.append((title, lines, {"type": "COPY"}))
         return sent
@@ -75,5 +84,6 @@ class Session:
             f"Copy mode: {self.copy_mode}",
             f"Copytrade bot: {self.copier.s['run'].upper() if self.copier else 'OFF'}"
             + (f" · wallet {self.copier.wallet}" if self.copier and self.copier.wallet else ""),
+            *(["Kontrol dari Telegram aktif: kirim /help ke bot ini."] if self.tg_control else []),
             f"Posisi terbuka: {len(snap['positions'])} · nilai {fmt_usd(snap['total_usd'])}",
         ])

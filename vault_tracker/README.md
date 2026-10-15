@@ -194,7 +194,8 @@ fitur ini ada di kartu "Wallet kembar".
 ## Bot copytrade (otomatis)
 
 Bot ini membuka posisi DLMM di **wallet bot kamu** setiap vault membuka posisi baru
-(memakai "Range kamu" dari copy mode), lalu menutupnya saat vault menutup posisi itu.
+(memakai "Range kamu" dari copy mode), ikut menambah / menarik likuiditas dengan proporsi
+yang sama saat vault melakukannya, lalu menutup posisi saat vault menutup.
 
 Mode `COPY_RUN`:
 
@@ -217,10 +218,43 @@ Kirim SOL secukupnya ke alamat wallet bot: modal, ditambah sekitar 0.2 SOL untuk
 bot sudah masuk akal, baru ganti ke **LIVE**. Bisa juga lewat terminal:
 `python -m vault_tracker watch --copy dry`.
 
+### Ukuran copy (`COPY_SIZE_MODE`)
+
+| Mode | Ukuran posisi bot |
+|---|---|
+| `vault` | **% mengikuti vault**: modal bot × bobot posisi itu di vault × `COPY_FOLLOW_PCT`/100. Vault menaruh 27% NAV-nya di DOPE-SOL → bot menaruh 27% modalnya (SOL di atas cadangan + USDC + posisi bot). |
+| `usd` | Tetap `COPY_SIZE_USD` per posisi. |
+| `ratio` | `COPY_SIZE_RATIO` × nilai posisi vault. |
+
+Semua mode dibatasi `COPY_MAX_USD` per posisi (termasuk tambahan setelah dibuka).
+
+### Ikut tambah / tarik likuiditas (`COPY_FOLLOW_LIQUIDITY=1`)
+
+- Vault menambah $X ke posisi yang sudah dicopy → bot menambah $X × (ukuran bot / ukuran vault saat buka).
+- Vault menarik 30% likuiditasnya → bot menarik 30% dari posisinya (dan swap balik ke modal kalau
+  `COPY_EXIT_SWAP=1`). Tarik ≥97% dihitung tarik semua; posisinya tetap terbuka sampai vault menutup.
+- Vault sering membuat posisi kosong dulu lalu mengisinya di transaksi berikutnya. Bot menunggu
+  sampai posisinya terisi (maksimal 15 menit), baru membuka copy dengan ukuran yang benar.
+- Aksi di bawah `COPY_MIN_ACTION_USD` diabaikan supaya tidak buang fee.
+
+### Exit sendiri dan kontrol darurat
+
+- `COPY_TP_PCT` / `COPY_SL_PCT`: tutup posisi bot saat untung / rugi (nilai + fee belum di-claim,
+  dibanding modal) mencapai batas, walau vault belum tutup. Butuh 2 cek berturut-turut supaya satu
+  harga aneh tidak memicu exit.
+- `COPY_OOR_CLOSE_MIN`: tutup posisi bot yang out of range lebih dari N menit.
+- Manual, kapan saja: tombol **Tarik %**, **Tambah $**, **Tutup** per posisi, **Jeda bot**, dan
+  **🚨 Tarik semua (darurat)** (tutup semua posisi bot lalu jeda bot) di kartu Copytrade bot.
+- Dari Telegram (`COPY_TG_COMMANDS=1`, hanya dari chat pribadi kamu dengan bot): `/status`,
+  `/posisi`, `/tarik N P`, `/tambah N USD`, `/tutup N`, `/darurat YA`, `/jeda`, `/lanjut`.
+  Perintah yang dikirim saat tracker mati (lebih dari 2 menit lalu) diabaikan.
+- Terminal: `copy-withdraw POSISI PERSEN`, `copy-add POSISI USD`, `copy-close POSISI`,
+  `copy-panic`. Kalau tracker sedang jalan, pakai tombol web atau Telegram saja supaya catatan
+  bot tidak bentrok.
+
 Pengaman yang selalu aktif:
 
-- Ukuran per posisi (`COPY_SIZE_USD`, atau `COPY_SIZE_RATIO` × nilai posisi vault) dan batas
-  maksimal `COPY_MAX_USD`.
+- Ukuran per posisi sesuai `COPY_SIZE_MODE` dan batas maksimal `COPY_MAX_USD`.
 - Maksimal posisi bot terbuka `COPY_MAX_OPEN`, cadangan SOL `COPY_RESERVE_SOL` yang tidak dipakai.
 - Batal kalau harga sudah bergerak lebih dari `COPY_MAX_PRICE_MOVE` % sejak vault membuka, atau
   posisi vault dibuka lebih dari `COPY_MAX_EVENT_AGE` detik lalu (misalnya setelah laptop mati).
@@ -230,10 +264,11 @@ Pengaman yang selalu aktif:
 - Tiga kegagalan berturut-turut: bot dijeda sampai kamu klik **Lanjutkan bot**
   (atau `python -m vault_tracker copy-resume`).
 
-Yang tidak di-copy otomatis: limit order, rebalance, dan tambah/tarik likuiditas sebagian. Bot
-mengirim pemberitahuan supaya kamu bisa mengikutinya manual.
+Yang tidak di-copy otomatis: limit order dan rebalance. Bot mengirim pemberitahuan supaya kamu
+bisa mengikutinya manual. Di mode DRY RUN bot mencatat posisi simulasi, jadi tambah/tarik/tutup
+vault berikutnya juga terlihat di Log bot.
 
-Perintah lain: `copy-status` (posisi + log bot), `copy-close <alamat_posisi>` (tutup satu posisi bot).
+Perintah lain: `copy-status` (posisi, modal, PnL, log bot).
 
 Risiko: bot ikut masuk ke token apa pun yang dibeli vault, termasuk token yang bisa langsung jatuh.
 Pakai wallet khusus dengan dana yang siap hilang. Private key hanya disimpan di file keypair

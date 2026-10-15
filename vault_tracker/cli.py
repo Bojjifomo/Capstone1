@@ -314,22 +314,47 @@ def cmd_copy_status(args):
     console.print(f"Posisi bot terbuka: {len(st['positions'])}")
     for p in st["positions"]:
         opened = time.strftime("%d/%m %H:%M", time.localtime(p["opened_at"]))
+        pnl = f"  PnL {p['pnl_pct']:+.1f}%" if p.get("pnl_pct") is not None else ""
         console.print(f"  {p['position']}  {p['pair']}  bins {p['lower']}..{p['upper']}  "
-                      f"{dashboard.fmt_usd(p['usd'])}  dibuka {opened}", highlight=False)
+                      f"modal {dashboard.fmt_usd(p.get('cost_usd', p['usd']))}{pnl}  dibuka {opened}", highlight=False)
     for e in st["log"][:args.limit]:
         console.print(f"[grey58]{time.strftime('%d/%m %H:%M', time.localtime(e['ts']))}[/] {e['title']}")
         for line in e["lines"]:
             console.print(f"    {line}", highlight=False)
 
 
-def cmd_copy_close(args):
+def _print_notes(fn):
     try:
-        title, lines = _copier(args).close_position(args.position)
+        out = fn()
     except Exception as e:
         sys.exit(f"Gagal: {e}")
-    console.print(f"[bold]{title}[/]")
-    for line in lines:
-        console.print(f"    {line}", highlight=False)
+    for title, lines in ([out] if isinstance(out, tuple) else out or []):
+        console.print(f"[bold]{title}[/]")
+        for line in lines:
+            console.print(f"    {line}", highlight=False)
+
+
+def cmd_copy_close(args):
+    c = _copier(args)
+    _print_notes(lambda: c.close_position(args.position))
+
+
+def cmd_copy_withdraw(args):
+    c = _copier(args)
+    _print_notes(lambda: c.withdraw(args.position, args.pct))
+
+
+def cmd_copy_add(args):
+    c = _copier(args)
+    _print_notes(lambda: c.add(args.position, args.usd))
+
+
+def cmd_copy_panic(args):
+    c = _copier(args)
+    n = len(c.state["positions"])
+    if not args.yes and input(f"Tutup SEMUA {n} posisi bot ({c.s['run'].upper()}) dan jeda bot? ketik YA: ").strip() != "YA":
+        sys.exit("Dibatalkan.")
+    _print_notes(lambda: c.emergency_exit("darurat dari terminal"))
 
 
 def cmd_copy_resume(args):
@@ -435,9 +460,21 @@ def main(argv=None):
         sp.set_defaults(fn=fn)
     cc = sub.add_parser("copy-close", help="tutup satu posisi bot (simulasi kalau mode bukan live)")
     cc.add_argument("position")
-    cc.add_argument("--rpc", default=None)
-    cc.add_argument("--state-dir", default=".vault_tracker")
     cc.set_defaults(fn=cmd_copy_close)
+    cwd = sub.add_parser("copy-withdraw", help="tarik sebagian likuiditas posisi bot, posisi tetap terbuka")
+    cwd.add_argument("position")
+    cwd.add_argument("pct", type=float, help="persen, 1–100")
+    cwd.set_defaults(fn=cmd_copy_withdraw)
+    ca = sub.add_parser("copy-add", help="tambah likuiditas ke posisi bot")
+    ca.add_argument("position")
+    ca.add_argument("usd", type=float)
+    ca.set_defaults(fn=cmd_copy_add)
+    cp = sub.add_parser("copy-panic", help="DARURAT: tutup semua posisi bot dan jeda bot")
+    cp.add_argument("--yes", action="store_true", help="tanpa konfirmasi")
+    cp.set_defaults(fn=cmd_copy_panic)
+    for sp in (cc, cwd, ca, cp):
+        sp.add_argument("--rpc", default=None)
+        sp.add_argument("--state-dir", default=".vault_tracker")
 
     t = sub.add_parser("test-alert", help="kirim pesan test ke Telegram/Discord")
     t.set_defaults(fn=cmd_test_alert)

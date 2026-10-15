@@ -22,8 +22,10 @@ FIELDS = {
     "COPY_RUN": ("off", False),
     "COPY_KEYPAIR": ("", False),
     "COPY_BUDGET": ("SOL", False),
+    "COPY_SIZE_MODE": ("", False),  # empty: "ratio" when COPY_SIZE_RATIO > 0, else "usd"
     "COPY_SIZE_USD": ("20", False),
     "COPY_SIZE_RATIO": ("0", False),
+    "COPY_FOLLOW_PCT": ("100", False),
     "COPY_MAX_USD": ("100", False),
     "COPY_MAX_OPEN": ("3", False),
     "COPY_RESERVE_SOL": ("0.1", False),
@@ -34,6 +36,12 @@ FIELDS = {
     "COPY_EXIT_SWAP": ("1", False),
     "COPY_PRIORITY": ("50000", False),
     "COPY_MAX_NEW_BIN_ARRAYS": ("1", False),
+    "COPY_FOLLOW_LIQUIDITY": ("1", False),
+    "COPY_MIN_ACTION_USD": ("2", False),
+    "COPY_TP_PCT": ("0", False),
+    "COPY_SL_PCT": ("0", False),
+    "COPY_OOR_CLOSE_MIN": ("0", False),
+    "COPY_TG_COMMANDS": ("1", False),
 }
 SECRETS = {k for k, (_, secret) in FIELDS.items() if secret}
 

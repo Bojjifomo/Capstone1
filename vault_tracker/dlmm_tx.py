@@ -195,20 +195,18 @@ def missing_bin_arrays(rpc, lb_pair, lower, upper):
     return [first + i for i, a in enumerate(accs) if a is None]
 
 
-def open_position_ixs(rpc, pool, owner, position, lower, upper, amount_x, amount_y, strategy="spot",
-                      max_slippage_bins=MAX_ACTIVE_BIN_SLIPPAGE):
-    """Instructions to create a position over [lower, upper] and deposit the amounts (raw units)."""
+def _check(pool, lower, upper):
     if upper - lower + 1 > MAX_BINS_PER_TX:
         raise ValueError(f"range {upper - lower + 1} bins; maksimal {MAX_BINS_PER_TX} bins per posisi")
     if pool.hooks:
         raise ValueError("token dengan transfer hook belum didukung")
-    lb = P(pool.address)
-    ixs = [ix_initialize_position(owner, position, lb, owner, lower, upper - lower + 1)]
-    for idx in missing_bin_arrays(rpc, pool.address, lower, upper):
-        ixs.append(ix_initialize_bin_array(lb, idx, owner))
+
+
+def _deposit_ixs(pool, owner, position, lower, upper, amount_x, amount_y, strategy, max_slippage_bins):
+    """Token accounts, SOL wrapping and the deposit itself; wSOL is unwrapped again at the end."""
     mx, my = P(pool.token_x_mint), P(pool.token_y_mint)
-    ixs.append(ix_create_ata_idempotent(owner, owner, mx, pool.program_x))
-    ixs.append(ix_create_ata_idempotent(owner, owner, my, pool.program_y))
+    ixs = [ix_create_ata_idempotent(owner, owner, mx, pool.program_x),
+           ix_create_ata_idempotent(owner, owner, my, pool.program_y)]
     for mint, amount, prog in ((mx, amount_x, pool.program_x), (my, amount_y, pool.program_y)):
         if mint == WSOL and amount:
             acct = ata(owner, mint, prog)
@@ -216,6 +214,44 @@ def open_position_ixs(rpc, pool, owner, position, lower, upper, amount_x, amount
     single_x = amount_y == 0 and amount_x > 0
     ixs.append(ix_add_liquidity_by_strategy(pool, position, owner, amount_x, amount_y, lower, upper, strategy,
                                             single_x, max_slippage_bins))
+    if WSOL in (mx, my):
+        ixs.append(ix_close_token_account(ata(owner, WSOL), owner, owner))
+    return ixs
+
+
+def open_position_ixs(rpc, pool, owner, position, lower, upper, amount_x, amount_y, strategy="spot",
+                      max_slippage_bins=MAX_ACTIVE_BIN_SLIPPAGE):
+    """Instructions to create a position over [lower, upper] and deposit the amounts (raw units)."""
+    _check(pool, lower, upper)
+    lb = P(pool.address)
+    ixs = [ix_initialize_position(owner, position, lb, owner, lower, upper - lower + 1)]
+    for idx in missing_bin_arrays(rpc, pool.address, lower, upper):
+        ixs.append(ix_initialize_bin_array(lb, idx, owner))
+    return ixs + _deposit_ixs(pool, owner, position, lower, upper, amount_x, amount_y, strategy, max_slippage_bins)
+
+
+def add_liquidity_ixs(pool, owner, position_state, amount_x, amount_y, strategy="spot",
+                      max_slippage_bins=MAX_ACTIVE_BIN_SLIPPAGE):
+    """Deposit more into an existing position, spread over its whole range."""
+    lower, upper = position_state.lower_bin_id, position_state.upper_bin_id
+    _check(pool, lower, upper)
+    return _deposit_ixs(pool, owner, P(position_state.address), lower, upper, amount_x, amount_y, strategy,
+                        max_slippage_bins)
+
+
+def remove_liquidity_ixs(pool, owner, position_state, bps=10_000, claim=False):
+    """Withdraw bps/10000 of every bin (position stays open); optionally claim fees too."""
+    lower, upper = position_state.lower_bin_id, position_state.upper_bin_id
+    _check(pool, lower, upper)
+    if not 1 <= bps <= 10_000:
+        raise ValueError("bps harus 1..10000")
+    pos = P(position_state.address)
+    mx, my = P(pool.token_x_mint), P(pool.token_y_mint)
+    ixs = [ix_create_ata_idempotent(owner, owner, mx, pool.program_x),
+           ix_create_ata_idempotent(owner, owner, my, pool.program_y),
+           ix_remove_liquidity_by_range(pool, pos, owner, lower, upper, bps)]
+    if claim:
+        ixs.append(ix_claim_fee(pool, pos, owner, lower, upper))
     if WSOL in (mx, my):
         ixs.append(ix_close_token_account(ata(owner, WSOL), owner, owner))
     return ixs

@@ -25,7 +25,7 @@ from solders.pubkey import Pubkey
 
 from . import config, copytrade, dashboard
 from .alerts import DEFAULT_TYPES, Notifier, plain, telegram_chats
-from .copier import load_keypair, settings_from_config
+from .copier import SIZE_MODES, Skip, load_keypair, settings_from_config
 from .rpc import normalize_rpc_url
 from .runner import Session
 
@@ -130,10 +130,13 @@ def validate_copy(cfg):
         errors["COPY_BUDGET"] = "pilih SOL atau USDC"
     if (cfg.get("COPY_STRATEGY") or "spot").lower() not in ("spot", "curve", "bidask"):
         errors["COPY_STRATEGY"] = "pilih spot, curve, atau bidask"
+    if (cfg.get("COPY_SIZE_MODE") or "usd").lower() not in SIZE_MODES:
+        errors["COPY_SIZE_MODE"] = "pilih usd, ratio, atau vault"
     for key, lo, hi in (("COPY_SIZE_USD", 1, None), ("COPY_SIZE_RATIO", 0, None), ("COPY_MAX_USD", 1, None),
                         ("COPY_MAX_OPEN", 1, 20), ("COPY_RESERVE_SOL", 0.02, None), ("COPY_MAX_PRICE_MOVE", 0.1, 50),
                         ("COPY_MAX_EVENT_AGE", 30, 3600), ("COPY_SLIPPAGE_BPS", 1, 1000), ("COPY_PRIORITY", 0, 10_000_000),
-                        ("COPY_MAX_NEW_BIN_ARRAYS", 0, 3)):
+                        ("COPY_MAX_NEW_BIN_ARRAYS", 0, 3), ("COPY_FOLLOW_PCT", 1, 1000), ("COPY_MIN_ACTION_USD", 0, None),
+                        ("COPY_TP_PCT", 0, 10_000), ("COPY_SL_PCT", 0, 99), ("COPY_OOR_CLOSE_MIN", 0, 10_080)):
         raw = cfg.get(key)
         if raw in (None, ""):
             continue
@@ -219,6 +222,7 @@ def build_view(sess):
         "channels": sess.notifier.channels,
         "copy_mode": sess.copy_mode,
         "copier": sess.copier.status() if sess.copier else None,
+        "telegram_control": None if not sess.tg_control else {"error": sess.tg_control.error},
     }
 
 
@@ -347,6 +351,8 @@ class Controller:
             self._error(e)
             self.status, self.message = "error", str(e)
         finally:
+            if sess:
+                sess.close()
             self.awake.release()
             self.next_check = None
             if self.status != "error":
@@ -385,35 +391,56 @@ class Controller:
             return None
         return sess.copier
 
-    def copy_close(self, position):
-        copier = self._copier()
-        if not copier:
-            return {"ok": False, "error": "Bot copytrade tidak jalan (mode off atau tracker belum Start)."}
-        if position not in copier.state["positions"]:
-            return {"ok": False, "error": "Itu bukan posisi yang dibuka bot."}
+    def _copy_job(self, what, action):
+        """Run a manual bot action in the background; its result lands in the bot log and the alerts."""
+        sess = self.session
+        copier = sess.copier
 
         def job():
             try:
-                title, lines = copier.close_position(position)
-                self.session.notifier.send(title, lines, {"type": "COPY"})
+                out = action()
+                for title, lines in ([out] if isinstance(out, tuple) else out or []):
+                    sess.notifier.send(title, lines, {"type": "COPY"})
             except Exception as e:
-                copier._note("error", "❌ COPY GAGAL: tutup manual", [f"{type(e).__name__}: {e}"])
-                copier.save()
-            view = build_view(self.session)
+                with copier.lock:
+                    copier._note("error", f"❌ COPY GAGAL: {what}", [str(e) if isinstance(e, Skip) else f"{type(e).__name__}: {e}"])
+                    copier.save()
+            view = build_view(sess)
             with self.lock:
                 self.view = view
         threading.Thread(target=job, daemon=True).start()
         return {"ok": True}
 
-    def copy_resume(self):
+    def copy_action(self, action, body):
         copier = self._copier()
         if not copier:
-            return {"ok": False, "error": "Bot copytrade tidak jalan."}
-        copier.resume()
-        view = build_view(self.session)
-        with self.lock:
-            self.view = view
-        return {"ok": True}
+            return {"ok": False, "error": "Bot copytrade tidak jalan (mode off atau tracker belum Start)."}
+        if action == "emergency":
+            return self._copy_job("tarik darurat", lambda: copier.emergency_exit("darurat dari web"))
+        if action in ("pause", "resume"):
+            copier.pause("dijeda dari web") if action == "pause" else copier.resume()
+            view = build_view(self.session)
+            with self.lock:
+                self.view = view
+            return {"ok": True}
+        position = str(body.get("position", ""))
+        if position not in copier.state["positions"]:
+            return {"ok": False, "error": "Itu bukan posisi yang dibuka bot."}
+        if action == "close":
+            return self._copy_job("tutup manual", lambda: copier.close_position(position))
+        try:
+            amount = float(body.get("amount"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Isi angka."}
+        if action == "withdraw":
+            if not 0 < amount <= 100:
+                return {"ok": False, "error": "Persen harus 1–100."}
+            return self._copy_job("tarik manual", lambda: copier.withdraw(position, amount))
+        if action == "add":
+            if amount < 1:
+                return {"ok": False, "error": "Minimal $1."}
+            return self._copy_job("tambah manual", lambda: copier.add(position, amount))
+        return {"ok": False, "error": "aksi tidak dikenal"}
 
     def find_mirrors(self, body):
         from .mirrors import find_mirrors
@@ -529,10 +556,8 @@ def make_handler(ctrl, allowed_hosts, token):
                 return self._send(200, ctrl.telegram_chat_id(body if isinstance(body, dict) else {}))
             if path == "/api/mirrors":
                 return self._send(200, ctrl.find_mirrors(body if isinstance(body, dict) else {}))
-            if path == "/api/copy/close":
-                return self._send(200, ctrl.copy_close(str((body or {}).get("position", ""))))
-            if path == "/api/copy/resume":
-                return self._send(200, ctrl.copy_resume())
+            if path.startswith("/api/copy/"):
+                return self._send(200, ctrl.copy_action(path.rsplit("/", 1)[1], body if isinstance(body, dict) else {}))
             self._send(404, {"error": "not found"})
 
     return Handler
