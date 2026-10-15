@@ -1,15 +1,28 @@
 """Minimal Solana JSON-RPC client with retry/backoff for rate-limited RPCs."""
 
 import os
+import re
 import time
+from urllib.parse import urlparse
 
 import requests
 
 PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def normalize_rpc_url(value):
+    """Full RPC URL from what people paste: a URL as is, a bare Helius API key (UUID) -> Helius URL."""
+    value = (value or "").strip()
+    if not value or value.startswith(("http://", "https://")):
+        return value
+    if _UUID.match(value):
+        return f"https://mainnet.helius-rpc.com/?api-key={value}"
+    return value
 
 
 def default_rpc_url():
-    url = os.environ.get("SOLANA_RPC_URL")
+    url = normalize_rpc_url(os.environ.get("SOLANA_RPC_URL"))
     if url:
         return url
     key = os.environ.get("ALCHEMY_API_KEY")
@@ -24,7 +37,10 @@ class RpcError(RuntimeError):
 
 class Rpc:
     def __init__(self, url=None, min_interval=0.0, retries=6, timeout=60):
-        self.url = url or default_rpc_url()
+        self.url = normalize_rpc_url(url) or default_rpc_url()
+        if not self.url.startswith(("http://", "https://")):
+            raise RpcError("Solana RPC URL tidak valid: isi URL lengkap, misalnya "
+                           "https://mainnet.helius-rpc.com/?api-key=KEY_KAMU")
         self.min_interval = min_interval
         self.retries = retries
         self.timeout = timeout
@@ -42,8 +58,11 @@ class Rpc:
             self._last_call = time.time()
             try:
                 r = self.session.post(self.url, json=payload, timeout=timeout or self.timeout)
+            except (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
+                    requests.exceptions.InvalidSchema) as e:
+                raise RpcError(f"Solana RPC URL tidak valid: {self._redact(str(e))}")
             except requests.RequestException as e:
-                last_err = e
+                last_err = RpcError(self._redact(str(e)))
                 time.sleep(1.0 * (2 ** attempt))
                 continue
             if r.status_code == 429 or r.status_code >= 500:
@@ -62,7 +81,15 @@ class Rpc:
                     continue
                 raise RpcError(err)
             return j.get("result")
-        raise RpcError(f"{method} failed after {retries} attempts: {last_err}")
+        raise RpcError(f"{method} gagal setelah {retries} percobaan: {last_err}")
+
+    @property
+    def host(self):
+        return urlparse(self.url).hostname or "RPC"
+
+    def _redact(self, text):
+        """Never show the RPC URL (it carries the API key) in errors."""
+        return text.replace(self.url, f"https://{self.host}/…") if self.url else text
 
     # ---- convenience wrappers -------------------------------------------------
 

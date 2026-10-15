@@ -25,6 +25,7 @@ from solders.pubkey import Pubkey
 from . import config, copytrade, dashboard
 from .alerts import DEFAULT_TYPES, Notifier, plain
 from .copier import load_keypair, settings_from_config
+from .rpc import normalize_rpc_url
 from .runner import Session
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
@@ -96,6 +97,10 @@ def validate(cfg):
     bad = [t for t in (cfg.get("ALERT_TYPES") or "").split(",") if t and t not in ALL_TYPES]
     if bad:
         errors["ALERT_TYPES"] = f"tipe tidak dikenal: {', '.join(bad)}"
+    rpc_url = normalize_rpc_url(cfg.get("SOLANA_RPC_URL"))
+    if rpc_url and not rpc_url.startswith(("http://", "https://")):
+        errors["SOLANA_RPC_URL"] = ("isi URL lengkap, misalnya https://mainnet.helius-rpc.com/?api-key=KEY_KAMU "
+                                    "(atau tempel API key Helius saja)")
     errors.update(validate_copy(cfg))
     return errors
 
@@ -140,7 +145,7 @@ def _mask(key, value):
     if not value:
         return ""
     if key == "SOLANA_RPC_URL":
-        host = urlparse(value).hostname or "RPC"
+        host = urlparse(normalize_rpc_url(value)).hostname or "RPC"
         return f"{host} (tersimpan)"
     return "tersimpan"
 
@@ -244,7 +249,7 @@ class Controller:
             v = str(v).strip()
             if k in config.SECRETS and (v == "" or v == _mask(k, cfg.get(k))):
                 continue  # empty secret box = keep the stored value
-            clean[k] = v
+            clean[k] = normalize_rpc_url(v) if k == "SOLANA_RPC_URL" else v
         for k in updates.get("_clear", []) or []:
             if k in config.SECRETS:
                 clean[k] = ""

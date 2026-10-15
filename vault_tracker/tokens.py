@@ -15,6 +15,8 @@ KNOWN = {
     USDT_MINT: ("USDT", 6),
 }
 STABLES = {USDC_MINT, USDT_MINT}
+JUPUSD_MINT = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD"
+SOFT_STABLES = {JUPUSD_MINT}  # priced at $1 only when Jupiter gives no price
 
 
 class TokenInfo:

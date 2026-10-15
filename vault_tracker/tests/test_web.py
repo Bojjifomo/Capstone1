@@ -60,5 +60,27 @@ class Validate(unittest.TestCase):
         self.assertEqual(set(validate(bad)), {"COPY_MODE", "POLL_INTERVAL", "ALERT_TYPES", "FOLLOWER_ADDRESS"})
 
 
+class RpcUrl(unittest.TestCase):
+    def test_normalize(self):
+        from vault_tracker.rpc import normalize_rpc_url
+        key = "2b0485ff-b406-4b0e-aaf8-557f18a07173"
+        self.assertEqual(normalize_rpc_url(key), f"https://mainnet.helius-rpc.com/?api-key={key}")
+        self.assertEqual(normalize_rpc_url(" https://x.io/?k=1 "), "https://x.io/?k=1")
+        self.assertEqual(normalize_rpc_url(""), "")
+        self.assertEqual(normalize_rpc_url("not a url"), "not a url")
+
+    def test_invalid_rejected_and_key_redacted(self):
+        from vault_tracker.rpc import Rpc, RpcError
+        with self.assertRaises(RpcError):
+            Rpc("not a url")
+        r = Rpc("https://mainnet.helius-rpc.com/?api-key=SECRET123")
+        self.assertNotIn("SECRET123", r._redact("boom at https://mainnet.helius-rpc.com/?api-key=SECRET123"))
+
+    def test_validate_rpc(self):
+        base = {"VAULT_ADDRESS": VAULT}
+        self.assertNotIn("SOLANA_RPC_URL", validate({**base, "SOLANA_RPC_URL": "2b0485ff-b406-4b0e-aaf8-557f18a07173"}))
+        self.assertIn("SOLANA_RPC_URL", validate({**base, "SOLANA_RPC_URL": "abc"}))
+
+
 if __name__ == "__main__":
     unittest.main()

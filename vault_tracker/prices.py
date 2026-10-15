@@ -5,7 +5,7 @@ import os
 import requests
 
 from .dlmm import account_bytes, bin_price, decode_lb_pair
-from .tokens import SOL_MINT, STABLES
+from .tokens import SOFT_STABLES, SOL_MINT, STABLES
 
 # Deep SOL-USDC DLMM pool used to price SOL when Jupiter is unreachable.
 SOL_USDC_POOL = "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6"
@@ -54,6 +54,8 @@ class PriceOracle:
                 self.source = "on-chain DLMM"
             except Exception:
                 pass
+        for m in mints & SOFT_STABLES:
+            prices.setdefault(m, 1.0)
         # Anything still missing: derive it from a pool whose other side is priced.
         for pair in pools:
             x, y = pair.token_x_mint, pair.token_y_mint
