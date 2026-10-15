@@ -248,7 +248,7 @@ def fs_op(op, args):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "LPWeb/1"
-    port = 8787
+    port = 4663
 
     def log_message(self, fmt, *a):  # quieter than the default
         if os.environ.get("LP_VERBOSE"):
@@ -350,7 +350,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--port", type=int, default=int(os.environ.get("LP_PORT", 8787)))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("LP_PORT", 4663)))
     ap.add_argument("--no-open", action="store_true", help="do not open the browser")
     a = ap.parse_args()
 

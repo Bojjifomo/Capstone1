@@ -20,7 +20,7 @@ Scriptable, versi web otomatis ikut.
    ```
 3. Double-click **`lp_web/Buka LP Web.command`** di Finder
    (atau dari Terminal: `python3 lp_web/server.py`).
-   Browser kebuka sendiri ke **http://127.0.0.1:8787**. Pilih RH Portfolio
+   Browser kebuka sendiri ke **http://127.0.0.1:4663**. Pilih RH Portfolio
    atau RH Pool.
 4. Biarin jendela Terminal-nya kebuka selama lu pake. Tutup = webnya mati.
 
@@ -31,7 +31,9 @@ Pertama kali:
 - Kalau `python3` belum ada, macOS bakal nawarin install Command Line Tools.
   Ikutin aja.
 
-Tips: bookmark `http://127.0.0.1:8787/run/RH%20Portfolio` biar langsung masuk.
+Port 4663 sengaja diambil dari chain id Robinhood biar nggak bentrok sama app lain. Kalau tetap kepake, server otomatis pindah ke port kosong berikutnya.
+
+Tips: bookmark `http://127.0.0.1:4663/run/RH%20Portfolio` biar langsung masuk.
 
 ## Key dan transaksi
 
