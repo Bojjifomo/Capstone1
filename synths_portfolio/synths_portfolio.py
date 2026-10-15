@@ -450,9 +450,9 @@ def render_scan(wallet, network, r, only_traded=False):
         ("  realized (koin dijual)", f_signed(r["realized_eth"])),
         ("  unrealized (bags)", f_signed(r["unrealized_eth"])),
     ]
-    if r["free_coins_value_eth"]:
+    if abs(r["free_coins_value_eth"]) > 5e-10:
         lines.append(("  koin tanpa modal", f_signed(r["free_coins_value_eth"])))
-    if r["other_eth"]:
+    if abs(r["other_eth"]) > 5e-10:
         lines.append(("  ETH lain masuk/keluar", f_signed(r["other_eth"])))
     lines.append(("  gas & fee (selisih)", f_signed(r["gas_and_fees_eth"])))
     out += ["", f"RINGKASAN ({r['tx_count']} transaksi)", summary_block(lines)]
