@@ -257,6 +257,16 @@ a:hover { text-decoration: underline; }
     </details>
 
     <details class="gsec">
+      <summary>Bandingkan vault dengan wallet yang kamu copy</summary>
+      <ol>
+        <li>Di Pengaturan, isi <b>Wallet pembanding</b> dengan wallet yang kamu copy (misalnya lewat Valhalla), beri nama, Simpan, lalu Start.</li>
+        <li>Kartu <b>VAULT vs WALLET</b> muncul di atas Allocation dengan status <b>SAMA</b>, <b>BEDA</b>, atau <b>MENUNGGU</b> (salah satu baru bergerak, ditunggu sampai toleransi waktu habis).</li>
+        <li>Telegram mengirim <b>⚠️ BEDA</b> saat salah satu buka/tutup posisi dan yang lain tidak, atau pool yang dipegang beda. Itu tanda untuk mempertimbangkan stop copy. <b>✅ SAMA LAGI</b> dikirim saat keduanya kembali sama.</li>
+        <li>Geser range (tutup lalu buka lagi di pool yang sama) tidak dihitung beda. Trade spot wallet itu dilaporkan sebagai info saja.</li>
+      </ol>
+    </details>
+
+    <details class="gsec">
       <summary>Bot copytrade otomatis</summary>
       <ol>
         <li>Buat wallet khusus bot di terminal: <code>python3 -m vault_tracker copy-wallet new</code>. Alamatnya tampil di layar, dan file keypair-nya otomatis tercatat di Pengaturan. Wallet lama dari Phantom juga bisa dipakai lewat <code>copy-wallet import</code>, tapi wallet baru lebih aman.</li>
@@ -350,9 +360,18 @@ a:hover { text-decoration: underline; }
           <input type="password" id="DISCORD_WEBHOOK_URL" spellcheck="false"></div>
         <div class="field"><label for="JUPITER_API_KEY">Jupiter API key (opsional)</label>
           <input type="password" id="JUPITER_API_KEY" spellcheck="false"></div>
+        <div class="field"><label for="COMPARE_ADDRESS">Wallet pembanding (opsional)</label>
+          <input type="text" id="COMPARE_ADDRESS" spellcheck="false" placeholder="wallet yang kamu copy, misalnya 8oH2…">
+          <div class="hint">Dibandingkan terus dengan vault. Alert Telegram kalau tindakannya beda atau sama lagi.</div></div>
+        <div class="field"><label for="COMPARE_NAME">Nama wallet pembanding</label>
+          <input type="text" id="COMPARE_NAME" placeholder="WALLET"></div>
+        <div class="field"><label for="COMPARE_WINDOW_MIN">Toleransi beda waktu (menit)</label>
+          <input type="number" id="COMPARE_WINDOW_MIN" min="1" max="120" step="1" placeholder="10">
+          <div class="hint">Aksi yang diikuti dalam waktu ini dihitung sama. Geser range (tutup lalu buka lagi di pool yang sama) tidak dihitung beda.</div></div>
       </div>
       <div class="field" style="margin-top:14px"><label>Kirim alert untuk</label><div class="checks" id="types"></div></div>
       <div class="field" style="margin-top:12px"><div class="checks">
+        <label><input type="checkbox" id="COMPARE_SOL_ONLY"> Pembanding: hanya bandingkan pool yang ada SOL-nya</label>
         <label><input type="checkbox" id="KEEP_AWAKE"> Jaga komputer tetap menyala selama tracker jalan</label>
       </div><div class="hint" id="awakeHint"></div></div>
       <div class="actions">
@@ -362,6 +381,18 @@ a:hover { text-decoration: underline; }
       </div>
     </form>
   </details>
+
+  <section class="card" id="cmpCard" hidden>
+    <div class="row">
+      <h2 style="margin:0" id="cmpTitle">Vault vs wallet</h2>
+      <span class="badge" id="cmpBadge">–</span>
+    </div>
+    <ul id="cmpReasons" style="margin:10px 0 4px 18px;padding:0"></ul>
+    <div class="muted" id="cmpStats" style="margin-bottom:8px"></div>
+    <div class="tablewrap"><table id="cmpPools"></table></div>
+    <h2 style="margin-top:14px">Log pembanding</h2>
+    <ul class="events" id="cmpLog"></ul>
+  </section>
 
   <section class="card" id="allocCard">
     <div class="row">
@@ -504,7 +535,8 @@ const TYPE_LABELS = {
 };
 const B58 = /^[1-9A-HJ-NP-Za-km-z]{32,90}$/;
 const FIELDS = ["VAULT_ADDRESS", "FOLLOWER_ADDRESS", "TRACKER_NAME", "POLL_INTERVAL", "MIN_ALERT_USD", "HISTORY_LIMIT",
-  "SOLANA_RPC_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "JUPITER_API_KEY"];
+  "SOLANA_RPC_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "JUPITER_API_KEY",
+  "COMPARE_ADDRESS", "COMPARE_NAME", "COMPARE_WINDOW_MIN"];
 const SECRET = new Set(["SOLANA_RPC_URL", "TELEGRAM_BOT_TOKEN", "DISCORD_WEBHOOK_URL", "JUPITER_API_KEY"]);
 const $ = (id) => document.getElementById(id);
 let S = null, by = "position", formLoaded = false, clockSkew = 0, busy = false, lastNotice = null;
@@ -577,6 +609,7 @@ function loadForm(cfg) {
   tgHint.textContent = badChat ? `"${chat}" bukan chat id (itu nama bot?). Chat id itu angka: kirim /start ke bot kamu, lalu klik Cari otomatis.`
     : "Bukan nama bot. Kirim /start ke bot kamu di Telegram, lalu klik Cari otomatis.";
   $("KEEP_AWAKE").checked = cfg.KEEP_AWAKE !== "0";
+  $("COMPARE_SOL_ONLY").checked = cfg.COMPARE_SOL_ONLY === "1";
   $("awakeHint").textContent = S.keep_awake.supported
     ? "Laptop harus dicolok dan layarnya terbuka. MacBook yang ditutup tetap tidur dan tracker berhenti mengecek."
     : "Di sistem ini fitur ini tidak tersedia. Matikan sleep di pengaturan sistem kalau perlu.";
@@ -726,6 +759,7 @@ function formData() {
   const picked = [...$("types").querySelectorAll("input:checked")].map((i) => i.value).sort();
   d.ALERT_TYPES = picked.join(",") === [...S.default_alert_types].sort().join(",") ? "" : picked.join(",");
   d.KEEP_AWAKE = $("KEEP_AWAKE").checked ? "1" : "0";
+  d.COMPARE_SOL_ONLY = $("COMPARE_SOL_ONLY").checked ? "1" : "0";
   return d;
 }
 function showFieldErrors(errors) {
@@ -925,6 +959,40 @@ $("mGo").addEventListener("click", async () => {
     await refresh();
   } catch (err) { $("mStatus").textContent = "Gagal: " + err.message; }
 });
+function renderCompare() {
+  const c = S.view && S.view.compare;
+  $("cmpCard").hidden = !c;
+  if (!c) return;
+  const A = c.a.name, B = c.b.name;
+  $("cmpTitle").textContent = `${A} vs ${B}`;
+  const badge = $("cmpBadge");
+  badge.textContent = c.verdict;
+  badge.className = "badge " + ({ SAMA: "good", BEDA: "bad", MENUNGGU: "warn" }[c.verdict] || "");
+  const ul = $("cmpReasons"); ul.replaceChildren();
+  if (c.verdict === "SAMA") ul.append(el("li", { class: "good" }, `${B} melakukan hal yang sama dengan ${A}.`));
+  for (const r of c.reasons) ul.append(el("li", { class: c.verdict === "BEDA" ? "bad" : "warn" }, r));
+  if (c.verdict === "BEDA") ul.append(el("li", { class: "muted" }, `Kalau kamu copy ${B}, pertimbangkan stop copy sampai statusnya SAMA lagi.`));
+  const s = c.stats || {};
+  const md = s.median_delay;
+  $("cmpStats").textContent = `24 jam: ${A} ${s.a_actions || 0} aksi buka/tutup, ${B} ikut ${s.a_matched || 0}` +
+    (md != null ? ` (median ${Math.abs(Math.round(md))} dtk ${md < 0 ? "lebih dulu" : "setelah"} ${A})` : "") +
+    ` · aksi ${B} sendiri: ${s.b_extra || 0} · aksi ${A} tidak diikuti: ${s.a_missed || 0} · geser range: ${s.moved || 0}` +
+    ` · toleransi ${c.window_min} menit` + (c.sol_only ? " · hanya pool SOL" : "");
+  const t = $("cmpPools"); t.replaceChildren(el("tr", {}, ["Pool", A, B, "Status"].map((h) => el("th", {}, h))));
+  if (!c.pools.length) t.append(el("tr", {}, el("td", { colspan: 4, class: "empty" }, "Keduanya tidak punya posisi LP.")));
+  const side = (x) => x ? [`${x.range[0]} … ${x.range[1]}`, el("div", { class: "l2" }, fmtUsd(x.value_usd) + (x.in_range === false ? " · OUT OF RANGE" : ""))] : [el("span", { class: "faint" }, "tidak ada")];
+  for (const p of c.pools) {
+    const ok = p.status === "SAMA";
+    t.append(el("tr", {}, el("td", {}, el("b", {}, p.pair), el("div", { class: "l2" }, solscan("account", p.lb_pair))),
+      el("td", {}, ...side(p.a)), el("td", {}, ...side(p.b)),
+      el("td", {}, el("span", { class: "pill " + (ok ? "good" : "bad") }, p.status),
+        ok && p.overlap != null ? el("div", { class: "l2" }, `range sama ${Math.round(p.overlap * 100)}%`) : null)));
+  }
+  const log = $("cmpLog"); log.replaceChildren();
+  if (!c.log.length) log.append(el("li", { class: "empty", style: "display:block" }, "Belum ada aksi baru sejak tracker start."));
+  for (const e of c.log.slice(0, 15)) log.append(el("li", {}, el("div", { class: "t" }, dstr(e.ts)),
+    el("div", {}, el("div", { class: "h" }, e.title), ...e.lines.map((l) => el("div", { class: "d" }, l)))));
+}
 function renderFoot() {
   const v = S.view, bits = [];
   if (v) bits.push("RPC " + v.rpc_host, "harga: " + v.price_source, "alert: " + (v.channels.length ? v.channels.join(", ") : "belum diset (isi Telegram/Discord)"));
@@ -969,7 +1037,7 @@ $("guide").addEventListener("toggle", () => { $("guideChev").textContent = $("gu
 function render() {
   if (!S) return;
   if (!formLoaded) loadForm(S.config);
-  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderCopy(); renderEvents(); renderMirrors(); renderManagers(); renderFoot();
+  renderHeader(); renderGuide(); renderAlloc(); renderPositions(); renderSync(); renderCopy(); renderCompare(); renderEvents(); renderMirrors(); renderManagers(); renderFoot();
 }
 async function refresh() {
   try {

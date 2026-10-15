@@ -2,6 +2,7 @@
 
 from . import copytrade
 from .alerts import AlertFormatter, Notifier, fmt_usd
+from .compare import Comparator
 from .copier import Copier, load_keypair
 from .prices import PriceOracle
 from .rpc import Rpc
@@ -13,7 +14,8 @@ from .vault import VaultTracker, resolve_vault
 class Session:
     def __init__(self, vault, follower=None, rpc_url=None, rpc_delay=0.05, copy_mode="mirror",
                  history=300, use_gpa=False, state_dir=".vault_tracker", alert_types=None, min_usd=5.0,
-                 name=None, copy_settings=None, copy_keypair=None):
+                 name=None, copy_settings=None, copy_keypair=None, compare=None, compare_name=None,
+                 compare_window=600, compare_sol_only=False):
         copytrade.parse_mode(copy_mode)  # raises ValueError on a bad mode
         self.copy_mode = copy_mode
         self.history = history
@@ -28,8 +30,14 @@ class Session:
         if follower:
             self.follower = VaultTracker(self.rpc, tokens, prices, follower, "follower", state_dir,
                                          use_gpa=use_gpa)
+        # a second wallet to hold the leader against (e.g. the wallet you copy instead of the vault)
+        self.compare, self.comparator = None, None
+        if compare and compare != self.leader.address:
+            self.compare = VaultTracker(self.rpc, tokens, prices, compare, "compare", state_dir, use_gpa=use_gpa)
+            self.compare.display = (compare_name or "WALLET").upper()
+            self.comparator = Comparator(self.leader, self.compare, compare_window, state_dir, compare_sol_only)
         # follower first, so leader alerts can say whether you already copied
-        self.trackers = [t for t in (self.follower, self.leader) if t]
+        self.trackers = [t for t in (self.follower, self.leader, self.compare) if t]
         self.notifier = Notifier(alert_types, min_usd=min_usd)
         self.formatter = AlertFormatter(self.leader, self.follower, copy_mode)
         self.copier = None
@@ -64,6 +72,8 @@ class Session:
             t.save()
         sent = []
         for ev in sorted(pending, key=lambda e: e.get("ts") or 0):
+            if ev.get("wallet") == "compare":
+                continue  # the comparator reports on this wallet
             title, lines = self.formatter.format(ev)
             if not self.notifier.wants(ev, self.follower_label):
                 continue
@@ -73,6 +83,10 @@ class Session:
             for title, lines in self.copier.handle(pending, self.leader) + self.copier.check():
                 self.notifier.send(title, lines, {"type": "COPY"})
                 sent.append((title, lines, {"type": "COPY"}))
+        if self.comparator:
+            for title, lines in self.comparator.update():
+                self.notifier.send(title, lines, {"type": "COMPARE"})
+                sent.append((title, lines, {"type": "COMPARE"}))
         return sent
 
     def announce(self):

@@ -8,6 +8,11 @@ FIELDS = {
     "FOLLOWER_ADDRESS": ("", False),
     "TRACKER_NAME": ("", False),
     "COPY_MODE": ("mirror", False),
+    # second wallet to hold the vault against (e.g. the wallet you copy instead); alerts when they differ
+    "COMPARE_ADDRESS": ("", False),
+    "COMPARE_NAME": ("", False),
+    "COMPARE_WINDOW_MIN": ("10", False),
+    "COMPARE_SOL_ONLY": ("0", False),
     "POLL_INTERVAL": ("30", False),
     "HISTORY_LIMIT": ("300", False),
     "MIN_ALERT_USD": ("5", False),

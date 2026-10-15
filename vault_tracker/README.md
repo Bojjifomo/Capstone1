@@ -191,6 +191,28 @@ vault membuka. Wallet yang konsisten diberi label:
 Kecocokan sekali dengan overlap kecil disembunyikan (`--all` untuk melihat). Di website,
 fitur ini ada di kartu "Wallet kembar".
 
+## Bandingkan vault dengan wallet lain
+
+Kalau kamu meng-copy wallet lain (misalnya wallet pribadi manager lewat Valhalla / LP Agent)
+sebagai pengganti vault, isi **Wallet pembanding** (`COMPARE_ADDRESS`) di Pengaturan. Tracker
+membandingkan kedua wallet tiap siklus dan mengirim alert Telegram:
+
+- `✅ SAMA: keduanya BUKA/TUTUP <pool>` saat wallet itu mengikuti vault (dengan selisih waktunya);
+- `⚠️ BEDA: ...` saat salah satu buka/tutup posisi dan yang lain tidak dalam
+  `COMPARE_WINDOW_MIN` menit (default 10), atau saat pool yang dipegang berbeda;
+- `✅ SAMA LAGI` saat keduanya kembali memegang pool yang sama;
+- `ℹ️ ... swap spot` saat wallet itu trading spot (bukan LP) di atas $50.
+
+Geser range (tutup lalu buka lagi di pool yang sama) tidak dihitung beda. Kartu **VAULT vs
+WALLET** di website menampilkan status SAMA / BEDA / MENUNGGU, alasannya, skor 24 jam, dan pool
+yang dipegang masing-masing. `COMPARE_SOL_ONLY=1` hanya membandingkan pool yang ada SOL-nya.
+
+Laporan sekali jalan di terminal:
+
+```bash
+python -m vault_tracker compare --vault <ALAMAT_VAULT> --compare <WALLET> --compare-name 8oH2
+```
+
 ## Bot copytrade (otomatis)
 
 Bot ini membuka posisi DLMM di **wallet bot kamu** setiap vault membuka posisi baru

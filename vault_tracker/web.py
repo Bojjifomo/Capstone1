@@ -82,10 +82,18 @@ def _addr_error(value, what, required):
 
 def validate(cfg):
     errors = {}
-    for key, what, required in (("VAULT_ADDRESS", "Alamat vault", True), ("FOLLOWER_ADDRESS", "Wallet kamu", False)):
+    for key, what, required in (("VAULT_ADDRESS", "Alamat vault", True), ("FOLLOWER_ADDRESS", "Wallet kamu", False),
+                                ("COMPARE_ADDRESS", "Wallet pembanding", False)):
         e = _addr_error(cfg.get(key, ""), what, required)
         if e:
             errors[key] = e
+    if cfg.get("COMPARE_ADDRESS") and cfg.get("COMPARE_ADDRESS") == cfg.get("VAULT_ADDRESS"):
+        errors["COMPARE_ADDRESS"] = "isi wallet lain, bukan alamat vault yang sama"
+    try:
+        if not 1 <= float(cfg.get("COMPARE_WINDOW_MIN") or 10) <= 120:
+            errors["COMPARE_WINDOW_MIN"] = "antara 1 dan 120 menit"
+    except ValueError:
+        errors["COMPARE_WINDOW_MIN"] = "harus angka"
     try:
         copytrade.parse_mode(cfg.get("COPY_MODE") or "mirror")
     except ValueError as e:
@@ -225,6 +233,7 @@ def build_view(sess):
         "copy_mode": sess.copy_mode,
         "copier": sess.copier.status() if sess.copier else None,
         "telegram_control": None if not sess.tg_control else {"error": sess.tg_control.error},
+        "compare": sess.comparator.view if sess.comparator else None,
     }
 
 
@@ -324,7 +333,10 @@ class Controller:
                 history=int(float(cfg.get("HISTORY_LIMIT") or 300)), state_dir=self.state_dir,
                 alert_types=set(cfg["ALERT_TYPES"].split(",")) if cfg.get("ALERT_TYPES") else None,
                 min_usd=float(cfg.get("MIN_ALERT_USD") or 5), name=cfg.get("TRACKER_NAME") or None,
-                copy_settings=settings_from_config(cfg), copy_keypair=cfg.get("COPY_KEYPAIR") or None)
+                copy_settings=settings_from_config(cfg), copy_keypair=cfg.get("COPY_KEYPAIR") or None,
+                compare=cfg.get("COMPARE_ADDRESS") or None, compare_name=cfg.get("COMPARE_NAME") or None,
+                compare_window=int(float(cfg.get("COMPARE_WINDOW_MIN") or 10) * 60),
+                compare_sol_only=cfg.get("COMPARE_SOL_ONLY") == "1")
             self.session = sess
             if sess.vault_note:  # share mint pasted: keep the real vault address from now on
                 config.save({"VAULT_ADDRESS": sess.leader.address}, self.env_path)

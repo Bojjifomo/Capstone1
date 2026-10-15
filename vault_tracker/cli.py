@@ -129,7 +129,7 @@ def cmd_watch(args):
                           rpc_url=args.rpc, rpc_delay=args.rpc_delay, copy_mode=args.copy_mode,
                           history=args.history, use_gpa=args.gpa, state_dir=args.state_dir,
                           alert_types=set(args.alerts.split(",")) if args.alerts else None,
-                          min_usd=args.min_usd, name=args.name, **_copy_kwargs(args))
+                          min_usd=args.min_usd, name=args.name, **_copy_kwargs(args), **_compare_kwargs(args))
     except (ValueError, OSError) as e:
         sys.exit(str(e))
     leader, follower, notifier = session.leader, session.follower, session.notifier
@@ -242,6 +242,50 @@ def cmd_mirrors(args):
         console.print(f"  {r['label']}", style="green" if r["strong"] else "grey58", highlight=False)
     if shown and not args.all and len(rows) > len(strong):
         console.print(f"\n(+{len(rows) - len(strong)} kecocokan lemah disembunyikan, tambah --all untuk melihat)")
+
+
+def _compare_kwargs(args):
+    if not getattr(args, "compare", None):
+        return {}
+    return {"compare": check_address(args.compare, "compare"), "compare_name": args.compare_name,
+            "compare_window": int(args.compare_window * 60), "compare_sol_only": args.compare_sol_only}
+
+
+def cmd_compare(args):
+    """One-off report: does the wallet do what the vault does?"""
+    from .compare import VERB, match_actions
+    if not args.compare:
+        sys.exit("isi --compare ALAMAT_WALLET (atau COMPARE_ADDRESS di .env)")
+    try:
+        session = Session(check_address(args.vault, "vault"), rpc_url=args.rpc, rpc_delay=args.rpc_delay,
+                          history=args.history, state_dir=args.state_dir, name=args.name, **_compare_kwargs(args))
+    except (ValueError, OSError) as e:
+        sys.exit(str(e))
+    for t in (session.leader, session.compare):
+        sync(t, args.history)
+        t.refresh(emit=False)
+        t.save()
+    c = session.comparator
+    c.update()
+    v = c.view
+    color = {"SAMA": "green", "BEDA": "red", "MENUNGGU": "yellow"}[v["verdict"]]
+    console.print(f"[bold]{v['a']['name']} vs {v['b']['name']}: [{color}]{v['verdict']}[/][/]")
+    for line in c.summary_lines()[1:]:
+        console.print(line, highlight=False)
+    now = time.time()
+    pairs, a_left, b_left = match_actions(c._events(c.a, "a", now - 86400), c._events(c.b, "b", now - 86400), c.window)
+    fmt = lambda ts: time.strftime("%d/%m %H:%M", time.localtime(ts))
+    console.print("\n[bold]Aksi 24 jam terakhir[/]")
+    rows = [(ea["ts"], f"✅ {VERB[ea['type']]} {ea['name']}: {v['b']['name']} {int(eb['ts'] - ea['ts']):+d} dtk") for ea, eb in pairs]
+    for side, evs in (("a", a_left), ("b", b_left)):
+        for e in evs:
+            moved = now - e["ts"] > c.window and c._reposition(e)
+            who = v["a"]["name"] if side == "a" else v["b"]["name"]
+            rows.append((e["ts"], f"{'↔️ geser range' if moved else '⚠️ hanya ' + who}: {VERB[e['type']]} {e['name']}"))
+    for ts, text in sorted(rows):
+        console.print(f"  {fmt(ts)}  {text}", highlight=False)
+    for r in v["pools"]:
+        console.print(f"Sekarang {r['pair']}: {r['status']}", highlight=False)
 
 
 DEFAULT_KEYPAIR = "~/.config/vault_tracker/copy-wallet.json"
@@ -409,6 +453,17 @@ def main(argv=None):
     w.add_argument("--fullscreen", action="store_true")
     w.add_argument("--copy", choices=("off", "dry", "live"), help="mode bot copytrade (default: COPY_RUN di .env)")
     w.set_defaults(fn=cmd_watch)
+    cm = sub.add_parser("compare", help="bandingkan aksi vault dengan wallet lain (mis. wallet yang kamu copy)")
+    common(cm, follower=False)
+    cm.set_defaults(fn=cmd_compare)
+    for sp in (w, cm):
+        sp.add_argument("--compare", default=os.environ.get("COMPARE_ADDRESS"),
+                        help="wallet pembanding: alert kalau aksinya beda dari vault (env COMPARE_ADDRESS)")
+        sp.add_argument("--compare-name", default=os.environ.get("COMPARE_NAME"))
+        sp.add_argument("--compare-window", type=float, default=float(os.environ.get("COMPARE_WINDOW_MIN", "10")),
+                        help="toleransi beda waktu dalam menit (default 10)")
+        sp.add_argument("--compare-sol-only", action="store_true", default=os.environ.get("COMPARE_SOL_ONLY") == "1",
+                        help="hanya bandingkan pool yang ada SOL-nya")
 
     s = sub.add_parser("snapshot", help="tampilkan allocation + posisi sekali")
     common(s)
