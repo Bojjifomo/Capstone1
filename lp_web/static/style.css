@@ -1,0 +1,129 @@
+/* Dark, like Scriptable on iOS in dark mode: the RH scripts colour their text
+   for a dark background, so the page is always dark. */
+:root {
+  --bg: #000000;
+  --surface: #1C1C1E;
+  --surface-2: #2C2C2E;
+  --text: #F5F5FF;
+  --muted: #9595B2;
+  --tint: #0A84FF;
+  --red: #FF453A;
+  --sep: rgba(142, 142, 147, 0.35);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body {
+  font: 400 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--tint); }
+
+/* ---- top bar ---- */
+.lp-bar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; background: rgba(20, 20, 22, 0.92);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--sep);
+}
+.lp-bar a { text-decoration: none; font-weight: 600; }
+.lp-bar .lp-name { font-weight: 700; }
+.lp-bar .lp-spacer { flex: 1; }
+.lp-bar button {
+  background: var(--surface-2); color: var(--text); border: 0; border-radius: 8px;
+  padding: 6px 12px; font: inherit; cursor: pointer;
+}
+.lp-bar button:hover { background: #3A3A3C; }
+
+/* ---- the table ---- */
+#lp-app { max-width: 720px; margin: 0 auto; padding: 8px 0 80px; }
+.lp-table { background: var(--bg); }
+.lp-row {
+  display: flex; align-items: center; padding: 4px 16px;
+  background: var(--bg);
+}
+.lp-row.lp-sep { border-bottom: 1px solid var(--sep); }
+.lp-row.lp-selectable { cursor: pointer; }
+.lp-row.lp-selectable:hover { background: #111114; }
+.lp-row.lp-header { background: var(--bg); }
+.lp-cell {
+  display: flex; flex-direction: column; justify-content: center;
+  min-width: 0; padding: 0 4px; overflow: hidden;
+}
+.lp-title { font-size: 17px; line-height: 1.25; color: var(--text); overflow-wrap: anywhere; }
+.lp-subtitle { font-size: 12px; line-height: 1.3; color: var(--muted); overflow-wrap: anywhere; margin-top: 2px; }
+.lp-btn {
+  background: none; border: 0; padding: 6px 8px; border-radius: 8px;
+  color: var(--tint); font: 600 15px -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer;
+}
+.lp-btn:hover:not(:disabled) { background: rgba(10, 132, 255, 0.14); }
+.lp-btn:disabled { cursor: default; opacity: 0.6; }
+
+/* ---- alerts ---- */
+.lp-alert-overlay {
+  position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55); padding: 16px;
+}
+.lp-alert {
+  width: 100%; max-width: 420px; max-height: calc(100vh - 32px); overflow: auto;
+  background: var(--surface); border-radius: 14px; padding: 18px 16px 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.lp-alert-title { font-weight: 700; font-size: 17px; text-align: center; margin-bottom: 6px; }
+.lp-alert-msg { font-size: 13px; line-height: 1.45; text-align: center; white-space: pre-wrap; color: #D8D8E6; }
+.lp-alert-input {
+  display: block; width: 100%; margin-top: 10px; padding: 9px 10px; border-radius: 8px;
+  border: 1px solid #3A3A3C; background: #000; color: var(--text); font: inherit;
+}
+.lp-alert-label { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.lp-alert-label + .lp-alert-input { margin-top: 4px; }
+.lp-alert-input:focus { outline: 2px solid var(--tint); border-color: transparent; }
+.lp-alert-btns { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.lp-alert-btns.lp-two { flex-direction: row; }
+.lp-alert-btns.lp-two .lp-alert-btn { flex: 1; }
+.lp-alert-btn {
+  border: 0; border-radius: 10px; padding: 10px; font: 600 15px -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--surface-2); color: var(--tint); cursor: pointer;
+}
+.lp-alert-btn:hover { background: #3A3A3C; }
+.lp-alert-btn.lp-destructive { background: var(--red); color: #fff; }
+.lp-alert-btn.lp-destructive:hover { background: #ff5f55; }
+.lp-alert-btn.lp-cancel { color: var(--text); font-weight: 400; }
+.lp-alert-btn:focus-visible { outline: 2px solid var(--tint); }
+
+/* ---- toast, log, error ---- */
+.lp-toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 200;
+  max-width: calc(100vw - 32px); background: #3A1D1D; color: #FFD7D4; border: 1px solid #6B2B27;
+  padding: 10px 14px; border-radius: 10px; font-size: 13px;
+}
+.lp-log {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; max-height: 40vh; display: none;
+  background: #0B0B0D; border-top: 1px solid var(--sep);
+  font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+}
+.lp-log.open { display: flex; flex-direction: column; }
+.lp-log-head { display: flex; padding: 6px 12px; color: var(--muted); }
+.lp-log-head span { flex: 1; }
+.lp-log-head button { background: none; border: 0; color: var(--tint); cursor: pointer; font: inherit; }
+#lp-log-body { overflow: auto; padding: 0 12px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.lp-log-warn { color: #F5BD00; }
+.lp-log-error { color: var(--red); }
+.lp-error { margin: 24px 16px; padding: 14px; border-radius: 12px; background: #2A1414; color: #FFD7D4; white-space: pre-wrap; font-size: 13px; }
+.lp-loading { padding: 40px 16px; text-align: center; color: var(--muted); }
+
+/* ---- launcher ---- */
+.lp-home { max-width: 560px; margin: 0 auto; padding: 24px 16px 60px; }
+.lp-home h1 { font-size: 24px; margin: 8px 0 4px; }
+.lp-home p { color: var(--muted); line-height: 1.5; }
+.lp-list { margin-top: 18px; border-radius: 12px; overflow: hidden; background: var(--surface); }
+.lp-list a {
+  display: flex; align-items: center; justify-content: space-between; padding: 14px 16px;
+  color: var(--text); text-decoration: none; border-bottom: 1px solid var(--sep); font-weight: 600;
+}
+.lp-list a:last-child { border-bottom: 0; }
+.lp-list a:hover { background: var(--surface-2); }
+.lp-list a span { color: var(--muted); font-weight: 400; font-size: 13px; }
+.lp-note { margin-top: 18px; font-size: 13px; color: var(--muted); }
+.lp-note code { color: var(--text); }

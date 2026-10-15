@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LP Web</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="lp-home">
+  <h1>🦄 LP Web</h1>
+  <p>Your Scriptable LP scripts, running in the browser. Pick one to open.</p>
+  <div class="lp-list" id="list"><div class="lp-loading">Looking for scripts…</div></div>
+  <div class="lp-note" id="note"></div>
+</div>
+<script>
+window.LP_TOKEN = "__LP_TOKEN__";
+(async () => {
+  const list = document.getElementById("list"), note = document.getElementById("note");
+  const DESC = {
+    "RH Pool": "find USDG pools and zap into one",
+    "RH Portfolio": "your positions: close, claim, re-enter",
+    "RH Wallet": "wallet view",
+  };
+  try {
+    const r = await fetch("/api/scripts", { headers: { "X-LP-Token": window.LP_TOKEN } });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    // Put the two main scripts first.
+    const order = ["RH Portfolio", "RH Pool", "RH Wallet"];
+    const names = j.scripts.slice().sort((a, b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+    });
+    list.innerHTML = "";
+    if (!names.length) list.innerHTML = '<div class="lp-loading">No scripts found.</div>';
+    for (const n of names) {
+      const a = document.createElement("a");
+      a.href = "/run/" + encodeURIComponent(n);
+      a.textContent = n;
+      const s = document.createElement("span");
+      s.textContent = DESC[n] || "";
+      a.appendChild(s);
+      list.appendChild(a);
+    }
+    note.innerHTML = "";
+    const p1 = document.createElement("div");
+    p1.textContent = "Reading scripts from: " + j.dir;
+    note.appendChild(p1);
+    if (!j.hasSecrets) {
+      const p2 = document.createElement("div");
+      p2.style.marginTop = "8px";
+      p2.textContent = "No RH Secrets found there, so the scripts run read-only (no zap / close).";
+      note.appendChild(p2);
+    }
+  } catch (e) {
+    list.innerHTML = "";
+    const d = document.createElement("div");
+    d.className = "lp-error"; d.textContent = "Could not reach the local server: " + e.message;
+    list.appendChild(d);
+  }
+})();
+</script>
+</body>
+</html>

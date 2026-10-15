@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LP Web</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="lp-bar">
+  <a href="/">‹ Scripts</a>
+  <span class="lp-name" id="lp-name"></span>
+  <span class="lp-spacer"></span>
+  <button type="button" id="lp-reload" title="Run the script again">Reload</button>
+  <button type="button" id="lp-log-toggle">Log</button>
+</div>
+<div id="lp-app"><div class="lp-loading">Loading…</div></div>
+<div class="lp-log" id="lp-log">
+  <div class="lp-log-head"><span>Script log</span><button type="button" id="lp-log-close">Close</button></div>
+  <div id="lp-log-body"></div>
+</div>
+<script>window.LP_TOKEN = "__LP_TOKEN__";</script>
+<script src="/static/scriptable.js"></script>
+<script>
+(async () => {
+  const name = decodeURIComponent(location.pathname.replace(/^\/run\//, ""));
+  const query = Object.fromEntries(new URLSearchParams(location.search));
+  document.getElementById("lp-name").textContent = name;
+  document.getElementById("lp-reload").onclick = () => location.reload();
+  const log = document.getElementById("lp-log");
+  document.getElementById("lp-log-toggle").onclick = () => log.classList.toggle("open");
+  document.getElementById("lp-log-close").onclick = () => log.classList.remove("open");
+  try {
+    await LPWeb.runScript(name, query);
+  } catch (e) {
+    console.error(e);
+    const app = document.getElementById("lp-app");
+    const d = document.createElement("div");
+    d.className = "lp-error";
+    d.textContent = "The script stopped with an error:\n\n" + ((e && (e.stack || e.message)) || e);
+    app.appendChild(d);
+  }
+})();
+</script>
+</body>
+</html>
