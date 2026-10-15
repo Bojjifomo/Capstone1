@@ -206,6 +206,9 @@ def cmd_mirrors(args):
         rows, info = find_mirrors(leader, window=args.window, max_events=args.events, max_txs=args.max_txs,
                                   on_progress=progress)
     leader.save()
+    if args.json:
+        print(json.dumps({"rows": rows, "info": info}, indent=2))
+        return
     console.print(f"Dicek {info['vault_opens']} posisi yang dibuka vault, {info['txs_scanned']} transaksi pool "
                   f"(±{info['window_s']} detik dari tiap open).")
     console.print("Alamat pemilik posisi vault: " + ", ".join(info["position_owners"]), highlight=False)
@@ -227,8 +230,6 @@ def cmd_mirrors(args):
         console.print(f"  {r['label']}", style="green" if r["strong"] else "grey58", highlight=False)
     if shown and not args.all and len(rows) > len(strong):
         console.print(f"\n(+{len(rows) - len(strong)} kecocokan lemah disembunyikan, tambah --all untuk melihat)")
-    if args.json:
-        print(json.dumps({"rows": rows, "info": info}, indent=2))
 
 
 DEFAULT_KEYPAIR = "~/.config/vault_tracker/copy-wallet.json"
