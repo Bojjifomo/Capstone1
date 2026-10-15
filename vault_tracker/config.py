@@ -42,6 +42,7 @@ FIELDS = {
     "COPY_SL_PCT": ("0", False),
     "COPY_OOR_CLOSE_MIN": ("0", False),
     "COPY_TG_COMMANDS": ("1", False),
+    "COPY_SOL_ONLY": ("0", False),
 }
 SECRETS = {k for k, (_, secret) in FIELDS.items() if secret}
 

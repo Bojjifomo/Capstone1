@@ -45,6 +45,7 @@ DEFAULTS = {
     "sl_pct": 0.0,              # close at -sl_pct % loss; 0 = off
     "oor_close_min": 0,         # close after this many minutes out of range; 0 = off
     "tg_commands": True,        # accept /status, /tarik, /darurat ... from your Telegram chat
+    "sol_only": False,          # deposit SOL only (one-sided, no token buys); pools without SOL are skipped
 }
 MAX_FAILURES = 3
 FEE_BUFFER_LAMPORTS = 10_000_000  # 0.01 SOL for tx fees / ATAs
@@ -96,6 +97,7 @@ def settings_from_config(cfg):
         "tp_pct": num("COPY_TP_PCT", 0.0), "sl_pct": num("COPY_SL_PCT", 0.0),
         "oor_close_min": num("COPY_OOR_CLOSE_MIN", 0, int),
         "tg_commands": (cfg.get("COPY_TG_COMMANDS") or "1") != "0",
+        "sol_only": (cfg.get("COPY_SOL_ONLY") or "0") == "1",
     }
 
 
@@ -154,6 +156,8 @@ class Copier:
             raise ValueError("mode live butuh COPY_KEYPAIR (file keypair wallet bot)")
         if self.s["run"] == "dry" and not self.wallet:
             raise ValueError("mode dry butuh COPY_KEYPAIR atau Wallet kamu (alamat untuk simulasi)")
+        if self.s["sol_only"] and self.s["budget"] != "SOL":
+            raise ValueError("mode SOL only butuh modal bot SOL (COPY_BUDGET=SOL)")
         self.budget_mint = BUDGET_MINTS[self.s["budget"]]
         name = str(self.wallet) if self.wallet else "none"
         self.path = os.path.join(state_dir, f"copier-{name}.json")
@@ -430,6 +434,8 @@ class Copier:
         pool = dlmm_tx.PoolContext(self.rpc, row["lb_pair"])
         if pool.hooks:
             raise Skip(f"{row['pair']}: token dengan transfer hook belum didukung")
+        if s["sol_only"] and SOL_MINT not in (pool.token_x_mint, pool.token_y_mint):
+            raise Skip(f"mode SOL only: pool {row['pair']} tidak punya SOL")
         sug = copytrade.suggest_range({**row, "active_bin": pool.active_id,
                                        "price": dlmm.bin_price(pool.active_id, pool.bin_step, *pool.decimals)},
                                       self.copy_mode)
@@ -479,9 +485,20 @@ class Copier:
         s = self.s
         mx, my = pool.token_x_mint, pool.token_y_mint
         tx, ty = self.tokens.get(mx), self.tokens.get(my)
-        px, py, pb = self._price(mx), self._price(my), self._price(self.budget_mint)
-        xs = x_share(lower, upper, pool.active_id)
+        pb = self._price(self.budget_mint)
+        if s["sol_only"]:  # one-sided: SOL goes only into the bins on its side of the price
+            if SOL_MINT not in (mx, my):
+                raise Skip("mode SOL only: pool ini tidak punya SOL")
+            sol_is_x = mx == SOL_MINT
+            if (sol_is_x and upper < pool.active_id) or (not sol_is_x and lower > pool.active_id):
+                raise Skip("mode SOL only: seluruh range ada di sisi token, tidak bisa diisi SOL saja")
+            xs = 1.0 if sol_is_x else 0.0
+        else:
+            xs = x_share(lower, upper, pool.active_id)
         need = {mx: size * xs, my: size * (1 - xs)}
+        # a side that gets nothing needs no price (SOL only: the pool token may be unpriced)
+        px = self._price(mx) if need[mx] else (self.prices.prices.get(mx) or 0.0)
+        py = self._price(my) if need[my] else (self.prices.prices.get(my) or 0.0)
         keep = int(s["reserve_sol"] * 1e9) + keep_extra_lamports
         if self.budget_mint == SOL_MINT:
             spendable_usd = max(0, bal["lamports"] + bal.get(SOL_MINT, 0) - keep) / 1e9 * pb
@@ -497,7 +514,8 @@ class Copier:
         swaps = [(m, usd) for m, usd in need.items() if usd >= 0.5 and m != self.budget_mint]
         for m, usd in swaps:
             lines.append(f"Swap: ≈{fmt_num(usd / pb)} {budget.symbol} → {self.tokens.get(m).symbol} ({fmt_usd(usd)})")
-        want_x, want_y = int(need[mx] / px * 10 ** tx.decimals), int(need[my] / py * 10 ** ty.decimals)
+        want_x = int(need[mx] / px * 10 ** tx.decimals) if need[mx] else 0
+        want_y = int(need[my] / py * 10 ** ty.decimals) if need[my] else 0
 
         def build(ax, ay, position):
             if existing is None:

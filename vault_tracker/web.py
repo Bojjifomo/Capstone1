@@ -132,6 +132,8 @@ def validate_copy(cfg):
         errors["COPY_STRATEGY"] = "pilih spot, curve, atau bidask"
     if (cfg.get("COPY_SIZE_MODE") or "usd").lower() not in SIZE_MODES:
         errors["COPY_SIZE_MODE"] = "pilih usd, ratio, atau vault"
+    if cfg.get("COPY_SOL_ONLY") == "1" and (cfg.get("COPY_BUDGET") or "SOL").upper() != "SOL":
+        errors["COPY_BUDGET"] = "mode SOL only butuh modal bot SOL"
     for key, lo, hi in (("COPY_SIZE_USD", 1, None), ("COPY_SIZE_RATIO", 0, None), ("COPY_MAX_USD", 1, None),
                         ("COPY_MAX_OPEN", 1, 20), ("COPY_RESERVE_SOL", 0.02, None), ("COPY_MAX_PRICE_MOVE", 0.1, 50),
                         ("COPY_MAX_EVENT_AGE", 30, 3600), ("COPY_SLIPPAGE_BPS", 1, 1000), ("COPY_PRIORITY", 0, 10_000_000),

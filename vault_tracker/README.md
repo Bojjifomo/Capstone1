@@ -228,6 +228,12 @@ bot sudah masuk akal, baru ganti ke **LIVE**. Bisa juga lewat terminal:
 
 Semua mode dibatasi `COPY_MAX_USD` per posisi (termasuk tambahan setelah dibuka).
 
+`COPY_SOL_ONLY=1` (**SOL only**): bot hanya menyetor SOL, one-sided, tanpa membeli token pool
+lebih dulu, seperti posisi "SOL only" di Meteora. SOL hanya mengisi bin di sisi SOL dari harga
+(di bawah harga kalau SOL token Y). Pool tanpa SOL (misalnya BORDR-USDC) dilewati, begitu juga
+range yang seluruhnya di sisi token. Saat posisi ditutup atau ditarik, token yang didapat
+di-swap balik ke SOL kalau `COPY_EXIT_SWAP=1`.
+
 ### Ikut tambah / tarik likuiditas (`COPY_FOLLOW_LIQUIDITY=1`)
 
 - Vault menambah $X ke posisi yang sudah dicopy → bot menambah $X × (ukuran bot / ukuran vault saat buka).

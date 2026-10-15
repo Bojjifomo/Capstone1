@@ -252,6 +252,27 @@ class FollowAndExits(unittest.TestCase):
         self.assertIn("DARURAT", notes[0][0])
         self.assertEqual(len(notes), 3)
 
+    def test_sol_only_deposits_sol_without_swaps(self):
+        from unittest import mock
+
+        from vault_tracker.copier import Skip
+        c = self.copier(sol_only=True)
+        self.prices.prices.pop(PoolLeader.X.mint)        # the pool token may have no price at all
+        c.tokens = type("T", (), {"get": staticmethod(lambda m: PoolLeader.X if m == "TOKX" else PoolLeader.Y)})()
+        pool = type("Pool", (), {"token_x_mint": "TOKX", "token_y_mint": PoolLeader.Y.mint, "active_id": 0})()
+        bal = {"lamports": 10 * 10 ** 9}
+        with mock.patch.object(dlmm_tx, "open_position_ixs", return_value=[]), \
+                mock.patch.object(dlmm_tx, "simulate", return_value=(True, 1, [], None)):
+            lines = []
+            _, ax, ay, _, _ = c._deposit(pool, -50, 10, 200.0, lines, 0, bal)
+        self.assertEqual(ax, 0)
+        self.assertEqual(ay, 2 * 10 ** 9)                 # $200 at $100/SOL, all SOL
+        self.assertFalse([l for l in lines if l.startswith("Swap")])
+        with self.assertRaises(Skip):                     # range only above the price: SOL cannot fill it
+            c._deposit(pool, 1, 20, 200.0, [], 0, bal)
+        with self.assertRaises(ValueError):
+            self.copier(sol_only=True, budget="USDC")
+
     def test_live_drops_dry_run_positions(self):
         c = self.copier()
         c.state["positions"]["dry-A"] = {"leader_position": "A", "pair": "A", "usd": 1, "virtual": True}

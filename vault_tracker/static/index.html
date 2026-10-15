@@ -449,6 +449,7 @@ a:hover { text-decoration: underline; }
           <input type="number" id="COPY_MAX_NEW_BIN_ARRAYS" min="0" max="3" step="1"></div>
       </div>
       <div class="field" style="margin-top:12px"><div class="checks">
+        <label><input type="checkbox" id="COPY_SOL_ONLY"> SOL only: deposit SOL saja (one-sided, tanpa beli token); pool tanpa SOL dilewati</label>
         <label><input type="checkbox" id="COPY_FOLLOW_LIQUIDITY"> Ikut tambah / tarik likuiditas vault (proporsional)</label>
         <label><input type="checkbox" id="COPY_EXIT_SWAP"> Swap token kembali ke modal bot setelah tutup / tarik</label>
         <label><input type="checkbox" id="COPY_TG_COMMANDS"> Terima perintah dari Telegram (/status, /tarik, /darurat …)</label></div></div>
@@ -588,6 +589,7 @@ const COPY_FIELDS = ["COPY_RUN", "COPY_KEYPAIR", "COPY_SIZE_MODE", "COPY_FOLLOW_
   "COPY_STRATEGY", "COPY_SLIPPAGE_BPS", "COPY_PRIORITY", "COPY_MAX_NEW_BIN_ARRAYS", "COPY_TP_PCT", "COPY_SL_PCT",
   "COPY_OOR_CLOSE_MIN", "COPY_MIN_ACTION_USD"];
 const COPY_CHECKS = ["COPY_EXIT_SWAP", "COPY_FOLLOW_LIQUIDITY", "COPY_TG_COMMANDS"];
+const COPY_OPTIN = ["COPY_SOL_ONLY"];  // off unless set to 1
 function sizeUi() {
   const m = $("COPY_SIZE_MODE").value;
   document.querySelectorAll("[data-size]").forEach((n) => { n.hidden = n.dataset.size !== m; });
@@ -602,6 +604,7 @@ function loadCopyForm(cfg) {
   $("COPY_STRATEGY").value = (cfg.COPY_STRATEGY || "spot").toLowerCase();
   $("COPY_SIZE_MODE").value = (cfg.COPY_SIZE_MODE || (+cfg.COPY_SIZE_RATIO > 0 ? "ratio" : "usd")).toLowerCase();
   for (const k of COPY_CHECKS) $(k).checked = cfg[k] !== "0";
+  for (const k of COPY_OPTIN) $(k).checked = cfg[k] === "1";
   sizeUi();
 }
 $("COPY_SIZE_MODE").addEventListener("change", sizeUi);
@@ -609,7 +612,7 @@ $("copyForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const d = {};
   for (const k of COPY_FIELDS) d[k] = $(k).value.trim();
-  for (const k of COPY_CHECKS) d[k] = $(k).checked ? "1" : "0";
+  for (const k of COPY_CHECKS.concat(COPY_OPTIN)) d[k] = $(k).checked ? "1" : "0";
   if (d.COPY_RUN === "live" && (S.config.COPY_RUN || "off") !== "live") {
     const ok = confirm("Mode LIVE: bot akan mengirim transaksi sungguhan dari wallet bot (swap, buka posisi, tutup posisi) " +
       "tanpa menunggu persetujuan kamu.\n\nPakai wallet khusus dengan dana kecil. Copy-trade bisa rugi, dan vault bisa membuka " +
