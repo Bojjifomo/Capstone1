@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""LP copy-trade checker untuk posisi Uniswap V4.
+"""LP copy-trade checker for Uniswap V4 positions.
 
-Nyari wallet yang open/close LP di pool + range tick yang PERSIS SAMA
-beberapa detik setelah wallet target (bot copy-LP), dan berapa token yang
-mereka lepas (dump) setelah wallet target close.
+Finds wallets that open/close LP in the same pool with the EXACT same tick
+ranges a few seconds after the target wallet (copy-LP bots), and how much of
+the pool token they dump after the target wallet closes.
 
-Dipakai dari CLI (di bawah) atau dari streamlit_app.py lewat analyze().
+Used from the CLI below or from streamlit_app.py via analyze().
 
-Contoh:
-  ALCHEMY_API_KEY=xxx python3 checker.py 0xWalletLu
-  python3 checker.py 0xWalletLu --events 10 --window 60
-  python3 checker.py 0xWalletLu --rpc https://base-mainnet.g.alchemy.com/v2/KEY
+Examples:
+  ALCHEMY_API_KEY=xxx python3 checker.py 0xYourWallet
+  python3 checker.py 0xYourWallet --events 10 --window 60
+  python3 checker.py 0xYourWallet --rpc https://base-mainnet.g.alchemy.com/v2/KEY
 """
 import argparse
 import json
@@ -29,8 +29,8 @@ TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 INITIALIZE = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"
 POOL_KEYS = "0x86b6be7d"  # PositionManager.poolKeys(bytes25)
 ZERO = "0x" + "0" * 40
-FULL_RANGE_TICK = 887000  # range full (min/max tick) terlalu umum, gampang kebetulan sama
-QUOTE_SYMBOLS = {"DAI", "WBTC", "CBBTC"}  # + yang ada "USD" / berakhiran "ETH"; nggak dihitung dump
+FULL_RANGE_TICK = 887000  # full-range positions are too common, easy to match by chance
+QUOTE_SYMBOLS = {"DAI", "WBTC", "CBBTC"}  # plus anything with "USD" / ending in "ETH"; not counted as dumps
 
 
 class RPCError(Exception):
@@ -38,7 +38,7 @@ class RPCError(Exception):
 
 
 class CheckerError(Exception):
-    """Error yang pesannya aman ditampilkan langsung ke user."""
+    """Error whose message is safe to show to the user as-is."""
 
 
 class RPC:
@@ -61,7 +61,7 @@ class RPC:
                     time.sleep(0.5 * 2 ** attempt)
                     continue
                 try:
-                    out = json.load(e)  # Alchemy ngirim error JSON di body HTTP 400
+                    out = json.load(e)  # Alchemy puts a JSON error in the HTTP 400 body
                 except ValueError:
                     raise RPCError(f"HTTP {e.code} on {method}") from e
             except (urllib.error.URLError, TimeoutError):
@@ -74,7 +74,7 @@ class RPC:
                     continue
                 raise RPCError(err.get("message", str(err)))
             return out["result"]
-        raise RPCError(f"{method} gagal terus setelah retry")
+        raise RPCError(f"{method} kept failing after retries")
 
 
 def signed(word):
@@ -86,8 +86,16 @@ def short(addr):
     return addr[:8] + "…" + addr[-6:]
 
 
+def compact(v):
+    """801505 -> 801.5K, 3134003 -> 3.1M, 705.77 -> 705.77."""
+    for div, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(v) >= div:
+            return f"{v / div:.1f}".removesuffix(".0") + suffix
+    return f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
 def fmt_amounts(amounts):
-    return ", ".join(f"{v:,.0f} {sym}" for sym, v in amounts.items() if v) or "-"
+    return " · ".join(f"{compact(v)} {sym}" for sym, v in amounts.items() if v) or "–"
 
 
 def is_quote(symbol):
@@ -105,7 +113,7 @@ class Checker:
         self.pools = {}
 
     def currencies(self, position_manager, pool, fallback):
-        """[currency0, currency1] pool V4; ZERO = native ETH."""
+        """[currency0, currency1] of a V4 pool; ZERO = native ETH."""
         if pool not in self.pools:
             found = None
             if position_manager:
@@ -139,7 +147,7 @@ class Checker:
         return latest, (t1 - t0) / span
 
     def lp_nft_txs(self, limit):
-        """Tx hash tempat wallet mint/burn NFT (kandidat open/close LP), terbaru dulu."""
+        """Tx hashes where the wallet minted/burned an NFT (LP open/close candidates), newest first."""
         blocks = {}
         directions = ({"fromAddress": ZERO, "toAddress": self.wallet},
                       {"fromAddress": self.wallet, "toAddress": ZERO})
@@ -160,7 +168,7 @@ class Checker:
         return sorted(blocks, key=blocks.get, reverse=True)
 
     def lp_actions(self, hashes, limit):
-        """Ambil event ModifyLiquidity dari tx wallet, dikelompokkan per tx."""
+        """Read ModifyLiquidity events from the wallet's txs, grouped per tx."""
         actions = []
         for h in hashes:
             rcpt = self.rpc("eth_getTransactionReceipt", [h])
@@ -172,7 +180,7 @@ class Checker:
             for l in mods:
                 d = l["data"][2:]
                 lo, hi, delta = signed(d[0:64]), signed(d[64:128]), signed(d[128:192])
-                if delta == 0:  # cuma collect fee
+                if delta == 0:  # fee collection only
                     continue
                 groups[(l["topics"][1], "OPEN" if delta > 0 else "CLOSE")].add((lo, hi))
             if not groups:
@@ -180,9 +188,9 @@ class Checker:
             pool_tokens, received, position_manager = set(), defaultdict(int), None
             for l in rcpt["logs"]:
                 if l["topics"] and l["topics"][0] == TRANSFER and len(l["topics"]) == 4:
-                    position_manager = position_manager or l["address"].lower()  # NFT posisi
+                    position_manager = position_manager or l["address"].lower()  # position NFT
                 if l["topics"] and l["topics"][0] == INITIALIZE and l["address"].lower() == pool_manager:
-                    # pool baru dibuat di tx yang sama (launchpad): currency langsung dari event
+                    # pool created in the same tx (launchpad): take currencies from the event
                     self.pools[l["topics"][1]] = ["0x" + l["topics"][2][-40:], "0x" + l["topics"][3][-40:]]
                 if not l["topics"] or l["topics"][0] != TRANSFER or len(l["topics"]) != 3:
                     continue
@@ -221,7 +229,7 @@ class Checker:
                 new = int(m.group(1)) if m else max(1, self.log_chunk // 4)
                 if new >= self.log_chunk:
                     raise
-                self.log_chunk = new  # turunin ukuran chunk (free tier Alchemy: 10 block)
+                self.log_chunk = new  # shrink the chunk (Alchemy free tier: 10 blocks)
                 continue
             b = to + 1
         return logs
@@ -245,26 +253,27 @@ class Checker:
 
 def analyze(rpc_url, wallet, events=8, window=60.0, chunk=2000, delay=0.12,
             include_full_range=False, progress=None):
-    """Jalanin pengecekan dan balikin hasilnya sebagai dict (tanpa print)."""
+    """Run the check and return the result as a dict (no printing)."""
     if not re.fullmatch(r"0x[0-9a-fA-F]{40}", wallet or ""):
-        raise CheckerError("Alamat wallet nggak valid.")
+        raise CheckerError("That doesn't look like a wallet address (0x followed by 40 hex characters).")
     progress = progress or (lambda frac, msg: None)
 
     c = Checker(RPC(rpc_url, delay), wallet, chunk)
     latest, bt = c.block_time()
     window_blocks = max(1, math.ceil(window / bt))
 
-    progress(0.02, "Nyari tx open/close LP...")
+    progress(0.02, "Finding recent LP opens and closes…")
     actions = c.lp_actions(c.lp_nft_txs(events), events)
     if not actions:
-        raise CheckerError("Nggak nemu aktivitas LP Uniswap V4 (mint/burn NFT posisi) di wallet ini.")
+        raise CheckerError("No Uniswap V4 LP activity found for this wallet "
+                           "(no position NFTs minted or burned).")
     actions.sort(key=lambda a: a["block"])
 
     followers = defaultdict(lambda: {"actions": set(), "opens": 0, "closes": 0, "delays": [],
                                      "ranges": 0, "dumped": defaultdict(float)})
     rows = []
     for i, a in enumerate(actions, 1):
-        progress(0.05 + 0.93 * (i - 1) / len(actions), f"Scan aksi LP {i}/{len(actions)}...")
+        progress(0.05 + 0.93 * (i - 1) / len(actions), f"Scanning LP action {i} of {len(actions)}…")
         end = min(latest, a["block"] + window_blocks)
         pools = sorted({pool for pool, _ in a["groups"]})
         logs = c.get_logs(a["pool_manager"], [MODIFY_LIQUIDITY, pools], a["block"], end)
@@ -309,8 +318,8 @@ def analyze(rpc_url, wallet, events=8, window=60.0, chunk=2000, delay=0.12,
 
     def level(f):
         if len(f["actions"]) >= 2:
-            return "COPY"
-        return "CURIGA" if f["ranges"] >= 2 else "lemah"
+            return "COPIER"
+        return "SUSPECT" if f["ranges"] >= 2 else "WEAK"
 
     summary = [{"wallet": who, "status": level(f), "copied": len(f["actions"]),
                 "opens": f["opens"], "closes": f["closes"],
@@ -319,88 +328,98 @@ def analyze(rpc_url, wallet, events=8, window=60.0, chunk=2000, delay=0.12,
                for who, f in followers.items()]
     summary.sort(key=lambda s: (-s["copied"], s["median_delay"]))
 
-    copy = [s for s in summary if s["status"] == "COPY"]
-    sus = [s for s in summary if s["status"] == "CURIGA"]
+    copiers = [s for s in summary if s["status"] == "COPIER"]
+    suspects = [s for s in summary if s["status"] == "SUSPECT"]
     dumped_total = defaultdict(float)
     for s in summary:
         for sym, v in s["dumped"].items():
             dumped_total[sym] += v
-    copy_delays = [d for w in copy for d in followers[w["wallet"]]["delays"]]
-    progress(1.0, "Selesai")
+    copier_delays = [d for w in copiers for d in followers[w["wallet"]]["delays"]]
+    progress(1.0, "Done")
     return {
         "wallet": c.wallet, "block_time": bt, "window": window, "n_actions": len(actions),
         "actions": rows, "followers": summary,
-        "verdict": "COPY" if copy else "CURIGA" if sus else "LEMAH" if summary else "AMAN",
-        "n_copy": len(copy), "n_sus": len(sus),
-        "median_delay": statistics.median(copy_delays) if copy_delays else None,
+        "verdict": "COPIED" if copiers else "SUSPECT" if suspects else "WEAK" if summary else "CLEAN",
+        "n_copy": len(copiers), "n_sus": len(suspects),
+        "median_delay": statistics.median(copier_delays) if copier_delays else None,
         "dumped_total": dict(dumped_total), "rpc_calls": c.rpc.calls,
     }
 
 
+def plural(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
 def verdict_text(res):
-    if res["verdict"] == "COPY":
-        text = (f"🚨 DI-COPYTRADE: {res['n_copy']} wallet ngikutin open/close LP "
-                f"(median {res['median_delay']:.1f} dtk setelah aksi lu).")
-        return text + (f" +{res['n_sus']} wallet curiga." if res["n_sus"] else "")
-    if res["verdict"] == "CURIGA":
-        return (f"⚠️ CURIGA: {res['n_sus']} wallet niru beberapa range lu, tapi baru sekali kejadian. "
-                "Coba cek lagi dengan jumlah aksi lebih banyak.")
-    if res["verdict"] == "LEMAH":
-        return "ℹ️ Cuma ada kecocokan 1 range sekali-sekali, kemungkinan kebetulan."
-    return f"✅ AMAN: nggak ketemu wallet yang ngikutin {res['n_actions']} aksi LP terakhir."
+    if res["verdict"] == "COPIED":
+        n, s = res["n_copy"], res["n_sus"]
+        text = (f"{plural(n, 'wallet')} {'keeps' if n == 1 else 'keep'} copying these LP moves, "
+                f"usually {res['median_delay']:.1f} s after each one.")
+        return text + (f" {plural(s, 'more wallet')} {'looks' if s == 1 else 'look'} suspicious." if s else "")
+    if res["verdict"] == "SUSPECT":
+        return (f"{plural(res['n_sus'], 'wallet')} copied several of these exact ranges, but only once so far. "
+                "Check more LP actions to confirm.")
+    if res["verdict"] == "WEAK":
+        return "Only one-off single-range matches. Probably a coincidence."
+    return f"Nobody copied the last {plural(res['n_actions'], 'LP action')}."
 
 
 def print_report(res):
-    print(f"\nWallet {res['wallet']}\n{res['n_actions']} aksi LP terakhir, window {res['window']:.0f} dtk\n")
+    print(f"\nWallet {res['wallet']}\nLast {plural(res['n_actions'], 'LP action')}, "
+          f"watching {res['window']:.0f} s after each\n")
     for a in res["actions"]:
         when = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(a["ts"]))
-        print(f"[{a['n']}] {when} UTC  {a['side']:<5} {a['pool']}  {a['ranges']} range  tx {a['tx'][:12]}…")
+        print(f"[{a['n']}] {when} UTC  {a['side']:<5} {a['pool']}  {plural(a['ranges'], 'range')}  "
+              f"tx {a['tx'][:12]}…")
         if a["received"]:
-            print("    lu terima: " + ", ".join(f"{v:,.2f} {s}" for s, v in a["received"].items()))
+            print("    you received: " + fmt_amounts(a["received"]))
         if not a["followers"]:
-            print("    ✅ nggak ada yang ngikutin\n")
+            print("    ✅ nobody copied this\n")
             continue
         delays = [f["delay"] for f in a["followers"]]
-        print(f"    🚨 {len(delays)} wallet ikut {a['side']} range yang sama, "
-              f"delay {min(delays):.1f}–{max(delays):.1f} dtk")
+        print(f"    🚨 {plural(len(delays), 'wallet')} made the same {a['side'].lower()}, "
+              f"{min(delays):.1f}–{max(delays):.1f} s later")
         for f in a["followers"]:
-            line = f"      {short(f['wallet'])}  +{f['delay']:5.1f}s  {f['matched']}/{a['ranges']} range"
+            line = f"      {short(f['wallet'])}  +{f['delay']:5.1f} s  {f['matched']}/{a['ranges']} ranges"
             if f["dumped"]:
-                line += "  lepas " + fmt_amounts(f["dumped"])
+                line += "  dumped " + fmt_amounts(f["dumped"])
             print(line)
         print()
 
     if res["followers"]:
-        print("=" * 96)
-        print(f"{'wallet':<44} {'status':<7} {'ikut':>5} {'open':>5} {'close':>6} {'median':>8}  dump setelah lu close")
-        print("-" * 96)
+        print("=" * 100)
+        print(f"{'wallet':<44} {'status':<8} {'copied':>6} {'opens':>6} {'closes':>7} {'median':>8}  "
+              "dumped after your closes")
+        print("-" * 100)
         for f in res["followers"]:
-            print(f"{f['wallet']:<44} {f['status']:<7} {f['copied']:>3}/{res['n_actions']:<1} {f['opens']:>5} "
-                  f"{f['closes']:>6} {f['median_delay']:>7.1f}s  {fmt_amounts(f['dumped'])}")
-        print("=" * 96)
-    print("\n" + verdict_text(res))
-    print("Tips: close LP + swap dalam 1 tx (multicall) biar nggak keduluan dump, atau ganti wallet.")
+            print(f"{f['wallet']:<44} {f['status']:<8} {f['copied']:>4}/{res['n_actions']:<1} {f['opens']:>6} "
+                  f"{f['closes']:>7} {f['median_delay']:>6.1f} s  {fmt_amounts(f['dumped'])}")
+        print("=" * 100)
+    icon = {"COPIED": "🚨", "SUSPECT": "⚠️ ", "WEAK": "ℹ️ ", "CLEAN": "✅"}[res["verdict"]]
+    print(f"\n{icon} {res['verdict']}: {verdict_text(res)}")
+    print("Tip: close and swap in one transaction (multicall) so bots can't dump before you, "
+          "or rotate wallets.")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Cek apakah LP wallet lu di-copytrade (Uniswap V4).")
+    ap = argparse.ArgumentParser(description="Check whether a wallet's Uniswap V4 LP is being copy-traded.")
     ap.add_argument("wallet")
     ap.add_argument("--network", default="robinhood-mainnet",
-                    help="nama network Alchemy (default: robinhood-mainnet)")
-    ap.add_argument("--rpc", help="URL RPC Alchemy lengkap (override --network/ALCHEMY_API_KEY)")
-    ap.add_argument("--events", type=int, default=8, help="jumlah tx open/close LP terakhir yang dicek")
-    ap.add_argument("--window", type=float, default=60, help="detik setelah aksi lu yang di-scan")
-    ap.add_argument("--chunk", type=int, default=2000, help="block per eth_getLogs (turun otomatis)")
-    ap.add_argument("--delay", type=float, default=0.12, help="jeda antar request (detik)")
+                    help="Alchemy network name (default: robinhood-mainnet)")
+    ap.add_argument("--rpc", help="full Alchemy RPC URL (overrides --network/ALCHEMY_API_KEY)")
+    ap.add_argument("--events", type=int, default=8, help="how many recent LP open/close txs to check")
+    ap.add_argument("--window", type=float, default=60, help="seconds to watch after each of your actions")
+    ap.add_argument("--chunk", type=int, default=2000, help="blocks per eth_getLogs call (shrinks automatically)")
+    ap.add_argument("--delay", type=float, default=0.12, help="pause between requests, in seconds")
     ap.add_argument("--include-full-range", action="store_true",
-                    help="ikut hitung posisi full range (rawan false positive)")
+                    help="also match full-range positions (prone to false positives)")
     args = ap.parse_args()
 
     url = args.rpc
     if not url:
         key = os.environ.get("ALCHEMY_API_KEY")
         if not key:
-            sys.exit("Set ALCHEMY_API_KEY atau kasih --rpc https://<network>.g.alchemy.com/v2/<key>")
+            sys.exit("Set ALCHEMY_API_KEY or pass --rpc https://<network>.g.alchemy.com/v2/<key>")
         url = f"https://{args.network}.g.alchemy.com/v2/{key}"
 
     def progress(frac, msg):
@@ -412,7 +431,7 @@ def main():
     except (CheckerError, RPCError) as e:
         sys.exit(str(e))
     print_report(res)
-    print(f"({res['rpc_calls']} RPC call)", file=sys.stderr)
+    print(f"({res['rpc_calls']} RPC calls)", file=sys.stderr)
 
 
 if __name__ == "__main__":

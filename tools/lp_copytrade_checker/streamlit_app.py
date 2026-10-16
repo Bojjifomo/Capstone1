@@ -1,9 +1,9 @@
-"""Web UI Streamlit untuk LP copy-trade checker.
+"""Streamlit web UI for the LP copy-trade checker.
 
-Jalanin lokal (dari root repo, biar tema di .streamlit/config.toml kebaca):
+Run locally from the repo root (so the theme in .streamlit/config.toml is picked up):
   ALCHEMY_API_KEY=xxx streamlit run tools/lp_copytrade_checker/streamlit_app.py
-Deploy ke Streamlit Community Cloud: isi ALCHEMY_API_KEY di Secrets (opsional;
-pengunjung juga bisa isi key sendiri di form).
+On Streamlit Community Cloud, ALCHEMY_API_KEY in Secrets is optional:
+visitors can also paste their own key in the form.
 """
 import html
 import os
@@ -15,7 +15,8 @@ import time
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from checker import CheckerError, RPCError, analyze, fmt_amounts, short, verdict_text  # noqa: E402
+from checker import (CheckerError, RPCError, analyze, fmt_amounts, plural, short,  # noqa: E402
+                     verdict_text)
 
 NETWORKS = {
     "Robinhood Chain": "robinhood-mainnet",
@@ -25,10 +26,10 @@ NETWORKS = {
     "Unichain": "unichain-mainnet",
     "BNB Chain": "bnb-mainnet",
 }
-CACHE_TTL = 600  # detik; wallet yang sama nggak di-scan ulang dalam 10 menit
+CACHE_TTL = 600  # seconds; the same wallet isn't rescanned within 10 minutes
 
-# Gaya gelap hijau-teal ala LP Web. Warna juga diset di .streamlit/config.toml,
-# tapi CSS ini yang jaga tampilan tetap sama walau config nggak kebaca.
+# Dark teal look matching the LP Web widget. Colors are also set in
+# .streamlit/config.toml, but this CSS keeps the look even if that file isn't read.
 CSS = """
 <style>
 :root {
@@ -51,7 +52,7 @@ CSS = """
   padding: .12rem .65rem; font-size: .74rem; font-weight: 500; letter-spacing: 0; text-transform: none;
 }
 .title { font-size: 2.3rem; font-weight: 800; color: var(--text); margin: .35rem 0 .2rem; line-height: 1.15; }
-.sub { color: var(--muted); font-size: 1.02rem; margin-bottom: 1.2rem; }
+.sub { color: var(--muted); font-size: 1.02rem; margin-bottom: 1.2rem; max-width: 46rem; }
 [data-testid="stForm"] { background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
 [data-testid="stFormSubmitButton"] button, .stButton button {
   background: #15302a; color: var(--mint-soft); border: 1px solid #25493f; font-weight: 600;
@@ -75,7 +76,8 @@ CSS = """
   border-right: 1px solid var(--line);
 }
 .strip div:last-child { border-right: 0; }
-.note { padding: .75rem 1.6rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; }
+.note { padding: .75rem 1.6rem; border-top: 1px solid var(--line); color: var(--text); font-size: .95rem; }
+.note.muted { color: var(--muted); font-size: .88rem; }
 .note b { color: var(--text); }
 table.lp { width: 100%; border-collapse: collapse; font-size: .9rem; }
 table.lp th {
@@ -89,26 +91,32 @@ table.lp th:first-child, table.lp td:first-child { padding-left: 1.6rem; }
 table.lp th:last-child, table.lp td:last-child { padding-right: 1.6rem; min-width: 11rem; }
 table.lp tr:last-child td { border-bottom: 0; }
 table.lp .num { text-align: right; font-variant-numeric: tabular-nums; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; white-space: nowrap; }
 table.lp td.num { white-space: nowrap; }
-.badge { font-size: .72rem; font-weight: 700; letter-spacing: .06em; padding: .15rem .5rem; border-radius: 6px; }
-.badge.COPY { color: var(--red); background: #3a1c1f; }
-.badge.CURIGA { color: var(--amber); background: #3a2f12; }
-.badge.lemah { color: var(--muted); background: #1a2424; }
-.section { color: var(--mint); font-size: .78rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; margin: 1.4rem 0 .4rem; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; white-space: nowrap; }
+.badge { font-size: .74rem; font-weight: 700; letter-spacing: .04em; padding: .15rem .55rem; border-radius: 6px; }
+.badge.COPIER { color: var(--red); background: #3a1c1f; }
+.badge.SUSPECT { color: var(--amber); background: #3a2f12; }
+.badge.WEAK { color: var(--muted); background: #1a2424; }
+.section { color: var(--mint); font-size: .78rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; margin: 1.6rem 0 .4rem; }
+.legend { color: var(--muted); font-size: .84rem; line-height: 1.6; margin: -.4rem 0 .8rem; }
+.legend b { color: var(--text); font-weight: 600; }
+.meta { color: var(--muted); font-size: .86rem; margin: .1rem 0 .6rem; }
+.meta b { color: var(--text); font-weight: 600; }
 @media (max-width: 640px) {
   .card-head { flex-direction: column; } .right { text-align: left; }
-  table.lp th, table.lp td, .card-head, .note { padding-left: .9rem; padding-right: .9rem; }
+  table.lp th:first-child, table.lp td:first-child, .card-head, .note { padding-left: .9rem; }
+  table.lp th:last-child, table.lp td:last-child, .card-head, .note { padding-right: .9rem; }
 }
 </style>
 """
 
 VERDICT_STYLE = {
-    "COPY": ("neg", "DI-COPYTRADE"),
-    "CURIGA": ("warn", "CURIGA"),
-    "LEMAH": ("muted", "KEMUNGKINAN KEBETULAN"),
-    "AMAN": ("pos", "AMAN"),
+    "COPIED": ("neg", "COPY-TRADED"),
+    "SUSPECT": ("warn", "SUSPICIOUS"),
+    "WEAK": ("muted", "PROBABLY CHANCE"),
+    "CLEAN": ("pos", "ALL CLEAR"),
 }
+STATUS_LABEL = {"COPIER": "Copier", "SUSPECT": "Suspect", "WEAK": "Weak"}
 
 st.set_page_config(page_title="LP Copy-Trade Checker", page_icon="🕵️", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
@@ -121,19 +129,23 @@ def esc(value):
 def server_key():
     try:
         key = st.secrets.get("ALCHEMY_API_KEY")
-    except Exception:  # belum ada secrets.toml
+    except Exception:  # no secrets.toml
         key = None
     return key or os.environ.get("ALCHEMY_API_KEY")
 
 
 @st.cache_resource
 def shared():
-    # Satu scan sekali jalan biar limit Alchemy free tier nggak jebol kalau rame
+    # One scan at a time so the free-tier Alchemy limit holds up when traffic spikes
     return {"lock": threading.Lock(), "cache": {}}
 
 
-def utc(ts):
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts))
+def when(ts):
+    return time.strftime("%b %d, %H:%M:%S UTC", time.gmtime(ts))
+
+
+def seconds(v):
+    return f"{v:.1f} s"
 
 
 def run_check(wallet, network, events, window, api_key, own_key):
@@ -144,11 +156,11 @@ def run_check(wallet, network, events, window, api_key, own_key):
         return hit[1]
 
     url = f"https://{network}.g.alchemy.com/v2/{api_key}"
-    bar = st.progress(0.0, text="Mulai...")
-    # Antrian cuma buat key server; yang bawa key sendiri langsung jalan
+    bar = st.progress(0.0, text="Starting…")
+    # Only scans on the shared key wait in line; visitors with their own key go straight through
     lock = None if own_key else store["lock"]
     if lock and not lock.acquire(blocking=False):
-        bar.progress(0.0, text="Lagi ada yang ngecek wallet lain, lu masuk antrian...")
+        bar.progress(0.0, text="Someone else is running a check. You're next in line…")
         lock.acquire()
     try:
         res = analyze(url, wallet, events=events, window=window,
@@ -164,15 +176,19 @@ def run_check(wallet, network, events, window, api_key, own_key):
 def rpc_error_text(err, network):
     msg = str(err)
     if "authenticated" in msg.lower() or "api key" in msg.lower() or "HTTP 401" in msg:
-        return "API key Alchemy ditolak. Cek lagi key-nya (copy dari dashboard.alchemy.com)."
+        return "Alchemy rejected this API key. Double-check it on dashboard.alchemy.com."
     if "not enabled" in msg:
-        return (f"Network {network} belum di-enable di app Alchemy lu. "
-                "Buka dashboard.alchemy.com → app lu → Networks, aktifin, terus coba lagi.")
-    return f"RPC error: {msg}"
+        return (f"{network} isn't enabled on your Alchemy app. Open dashboard.alchemy.com → "
+                "your app → Networks, turn it on, then try again.")
+    return f"Something went wrong talking to Alchemy: {msg}"
+
+
+def wallet_cell(addr):
+    return f'<span class="mono" title="{esc(addr)}">{esc(short(addr))}</span>'
 
 
 def table(headers, rows):
-    """headers: [(label, is_num)], rows: list of cell HTML (sudah di-escape)."""
+    """headers: [(label, is_num)], rows: lists of cell HTML (already escaped)."""
     head = "".join(f'<th class="{"num" if num else ""}">{esc(label)}</th>' for label, num in headers)
     body = "".join(
         "<tr>" + "".join(f'<td class="{"num" if num else ""}">{cell}</td>'
@@ -184,25 +200,27 @@ def table(headers, rows):
 def render(res):
     tone, label = VERDICT_STYLE[res["verdict"]]
     n_follow = res["n_copy"] + res["n_sus"]
-    delay = f"median {res['median_delay']:.1f} dtk setelah aksi lu" if res["median_delay"] is not None else ""
-    dumped = (f'<div class="note"><b>Dilepas follower setelah lu close:</b> {esc(fmt_amounts(res["dumped_total"]))}</div>'
-              if res["dumped_total"] else "")
+    delay = res["median_delay"]
+    react = f"they react in about {seconds(delay)}" if delay is not None else ""
+    dumped = (f'<div class="note muted"><b>Dumped by copiers after your closes:</b> '
+              f'{esc(fmt_amounts(res["dumped_total"]))}</div>' if res["dumped_total"] else "")
     st.html(f"""
 <div class="card">
   <div class="card-head">
     <div>
-      <div class="big">{n_follow} wallet ngikutin</div>
-      <div class="small">{esc(short(res['wallet']))} · {res['n_actions']} aksi LP dicek · window {res['window']:.0f} dtk</div>
+      <div class="big">{plural(n_follow, 'copier')}</div>
+      <div class="small">{esc(short(res['wallet']))} · last {plural(res['n_actions'], 'LP action')} ·
+        watched {res['window']:.0f} s after each</div>
     </div>
     <div class="right">
       <div class="big {tone}">{label}</div>
-      <div class="small {tone}">{esc(delay)}</div>
+      <div class="small {tone}">{esc(react)}</div>
     </div>
   </div>
   <div class="strip">
-    <div class="neg">COPY · {res['n_copy']}</div>
-    <div class="warn">CURIGA · {res['n_sus']}</div>
-    <div class="pos">MEDIAN · {f"{res['median_delay']:.1f} dtk" if res['median_delay'] is not None else "-"}</div>
+    <div class="neg">COPIERS · {res['n_copy']}</div>
+    <div class="warn">SUSPECTS · {res['n_sus']}</div>
+    <div class="pos">TYPICAL DELAY · {seconds(delay) if delay is not None else "–"}</div>
   </div>
   <div class="note">{esc(verdict_text(res))}</div>
   {dumped}
@@ -210,75 +228,86 @@ def render(res):
 
     if res["followers"]:
         rows = [[
-            f'<span class="mono">{esc(f["wallet"])}</span>',
-            f'<span class="badge {esc(f["status"])}">{esc(f["status"])}</span>',
-            f'{f["copied"]}/{res["n_actions"]}',
+            wallet_cell(f["wallet"]),
+            f'<span class="badge {esc(f["status"])}">{STATUS_LABEL[f["status"]]}</span>',
+            f'{f["copied"]} of {res["n_actions"]}',
             f'<span class="pos">{f["opens"]}</span> / <span class="neg">{f["closes"]}</span>',
-            f'{f["median_delay"]:.1f} dtk',
+            seconds(f["median_delay"]),
             esc(fmt_amounts(f["dumped"])),
         ] for f in res["followers"]]
-        st.html('<div class="section">◆ Wallet yang ngikutin</div><div class="card">'
-                + table([("Wallet", False), ("Status", False), ("Ikut", True),
-                         ("Open / Close", True), ("Median delay", True), ("Dump setelah lu close", False)], rows)
-                + "</div>")
+        st.html('<div class="section">◆ Who\'s copying</div><div class="card">'
+                + table([("Wallet", False), ("Status", False), ("Copied", True),
+                         ("Opens / Closes", True), ("Typical delay", True),
+                         ("Dumped after your closes", False)], rows)
+                + "</div>"
+                '<div class="legend"><b>Copier</b>: mirrored 2 or more of your LP actions. '
+                "<b>Suspect</b>: copied 2+ of your exact ranges, once. "
+                "<b>Weak</b>: a single matching range, could be chance. "
+                "<b>Delay</b>: time between your transaction and theirs.</div>")
+        with st.expander("Full wallet addresses (copy)"):
+            st.code("\n".join(f["wallet"] for f in res["followers"]), language=None)
 
-    st.html('<div class="section">◆ Timeline aksi LP</div>')
+    st.html('<div class="section">◆ Your recent LP actions</div>')
     for a in reversed(res["actions"]):
         n = len(a["followers"])
-        pool = re.sub(r"[^\w./$ -]", "", a["pool"])  # label expander dirender markdown
-        flag = f"🚨 {n} wallet ngikutin" if n else "✅ aman"
-        with st.expander(f"{utc(a['ts'])} UTC · {a['side']} {pool} · {a['ranges']} range · {flag}"):
-            info = f'<div class="small mono">tx {esc(a["tx"])}</div>'
+        pool = re.sub(r"[^\w./$ -]", "", a["pool"])  # expander labels are rendered as markdown
+        verb = "Opened" if a["side"] == "OPEN" else "Closed"
+        flag = f"🚨 {plural(n, 'wallet')} copied" if n else "✅ nobody copied"
+        with st.expander(f"{when(a['ts'])} · {verb} {pool} · {plural(a['ranges'], 'range')} · {flag}"):
+            info = f'<div class="meta">Transaction <span class="mono">{esc(a["tx"])}</span></div>'
             if a["received"]:
-                got = ", ".join(f"{v:,.2f} {s}" for s, v in a["received"].items())
-                info += f'<div class="small">Lu terima: {esc(got)}</div>'
+                info += f'<div class="meta">You received <b>{esc(fmt_amounts(a["received"]))}</b></div>'
             rows = [[
-                f'<span class="mono">{esc(f["wallet"])}</span>',
-                f'+{f["delay"]:.1f} dtk',
-                f'{f["matched"]}/{a["ranges"]}',
+                wallet_cell(f["wallet"]),
+                f'+{seconds(f["delay"])}',
+                f'{f["matched"]} of {a["ranges"]}',
                 esc(fmt_amounts(f["dumped"])),
             ] for f in a["followers"]]
-            st.html(info + (f'<div class="card">{table([("Wallet", False), ("Delay", True), ("Range sama", True), ("Token dilepas", False)], rows)}</div>' if rows else ""))
+            table_html = table([("Wallet", False), ("Delay", True), ("Same ranges", True),
+                                ("Dumped", False)], rows) if rows else ""
+            st.html(info + (f'<div class="card">{table_html}</div>' if rows else ""))
 
-    with st.expander("Tips biar nggak diguyur bot"):
+    with st.expander("How to avoid getting dumped on"):
         st.markdown(
-            "- **Close LP + swap dalam 1 transaksi** (multicall). Bot baru bisa bereaksi setelah tx lu "
-            "masuk block, jadi kalau jualnya di tx yang sama, mereka nggak bisa dump duluan.\n"
-            "- **Ganti wallet** secara berkala. Bot ngikutin alamat wallet lu.\n"
-            "- Kalau nggak buru-buru, **tunggu dump-nya selesai** baru jual token hasil close."
+            "- **Close and swap in one transaction** (multicall). Bots can only react after your "
+            "transaction lands, so they can't dump before your sell.\n"
+            "- **Rotate wallets.** The bots follow your wallet address.\n"
+            "- **No rush? Wait it out.** Let the dump finish before selling what you got from the close."
         )
-    st.caption(f"Block time ~{res['block_time']:.3f} dtk · {res['rpc_calls']} RPC call")
+    st.caption(f"Block time ≈ {res['block_time']:.3f} s · {res['rpc_calls']} RPC calls")
 
 
 st.html("""
 <div class="eyebrow">◆ LP Copy-Trade Checker <span class="pill">Uniswap V4</span></div>
-<div class="title">Ada yang nyontek LP lu?</div>
-<div class="sub">Cek bot yang ngikutin open/close LP sebuah wallet, lalu dump token begitu wallet itu close.</div>
+<div class="title">Is someone copying your LP?</div>
+<div class="sub">Find bots that mirror a wallet's LP opens and closes, then dump the token right after it closes.</div>
 """)
 
 has_server_key = bool(server_key())
 with st.form("check"):
-    wallet = st.text_input("Wallet address", placeholder="0x...").strip()
+    wallet = st.text_input("Wallet address", placeholder="0x…").strip()
     user_key = st.text_input(
-        "Alchemy API key" + (" (opsional)" if has_server_key else ""),
+        "Alchemy API key" + (" (optional)" if has_server_key else ""),
         type="password",
-        placeholder="Kosongin buat pakai key bawaan" if has_server_key else "Paste API key Alchemy lu",
-        help="Bikin gratis di dashboard.alchemy.com, lalu enable network yang mau dicek "
-             "(misalnya Robinhood Chain). Key cuma dipakai buat scan ini dan nggak disimpan.",
+        placeholder="Leave empty to use the built-in key" if has_server_key else "Paste your Alchemy API key",
+        help="Get a free key at dashboard.alchemy.com and enable the chain you want to check "
+             "(for example Robinhood Chain). Your key is only used for this check and is never stored.",
     ).strip()
     c1, c2, c3 = st.columns(3)
     network = c1.selectbox("Chain", list(NETWORKS))
-    events = c2.slider("Jumlah aksi LP terakhir", 3, 15, 6)
-    window = c3.slider("Window scan (detik setelah aksi)", 15, 120, 60, step=5)
-    submitted = st.form_submit_button("Cek wallet", type="primary")
+    events = c2.slider("LP actions to check", 3, 15, 6,
+                       help="How many of the wallet's most recent LP opens and closes to scan.")
+    window = c3.slider("Seconds to watch after each action", 15, 120, 60, step=5,
+                       help="Copy bots usually react within 10 seconds.")
+    submitted = st.form_submit_button("Check wallet", type="primary")
 
 if submitted:
     key = user_key or server_key()
     if not key:
-        st.error("Isi Alchemy API key dulu. Bikin gratis di dashboard.alchemy.com "
-                 "dan enable network Robinhood Chain di app-nya.")
+        st.error("Add an Alchemy API key first. You can get one free at dashboard.alchemy.com "
+                 "(enable Robinhood Chain on the app).")
     elif not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", key):
-        st.error("Format API key nggak valid. Copy ulang key-nya dari dashboard Alchemy.")
+        st.error("That API key doesn't look right. Copy it again from your Alchemy dashboard.")
     else:
         try:
             st.session_state["result"] = run_check(wallet, NETWORKS[network], events, window,
@@ -293,5 +322,5 @@ if submitted:
 if "result" in st.session_state:
     render(st.session_state["result"])
 else:
-    st.caption("Scan butuh ~1–3 menit di Alchemy free tier. Hasil disimpan 10 menit per wallet. "
-               "API key yang lu isi cuma dipakai buat scan ini, nggak disimpan.")
+    st.caption("A check takes about 1–3 minutes on Alchemy's free tier. Results are cached for "
+               "10 minutes per wallet. Your API key is only used for this check and is never stored.")

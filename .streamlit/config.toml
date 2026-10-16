@@ -1,4 +1,4 @@
-# Tema untuk tools/lp_copytrade_checker/streamlit_app.py (Streamlit Cloud baca dari root repo)
+# Theme for tools/lp_copytrade_checker/streamlit_app.py (Streamlit Cloud reads it from the repo root)
 [theme]
 base = "dark"
 primaryColor = "#34d399"

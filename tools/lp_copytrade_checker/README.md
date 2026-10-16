@@ -1,94 +1,96 @@
 # LP Copy-Trade Checker (Uniswap V4)
 
-Ngecek apakah ada bot yang **ngikutin open/close LP** sebuah wallet, lalu dump token setelah wallet itu close.
-Bisa dipakai lewat **web (Streamlit)** atau **CLI**.
+Find out whether bots are **copying a wallet's LP opens and closes**, then dumping the token right after it closes.
+Works as a **web app (Streamlit)** or from the **command line**.
 
-## Cara kerja
+## How it works
 
-1. Ambil N tx open/close LP terakhir wallet (mint/burn NFT posisi Uniswap V4).
-2. Untuk tiap aksi, scan event `ModifyLiquidity` di PoolManager selama `window` detik setelahnya.
-3. Wallet lain yang open/close di **pool yang sama dengan range tick yang persis sama** dicatat sebagai follower, lengkap dengan delay-nya.
-4. Setelah wallet target close, dihitung juga berapa token pool (selain stablecoin/ETH) yang follower lepas dalam window itu.
+1. Grab the wallet's most recent LP opens/closes (Uniswap V4 position NFT mints and burns).
+2. For each one, scan the PoolManager's `ModifyLiquidity` events for the next few seconds (the "window").
+3. Any other wallet that opens/closes in the **same pool with the exact same tick ranges** is recorded as a follower, along with how many seconds later it acted.
+4. After the wallet closes, count how much of the pool token (stablecoins and ETH excluded) each follower moves out during the window.
 
-Status follower:
+Follower status:
 
-| Status | Arti |
+| Status | Meaning |
 |---|---|
-| `COPY` | ngikutin minimal 2 aksi (misalnya open **dan** close) → hampir pasti bot copy-LP |
-| `CURIGA` | baru sekali, tapi niru ≥2 range |
-| `lemah` | cuma 1 range sekali, bisa jadi kebetulan |
+| `Copier` | Mirrored 2 or more of the wallet's LP actions (for example an open **and** a close). Almost certainly a copy-LP bot. |
+| `Suspect` | Copied 2+ of the wallet's exact ranges, but only once so far. |
+| `Weak` | A single matching range, once. Could be chance. |
 
-## Web (Streamlit)
+## Web app (Streamlit)
 
-Jalanin lokal dari **root repo** (biar tema gelap di `.streamlit/config.toml` kebaca):
+Run it locally from the **repo root** so the dark theme in `.streamlit/config.toml` is picked up:
 
 ```bash
 pip install -r tools/lp_copytrade_checker/requirements.txt
-export ALCHEMY_API_KEY=xxxx   # opsional, bisa juga diisi di form
+export ALCHEMY_API_KEY=xxxx   # optional; can also be entered in the form
 streamlit run tools/lp_copytrade_checker/streamlit_app.py
 ```
 
-Deploy gratis ke **Streamlit Community Cloud**:
+Deploy for free on **Streamlit Community Cloud**:
 
-1. Buka https://share.streamlit.io → login pakai GitHub → **Create app**.
-2. Repo: `bojjifomo/capstone1`, branch tempat folder ini berada, main file path:
+1. Go to https://share.streamlit.io → sign in with GitHub → **Create app**.
+2. Repo: `bojjifomo/capstone1`, the branch this folder is on, main file path
    `tools/lp_copytrade_checker/streamlit_app.py`.
-3. (Opsional tapi disaranin) **Advanced settings → Secrets**, isi:
+3. (Optional, recommended) **Advanced settings → Secrets**:
    ```toml
-   ALCHEMY_API_KEY = "key-alchemy-lu"
+   ALCHEMY_API_KEY = "your-alchemy-key"
    ```
-4. Deploy. Lu dapet URL `https://<nama-app>.streamlit.app`.
+4. Deploy. You'll get a `https://<app-name>.streamlit.app` URL.
 
-### Kolom Alchemy API key
+### The Alchemy API key field
 
-- Kalau `ALCHEMY_API_KEY` ada di Secrets, kolom key di form jadi **opsional**: pengunjung tinggal isi wallet.
-  Yang mau lebih cepat atau nggak mau antri bisa isi key sendiri.
-- Kalau Secrets kosong, kolom key **wajib** diisi tiap pengunjung.
-- Key yang diisi di form cuma dipakai buat scan itu. Nggak disimpan, nggak di-log, dan nggak ditampilin di halaman.
+- If `ALCHEMY_API_KEY` is set in Secrets, the key field is **optional**: visitors only need to paste a wallet.
+  Anyone who wants faster results, or doesn't want to wait in line, can enter their own key.
+- If Secrets is empty, every visitor has to enter a key.
+- A key entered in the form is only used for that check. It's never stored, logged, or shown on the page.
 
-API key Alchemy bisa dibikin gratis di https://dashboard.alchemy.com. Pastikan network yang mau dicek
-(misalnya **Robinhood Chain**) udah di-enable di app Alchemy-nya.
+You can create a free Alchemy key at https://dashboard.alchemy.com. Make sure the chain you want to check
+(for example **Robinhood Chain**) is enabled on that Alchemy app.
 
-### Share ke orang lain
+### Sharing the app
 
-Di app yang udah ke-deploy, klik **Share** (kanan atas) → set app jadi **public**, terus copy link-nya.
-Kalau repo-nya private, app defaultnya private juga, jadi pastiin setting ini diubah.
+On the deployed app, click **Share** (top right) → make the app **public**, then copy the link.
+If the repo is private, the app starts out private too, so this step is required.
 
-Supaya kuota key Secrets nggak jebol kalau web-nya rame:
+To keep the shared key within its quota when traffic picks up:
 
-- Hasil per wallet di-cache 10 menit.
-- Scan yang pakai key Secrets jalan satu-satu (antrian). Pengunjung yang isi key sendiri nggak ikut antri.
+- Results are cached for 10 minutes per wallet.
+- Checks that use the Secrets key run one at a time (a queue). Visitors with their own key skip the queue.
 
-### Tema
+### Theme
 
-Warna diatur di `.streamlit/config.toml` (root repo) dan CSS di `streamlit_app.py`:
-gelap hijau-teal, card, label mint.
+Colors live in `.streamlit/config.toml` (repo root) and the CSS in `streamlit_app.py`:
+dark teal background, cards, and mint accents, matching the LP Web widget.
 
-## CLI
+## Command line
 
 ```bash
 export ALCHEMY_API_KEY=xxxx
-python3 checker.py 0xWallet                         # default Robinhood Chain
+python3 checker.py 0xWallet                         # Robinhood Chain by default
 python3 checker.py 0xWallet --events 15 --window 90
-python3 checker.py 0xWallet --network base-mainnet  # chain lain yang ada Uniswap V4
+python3 checker.py 0xWallet --network base-mainnet  # any other chain with Uniswap V4
 ```
 
-CLI cuma pakai standard library Python. Opsi:
+The CLI only uses the Python standard library. Options:
 
-- `--events` jumlah tx LP terakhir yang dicek (default 8)
-- `--window` berapa detik setelah aksi yang di-scan (default 60)
-- `--include-full-range` ikut hitung posisi full range (default diskip karena rawan kebetulan)
-- `--rpc` URL Alchemy lengkap, kalau nggak mau pakai env var
+- `--events`: how many recent LP txs to check (default 8)
+- `--window`: seconds to watch after each action (default 60)
+- `--include-full-range`: also match full-range positions (skipped by default because they're often matched by chance)
+- `--rpc`: full Alchemy URL, if you'd rather not use the environment variable
 
-## Kecepatan
+## Speed
 
-Free tier Alchemy cuma ngizinin `eth_getLogs` 10 block per request. Robinhood Chain block-nya ~0,1 detik,
-jadi window 60 detik = ~60 request per aksi. Satu cek 6 aksi makan kira-kira 1–3 menit. Script otomatis
-nyesuaiin ukuran chunk. Dengan key Alchemy berbayar (PAYG), satu aksi cukup 1 request dan cek jadi jauh lebih cepat.
+Alchemy's free tier only allows `eth_getLogs` over 10 blocks per request. Robinhood Chain produces a block about
+every 0.1 s, so a 60-second window takes about 60 requests per action, and a 6-action check takes roughly
+1–3 minutes. The script adjusts the chunk size automatically. With a paid (PAYG) Alchemy key, each action takes a
+single request and checks are much faster.
 
-## Batasan
+## Limitations
 
-- Hanya Uniswap V4 (PoolManager `ModifyLiquidity`). V3 belum didukung.
-- Yang dideteksi cuma aksi yang mint/burn NFT posisi. Decrease sebagian tanpa burn nggak kebaca.
-- Follower diidentifikasi dari `tx.from`. Bot yang pakai relayer bisa kebaca sebagai alamat relayer-nya.
-- "Dump" = semua transfer keluar token pool (non-stable) dari wallet follower dalam window. Biasanya itu jualan, tapi bisa juga add LP ulang.
+- Uniswap V4 only (PoolManager `ModifyLiquidity`). V3 isn't supported yet.
+- Only actions that mint or burn a position NFT are detected. Partial decreases without a burn are missed.
+- Followers are identified by `tx.from`. Bots that use a relayer show up as the relayer's address.
+- "Dumped" means every transfer of the pool's non-stable token out of the follower's wallet during the window.
+  That's usually a sell, but it can also be a fresh LP deposit.
