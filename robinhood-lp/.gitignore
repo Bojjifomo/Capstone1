@@ -1,0 +1,4 @@
+# Never commit the secrets script: it holds the wallet private key.
+RH_Secrets.js
+RH Secrets.js
+.env
