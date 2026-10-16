@@ -1,0 +1,23 @@
+# Tema untuk tools/lp_copytrade_checker/streamlit_app.py (Streamlit Cloud baca dari root repo)
+[theme]
+base = "dark"
+primaryColor = "#34d399"
+backgroundColor = "#0c1312"
+secondaryBackgroundColor = "#141d1d"
+textColor = "#e6eeec"
+borderColor = "#1f2c2b"
+showWidgetBorder = true
+baseRadius = "0.6rem"
+buttonRadius = "0.5rem"
+linkColor = "#34d399"
+greenColor = "#34d399"
+redColor = "#f87171"
+dataframeBorderColor = "#1f2c2b"
+dataframeHeaderBackgroundColor = "#101818"
+dataframeHeaderTextColor = "#8a9b98"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

@@ -20,32 +20,49 @@ Status follower:
 
 ## Web (Streamlit)
 
-Jalanin lokal:
+Jalanin lokal dari **root repo** (biar tema gelap di `.streamlit/config.toml` kebaca):
 
 ```bash
-pip install -r requirements.txt
-export ALCHEMY_API_KEY=xxxx
-streamlit run streamlit_app.py
+pip install -r tools/lp_copytrade_checker/requirements.txt
+export ALCHEMY_API_KEY=xxxx   # opsional, bisa juga diisi di form
+streamlit run tools/lp_copytrade_checker/streamlit_app.py
 ```
 
-Deploy gratis ke **Streamlit Community Cloud** biar semua orang bisa pakai:
+Deploy gratis ke **Streamlit Community Cloud**:
 
 1. Buka https://share.streamlit.io → login pakai GitHub → **Create app**.
 2. Repo: `bojjifomo/capstone1`, branch tempat folder ini berada, main file path:
    `tools/lp_copytrade_checker/streamlit_app.py`.
-3. **Advanced settings → Secrets**, isi:
+3. (Opsional tapi disaranin) **Advanced settings → Secrets**, isi:
    ```toml
    ALCHEMY_API_KEY = "key-alchemy-lu"
    ```
-4. Deploy. Lu dapet URL `https://<nama-app>.streamlit.app` yang bisa dibagiin.
+4. Deploy. Lu dapet URL `https://<nama-app>.streamlit.app`.
+
+### Kolom Alchemy API key
+
+- Kalau `ALCHEMY_API_KEY` ada di Secrets, kolom key di form jadi **opsional**: pengunjung tinggal isi wallet.
+  Yang mau lebih cepat atau nggak mau antri bisa isi key sendiri.
+- Kalau Secrets kosong, kolom key **wajib** diisi tiap pengunjung.
+- Key yang diisi di form cuma dipakai buat scan itu. Nggak disimpan, nggak di-log, dan nggak ditampilin di halaman.
 
 API key Alchemy bisa dibikin gratis di https://dashboard.alchemy.com. Pastikan network yang mau dicek
 (misalnya **Robinhood Chain**) udah di-enable di app Alchemy-nya.
 
-Supaya kuota Alchemy nggak jebol kalau web-nya rame:
+### Share ke orang lain
+
+Di app yang udah ke-deploy, klik **Share** (kanan atas) → set app jadi **public**, terus copy link-nya.
+Kalau repo-nya private, app defaultnya private juga, jadi pastiin setting ini diubah.
+
+Supaya kuota key Secrets nggak jebol kalau web-nya rame:
 
 - Hasil per wallet di-cache 10 menit.
-- Cuma satu scan yang jalan dalam satu waktu. Request lain masuk antrian.
+- Scan yang pakai key Secrets jalan satu-satu (antrian). Pengunjung yang isi key sendiri nggak ikut antri.
+
+### Tema
+
+Warna diatur di `.streamlit/config.toml` (root repo) dan CSS di `streamlit_app.py`:
+gelap hijau-teal, card, label mint.
 
 ## CLI
 
