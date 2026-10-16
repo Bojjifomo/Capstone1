@@ -12,6 +12,9 @@
 //  lightning button.
 //
 //  Ranks USDG-paired V4 pools by fee yield so the good LP targets stand out.
+//  The 🔥 button switches to the fastest pools by the last hour's fee pace,
+//  small ones included, with floors you set in the app; pin a token from its
+//  search result to keep it in that view.
 //
 //  Fee yield = 24h volume x the pool's LP fee, divided by TVL, per day. The LP
 //  fee is read from chain state (StateView.getSlot0), so dynamic-fee pools show
@@ -89,7 +92,7 @@ const SECRETS = (() => {
   return {};
 })();
 
-const VERSION = "zap-v35 (fee tiers to 15%, TVL from $5K)";
+const VERSION = "zap-v36 (🔥 fee kenceng filter, pins)";
 
 // =============================================================================
 //  ZAP SETUP - the only part you need to edit.
@@ -2433,7 +2436,8 @@ const MIN_TVL  = 5_000;           // USD
 
 // Discovery: pages of 20 pools each, ranked by 24h volume. 10 is GeckoTerminal's
 // hard cap (page 11 is refused), which today puts the cutoff near $500K/day for
-// a V4 USDG pool. This is deliberately the only discovery source: no log scan,
+// a V4 USDG pool. Besides it, only the 🔥 view's two sources add candidates
+// (last hour's trending pools, pinned tokens; see HOT_DEFAULTS): no log scan,
 // sibling expansion, or launch-age extrapolation runs behind the ranking.
 //
 // Widget mode: NEVER fetch GeckoTerminal (its rate limits + sleep gaps blow the
@@ -2490,6 +2494,30 @@ const ZERO_ADDR  = "0x0000000000000000000000000000000000000000";   // native ETH
 const GECKO_POOLS = "https://api.geckoterminal.com/api/v2/networks/robinhood/dexes/uniswap-v4-robinhood/pools";
 const DEX_PAIRS   = "https://api.dexscreener.com/latest/dex/pairs/robinhood/";
 const DEX_CHAIN_URL = "https://dexscreener.com/robinhood";
+
+// "🔥 Fee kenceng": the table's second view, for the small busy pools whose fee
+// is running hardest right now. The ranked view hides them twice over: they
+// rarely reach the top 200 by 24h volume, and when they do the $1M mcap and $5K
+// TVL floors drop them. This view relaxes both floors (editable in the app),
+// ranks by the last hour's fee pace, and adds two more ways in:
+//   - GeckoTerminal's trending pools for the last hour, which is where a pool
+//     with a burst of swaps shows up long before its 24h volume ranks it.
+//   - Pinned tokens: pin one from its search result and its pools are fetched
+//     on every refresh and always listed here, with no floors at all, the same
+//     rule search follows. Pins live in a file next to the caches, so pasting a
+//     new build over this script keeps them.
+// The ranked view and the widget are unchanged: they still read only the rows
+// that pass the normal floors.
+// minPace is the 1h fee pace in %/day; 25 is where feeRateColor turns yellow.
+const HOT_DEFAULTS = { minPace: 25, minMcap: 100_000, minTvl: 1_000 };
+const GECKO_TRENDING = "https://api.geckoterminal.com/api/v2/networks/robinhood/trending_pools";
+const TRENDING_PAGES = 2;
+// Trending is about the last hour, so it goes stale fast; one refresh per ten
+// minutes keeps GeckoTerminal's rate limit for the ranked pages.
+const TRENDING_TTL_MS = 10 * 60 * 1000;
+const TRENDING_SEEN_TTL_MS = 6 * 60 * 60 * 1000;
+// Pins fetched per refresh, at one DexScreener call each (limit is 300/min).
+const MAX_PINS = 25;
 
 // Uniswap V4 on Robinhood Chain (4663)
 const STATE_VIEW = "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b";
@@ -3262,7 +3290,14 @@ function migrateOldCache() {
 
 // ----------------------------- discovery --------------------------------------
 async function fetchGeckoPage(page) {
-  const req = new Request(`${GECKO_POOLS}?page=${page}&sort=h24_volume_usd_desc&include=base_token,quote_token`);
+  return fetchGeckoPools(`${GECKO_POOLS}?page=${page}&sort=h24_volume_usd_desc&include=base_token,quote_token`);
+}
+// Trending covers every dex on the chain; the dex filter below keeps V4 only.
+async function fetchTrendingPage(page) {
+  return fetchGeckoPools(`${GECKO_TRENDING}?page=${page}&duration=1h&include=base_token,quote_token`);
+}
+async function fetchGeckoPools(url) {
+  const req = new Request(url);
   req.headers = { "Accept": "application/json;version=20230302" };
   req.timeoutInterval = 10;
   const body = await req.loadString();
@@ -3316,6 +3351,24 @@ async function discoverPools() {
     } catch (e) {}
     if (i < refreshPages.length - 1) await sleep(GECKO_GAP_MS);
   }
+  // Last hour's trending pools, for the 🔥 view. Same rate-limited host, so it
+  // waits the same gap after the ranked pages and keeps its old copy on failure.
+  if (PAGES_PER_RUN > 0 && (!cache.trending || now - cache.trending.t > TRENDING_TTL_MS)) {
+    const got = [];
+    let ok = false;
+    for (let p = 1; p <= TRENDING_PAGES; p++) {
+      if (refreshPages.length || p > 1) await sleep(GECKO_GAP_MS);
+      try {
+        let r = await fetchTrendingPage(p);
+        if (r.retry) { await sleep(5000); r = await fetchTrendingPage(p); }
+        if (!r.pools) break;
+        ok = true;
+        // USDG pairs only: anything else would only sit in the candidate set.
+        got.push(...r.pools.filter(x => x.base.addr === USDG_ADDR || x.quote.addr === USDG_ADDR));
+      } catch (e) { break; }
+    }
+    if (ok) { cache.trending = { t: Date.now(), pools: got }; fetched++; }
+  }
   // Pools stay candidates for SEEN_TTL_MS after they were last seen on any
   // page, not only while they sit on a cached page. Pages are fetched on
   // different runs, so a pool near a page boundary can be on page 5 when page 4
@@ -3327,9 +3380,24 @@ async function discoverPools() {
     const t = cache.pages[p].t;
     for (const pool of cache.pages[p].pools) {
       if (!seen[pool.id] || seen[pool.id].seenAt <= t) seen[pool.id] = { ...pool, seenAt: t };
+      // On a ranked page now, so no longer on trending's shorter clock.
+      else if (seen[pool.id].trending) seen[pool.id] = { ...pool, seenAt: seen[pool.id].seenAt };
     }
   }
-  for (const id in seen) if (now - seen[id].seenAt > SEEN_TTL_MS) delete seen[id];
+  // A pool known only from trending is kept for hours rather than days: a
+  // burst that has passed should not keep adding chain reads to every refresh.
+  // Once a ranked page lists it, it is an ordinary candidate again.
+  if (cache.trending) {
+    const t = cache.trending.t;
+    for (const pool of cache.trending.pools || []) {
+      if (!seen[pool.id]) seen[pool.id] = { ...pool, seenAt: t, trending: true };
+      else if (seen[pool.id].seenAt <= t) seen[pool.id] = { ...seen[pool.id], seenAt: t };
+    }
+  }
+  for (const id in seen) {
+    const ttl = seen[id].trending ? TRENDING_SEEN_TTL_MS : SEEN_TTL_MS;
+    if (now - seen[id].seenAt > ttl) delete seen[id];
+  }
   cache.seen = seen;
   if (fetched > 0) saveJson("discovery", cache);
   const oldest = Object.values(cache.pages).reduce((m, c) => Math.min(m, c.t), now);
@@ -3337,6 +3405,53 @@ async function discoverPools() {
 }
 
 function sleep(ms) { return new Promise(r => Timer.schedule(ms, false, r)); }
+
+// ----------------------------- pins (🔥 view) ---------------------------------
+// { tokenAddr: { symbol, t } }, set from a search result. Kept beside the caches
+// rather than in this script, so a new build pasted over the top keeps them.
+function loadPins() {
+  const p = loadJson("pins");
+  return p && typeof p === "object" && !Array.isArray(p) ? p : {};
+}
+function savePins(p) { saveJson("pins", p); }
+
+// A DexScreener pair as a discovery candidate, or null when it is not a USDG
+// Uniswap V4 pool on this chain: the same test search applies. Fee tier and
+// market cap are left to the chain reads every other candidate goes through.
+function dexPairToCandidate(p) {
+  if (!p || p.chainId !== "robinhood" || !p.pairAddress) return null;
+  const v4 = String(p.dexId || "").includes("uniswap")
+          && (p.labels || []).some(l => String(l).toLowerCase() === "v4");
+  if (!v4) return null;
+  const tok = t => ({ addr: String((t && t.address) || "").toLowerCase(), sym: (t && t.symbol) || "?", dec: 18 });
+  const base = tok(p.baseToken), quote = tok(p.quoteToken);
+  if (base.addr !== USDG_ADDR && quote.addr !== USDG_ADDR) return null;
+  return {
+    id: String(p.pairAddress).toLowerCase(), name: "", base, quote,
+    created: p.pairCreatedAt || null,
+    mcap: Number(p.marketCap) || Number(p.fdv) || null,
+    reserve: Number(p.liquidity && p.liquidity.usd) || 0,
+    vol24: Number(p.volume && p.volume.h24) || 0,
+    vol1h: Number(p.volume && p.volume.h1) || 0,
+  };
+}
+
+// Every USDG V4 pool of every pinned token. One call per token, all at once,
+// because the token endpoint answers for at most 30 pairs however many tokens
+// it is asked about. A token that fails just sits this refresh out.
+async function pinnedPools(pins) {
+  const addrs = Object.keys(pins || {}).slice(0, MAX_PINS);
+  const lists = await Promise.all(addrs.map(async addr => {
+    try {
+      const req = new Request("https://api.dexscreener.com/latest/dex/tokens/" + addr);
+      req.headers = { Accept: "application/json" };
+      req.timeoutInterval = 10;
+      const j = await req.loadJSON();
+      return ((j && j.pairs) || []).map(dexPairToCandidate).filter(Boolean);
+    } catch (e) { return []; }
+  }));
+  return [].concat(...lists);
+}
 
 
 // ----------------------------- live numbers -----------------------------------
@@ -3652,8 +3767,13 @@ async function main() {
   let data = null, stale = false, dataTime = Date.now(), error = null;
   try {
     const disc = await discoverPools();
+    // Pinned tokens join the candidates on every in-app refresh, whatever the
+    // rankings say. Discovery's copy of a pool goes first so its name, which
+    // carries the fee tier as a fallback, wins the dedupe.
+    const pins = loadPins();
+    const pinned = config.runsInWidget ? [] : await pinnedPools(pins).catch(() => []);
     const seen = new Set(), pools = [];
-    for (const p of disc.pools) {
+    for (const p of disc.pools.concat(pinned)) {
       if (seen.has(p.id) || (p.base.addr !== USDG_ADDR && p.quote.addr !== USDG_ADDR)) continue;
       seen.add(p.id);
       pools.push(p);
@@ -3753,7 +3873,11 @@ async function main() {
       return out;
     })();
 
-    const rows = [];
+    // rows: the ranked view and the widget, which keep the normal floors exactly
+    // as before. hotRows: every pool with money in it, for the 🔥 view, which
+    // applies its own lower floors when it is shown so they can be changed in
+    // the app without another network run.
+    const rows = [], hotRows = [];
     for (const p of pools) {
       const tok = tokenOf(p);
       const s = chain.slot.get(p.id);
@@ -3763,7 +3887,9 @@ async function main() {
       const tvl = m ? m.liq : p.reserve;
       const vol24 = m ? m.vol24 : p.vol24;
       const vol1h = m ? m.vol1h : p.vol1h;
-      if (tvl < MIN_TVL) continue;
+      // Fee yield divides by TVL, so an empty pool has no row in either view.
+      if (!(tvl > 0)) continue;
+      let ranked = tvl >= MIN_TVL;
 
       // Token price from the tick. Pool price is currency1 per currency0 in raw
       // units; the token is currency1 when its address sorts after USDG's.
@@ -3789,8 +3915,8 @@ async function main() {
       // one straddling it is shown and marked rather than decided arbitrarily.
       // Unknown is excluded, because the script cannot show that it passes.
       if (!major) {
-        if (mcap == null) continue;
-        if ((mcapHigh == null ? mcap : mcapHigh) < MIN_MCAP) continue;
+        if (mcap == null) ranked = false;
+        else if ((mcapHigh == null ? mcap : mcapHigh) < MIN_MCAP) ranked = false;
       }
 
       // A zero LP fee means either a genuinely free pool or a hook that prices
@@ -3803,7 +3929,7 @@ async function main() {
       const ageDays = created ? (now - created) / 86400000 : null;
       const _c0 = p.base.addr < p.quote.addr ? p.base.addr : p.quote.addr;
       const _c1 = p.base.addr < p.quote.addr ? p.quote.addr : p.base.addr;
-      rows.push({
+      const row = {
         id: p.id,
         currency0: _c0,
         currency1: _c1,
@@ -3826,9 +3952,13 @@ async function main() {
         price,
         ageDays,
         live: !!m,
-      });
+        pinned: !!pins[tok.addr],
+      };
+      hotRows.push(row);
+      if (ranked) rows.push(row);
     }
     rows.sort((a, b) => b.feePctDay - a.feePctDay || b.vol24 - a.vol24);
+    hotRows.sort((a, b) => b.feePctDay1h - a.feePctDay1h || b.feePctDay - a.feePctDay);
 
     const pcts = rows.map(r => r.feePctDay).sort((a, b) => a - b);
     const medianPct = pcts.length ? pcts[Math.floor(pcts.length / 2)] : null;
@@ -3839,7 +3969,7 @@ async function main() {
       : Math.max(0, Math.min(20, Math.floor((widgetSize().h - CHROME) / PITCH)));
 
     data = {
-      rows, medianPct, total: rows.length,
+      rows, hotRows, medianPct, total: rows.length,
       sumTvl: rows.reduce((s, r) => s + r.tvl, 0),
       sumVol24: rows.reduce((s, r) => s + r.vol24, 0),
       candidates: pools.length, pagesCached: disc.pagesCached, discoveryOldest: disc.oldest,
@@ -3894,33 +4024,42 @@ function statusText(stale, dataTime, refreshing, error) {
 
 // Fills (or refills) a table in place, so the same one can open on cached rows
 // and be reloaded with fresh ones. "refreshing" is that first, cached state.
-function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, _sortCol, _sortMode, _onSort, onZap, busy, progress) {
+function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, _sortCol, _sortMode, _onSort, onZap, busy, progress, onHot) {
   t.removeAllRows();
   t.showSeparators = true;
-  const top = d.rows[0];
+  // The 🔥 view is about the current pace, so its headline is the fastest 1h
+  // pace rather than whichever row the chosen sort happens to put first.
+  const paceKey = d.hot ? "feePctDay1h" : "feePctDay";
+  const top = d.hot
+    ? d.rows.reduce((a, r) => (!a || r.feePctDay1h > a.feePctDay1h ? r : a), null)
+    : d.rows[0];
 
   const header = new UITableRow();
   header.isHeader = true;
   header.height = 72;
   const hCell = header.addText(
-    d.tokenView ? `${d.rows.length} ${d.tokenView} pools` : `${d.rows.length} pools`,
+    d.tokenView ? `${d.rows.length} ${d.tokenView} pools`
+      : d.hot ? `🔥 ${d.rows.length} pools` : `${d.rows.length} pools`,
     d.tokenView
       // A token lookup is deliberate, so it shows every V4 USDG pool for that
       // token rather than applying the ranked table's mcap and TVL floors.
       // Thin pools included: the zap confirmation is where a small pool is
       // called out, with the deposit as a percentage of what it holds.
       ? `Uniswap V4 USDG pools for ${d.tokenView} · every pool, no floors`
+      : d.hot
+      ? `1h ≥ ${fmtPct(d.hot.minPace, 0)}/d · mcap ≥ ${fmtShort(d.hot.minMcap)} · TVL ≥ ${fmtShort(d.hot.minTvl)}`
       : `Uniswap V4 · USDG pairs · mcap ≥ ${fmtShort(MIN_MCAP)} · TVL ≥ ${fmtShort(MIN_TVL)}`
   );
   hCell.widthWeight = 55;
   hCell.titleFont = Font.boldSystemFont(20);
   hCell.subtitleFont = Font.systemFont(12);
   hCell.subtitleColor = COL.muted;
-  const hTop = header.addText(top ? `${top.feePctDay.toFixed(1)}%/day` : "--", top ? `best · ${top.label}` : "");
+  const hTop = header.addText(top ? `${top[paceKey].toFixed(1)}%/day` : "--",
+    top ? `${d.hot ? "best 1h pace" : "best"} · ${top.label}` : "");
   hTop.widthWeight = 45;
   hTop.rightAligned();
   hTop.titleFont = Font.boldSystemFont(20);
-  hTop.titleColor = top ? feeRateColor(top.feePctDay) : COL.muted;
+  hTop.titleColor = top ? feeRateColor(top[paceKey]) : COL.muted;
   hTop.subtitleFont = Font.systemFont(12);
   hTop.subtitleColor = COL.muted;
   header.onSelect = () => Safari.open(DEX_CHAIN_URL);
@@ -3974,15 +4113,31 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, _sortCol
   // One way in for anything that names a pool: poolId, token address, token
   // name, or a DexScreener link. While a result is showing it becomes the way
   // back out, so the same control never means two things at once.
-  if (onZap) {
+  // Beside it: the 🔥 view's switch, or on a search result its pin, which
+  // makes that token's pools join the 🔥 view on every refresh.
+  const hotBtn = !onHot ? null
+    : d.tokenView ? (d.tokenAddr ? (d.pinned ? "\u2605 Pinned" : "\u2606 Pin to \u{1F525}") : null)
+    : (d.hot ? "\u{1F525} ON \u00B7 edit" : "\u{1F525} Fee kenceng");
+  if (onZap || hotBtn) {
     const sr = new UITableRow();
     sr.height = 40;
-    const sb = sr.addButton(d.tokenView
-      ? `\u2715  ${d.tokenView}\u2003·\u2003back to all pools`
-      : "\u{1F50E}  Search a pool, token, or link");
-    sb.centerAligned();
-    sb.titleFont = Font.semiboldSystemFont(14);
-    sb.onTap = () => onZap(d.tokenView ? "__clearsearch__" : "__search__", null);
+    if (onZap) {
+      const sb = sr.addButton(d.tokenView
+        ? `\u2715  ${d.tokenView}\u2003·\u2003back${hotBtn ? "" : " to all pools"}`
+        : hotBtn ? "\u{1F50E}  Search" : "\u{1F50E}  Search a pool, token, or link");
+      sb.widthWeight = hotBtn ? 58 : 100;
+      sb.centerAligned();
+      sb.titleFont = Font.semiboldSystemFont(14);
+      sb.onTap = () => onZap(d.tokenView ? "__clearsearch__" : "__search__", null);
+    }
+    if (hotBtn) {
+      const hb = sr.addButton(hotBtn);
+      hb.widthWeight = onZap ? 42 : 100;
+      hb.centerAligned();
+      hb.titleFont = Font.semiboldSystemFont(14);
+      hb.titleColor = d.hot || d.pinned ? COL.yellow : COL.accent;
+      hb.onTap = () => onHot(d.tokenView ? "__pin__" : "__hot__");
+    }
     t.addRow(sr);
   }
 
@@ -4127,6 +4282,20 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, _sortCol
     }
   }
 
+  // An empty 🔥 view says which knob to turn rather than looking broken.
+  if (d.hot && !d.rows.length) {
+    const er = new UITableRow();
+    er.height = 48;
+    const ec = er.addText(d.hotCold ? "Nothing here yet: refresh once to fill this view"
+                                    : "No pool is that fast right now",
+      `Tap \u{1F525} to lower the pace, mcap or TVL floor, or pin a token from its search.`);
+    ec.titleFont = Font.semiboldSystemFont(13);
+    ec.titleColor = COL.yellow;
+    ec.subtitleFont = Font.systemFont(11);
+    ec.subtitleColor = COL.muted;
+    t.addRow(er);
+  }
+
   for (const r of d.rows || []) {
     const row = new UITableRow();
     row.height = 58;
@@ -4138,7 +4307,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, _sortCol
     // which is where two positions can be compared against each other.
     const sub = [r.tier, fmtAge(r.ageDays)];
     if (r.chg24 != null) sub.push(`${r.chg24 >= 0 ? "+" : ""}${r.chg24.toFixed(0)}% 24h`);
-    const name = row.addText(r.symbol, sub.join(" · "));
+    const name = row.addText(r.pinned && !d.tokenView ? "⭐" + r.symbol : r.symbol, sub.join(" · "));
     name.widthWeight = 25;
     name.titleFont = Font.boldSystemFont(16);
     name.titleColor = COL.text;
@@ -4524,16 +4693,116 @@ if (config.runsInWidget) {
   let lastCustom = { amount: ZAP_PRESETS[0].amount, top: ZAP_PRESETS[0].top || 0,
                      range: ZAP_PRESETS[0].range, slices: ZAP_PRESETS[0].slices };
 
+  // 🔥 view: whether it is on and its floors, remembered between opens. Pins
+  // are read once here and changed in place, so a pin shows without a refresh.
+  let hot = (() => {
+    const h = loadJson("hot") || {};
+    const num = (v, dflt) => (v != null && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : dflt);
+    return { on: !!h.on, minPace: num(h.minPace, HOT_DEFAULTS.minPace),
+             minMcap: num(h.minMcap, HOT_DEFAULTS.minMcap), minTvl: num(h.minTvl, HOT_DEFAULTS.minTvl) };
+  })();
+  if (hot.on) { sortCol = 3; sortMode = 2; }   // 1h pace, descending
+  let pins = loadPins();
+  const majorSyms = new Set(Object.values(MAJORS));
+  // A pinned token was named by the user, so it skips every floor, the same
+  // rule search follows. Everything else needs the pace and both floors; an
+  // unknown market cap only passes when the mcap floor is zero.
+  const passesHot = r => {
+    if (r.pinned) return true;
+    if (!(r.tvl >= hot.minTvl)) return false;
+    if (!majorSyms.has(r.symbol) && hot.minMcap > 0) {
+      if (r.mcap == null) return false;
+      if ((r.mcapHigh == null ? r.mcap : r.mcapHigh) < hot.minMcap) return false;
+    }
+    return (r.feePctDay1h || 0) >= hot.minPace;
+  };
+  const withPins = rows => rows.map(r => ({ ...r, pinned: !!pins[r.tokenAddr] }));
+  // A cache from before this build has no hotRows. Its ranked rows stand in,
+  // and hotCold tells the empty state to ask for a refresh.
+  const hotView = data => ({ ...data, rows: withPins(data.hotRows || data.rows).filter(passesHot),
+                             hot, hotCold: !data.hotRows });
+
   const show = (r, refreshing) => {
     if (r.data && r.data.rows) {
-      const base = tokenView ? { ...r.data, rows: tokenView.rows, tokenView: tokenView.symbol } : r.data;
+      const tv0 = tokenView && tokenView.rows[0];
+      const base = tokenView
+        ? { ...r.data, rows: tokenView.rows, tokenView: tokenView.symbol,
+            tokenAddr: tv0 && tv0.tokenAddr, pinned: !!(tv0 && pins[tv0.tokenAddr]) }
+        : hot.on ? hotView(r.data)
+        : { ...r.data, rows: withPins(r.data.rows) };
       const sorted = { ...base, rows: sortRows(base.rows) };
       fillTable(t, sorted, r.stale, r.dataTime, refreshing, r.error, refresh,
-                sortCol, sortMode, handleSort, ZAP_READY ? onZap : null, busy, progress);
+                sortCol, sortMode, handleSort, ZAP_READY ? onZap : null, busy, progress, onHot);
     }
     else fillEmptyTable(t, r.message || "Nothing loaded", refreshing, refresh);
     if (shown) t.reload(); else shown = t.present(false);
   };
+
+  // The 🔥 button: on a search result it pins or unpins that token; otherwise
+  // it opens the view's settings, which is also where it is turned off.
+  async function onHot(action) {
+    if (busy) return;
+    if (action === "__pin__") {
+      const r0 = tokenView && tokenView.rows[0];
+      if (!r0 || !r0.tokenAddr) return;
+      const addr = r0.tokenAddr;
+      if (pins[addr]) {
+        delete pins[addr];
+      } else {
+        pins[addr] = { symbol: r0.symbol, t: Date.now() };
+        // The search already has this token's rows, so they join the 🔥 view
+        // now; the next refresh fetches them along with everything else.
+        if (current && current.data && current.data.rows) {
+          const had = current.data.hotRows || current.data.rows;
+          const ids = new Set(had.map(r => r.id));
+          current = { ...current, data: { ...current.data,
+            hotRows: had.concat(tokenView.rows.filter(r => !ids.has(r.id))) } };
+        }
+      }
+      savePins(pins);
+      return show(current, false);
+    }
+
+    const a = new Alert();
+    a.title = "\u{1F525} Fee kenceng";
+    a.message = "Pools ranked by the last hour's fee pace (the %/day they would earn "
+              + "if the last hour kept up), small ones included.\n\n"
+              + "Pinned tokens always show, with no floors: search a token, then tap "
+              + "\u2606 Pin.\n\nSmall pools are thin and move fast. Check TVL before depositing.";
+    a.addTextField("Min 1h pace, %/day (e.g. 25)", String(hot.minPace));
+    a.addTextField("Min market cap (e.g. 100K, 0 = any)", hot.minMcap ? fmtShort(hot.minMcap) : "0");
+    a.addTextField("Min TVL (e.g. 1K, 0 = any)", hot.minTvl ? fmtShort(hot.minTvl) : "0");
+    a.addAction(hot.on ? "Apply" : "Turn on");
+    if (hot.on) a.addDestructiveAction("Turn off");
+    a.addCancelAction("Cancel");
+    const choice = await a.presentAlert();
+    if (choice < 0) return;
+    if (choice === 1) {
+      hot = { ...hot, on: false };
+      sortCol = 2; sortMode = 2;   // back to the ranked default, fees %/day
+    } else {
+      // A field left empty or unreadable keeps its old value, and "0" means no
+      // floor, which parseUsd alone would read as unreadable.
+      const usd = (txt, old) => {
+        const v = String(txt == null ? "" : txt).trim();
+        if (/^\$?0+(\.0*)?$/.test(v)) return 0;
+        const n = parseUsd(v);
+        return n == null ? old : n;
+      };
+      const paceTxt = String(a.textFieldValue(0) || "").replace(/[^0-9.]/g, "");
+      const pace = paceTxt ? Number(paceTxt) : NaN;
+      const wasOn = hot.on;
+      hot = {
+        on: true,
+        minPace: Number.isFinite(pace) ? pace : hot.minPace,
+        minMcap: usd(a.textFieldValue(1), hot.minMcap),
+        minTvl: usd(a.textFieldValue(2), hot.minTvl),
+      };
+      if (!wasOn) { sortCol = 3; sortMode = 2; }   // 1h pace, descending
+    }
+    saveJson("hot", hot);
+    return show(current, false);
+  }
 
   // Opening a position spends real money, so it always goes through a
   // confirmation naming the pool, the amount and the range.
