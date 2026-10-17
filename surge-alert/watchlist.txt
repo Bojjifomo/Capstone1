@@ -1,0 +1,5 @@
+# Token yang dipantau. Satu per baris: alamat kontrak 0x… (paling aman) atau simbol.
+# Teks setelah # diabaikan. Token di sini dapet 2 jenis alert: "bangkit abis jatoh" + "lagi pump".
+0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894  # ZERO (ZeroTrace)
+IGNITION  # ganti pakai alamat kontrak kalau udah tau
+AGEM      # ganti pakai alamat kontrak kalau udah tau

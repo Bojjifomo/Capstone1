@@ -146,5 +146,66 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(sa.resolve(TOKEN.upper().replace("0X", "0x"), "robinhood"), TOKEN)
 
 
+class PumpTest(unittest.TestCase):
+    def test_pump_without_prior_dump(self):
+        hist = series((600, 1.0), (60, 1.0), (30, 1.1), (0, 1.4))
+        self.assertIsNone(sa.detect(hist, NOW, CFG))
+        sig = sa.detect_pump(hist, NOW, CFG)
+        self.assertEqual(sig.kind, "pump")
+        self.assertAlmostEqual(sig.rebound, 40)
+        self.assertEqual(sig.peak, 1.4)
+
+    def test_slow_climb_ignored(self):
+        hist = series((600, 0.5), (60, 1.0), (30, 1.1), (0, 1.2))
+        self.assertIsNone(sa.detect_pump(hist, NOW, CFG))
+
+    def test_rise_outside_window_ignored(self):
+        hist = series((180, 1.0), (90, 1.5), (0, 1.55))
+        self.assertIsNone(sa.detect_pump(hist, NOW, CFG))
+
+    def test_pump_again_below_old_peak(self):
+        # kayak ZERO: puncak udah > 24 jam lalu, ngebleed pelan, sekarang pump lagi
+        hist = series((1800, 3.0), (600, 1.6), (60, 1.0), (0, 1.5))
+        self.assertIsNone(sa.detect(hist, NOW, CFG))
+        sig = sa.detect_pump(hist, NOW, CFG)
+        msg = sa.format_alert(pair(1.5, symbol="ZERO"), sig, CFG)
+        self.assertIn("ZERO lagi pump", msg)
+        self.assertIn("Naik +50%", msg)
+        self.assertIn("masih -6% dari puncak 24j", msg)
+
+    def test_pump_only_alerts_for_watchlist(self):
+        p = pair(1.0, {"m5": 3, "h1": 40, "h6": 30, "h24": 20})
+        for pump, expected in ((False, 0), (True, 1)):
+            state, sent = sa.load_state("/nonexistent"), []
+            sa.process(state, TOKEN, p, NOW, CFG, sent.append, pump=pump)
+            self.assertEqual(len(sent), expected)
+        self.assertIn("lagi pump", sent[0])
+        self.assertIn("puncak baru 24j", sent[0])
+
+    def test_dip_signal_wins_no_duplicate(self):
+        state, sent = sa.load_state("/nonexistent"), []
+        p = pair(1.0, {"m5": 5, "h1": 40, "h6": -50, "h24": -60})
+        sa.process(state, TOKEN, p, NOW, CFG, sent.append, pump=True)
+        sa.process(state, TOKEN, p, NOW + 60, CFG, sent.append, pump=True)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("bangkit abis jatoh", sent[0])
+
+
+class WatchlistTest(unittest.TestCase):
+    def test_read_watchlist(self):
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("# komentar\n0xABC  # ZERO\n\n  IGNITION\n")
+        try:
+            self.assertEqual(sa.read_watchlist(f.name), ["0xABC", "IGNITION"])
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(sa.read_watchlist("/nonexistent"), [])
+
+    def test_bundled_watchlist_has_zero(self):
+        self.assertIn("0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894", sa.read_watchlist(sa.WATCHLIST))
+
+
 if __name__ == "__main__":
     unittest.main()

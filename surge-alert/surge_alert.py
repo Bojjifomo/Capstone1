@@ -3,16 +3,19 @@
 
 Data dari DexScreener public API (gratis, tanpa API key). Cuma pakai stdlib.
 
-Pola yang dicari:
+Sinyal "bangkit abis jatoh" (semua token):
   1. Harga turun >= --drop % dari puncak ke dasar (dalam --lookback jam)
   2. Dasarnya masih baru (<= --low-age menit lalu)
   3. Harga sekarang udah mantul >= --rebound % dari dasar
-  4. Dikonfirmasi: likuiditas cukup, volume 1 jam spike, buy > sell
+Sinyal "lagi pump" (cuma token di watchlist / --watch):
+  naik >= --pump % dari harga terendah --pump-window menit terakhir
+Dua-duanya harus lolos konfirmasi: likuiditas cukup, volume 1 jam spike, buy > sell.
 
 Contoh:
-  python surge_alert.py --check IGNITION AGEM          # cek status sekarang
-  python surge_alert.py --watch IGNITION AGEM          # pantau terus, kirim alert
-  python surge_alert.py --watch IGNITION AGEM --scan   # + scan token baru di chain
+  python surge_alert.py --check                        # cek semua token di watchlist.txt
+  python surge_alert.py --check 0x316f…2894            # cek 1 token
+  python surge_alert.py                                # pantau watchlist.txt, kirim alert
+  python surge_alert.py --scan                         # + scan token baru di chain
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ API = "https://api.dexscreener.com"
 WINDOWS = (("m5", 300), ("h1", 3600), ("h6", 21600), ("h24", 86400))
 DISCOVER_EVERY_S = 300  # endpoint profile/boost limitnya 60 req/menit
 MAX_SCAN_TOKENS = 300
+WATCHLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.txt")
 
 
 @dataclass
@@ -46,6 +50,8 @@ class Config:
     min_buy_ratio: float = 0.55    # porsi tx buy dalam 1 jam
     cooldown_min: float = 60
     rerun_mult: float = 1.5        # alert lagi kalau harga udah 1.5x dari alert terakhir
+    pump_pct: float = 25.0         # watchlist: min naik dari low pump_window terakhir
+    pump_window_min: float = 60
 
 
 @dataclass
@@ -56,6 +62,7 @@ class Signal:
     price: float
     drop: float
     rebound: float
+    kind: str = "dip"  # "dip" = bangkit abis jatoh, "pump" = lagi pump
 
 
 def warn(msg: str) -> None:
@@ -193,6 +200,22 @@ def detect(history: list, now: float, cfg: Config) -> Signal | None:
     return None
 
 
+def detect_pump(history: list, now: float, cfg: Config) -> Signal | None:
+    """Naik tajam dari harga terendah <= pump_window menit terakhir, gak perlu dump dulu.
+    Buat koin yang udah dipantau dan "pump lagi" (puncak lamanya bisa udah lewat 24 jam)."""
+    pts = [(t, p) for t, p in history if now - t <= cfg.lookback_h * 3600 and p > 0]
+    recent = [pt for pt in pts[:-1] if now - pt[0] <= cfg.pump_window_min * 60]
+    if not recent:
+        return None
+    price = pts[-1][1]
+    low_ts, low = min(recent, key=lambda pt: pt[1])
+    rise = (price / low - 1) * 100
+    if rise < cfg.pump_pct:
+        return None
+    peak = max(p for _, p in pts)
+    return Signal(peak, low, low_ts, price, (1 - low / peak) * 100, rise, kind="pump")
+
+
 def confirm(pair: dict, cfg: Config) -> list[str]:
     """Filter konfirmasi. Return alasan gagal (list kosong = lolos)."""
     fails = []
@@ -246,10 +269,19 @@ def format_alert(pair: dict, sig: Signal, cfg: Config) -> str:
     tx = (pair.get("txns") or {}).get("h1") or {}
     b, s = tx.get("buys") or 0, tx.get("sells") or 0
     fdv = pair.get("fdv") or pair.get("marketCap")
-    return "\n".join([
-        f"🚀 {pair['baseToken']['symbol']} bangkit abis jatoh — {cfg.chain}",
-        f"Turun {sig.drop:.0f}% ({price_str(sig.peak)} → {price_str(sig.low)}), "
-        f"sekarang mantul +{sig.rebound:.0f}% ke {price_str(sig.price)}",
+    sym = pair["baseToken"]["symbol"]
+    if sig.kind == "pump":
+        vs_peak = (f"puncak baru {cfg.lookback_h:g}j" if sig.price >= sig.peak else
+                   f"masih {(sig.price / sig.peak - 1) * 100:.0f}% dari puncak {cfg.lookback_h:g}j "
+                   f"{price_str(sig.peak)}")
+        head = [f"🚀 {sym} lagi pump — {cfg.chain}",
+                f"Naik +{sig.rebound:.0f}% dalam ≤{cfg.pump_window_min:g} menit "
+                f"({price_str(sig.low)} → {price_str(sig.price)}), {vs_peak}"]
+    else:
+        head = [f"🚀 {sym} bangkit abis jatoh — {cfg.chain}",
+                f"Turun {sig.drop:.0f}% ({price_str(sig.peak)} → {price_str(sig.low)}), "
+                f"sekarang mantul +{sig.rebound:.0f}% ke {price_str(sig.price)}"]
+    return "\n".join(head + [
         f"Vol 1j {usd(v1)}{spike} · Buy {b}/{s} · Liq {usd(liq(pair))}"
         + (f" · FDV {usd(float(fdv))}" if fdv else ""),
         changes_str(pair),
@@ -291,8 +323,10 @@ def update_history(state: dict, addr: str, pair: dict, now: float, cfg: Config) 
     return hist
 
 
-def process(state: dict, addr: str, pair: dict, now: float, cfg: Config, notify) -> Signal | None:
-    sig = detect(update_history(state, addr, pair, now, cfg), now, cfg)
+def process(state: dict, addr: str, pair: dict, now: float, cfg: Config, notify,
+            pump: bool = False) -> Signal | None:
+    hist = update_history(state, addr, pair, now, cfg)
+    sig = detect(hist, now, cfg) or (detect_pump(hist, now, cfg) if pump else None)
     if not sig or confirm(pair, cfg) or not should_alert(state["alerts"].get(addr), sig, now, cfg):
         return None
     notify(format_alert(pair, sig, cfg))
@@ -323,6 +357,15 @@ def make_notifier():
     return notify
 
 
+def read_watchlist(path: str) -> list[str]:
+    """Satu token per baris (alamat 0x… atau simbol); teks setelah # diabaikan."""
+    try:
+        with open(path) as f:
+            return [s for s in (line.split("#")[0].strip() for line in f) if s]
+    except FileNotFoundError:
+        return []
+
+
 def resolve_all(items: list[str], state: dict, cfg: Config) -> list[str]:
     out = []
     for item in items:
@@ -348,14 +391,17 @@ def check(items: list[str], cfg: Config) -> None:
             print(f"{addr}: gak ada pair di {cfg.chain}\n")
             continue
         hist = update_history(state, addr, pair, now, cfg)
-        sig, fails = detect(hist, now, cfg), confirm(pair, cfg)
+        sig = detect(hist, now, cfg) or detect_pump(hist, now, cfg)
+        fails = confirm(pair, cfg)
         print(f"{pair['baseToken']['symbol']}  {addr}")
         print(f"  harga {price_str(float(pair.get('priceUsd') or 0))} · liq {usd(liq(pair))} · "
               f"{changes_str(pair)}")
-        if sig:
+        if sig and sig.kind == "dip":
             print(f"  pola: turun {sig.drop:.0f}% lalu mantul +{sig.rebound:.0f}% ✅")
+        elif sig:
+            print(f"  pola: lagi pump +{sig.rebound:.0f}% dari low {cfg.pump_window_min:g} menit ✅")
         else:
-            print("  pola: belum ada dip -> rebound yang cukup")
+            print("  pola: belum ada dip -> rebound / pump yang cukup")
         print(f"  konfirmasi: {'lolos ✅' if not fails else '; '.join(fails)}")
         print(f"  status: {'🚀 ALERT' if sig and not fails else 'belum'}")
         print(f"  {pair.get('url', '')}\n")
@@ -379,7 +425,7 @@ def run(args, cfg: Config) -> None:
             state["scan"] = {a: t for a, t in newest if now - t <= cfg.lookback_h * 3600}
         tracked = sorted(set(watch) | set(state["scan"]))
         for addr, pair in fetch_best_pairs(cfg.chain, tracked).items():
-            process(state, addr, pair, now, cfg, notify)
+            process(state, addr, pair, now, cfg, notify, pump=addr in watch)
         for addr in list(state["history"]):
             if addr not in tracked:
                 del state["history"][addr]
@@ -393,8 +439,11 @@ def main(argv=None) -> None:
     d = Config()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--check", nargs="+", metavar="TOKEN", help="cek status sekarang lalu keluar")
-    mode.add_argument("--watch", nargs="*", default=[], metavar="TOKEN", help="simbol atau alamat 0x…")
+    mode.add_argument("--check", nargs="*", metavar="TOKEN",
+                      help="cek status sekarang lalu keluar (tanpa TOKEN = isi watchlist)")
+    mode.add_argument("--watch", nargs="*", metavar="TOKEN",
+                      help="simbol atau alamat 0x… (tanpa TOKEN = isi watchlist)")
+    ap.add_argument("--watchlist", default=WATCHLIST, help="file daftar token (default watchlist.txt)")
     ap.add_argument("--scan", action="store_true", help="ikut pantau token baru (profile/boost) di chain")
     ap.add_argument("--once", action="store_true", help="jalan sekali aja (buat cron)")
     ap.add_argument("--interval", type=int, default=60, help="detik antar polling (default 60)")
@@ -409,13 +458,23 @@ def main(argv=None) -> None:
     ap.add_argument("--vol-spike", type=float, default=d.vol_spike)
     ap.add_argument("--min-buy", type=float, default=d.min_buy_ratio, help="0-1")
     ap.add_argument("--cooldown", type=float, default=d.cooldown_min, help="menit")
+    ap.add_argument("--pump", type=float, default=d.pump_pct,
+                    help=f"watchlist: min %% naik buat alert pump (default {d.pump_pct:g})")
+    ap.add_argument("--pump-window", type=float, default=d.pump_window_min,
+                    help=f"menit (default {d.pump_window_min:g})")
     args = ap.parse_args(argv)
-    cfg = Config(args.chain, args.drop, args.rebound, args.lookback, args.low_age, args.min_liq,
-                 args.min_vol, args.vol_spike, args.min_buy, args.cooldown)
+    cfg = Config(chain=args.chain, drop_pct=args.drop, rebound_pct=args.rebound,
+                 lookback_h=args.lookback, max_low_age_min=args.low_age, min_liq_usd=args.min_liq,
+                 min_vol_h1_usd=args.min_vol, vol_spike=args.vol_spike, min_buy_ratio=args.min_buy,
+                 cooldown_min=args.cooldown, pump_pct=args.pump, pump_window_min=args.pump_window)
     try:
-        if args.check:
-            check(args.check, cfg)
+        if args.check is not None:
+            items = args.check or read_watchlist(args.watchlist)
+            if not items:
+                sys.exit(f"Gak ada token buat dicek. Isi {args.watchlist} atau kasih TOKEN.")
+            check(items, cfg)
         else:
+            args.watch = args.watch or read_watchlist(args.watchlist)
             run(args, cfg)
     except KeyboardInterrupt:
         pass
