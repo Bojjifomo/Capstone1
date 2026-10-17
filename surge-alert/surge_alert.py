@@ -35,9 +35,10 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 
-VERSION = "5"
+VERSION = "6"
 API = "https://api.dexscreener.com"
 # (key priceChange DexScreener, panjang jendela dalam detik)
 WINDOWS = (("m5", 300), ("h1", 3600), ("h6", 21600), ("h24", 86400))
@@ -45,6 +46,10 @@ DISCOVER_EVERY_S = 300        # tanpa GMGN: GeckoTerminal + DexScreener (rate li
 GMGN_DISCOVER_EVERY_S = 60    # GMGN limitnya longgar, jadi bisa tiap putaran
 WATCHLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.txt")
 GT_API = "https://api.geckoterminal.com/api/v2"
+DP_API = "https://api.dexpaprika.com"
+DP_MIN_GAP_S = 5.0            # DexPaprika keyless ~15 req/menit
+DP_PAGES = 5                  # 5 x 100 pool volume 24j terbesar (LP >= --min-liq) per putaran discovery
+DP_QUOTE_MIN_POOLS = 10       # token yang nongol di >= 10 pool itu token quote (WETH, USDC, saham token)
 GT_MIN_GAP_S = 6.0        # GeckoTerminal keyless: <= 10 req/menit biar gak kena 429
 GT_OHLCV_PER_LOOP = 3     # maks ambil candle per putaran polling (GeckoTerminal)
 GMGN_OHLCV_PER_LOOP = 8   # idem, kalau pakai GMGN
@@ -142,26 +147,34 @@ def get_json(path: str, params: dict | None = None):
         "User-Agent": "surge-alert/1.0", "Accept": "application/json"}))
 
 
-_gt_last_call = 0.0
-_gt_blocked_until = 0.0
+_last_call: dict[str, float] = {}
+_blocked_until: dict[str, float] = {}
 _gt_top_cursor = 0
 
 
-def gt_get(path: str, params: dict | None = None):
-    """GeckoTerminal keyless. Kena 429 -> berhenti nanya sampai limitnya reset, bukan diulang terus."""
-    global _gt_last_call, _gt_blocked_until
-    if time.time() < _gt_blocked_until:
-        raise RuntimeError(f"rate limit, istirahat {int(_gt_blocked_until - time.time())} detik lagi")
-    time.sleep(max(0.0, _gt_last_call + GT_MIN_GAP_S - time.time()))
-    _gt_last_call = time.time()
-    url = GT_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+def paced_get(base: str, gap: float, path: str, params: dict | None = None, headers: dict | None = None):
+    """API keyless (GeckoTerminal, DexPaprika): ada jeda antar call, dan kalau kena 429 berhenti nanya
+    sampai limitnya reset, bukan diulang terus."""
+    if time.time() < _blocked_until.get(base, 0):
+        raise RuntimeError(f"rate limit, istirahat {int(_blocked_until[base] - time.time())} detik lagi")
+    time.sleep(max(0.0, _last_call.get(base, 0) + gap - time.time()))
+    _last_call[base] = time.time()
+    url = base + path + ("?" + urllib.parse.urlencode(params) if params else "")
     try:
-        return _request(urllib.request.Request(url, headers={
-            "User-Agent": "surge-alert/1.0", "Accept": "application/json;version=20230302"}), retry=False)
+        return _request(urllib.request.Request(url, headers={"User-Agent": "surge-alert/1.0", **(headers or {})}),
+                        retry=False)
     except urllib.error.HTTPError as e:
         if e.code == 429:
-            _gt_blocked_until = time.time() + (_num((e.headers or {}).get("Retry-After")) or 60)
+            _blocked_until[base] = time.time() + (_num((e.headers or {}).get("Retry-After")) or 60)
         raise
+
+
+def gt_get(path: str, params: dict | None = None):
+    return paced_get(GT_API, GT_MIN_GAP_S, path, params, {"Accept": "application/json;version=20230302"})
+
+
+def dp_get(path: str, params: dict | None = None):
+    return paced_get(DP_API, DP_MIN_GAP_S, path, params, {"Accept": "application/json"})
 
 
 _gmgn_last_call = 0.0
@@ -295,10 +308,33 @@ def gmgn_discover(cfg: Config) -> list[str]:
     return found
 
 
+def dp_discover(cfg: Config) -> list[str]:
+    """DexPaprika: pool volume 24j terbesar yang LP-nya >= --min-liq (disaring di server), 100 per halaman."""
+    rows, cursor = [], None
+    for _ in range(DP_PAGES):
+        params = {"order_by": "volume_usd_24h", "sort": "desc", "limit": 100,
+                  "liquidity_usd_min": f"{cfg.min_liq_usd:g}"}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            res = dp_get(f"/networks/{cfg.chain}/pools/search", params) or {}
+        except Exception as e:
+            warn_once("dp", f"discover DexPaprika gagal: {e}")
+            break
+        rows += res.get("results") or []
+        cursor = res.get("next_cursor")
+        if not res.get("has_next_page") or not cursor:
+            break
+    pools = [[(t.get("id") or t.get("address") or "").lower() for t in r.get("tokens") or []] for r in rows]
+    seen_in = Counter(a for pool in pools for a in set(pool))
+    return [a for pool in pools for a in pool if a.startswith("0x") and seen_in[a] < DP_QUOTE_MIN_POOLS]
+
+
 def discover(cfg: Config) -> list[str]:
     """Semua koin yang lagi aktif di chain. Pakai GMGN kalau ada GMGN_API_KEY; kalau gak ada / gagal:
-    profile/boost DexScreener + pool trending (5m/1j), pool baru, & pool volume 24j terbesar
-    GeckoTerminal (digilir per halaman). Koin mati yang tiba-tiba bangun langsung masuk trending."""
+    profile/boost DexScreener + 500 pool LP >= --min-liq dari DexPaprika + pool trending (5m/1j),
+    pool baru, & pool volume 24j terbesar GeckoTerminal (digilir per halaman). Koin mati yang tiba-tiba
+    bangun langsung masuk trending."""
     global _gt_top_cursor
     if gmgn_enabled():
         found = gmgn_discover(cfg)
@@ -314,6 +350,7 @@ def discover(cfg: Config) -> list[str]:
         for it in items if isinstance(items, list) else [items]:
             if it.get("chainId") == chain and it.get("tokenAddress"):
                 found.append(it["tokenAddress"].lower())
+    found += dp_discover(cfg)
     pages = [(_gt_top_cursor + i) % GT_TOP_PAGES + 1 for i in range(GT_TOP_PAGES_PER_ROUND)]
     _gt_top_cursor = (_gt_top_cursor + GT_TOP_PAGES_PER_ROUND) % GT_TOP_PAGES
     for endpoint, params in GT_DISCOVER + [("pools", {"sort": "h24_volume_usd_desc", "page": p}) for p in pages]:
@@ -758,7 +795,7 @@ def run(args, cfg: Config) -> None:
     every = GMGN_DISCOVER_EVERY_S if gmgn else DISCOVER_EVERY_S
     if scan:
         print("Sumber koin: " + ("GMGN (filter mcap & LP langsung di server GMGN)" if gmgn else
-                                 "GeckoTerminal + DexScreener (isi GMGN_API_KEY di notify.env biar lebih lengkap)"),
+                                 "DexPaprika + GeckoTerminal + DexScreener (gratis, tanpa key)"),
               flush=True)
     candle_cache: dict[str, tuple[float, list]] = {}
     live = sys.stdout.isatty()

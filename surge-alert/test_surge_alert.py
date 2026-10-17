@@ -10,6 +10,13 @@ import surge_alert as sa
 sa.NOTIFY_ENV = "/nonexistent"  # tes gak boleh baca notify.env (dan key) asli
 os.environ.pop("GMGN_API_KEY", None)
 
+
+def _no_network(*a, **k):
+    raise AssertionError("tes gak boleh akses jaringan")
+
+
+sa.urllib.request.urlopen = _no_network  # tes yang butuh respons nge-mock urlopen sendiri
+
 NOW = 1_800_000_000.0
 CFG = sa.Config()
 TOKEN = "0x" + "ab" * 20
@@ -323,7 +330,7 @@ class GeckoTerminalTest(unittest.TestCase):
             return {"data": pages[path.rsplit("/", 1)[1]]}
         with mock.patch.object(sa, "get_json", side_effect=lambda p, q=None: prof if "profiles" in p else []), \
                 mock.patch.object(sa, "gt_get", side_effect=fake_gt), mock.patch.dict(os.environ, {}, clear=True), \
-                mock.patch.object(sa, "_gt_top_cursor", 0):
+                mock.patch.object(sa, "_gt_top_cursor", 0), mock.patch.object(sa, "dp_get", return_value={}):
             found = sa.discover(CFG)
             self.assertEqual(len(calls), 5)  # trending 5m/1j + pool baru + 2 halaman volume terbesar
             sa.discover(CFG)
@@ -451,7 +458,7 @@ class GmgnTest(unittest.TestCase):
     def test_discover_falls_back_to_geckoterminal(self):
         with mock.patch.object(sa, "gmgn_get", side_effect=RuntimeError("down")), \
                 mock.patch.object(sa, "gt_get", return_value={"data": []}) as gt, \
-                mock.patch.object(sa, "get_json", return_value=[]):
+                mock.patch.object(sa, "dp_get", return_value={}), mock.patch.object(sa, "get_json", return_value=[]):
             self.assertEqual(sa.discover(CFG), [])
         self.assertTrue(gt.called)
 
@@ -476,13 +483,49 @@ class GmgnTest(unittest.TestCase):
 class GeckoTerminalPacingTest(unittest.TestCase):
     def test_429_pauses_instead_of_retrying(self):
         err = http_error(429, headers={"Retry-After": "30"})
-        with mock.patch.object(sa, "_gt_blocked_until", 0.0), mock.patch.object(sa, "GT_MIN_GAP_S", 0), \
+        with mock.patch.dict(sa._blocked_until, clear=True), mock.patch.object(sa, "GT_MIN_GAP_S", 0), \
                 mock.patch.object(sa.urllib.request, "urlopen", side_effect=err) as op:
             with self.assertRaises(sa.urllib.error.HTTPError):
                 sa.gt_get("/networks/robinhood/pools")
             with self.assertRaisesRegex(RuntimeError, "istirahat"):
                 sa.gt_get("/networks/robinhood/pools")
         self.assertEqual(op.call_count, 1)
+
+
+class DexPaprikaTest(unittest.TestCase):
+    def test_discover_pages_and_drops_quote_tokens(self):
+        weth = "0x" + "e" * 40
+        page1 = {"results": [{"tokens": [{"id": "0xMEME%02d" % i}, {"id": weth}]} for i in range(10)],
+                 "has_next_page": True, "next_cursor": "c2"}
+        page2 = {"results": [{"tokens": [{"id": "0xZERO"}, {"id": "0xTSLA"}]}], "has_next_page": False}
+        calls = []
+
+        def fake(path, params):
+            calls.append((path, dict(params)))
+            return page2 if params.get("cursor") == "c2" else page1
+        with mock.patch.object(sa, "dp_get", side_effect=fake):
+            found = sa.dp_discover(CFG)
+        self.assertNotIn(weth, found)  # nongol di 10 pool -> token quote
+        self.assertEqual(found[:2], ["0xmeme00", "0xmeme01"])
+        self.assertIn("0xzero", found)
+        self.assertEqual(len(calls), 2)
+        path, params = calls[0]
+        self.assertEqual(path, "/networks/robinhood/pools/search")
+        self.assertEqual((params["order_by"], params["sort"], params["limit"], params["liquidity_usd_min"]),
+                         ("volume_usd_24h", "desc", 100, "5000"))
+        self.assertEqual(calls[1][1]["cursor"], "c2")
+
+    def test_free_discovery_combines_sources(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(sa, "dp_get", return_value={"results": [{"tokens": [{"id": "0xDP"}]}]}), \
+                mock.patch.object(sa, "gt_get", return_value={"data": [
+                    {"attributes": {}, "relationships": {"base_token": {"data": {"id": "robinhood_0xGT"}}}}]}), \
+                mock.patch.object(sa, "get_json", return_value=[{"chainId": "robinhood", "tokenAddress": "0xDS"}]):
+            self.assertEqual(sa.discover(CFG), ["0xds", "0xdp", "0xgt"])
+
+    def test_failure_is_quiet(self):
+        with mock.patch.object(sa, "dp_get", side_effect=RuntimeError("down")), mock.patch.object(sa, "warn"):
+            self.assertEqual(sa.dp_discover(CFG), [])
 
 
 class WatchlistTest(unittest.TestCase):

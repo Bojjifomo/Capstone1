@@ -9,7 +9,7 @@ koin yang volume + chart-nya surging:
 
 Filter default: **mcap ≥ $400k** dan **TVL LP ≥ $5k**.
 
-Data dari GMGN (pakai API key gratis, disarankan) atau GeckoTerminal, plus DexScreener. Cuma butuh
+Data gratis tanpa key dari DexPaprika, GeckoTerminal, dan DexScreener (GMGN opsional). Cuma butuh
 Python 3.10+, gak perlu install apa-apa.
 
 ## Cara pakai
@@ -66,12 +66,22 @@ python surge_alert.py --test-notify
 
 ## Koin yang dipantau
 
-**Pakai GMGN (disarankan).** Kalau `GMGN_API_KEY` diisi di `notify.env`, tiap menit bot minta ke GMGN
-semua koin Robinhood Chain dengan mcap ≥ $400k dan likuiditas ≥ $5k (disaring di server GMGN):
-100 teratas volume 5 menit, 100 teratas volume 1 jam, dan 100 mcap terbesar 24 jam. Candle buat
-sinyal "bangkit dari mati" juga dari GMGN. Pas start, terminal nulis `Sumber koin: GMGN`.
+**Default (gratis, tanpa key).** Tiap 5 menit bot ngumpulin koin dari:
 
-Cara bikin GMGN API key (gratis, sekali aja):
+- **DexPaprika**: 500 pool volume 24 jam terbesar di Robinhood Chain yang LP-nya ≥ $5k (disaring
+  di server DexPaprika). Token yang nongol di banyak pool (WETH, USDC, saham token) dibuang karena
+  itu token pasangan, bukan koinnya.
+- **GeckoTerminal**: pool trending 5 menit / 1 jam, pool baru, dan pool volume 24 jam terbesar
+  (digilir 2 halaman per putaran).
+- **DexScreener**: token yang baru pasang profile / boost.
+
+Mcap ≥ $400k dicek per koin lewat DexScreener tiap menit. Semua API gratis itu punya batas
+request, jadi bot sengaja pelan-pelan. Kalau tetap kena limit, bot diem sampai limitnya reset,
+bukan nembak terus.
+
+**GMGN (opsional).** Kalau kamu punya `GMGN_API_KEY` (GMGN minta deposit buat bikin key), isi di
+`notify.env`. Bot bakal ambil koin dari GMGN tiap menit dengan filter mcap & LP langsung di server
+GMGN, plus candle-nya. Cara bikin key:
 
 1. Bikin pasangan kunci. GMGN minta *public key*-nya pas daftar:
 
@@ -83,17 +93,10 @@ Cara bikin GMGN API key (gratis, sekali aja):
    openssl pkey -in ~/gmgn_private.pem -pubout
    ```
 
-2. Buka https://gmgn.ai/ai, tempel teks `-----BEGIN PUBLIC KEY----- …` dari langkah 1 ke form
-   pembuatan API key, submit, terus salin API key-nya.
-3. Isi `GMGN_API_KEY=…` di `notify.env`, lalu jalanin ulang bot.
-
-`~/gmgn_private.pem` jangan dibagi ke siapa-siapa. Bot ini gak butuh file itu (cuma buat fitur
-trading GMGN).
-
-**Tanpa GMGN**, bot pakai GeckoTerminal + DexScreener: pool trending 5 menit / 1 jam, pool baru, dan
-pool volume 24 jam terbesar (10 halaman digilir 2 halaman tiap 5 menit). Batas GeckoTerminal tanpa
-key ketat, jadi bot sengaja pelan-pelan (maks ~10 request/menit). Kalau tetap kena limit, bot diem
-sampai limitnya reset, bukan nembak terus.
+2. Buka https://gmgn.ai/ai, tempel teks `-----BEGIN PUBLIC KEY----- …` ke form pembuatan API key
+   (cukup *Enable Reading*), submit, terus salin API key-nya.
+3. Isi `GMGN_API_KEY=…` di `notify.env`, lalu jalanin ulang bot. Terminal bakal nulis
+   `Sumber koin: GMGN`.
 
 `watchlist.txt` berisi koin yang pengen selalu kamu pantau (udah ada ZERO, IGNITION, AGEM). Koin
 yang udah ketemu tetap dipantau 24 jam sejak terakhir nongol (maks 500 koin).
