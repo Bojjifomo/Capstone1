@@ -142,6 +142,12 @@ class ResolveTest(unittest.TestCase):
             self.assertIsNone(sa.resolve("AGEM", "robinhood"))
             self.assertIn("base", w.call_args[0][0])
 
+    def test_search_error_skips_token(self):
+        err = sa.urllib.error.HTTPError("u", 400, "Bad Request", None, None)
+        with mock.patch.object(sa, "get_json", side_effect=err), mock.patch.object(sa, "warn") as w:
+            self.assertIsNone(sa.resolve("#", "robinhood"))
+            self.assertIn("400", w.call_args[0][0])
+
     def test_address_passthrough(self):
         self.assertEqual(sa.resolve(TOKEN.upper().replace("0X", "0x"), "robinhood"), TOKEN)
 
@@ -306,6 +312,13 @@ class WatchlistTest(unittest.TestCase):
         finally:
             os.unlink(f.name)
         self.assertEqual(sa.read_watchlist("/nonexistent"), [])
+
+    def test_zsh_inline_comment_ignored(self):
+        with mock.patch.object(sa, "check") as check, mock.patch.object(sa, "run") as run:
+            sa.main(["--check", "#", "cek", "status", "sekarang"])
+            sa.main(["--scan", "#", "pantau", "terus", "+", "kirim", "alert"])
+        self.assertEqual(check.call_args[0][0], sa.read_watchlist(sa.WATCHLIST))
+        self.assertTrue(run.call_args[0][0].scan)
 
     def test_bundled_watchlist_has_zero(self):
         self.assertIn("0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894", sa.read_watchlist(sa.WATCHLIST))

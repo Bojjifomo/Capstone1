@@ -152,7 +152,11 @@ def resolve(item: str, chain: str) -> str | None:
     if is_address(item):
         return item.lower()
     sym = item.lstrip("$").upper()
-    pairs = (get_json("/latest/dex/search", {"q": sym}) or {}).get("pairs") or []
+    try:
+        pairs = (get_json("/latest/dex/search", {"q": sym}) or {}).get("pairs") or []
+    except Exception as e:
+        warn(f"{sym}: gagal dicari di DexScreener ({e}), dilewat")
+        return None
     same_sym = [p for p in pairs if p["baseToken"]["symbol"].upper() == sym]
     on_chain = [p for p in same_sym if p.get("chainId") == chain]
     if not on_chain:
@@ -535,6 +539,8 @@ def check(items: list[str], cfg: Config) -> None:
     """Snapshot status sekarang (tanpa history, tanpa kirim alert)."""
     state = load_state(os.devnull)
     addrs = resolve_all(items, state, cfg)
+    if not addrs:
+        sys.exit("Gak ada token yang ketemu. Cek simbol/alamat di watchlist.txt.")
     pairs = fetch_best_pairs(cfg.chain, addrs)
     now = time.time()
     for addr in addrs:
@@ -635,6 +641,9 @@ def main(argv=None) -> None:
                     help=f"bangkit dari mati: min %% level mati di bawah puncak (default {d.dead_drop_pct:g})")
     ap.add_argument("--revival", type=float, default=d.revival_pct,
                     help=f"bangkit dari mati: min %% di atas range mati (default {d.revival_pct:g})")
+    argv = sys.argv[1:] if argv is None else argv
+    # zsh (default di Mac) gak nganggep "# ..." sebagai komentar: buang mulai dari argumen "#…"
+    argv = next((argv[:i] for i, a in enumerate(argv) if a.startswith("#")), argv)
     args = ap.parse_args(argv)
     cfg = Config(chain=args.chain, drop_pct=args.drop, rebound_pct=args.rebound,
                  lookback_h=args.lookback, max_low_age_min=args.low_age, min_liq_usd=args.min_liq,

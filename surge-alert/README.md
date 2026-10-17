@@ -7,17 +7,27 @@ cuma butuh Python 3.10+ tanpa install apa-apa.
 
 ## Cara pakai
 
+Cek status semua token di `watchlist.txt`:
+
 ```bash
-# cek status semua token di watchlist.txt
 python surge_alert.py --check
+```
 
-# cek token tertentu
+Cek token tertentu:
+
+```bash
 python surge_alert.py --check 0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894
+```
 
-# pantau watchlist.txt terus tiap 60 detik + kirim alert
+Pantau watchlist terus tiap 60 detik + kirim alert (`Ctrl+C` buat stop):
+
+```bash
 python surge_alert.py
+```
 
-# + ikut scan token baru di Robinhood Chain (yang masang profile/boost di DexScreener)
+Sama, plus scan token baru di Robinhood Chain:
+
+```bash
 python surge_alert.py --scan
 ```
 
