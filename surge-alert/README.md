@@ -1,7 +1,8 @@
 # Surge alert — Robinhood Chain
 
-Bot alert buat koin yang **surging abis jatoh** (kayak pola IGNITION / AGEM) dan koin yang
-**lagi pump lagi** (kayak ZERO). Data dari DexScreener (gratis, tanpa API key),
+Bot alert buat koin yang **bangkit dari mati** (pump → dump → mati lama → surging lagi, kayak
+chart ZERO), **surging abis jatoh** (kayak IGNITION / AGEM), dan **lagi pump lagi**.
+Data dari DexScreener + candle GeckoTerminal (dua-duanya gratis, tanpa API key),
 cuma butuh Python 3.10+ tanpa install apa-apa.
 
 ## Cara pakai
@@ -46,9 +47,24 @@ Set salah satu (atau semua) env var ini sebelum jalanin:
 
 ## Logika sinyal
 
-Ada 2 jenis sinyal (angka default, bisa diubah lewat flag):
+Ada 3 jenis sinyal (angka default, bisa diubah lewat flag):
 
-**🚀 Bangkit abis jatoh** — semua token (watchlist + scan)
+**💀→🚀 Bangkit dari mati** — semua token (watchlist + scan). Pakai candle 1 jam 30 hari terakhir
+dari GeckoTerminal, karena fase "mati"-nya bisa berhari-hari (DexScreener cuma kasih data 24 jam).
+
+| Syarat | Default | Flag |
+|---|---|---|
+| Ada puncak lama, level matinya jauh di bawah | ≥ 70% di bawah puncak | `--dead-drop` |
+| Mati: harga flat (rentang p90/p10) sebelum surge | ≥ 24 jam, rentang ≤ 2x | `--dead-hours` |
+| Breakout di atas atap rentang mati, dalam 6 jam terakhir | ≥ +50% | `--revival` |
+| Volume per jam pas surge vs pas mati | ≥ 5x | — |
+
+Biar hemat rate limit GeckoTerminal, candle cuma diambil buat token yang lagi naik
+(1 jam ≥ +20% atau 6 jam ≥ +40%) dan udah lolos konfirmasi, maks 8 token per putaran.
+`--scan` juga ngambil pool yang lagi trending 1 jam di GeckoTerminal, jadi koin yang baru bangun
+biasanya kebawa.
+
+**🚀 Bangkit abis jatoh** — semua token (watchlist + scan), versi cepat dalam 24 jam
 
 | Syarat | Default | Flag |
 |---|---|---|
@@ -82,6 +98,11 @@ Dua-duanya juga harus lolos konfirmasi:
 
 - Chain id DexScreener diasumsikan `robinhood` (sesuai URL `dexscreener.com/robinhood`). Kalau
   `--check` bilang "gak ketemu di chain 'robinhood'", lihat daftar chain yang ditampilin lalu pakai `--chain`.
-- `--scan` cuma nangkep token yang masang profile/boost di DexScreener, jadi bukan semua token di chain.
+- `--scan` nangkep token yang masang profile/boost di DexScreener + pool trending GeckoTerminal,
+  jadi bukan semua token di chain.
+- Network id GeckoTerminal juga `robinhood`. Kalau GeckoTerminal gagal, bot cuma ngasih warning
+  sekali dan sinyal "bangkit dari mati" dilewat; dua sinyal lain tetap jalan.
+- Kebangkitan yang sama cuma di-alert sekali (dalam 24 jam), kecuali harganya udah 1.5x dari alert
+  terakhir.
 - Tes: `python -m unittest test_surge_alert`
 - Bukan saran finansial. Mantul abis dump di memecoin sering jadi dead-cat bounce.

@@ -191,6 +191,110 @@ class PumpTest(unittest.TestCase):
         self.assertIn("bangkit abis jatoh", sent[0])
 
 
+def zero_like(dead=(0.18, 0.24), peak=3.0, surge_vol=5000.0, now_price=1.2, dead_every=1, hours=480):
+    """Candle 1 jam kayak chart ZERO: pump -> dump -> mati ~12 hari -> bangun 6 jam terakhir."""
+    out = []
+    for h in range(hours, -1, -1):
+        if h > 400:
+            p, v = 0.5, 500.0
+        elif h > 379:
+            p, v = peak, 20_000.0
+        elif h >= 300:
+            p, v = 0.2 + (h - 300) / 79 * (peak - 0.2), 3000.0
+        elif h > 6:
+            if h % dead_every:
+                continue  # pool sepi: jam tanpa trade gak ada candle
+            p, v = dead[0] + (dead[1] - dead[0]) * ((h * 7) % 10) / 9, 50.0
+        else:
+            p, v = now_price - h * 0.15, surge_vol
+        out.append((NOW - h * 3600, p, v))
+    return out
+
+
+class RevivalTest(unittest.TestCase):
+    def test_zero_like_chart(self):
+        sig = sa.detect_revival(zero_like(), 1.2, NOW, CFG)
+        self.assertEqual(sig.kind, "revival")
+        self.assertEqual(sig.peak, 3.0)
+        self.assertGreater(sig.drop, 90)
+        self.assertGreater(sig.rebound, 400)
+        self.assertAlmostEqual(sig.dead_h, 299)
+        self.assertEqual(sig.low_ts, NOW - 6 * 3600)
+
+    def test_sparse_dead_candles_are_filled(self):
+        self.assertIsNotNone(sa.detect_revival(zero_like(dead_every=10), 1.2, NOW, CFG))
+
+    def test_rejections(self):
+        cases = [
+            ({"dead": (0.1, 0.4)}, 1.2, "gak flat"),
+            ({"peak": 0.3}, 1.2, "level mati"),
+            ({"now_price": 0.3}, 0.3, "atap range mati"),
+            ({"surge_vol": 100.0}, 1.2, "volume surge"),
+            ({"hours": 20}, 1.2, "history"),
+        ]
+        for kw, price, word in cases:
+            why = []
+            self.assertIsNone(sa.detect_revival(zero_like(**kw), price, NOW, CFG, why), kw)
+            self.assertIn(word, why[0], kw)
+
+    def test_hourly_fill(self):
+        filled = sa.hourly([(NOW - 3 * 3600, 1.0, 10.0), (NOW - 3600, 2.0, 5.0)], NOW)
+        self.assertEqual(filled, [(NOW - 3 * 3600, 1.0, 10.0), (NOW - 2 * 3600, 1.0, 0.0),
+                                  (NOW - 3600, 2.0, 5.0), (NOW, 2.0, 0.0)])
+
+    def test_process_sends_revival_with_mcap(self):
+        state, sent = sa.load_state("/nonexistent"), []
+        p = pair(1.2, {"m5": 5, "h1": 30, "h6": 300, "h24": 400}, symbol="ZERO")
+        sig = sa.process(state, TOKEN, p, NOW, CFG, sent.append, candles=zero_like())
+        self.assertEqual(sig.kind, "revival")
+        self.assertIn("ZERO bangkit dari mati", sent[0])
+        self.assertIn("mati ~12.5 hari", sent[0])
+        self.assertIn("(mcap $3.0M)", sent[0])  # fdv $1.2M x 3.0 / 1.2
+        # surge lanjut tapi belum 1.5x: sinyal masih nyala, tapi gak dikirim lagi walau lewat cooldown
+        later = NOW + 7200
+        self.assertIsNotNone(sa.detect_revival(zero_like(now_price=1.3), 1.3, later, CFG))
+        self.assertIsNone(sa.process(state, TOKEN, pair(1.3, p["priceChange"]), later, CFG,
+                                     sent.append, candles=zero_like(now_price=1.3)))
+        self.assertEqual(len(sent), 1)
+        # udah 1.5x dari alert terakhir: kirim lagi (masih terbang)
+        sa.process(state, TOKEN, pair(1.8, p["priceChange"]), later, CFG, sent.append,
+                   candles=zero_like(now_price=1.8))
+        self.assertEqual(len(sent), 2)
+
+
+class GeckoTerminalTest(unittest.TestCase):
+    def test_fetch_candles_falls_back_to_top_pool(self):
+        calls = []
+
+        def fake(path, params=None):
+            calls.append(path)
+            if "/pools/0xdexpool/" in path:
+                raise sa.urllib.error.HTTPError(path, 404, "Not Found", None, None)
+            if path.endswith(f"/tokens/{TOKEN}/pools"):
+                return {"data": [{"attributes": {"address": "0xgtpool"}}]}
+            return {"data": {"attributes": {"ohlcv_list": [
+                [NOW, 1, 2, 0.5, 1.5, 900], [NOW - 3600, 1, 1, 1, 1.0, 100]]}}}
+        p = dict(pair(), pairAddress="0xdexpool")
+        cache = {}
+        with mock.patch.object(sa, "gt_get", side_effect=fake):
+            candles = sa.fetch_candles("robinhood", p, 30, cache)
+        self.assertEqual(candles, [(NOW - 3600, 1.0, 100.0), (NOW, 1.5, 900.0)])
+        self.assertEqual(cache, {TOKEN: "0xgtpool"})
+        self.assertIn("/networks/robinhood/pools/0xgtpool/ohlcv/hour", calls)
+
+    def test_fetch_candles_failure_returns_empty(self):
+        with mock.patch.object(sa, "gt_get", side_effect=OSError("blocked")), \
+                mock.patch.object(sa, "warn"):
+            self.assertEqual(sa.fetch_candles("robinhood", dict(pair(), pairAddress="0x1"), 30, {}), [])
+
+    def test_discover_includes_trending_pools(self):
+        prof = [{"chainId": "robinhood", "tokenAddress": "0xAAA"}, {"chainId": "base", "tokenAddress": "0xB"}]
+        trending = {"data": [{"relationships": {"base_token": {"data": {"id": "robinhood_0xCCC"}}}}]}
+        with mock.patch.object(sa, "get_json", side_effect=lambda p, q=None: prof if "profiles" in p else []), \
+                mock.patch.object(sa, "gt_get", return_value=trending):
+            self.assertEqual(sa.discover("robinhood"), ["0xaaa", "0xccc"])
+
+
 class WatchlistTest(unittest.TestCase):
     def test_read_watchlist(self):
         import os

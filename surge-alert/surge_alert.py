@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Alert koin yang "surging abis jatoh" (dip -> rebound) di Robinhood Chain.
+"""Alert koin yang "surging abis jatoh" / "bangkit dari mati" di Robinhood Chain.
 
-Data dari DexScreener public API (gratis, tanpa API key). Cuma pakai stdlib.
+Data dari DexScreener + candle GeckoTerminal (gratis, tanpa API key). Cuma pakai stdlib.
 
+Sinyal "bangkit dari mati" (semua token, kayak chart ZERO):
+  pump -> dump >= --dead-drop % -> flat & sepi >= --dead-hours jam -> sekarang breakout
+  >= --revival % di atas range matinya dengan volume >= 5x volume pas mati
 Sinyal "bangkit abis jatoh" (semua token):
   1. Harga turun >= --drop % dari puncak ke dasar (dalam --lookback jam)
   2. Dasarnya masih baru (<= --low-age menit lalu)
@@ -35,6 +38,10 @@ WINDOWS = (("m5", 300), ("h1", 3600), ("h6", 21600), ("h24", 86400))
 DISCOVER_EVERY_S = 300  # endpoint profile/boost limitnya 60 req/menit
 MAX_SCAN_TOKENS = 300
 WATCHLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.txt")
+GT_API = "https://api.geckoterminal.com/api/v2"
+GT_MIN_GAP_S = 2.5        # GeckoTerminal keyless ~30 req/menit
+GT_OHLCV_PER_LOOP = 8     # maks ambil candle per putaran polling
+CANDLE_TTL_S = 600
 
 
 @dataclass
@@ -52,6 +59,13 @@ class Config:
     rerun_mult: float = 1.5        # alert lagi kalau harga udah 1.5x dari alert terakhir
     pump_pct: float = 25.0         # watchlist: min naik dari low pump_window terakhir
     pump_window_min: float = 60
+    dead_h: float = 24             # revival: min lama "mati" sebelum surge
+    dead_flat: float = 2.0         # revival: range harga pas mati (p90/p10) maks segini
+    dead_drop_pct: float = 70.0    # revival: level mati min X% di bawah puncak lama
+    revival_pct: float = 50.0      # revival: harga min X% di atas atap range mati
+    revival_window_h: float = 6    # revival: surge-nya dalam X jam terakhir
+    revival_vol_mult: float = 5.0  # revival: volume/jam pas surge vs pas mati
+    history_days: float = 30       # revival: candle berapa hari ke belakang
 
 
 @dataclass
@@ -62,11 +76,21 @@ class Signal:
     price: float
     drop: float
     rebound: float
-    kind: str = "dip"  # "dip" = bangkit abis jatoh, "pump" = lagi pump
+    kind: str = "dip"  # "dip" = bangkit abis jatoh, "pump" = lagi pump, "revival" = bangkit dari mati
+    dead_h: float = 0.0
 
 
 def warn(msg: str) -> None:
     print(f"[warn] {msg}", file=sys.stderr, flush=True)
+
+
+_warned: set[str] = set()
+
+
+def warn_once(key: str, msg: str) -> None:
+    if key not in _warned:
+        _warned.add(key)
+        warn(msg)
 
 
 # ---------------------------------------------------------------- HTTP
@@ -90,6 +114,18 @@ def get_json(path: str, params: dict | None = None):
     url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
     return _request(urllib.request.Request(url, headers={
         "User-Agent": "surge-alert/1.0", "Accept": "application/json"}))
+
+
+_gt_last_call = 0.0
+
+
+def gt_get(path: str, params: dict | None = None):
+    global _gt_last_call
+    time.sleep(max(0.0, _gt_last_call + GT_MIN_GAP_S - time.time()))
+    _gt_last_call = time.time()
+    url = GT_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    return _request(urllib.request.Request(url, headers={
+        "User-Agent": "surge-alert/1.0", "Accept": "application/json;version=20230302"}))
 
 
 def post(url: str, data: bytes, headers: dict) -> None:
@@ -161,7 +197,46 @@ def discover(chain: str) -> list[str]:
         for it in items if isinstance(items, list) else [items]:
             if it.get("chainId") == chain and it.get("tokenAddress"):
                 found.append(it["tokenAddress"].lower())
+    # pool yang lagi trending 1 jam terakhir: koin yang baru bangun biasanya masuk sini
+    try:
+        res = gt_get(f"/networks/{chain}/trending_pools", {"duration": "1h"}) or {}
+        for pool in res.get("data") or []:
+            base = ((pool.get("relationships") or {}).get("base_token") or {}).get("data") or {}
+            if base.get("id", "").startswith(chain + "_"):
+                found.append(base["id"].split("_", 1)[1].lower())
+    except Exception as e:
+        warn(f"discover GeckoTerminal trending gagal: {e}")
     return found
+
+
+def _ohlcv(chain: str, pool: str, params: dict) -> list[tuple[float, float, float]]:
+    try:
+        res = gt_get(f"/networks/{chain}/pools/{pool}/ohlcv/hour", params) or {}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return []
+        raise
+    rows = ((res.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+    return sorted((float(r[0]), float(r[4]), float(r[5] or 0)) for r in rows if r[4])
+
+
+def fetch_candles(chain: str, pair: dict, days: float, pool_cache: dict) -> list:
+    """Candle 1 jam [(ts, close, volume USD)] urut lama -> baru dari GeckoTerminal. [] kalau gagal."""
+    token = pair["baseToken"]["address"].lower()
+    params = {"aggregate": 1, "limit": min(1000, int(days * 24)), "currency": "usd", "token": token}
+    pool = pool_cache.get(token) or pair.get("pairAddress")
+    try:
+        candles = _ohlcv(chain, pool, params) if pool else []
+        if not candles:  # alamat pool DexScreener gak dikenal GeckoTerminal: pakai pool teratas token
+            res = gt_get(f"/networks/{chain}/tokens/{token}/pools") or {}
+            top = ((res.get("data") or [{}])[0].get("attributes") or {}).get("address")
+            if top and top != pool:
+                pool_cache[token] = top
+                candles = _ohlcv(chain, top, params)
+        return candles
+    except Exception as e:
+        warn_once("gt", f"candle GeckoTerminal gagal ({e}); sinyal 'bangkit dari mati' dilewat")
+        return []
 
 
 # ---------------------------------------------------------------- deteksi
@@ -216,6 +291,66 @@ def detect_pump(history: list, now: float, cfg: Config) -> Signal | None:
     return Signal(peak, low, low_ts, price, (1 - low / peak) * 100, rise, kind="pump")
 
 
+def hourly(candles: list, now: float) -> list[tuple[float, float, float]]:
+    """Jam tanpa trade gak punya candle: isi pakai close sebelumnya, volume 0."""
+    if not candles:
+        return []
+    by_hour = {int(t // 3600): (c, v) for t, c, v in candles}
+    out, last = [], None
+    for h in range(min(by_hour), int(now // 3600) + 1):
+        c, v = by_hour.get(h, (last, 0.0))
+        out.append((h * 3600.0, c, v))
+        last = c
+    return out
+
+
+def quantile(xs: list[float], q: float) -> float:
+    s = sorted(xs)
+    return s[min(len(s) - 1, int(q * len(s)))]
+
+
+def looks_like_surge(pair: dict) -> bool:
+    """Saringan murah sebelum ambil candle (GeckoTerminal ada rate limit)."""
+    pc = pair.get("priceChange") or {}
+    return (pc.get("h1") or 0) >= 20 or (pc.get("h6") or 0) >= 40
+
+
+def detect_revival(candles: list, price: float, now: float, cfg: Config,
+                   why: list | None = None) -> Signal | None:
+    """Pump -> dump -> mati (flat & sepi) -> bangun lagi. Alasan gagal ditaruh di `why`."""
+    def no(reason: str) -> None:
+        if why is not None:
+            why.append(reason)
+
+    series = hourly(candles, now)
+    surge_from = now - cfg.revival_window_h * 3600
+    base_from = surge_from - cfg.dead_h * 3600
+    before = [c for c in series if c[0] < base_from]
+    base = [c for c in series if base_from <= c[0] < surge_from]
+    surge = [c for c in series if c[0] >= surge_from]
+    if not before or len(base) < cfg.dead_h / 2 or price <= 0:
+        return no("history candle belum cukup panjang")
+    closes = [c[1] for c in base]
+    lo, mid, hi = quantile(closes, 0.1), quantile(closes, 0.5), quantile(closes, 0.9)
+    peak = max(c[1] for c in before)
+    drop = (1 - mid / peak) * 100
+    if hi / lo > cfg.dead_flat:
+        return no(f"{cfg.dead_h:g}j sebelum surge gak flat (range {hi / lo:.1f}x, maks {cfg.dead_flat:g}x)")
+    if drop < cfg.dead_drop_pct:
+        return no(f"level mati cuma -{drop:.0f}% dari puncak (min -{cfg.dead_drop_pct:g}%)")
+    breakout = (price / hi - 1) * 100
+    if breakout < cfg.revival_pct:
+        return no(f"baru {breakout:+.0f}% dari atap range mati (min +{cfg.revival_pct:g}%)")
+    base_vol = sum(c[2] for c in base) / len(base)
+    surge_vol = sum(c[2] for c in surge) / max(1, len(surge))
+    if base_vol > 0 and surge_vol < cfg.revival_vol_mult * base_vol:
+        return no(f"volume surge {surge_vol / base_vol:.1f}x volume pas mati (min {cfg.revival_vol_mult:g}x)")
+    breakout_ts = next((c[0] for c in surge if c[1] > hi), surge_from)
+    last_alive = max(c[0] for c in before + base if c[1] >= hi * 1.5) if peak >= hi * 1.5 else series[0][0]
+    return Signal(peak, mid, breakout_ts, price, drop, (price / mid - 1) * 100,
+                  kind="revival", dead_h=(breakout_ts - last_alive) / 3600)
+
+
 def confirm(pair: dict, cfg: Config) -> list[str]:
     """Filter konfirmasi. Return alasan gagal (list kosong = lolos)."""
     fails = []
@@ -240,6 +375,8 @@ def should_alert(last: dict | None, sig: Signal, now: float, cfg: Config) -> boo
         return True
     if sig.price >= last["price"] * cfg.rerun_mult:  # masih lanjut terbang
         return True
+    if sig.kind == "revival" == last.get("kind") and now - last["ts"] < cfg.dead_h * 3600:
+        return False  # satu kebangkitan cukup sekali, titik breakout-nya bisa geser tiap jam
     new_episode = sig.low_ts != last.get("low_ts")
     return new_episode and now - last["ts"] >= cfg.cooldown_min * 60
 
@@ -255,6 +392,10 @@ def usd(x: float) -> str:
 
 def price_str(p: float) -> str:
     return f"${p:,.4f}" if p >= 1 else f"${p:.4g}"
+
+
+def hours_str(h: float) -> str:
+    return f"{h / 24:.1f} hari" if h >= 48 else f"{h:.0f} jam"
 
 
 def changes_str(pair: dict) -> str:
@@ -277,6 +418,15 @@ def format_alert(pair: dict, sig: Signal, cfg: Config) -> str:
         head = [f"🚀 {sym} lagi pump — {cfg.chain}",
                 f"Naik +{sig.rebound:.0f}% dalam ≤{cfg.pump_window_min:g} menit "
                 f"({price_str(sig.low)} → {price_str(sig.price)}), {vs_peak}"]
+    elif sig.kind == "revival":
+        mc = float(pair.get("marketCap") or fdv or 0)
+
+        def at(p: float) -> str:
+            return f" (mcap {usd(mc * p / sig.price)})" if mc else ""
+        head = [f"💀→🚀 {sym} bangkit dari mati — {cfg.chain}",
+                f"Puncak {price_str(sig.peak)}{at(sig.peak)} → mati ~{hours_str(sig.dead_h)} di "
+                f"{price_str(sig.low)}{at(sig.low)}, -{sig.drop:.0f}%",
+                f"Sekarang {price_str(sig.price)}{at(sig.price)}, +{sig.rebound:.0f}% dari level mati"]
     else:
         head = [f"🚀 {sym} bangkit abis jatoh — {cfg.chain}",
                 f"Turun {sig.drop:.0f}% ({price_str(sig.peak)} → {price_str(sig.low)}), "
@@ -298,7 +448,7 @@ def load_state(path: str) -> dict:
             state = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         state = {}
-    for k in ("history", "alerts", "scan", "resolved"):
+    for k in ("history", "alerts", "scan", "resolved", "gt_pool"):
         state.setdefault(k, {})
     return state
 
@@ -324,13 +474,15 @@ def update_history(state: dict, addr: str, pair: dict, now: float, cfg: Config) 
 
 
 def process(state: dict, addr: str, pair: dict, now: float, cfg: Config, notify,
-            pump: bool = False) -> Signal | None:
+            pump: bool = False, candles: list | None = None) -> Signal | None:
     hist = update_history(state, addr, pair, now, cfg)
-    sig = detect(hist, now, cfg) or (detect_pump(hist, now, cfg) if pump else None)
+    price = float(pair.get("priceUsd") or 0)
+    sig = ((detect_revival(candles, price, now, cfg) if candles else None)
+           or detect(hist, now, cfg) or (detect_pump(hist, now, cfg) if pump else None))
     if not sig or confirm(pair, cfg) or not should_alert(state["alerts"].get(addr), sig, now, cfg):
         return None
     notify(format_alert(pair, sig, cfg))
-    state["alerts"][addr] = {"ts": now, "price": sig.price, "low_ts": sig.low_ts}
+    state["alerts"][addr] = {"ts": now, "price": sig.price, "low_ts": sig.low_ts, "kind": sig.kind}
     return sig
 
 
@@ -390,20 +542,27 @@ def check(items: list[str], cfg: Config) -> None:
         if not pair:
             print(f"{addr}: gak ada pair di {cfg.chain}\n")
             continue
+        price = float(pair.get("priceUsd") or 0)
         hist = update_history(state, addr, pair, now, cfg)
+        candles, why = fetch_candles(cfg.chain, pair, cfg.history_days, state["gt_pool"]), []
+        rev = detect_revival(candles, price, now, cfg, why) if candles else None
         sig = detect(hist, now, cfg) or detect_pump(hist, now, cfg)
         fails = confirm(pair, cfg)
         print(f"{pair['baseToken']['symbol']}  {addr}")
-        print(f"  harga {price_str(float(pair.get('priceUsd') or 0))} · liq {usd(liq(pair))} · "
-              f"{changes_str(pair)}")
-        if sig and sig.kind == "dip":
-            print(f"  pola: turun {sig.drop:.0f}% lalu mantul +{sig.rebound:.0f}% ✅")
-        elif sig:
-            print(f"  pola: lagi pump +{sig.rebound:.0f}% dari low {cfg.pump_window_min:g} menit ✅")
+        print(f"  harga {price_str(price)} · liq {usd(liq(pair))} · {changes_str(pair)}")
+        if rev:
+            print(f"  bangkit dari mati: puncak {price_str(rev.peak)} → mati ~{hours_str(rev.dead_h)} "
+                  f"(-{rev.drop:.0f}%) → +{rev.rebound:.0f}% ✅")
         else:
-            print("  pola: belum ada dip -> rebound / pump yang cukup")
+            print(f"  bangkit dari mati: {why[0] if why else 'gak ada data candle GeckoTerminal'}")
+        if sig and sig.kind == "dip":
+            print(f"  abis jatoh: turun {sig.drop:.0f}% lalu mantul +{sig.rebound:.0f}% ✅")
+        elif sig:
+            print(f"  lagi pump: +{sig.rebound:.0f}% dari low {cfg.pump_window_min:g} menit ✅")
+        else:
+            print("  abis jatoh / pump: belum")
         print(f"  konfirmasi: {'lolos ✅' if not fails else '; '.join(fails)}")
-        print(f"  status: {'🚀 ALERT' if sig and not fails else 'belum'}")
+        print(f"  status: {'🚀 ALERT' if (rev or sig) and not fails else 'belum'}")
         print(f"  {pair.get('url', '')}\n")
 
 
@@ -415,6 +574,7 @@ def run(args, cfg: Config) -> None:
         sys.exit("Gak ada token yang bisa dipantau. Cek simbol/alamat atau tambah --scan.")
     print(f"Pantau {len(watch)} token di '{cfg.chain}'" + (" + scan" if args.scan else "")
           + f", tiap {args.interval}s. Ctrl+C buat stop.", flush=True)
+    candle_cache: dict[str, tuple[float, list]] = {}
     while True:
         now = time.time()
         if args.scan and now - state.get("last_discover", 0) >= DISCOVER_EVERY_S:
@@ -424,11 +584,18 @@ def run(args, cfg: Config) -> None:
             newest = sorted(state["scan"].items(), key=lambda kv: -kv[1])[:MAX_SCAN_TOKENS]
             state["scan"] = {a: t for a, t in newest if now - t <= cfg.lookback_h * 3600}
         tracked = sorted(set(watch) | set(state["scan"]))
-        for addr, pair in fetch_best_pairs(cfg.chain, tracked).items():
-            process(state, addr, pair, now, cfg, notify, pump=addr in watch)
-        for addr in list(state["history"]):
-            if addr not in tracked:
-                del state["history"][addr]
+        pairs = fetch_best_pairs(cfg.chain, tracked)
+        candle_cache = {a: v for a, v in candle_cache.items() if now - v[0] < CANDLE_TTL_S}
+        budget = GT_OHLCV_PER_LOOP
+        # yang naiknya paling kenceng duluan, biar kebagian jatah candle
+        for addr, pair in sorted(pairs.items(), key=lambda kv: -((kv[1].get("priceChange") or {}).get("h1") or 0)):
+            if looks_like_surge(pair) and not confirm(pair, cfg) and addr not in candle_cache and budget > 0:
+                budget -= 1
+                candle_cache[addr] = (now, fetch_candles(cfg.chain, pair, cfg.history_days, state["gt_pool"]))
+            candles = candle_cache[addr][1] if addr in candle_cache and looks_like_surge(pair) else None
+            process(state, addr, pair, now, cfg, notify, pump=addr in watch, candles=candles)
+        for key in ("history", "gt_pool"):
+            state[key] = {a: v for a, v in state[key].items() if a in tracked}
         save_state(args.state, state)
         if args.once:
             return
@@ -462,11 +629,18 @@ def main(argv=None) -> None:
                     help=f"watchlist: min %% naik buat alert pump (default {d.pump_pct:g})")
     ap.add_argument("--pump-window", type=float, default=d.pump_window_min,
                     help=f"menit (default {d.pump_window_min:g})")
+    ap.add_argument("--dead-hours", type=float, default=d.dead_h,
+                    help=f"bangkit dari mati: min jam flat sebelum surge (default {d.dead_h:g})")
+    ap.add_argument("--dead-drop", type=float, default=d.dead_drop_pct,
+                    help=f"bangkit dari mati: min %% level mati di bawah puncak (default {d.dead_drop_pct:g})")
+    ap.add_argument("--revival", type=float, default=d.revival_pct,
+                    help=f"bangkit dari mati: min %% di atas range mati (default {d.revival_pct:g})")
     args = ap.parse_args(argv)
     cfg = Config(chain=args.chain, drop_pct=args.drop, rebound_pct=args.rebound,
                  lookback_h=args.lookback, max_low_age_min=args.low_age, min_liq_usd=args.min_liq,
                  min_vol_h1_usd=args.min_vol, vol_spike=args.vol_spike, min_buy_ratio=args.min_buy,
-                 cooldown_min=args.cooldown, pump_pct=args.pump, pump_window_min=args.pump_window)
+                 cooldown_min=args.cooldown, pump_pct=args.pump, pump_window_min=args.pump_window,
+                 dead_h=args.dead_hours, dead_drop_pct=args.dead_drop, revival_pct=args.revival)
     try:
         if args.check is not None:
             items = args.check or read_watchlist(args.watchlist)
