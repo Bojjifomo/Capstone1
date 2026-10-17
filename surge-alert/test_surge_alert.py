@@ -1,7 +1,14 @@
+import io
+import json
+import os
+import socket
 import unittest
 from unittest import mock
 
 import surge_alert as sa
+
+sa.NOTIFY_ENV = "/nonexistent"  # tes gak boleh baca notify.env (dan key) asli
+os.environ.pop("GMGN_API_KEY", None)
 
 NOW = 1_800_000_000.0
 CFG = sa.Config()
@@ -315,11 +322,13 @@ class GeckoTerminalTest(unittest.TestCase):
             calls.append(path)
             return {"data": pages[path.rsplit("/", 1)[1]]}
         with mock.patch.object(sa, "get_json", side_effect=lambda p, q=None: prof if "profiles" in p else []), \
-                mock.patch.object(sa, "gt_get", side_effect=fake_gt):
+                mock.patch.object(sa, "gt_get", side_effect=fake_gt), mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(sa, "_gt_top_cursor", 0):
             found = sa.discover(CFG)
+            self.assertEqual(len(calls), 5)  # trending 5m/1j + pool baru + 2 halaman volume terbesar
+            sa.discover(CFG)
         self.assertEqual(found, ["0xaaa", "0xccc", "0xnew", "0xnoinfo"])
-        self.assertEqual(len(calls), 15)  # trending x3 + baru x2 + volume terbesar x10
-        self.assertEqual(calls.count("/networks/robinhood/trending_pools"), 3)
+        self.assertEqual(calls.count("/networks/robinhood/trending_pools"), 4)
 
 
 class HistoryCompactionTest(unittest.TestCase):
@@ -369,6 +378,111 @@ class NotifyTest(unittest.TestCase):
                 mock.patch.object(sa, "load_env_file"), mock.patch("builtins.print"):
             sa.main(["--test-notify"])
         self.assertIn("Tes notif", sent[0])
+
+
+class FakeResponse(io.BytesIO):
+    def __init__(self, payload, status=200, headers=None):
+        super().__init__(json.dumps(payload).encode())
+        self.status, self.headers = status, headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def http_error(code, payload=None, headers=None):
+    return sa.urllib.error.HTTPError("https://x", code, "err", headers or {},
+                                     io.BytesIO(json.dumps(payload or {}).encode()))
+
+
+class GmgnTest(unittest.TestCase):
+    def setUp(self):
+        patches = [mock.patch.dict(os.environ, {"GMGN_API_KEY": "k-123"}),
+                   mock.patch.object(sa, "GMGN_MIN_GAP_S", 0), mock.patch.object(sa, "_gmgn_blocked_until", 0.0),
+                   mock.patch.object(sa, "warn")]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_get_sends_key_and_auth_params(self):
+        resp = FakeResponse({"code": 0, "data": {"rank": []}})
+        with mock.patch.object(sa.urllib.request, "urlopen", return_value=resp) as op:
+            self.assertEqual(sa.gmgn_get("/v1/market/rank", {"chain": "robinhood", "filters": ["not_honeypot"]}),
+                             {"rank": []})
+        req = op.call_args[0][0]
+        self.assertEqual(req.get_header("X-apikey"), "k-123")
+        q = sa.urllib.parse.parse_qs(sa.urllib.parse.urlparse(req.full_url).query)
+        self.assertEqual(q["chain"], ["robinhood"])
+        self.assertEqual(q["filters"], ["not_honeypot"])
+        self.assertTrue(q["timestamp"][0].isdigit())
+        self.assertEqual(len(q["client_id"][0]), 36)
+
+    def test_rate_limit_backs_off_until_reset(self):
+        reset = NOW + 120
+        err = http_error(429, {"code": 429, "error": "RATE_LIMIT_BANNED", "reset_at": reset})
+        with mock.patch.object(sa.urllib.request, "urlopen", side_effect=err) as op, \
+                mock.patch.object(sa.time, "time", return_value=NOW):
+            with self.assertRaisesRegex(RuntimeError, "RATE_LIMIT_BANNED"):
+                sa.gmgn_get("/v1/market/rank", {})
+            with self.assertRaisesRegex(RuntimeError, "istirahat 120 detik"):
+                sa.gmgn_get("/v1/market/rank", {})
+        self.assertEqual(op.call_count, 1)
+
+    def test_business_error_raises(self):
+        resp = FakeResponse({"code": 40001, "error": "INVALID_API_KEY", "message": "bad key"})
+        with mock.patch.object(sa.urllib.request, "urlopen", return_value=resp):
+            with self.assertRaisesRegex(RuntimeError, "INVALID_API_KEY bad key"):
+                sa.gmgn_get("/v1/market/rank", {})
+
+    def test_discover_uses_server_side_filters(self):
+        ranks = {"5m": [{"address": "0xAAA"}], "1h": [{"address": "0xaaa"}, {"address": "0xBBB"}],
+                 "24h": [{"address": "0xCCC"}]}
+        with mock.patch.object(sa, "gmgn_get", side_effect=lambda path, q: {"rank": ranks[q["interval"]]}) as g, \
+                mock.patch.object(sa, "gt_get") as gt, mock.patch.object(sa, "get_json") as ds:
+            self.assertEqual(sa.discover(CFG), ["0xaaa", "0xbbb", "0xccc"])
+        gt.assert_not_called()
+        ds.assert_not_called()
+        params = g.call_args_list[2][0][1]
+        self.assertEqual((params["min_marketcap"], params["min_liquidity"]), ("400000", "5000"))
+        self.assertEqual((params["interval"], params["order_by"], params["limit"]), ("24h", "marketcap", 100))
+
+    def test_discover_falls_back_to_geckoterminal(self):
+        with mock.patch.object(sa, "gmgn_get", side_effect=RuntimeError("down")), \
+                mock.patch.object(sa, "gt_get", return_value={"data": []}) as gt, \
+                mock.patch.object(sa, "get_json", return_value=[]):
+            self.assertEqual(sa.discover(CFG), [])
+        self.assertTrue(gt.called)
+
+    def test_candles_from_gmgn_kline(self):
+        rows = [{"time": NOW, "close": "1.5", "amount": "900"},
+                {"time": (NOW - 3600) * 1000, "close": "1.0", "amount": "100"},  # milidetik juga diterima
+                {"time": NOW - 7200, "close": "0", "amount": "5"}]
+        with mock.patch.object(sa, "gmgn_get", return_value={"list": rows}) as g, mock.patch.object(sa, "gt_get") as gt:
+            candles = sa.fetch_candles("robinhood", pair(), 30, {})
+        self.assertEqual(candles, [(NOW - 3600, 1.0, 100.0), (NOW, 1.5, 900.0)])
+        self.assertEqual(g.call_args[0][1]["resolution"], "1h")
+        gt.assert_not_called()
+
+    def test_gmgn_resolves_ipv4_only(self):
+        v4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 443))
+        v6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 443, 0, 0))
+        with mock.patch.object(sa, "_orig_getaddrinfo", return_value=[v6, v4]):
+            self.assertEqual(sa._getaddrinfo_ipv4_for_gmgn("openapi.gmgn.ai", 443), [v4])
+            self.assertEqual(sa._getaddrinfo_ipv4_for_gmgn("api.dexscreener.com", 443), [v6, v4])
+
+
+class GeckoTerminalPacingTest(unittest.TestCase):
+    def test_429_pauses_instead_of_retrying(self):
+        err = http_error(429, headers={"Retry-After": "30"})
+        with mock.patch.object(sa, "_gt_blocked_until", 0.0), mock.patch.object(sa, "GT_MIN_GAP_S", 0), \
+                mock.patch.object(sa.urllib.request, "urlopen", side_effect=err) as op:
+            with self.assertRaises(sa.urllib.error.HTTPError):
+                sa.gt_get("/networks/robinhood/pools")
+            with self.assertRaisesRegex(RuntimeError, "istirahat"):
+                sa.gt_get("/networks/robinhood/pools")
+        self.assertEqual(op.call_count, 1)
 
 
 class WatchlistTest(unittest.TestCase):

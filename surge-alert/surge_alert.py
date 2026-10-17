@@ -27,30 +27,37 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
-VERSION = "4"
+VERSION = "5"
 API = "https://api.dexscreener.com"
 # (key priceChange DexScreener, panjang jendela dalam detik)
 WINDOWS = (("m5", 300), ("h1", 3600), ("h6", 21600), ("h24", 86400))
-DISCOVER_EVERY_S = 300  # endpoint profile/boost limitnya 60 req/menit
+DISCOVER_EVERY_S = 300        # tanpa GMGN: GeckoTerminal + DexScreener (rate limit ketat)
+GMGN_DISCOVER_EVERY_S = 60    # GMGN limitnya longgar, jadi bisa tiap putaran
 WATCHLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.txt")
 GT_API = "https://api.geckoterminal.com/api/v2"
-GT_MIN_GAP_S = 2.5        # GeckoTerminal keyless ~30 req/menit
-GT_OHLCV_PER_LOOP = 8     # maks ambil candle per putaran polling
+GT_MIN_GAP_S = 6.0        # GeckoTerminal keyless: <= 10 req/menit biar gak kena 429
+GT_OHLCV_PER_LOOP = 3     # maks ambil candle per putaran polling (GeckoTerminal)
+GMGN_OHLCV_PER_LOOP = 8   # idem, kalau pakai GMGN
+GMGN_API = "https://openapi.gmgn.ai"
+GMGN_MIN_GAP_S = 1.0
+# (interval, urutan): koin paling rame 5 menit & 1 jam terakhir + 100 mcap terbesar 24 jam
+GMGN_RANKS = (("5m", "volume"), ("1h", "volume"), ("24h", "marketcap"))
 CANDLE_TTL_S = 600
 MAX_SCAN_TOKENS = 500
-GT_DISCOVER = (
-    [("trending_pools", {"duration": d}) for d in ("5m", "1h", "6h")]
-    + [("new_pools", {"page": p}) for p in (1, 2)]
-    + [("pools", {"sort": "h24_volume_usd_desc", "page": p}) for p in range(1, 11)]  # GeckoTerminal maks 10 halaman
-)
+GT_DISCOVER = [("trending_pools", {"duration": "5m"}), ("trending_pools", {"duration": "1h"}),
+               ("new_pools", {"page": 1})]
+GT_TOP_PAGES = 10             # pool volume 24j terbesar, GeckoTerminal maks 10 halaman...
+GT_TOP_PAGES_PER_ROUND = 2    # ...digilir 2 halaman per putaran discovery biar gak kena 429
 NOTIFY_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notify.env")
 
 
@@ -106,19 +113,27 @@ def warn_once(key: str, msg: str) -> None:
 
 # ---------------------------------------------------------------- HTTP
 
-def _request(req: urllib.request.Request, timeout: float = 20):
-    for attempt in range(4):
+def _request(req: urllib.request.Request, timeout: float = 20, retry: bool = True):
+    attempts = 4 if retry else 1
+    for attempt in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read()
                 return json.loads(body) if body else None
         except urllib.error.HTTPError as e:
-            if e.code not in (429, 500, 502, 503, 504) or attempt == 3:
+            if e.code not in (429, 500, 502, 503, 504) or attempt == attempts - 1:
                 raise
         except urllib.error.URLError:
-            if attempt == 3:
+            if attempt == attempts - 1:
                 raise
         time.sleep(2 ** (attempt + 1))
+
+
+def _num(x) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def get_json(path: str, params: dict | None = None):
@@ -128,15 +143,74 @@ def get_json(path: str, params: dict | None = None):
 
 
 _gt_last_call = 0.0
+_gt_blocked_until = 0.0
+_gt_top_cursor = 0
 
 
 def gt_get(path: str, params: dict | None = None):
-    global _gt_last_call
+    """GeckoTerminal keyless. Kena 429 -> berhenti nanya sampai limitnya reset, bukan diulang terus."""
+    global _gt_last_call, _gt_blocked_until
+    if time.time() < _gt_blocked_until:
+        raise RuntimeError(f"rate limit, istirahat {int(_gt_blocked_until - time.time())} detik lagi")
     time.sleep(max(0.0, _gt_last_call + GT_MIN_GAP_S - time.time()))
     _gt_last_call = time.time()
     url = GT_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
-    return _request(urllib.request.Request(url, headers={
-        "User-Agent": "surge-alert/1.0", "Accept": "application/json;version=20230302"}))
+    try:
+        return _request(urllib.request.Request(url, headers={
+            "User-Agent": "surge-alert/1.0", "Accept": "application/json;version=20230302"}), retry=False)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            _gt_blocked_until = time.time() + (_num((e.headers or {}).get("Retry-After")) or 60)
+        raise
+
+
+_gmgn_last_call = 0.0
+_gmgn_blocked_until = 0.0
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_ipv4_for_gmgn(host, *args, **kwargs):
+    # GMGN OpenAPI cuma jalan lewat IPv4; lewat IPv6 dibales 401/403
+    res = _orig_getaddrinfo(host, *args, **kwargs)
+    if host == urllib.parse.urlparse(GMGN_API).hostname:
+        return [r for r in res if r[0] == socket.AF_INET] or res
+    return res
+
+
+socket.getaddrinfo = _getaddrinfo_ipv4_for_gmgn
+
+
+def gmgn_enabled() -> bool:
+    return bool(os.getenv("GMGN_API_KEY"))
+
+
+def gmgn_get(path: str, params: dict):
+    """GMGN OpenAPI (read-only, cukup API key). Kena rate limit -> diem sampai waktu reset dari GMGN."""
+    global _gmgn_last_call, _gmgn_blocked_until
+    if time.time() < _gmgn_blocked_until:
+        raise RuntimeError(f"rate limit, istirahat {int(_gmgn_blocked_until - time.time())} detik lagi")
+    time.sleep(max(0.0, _gmgn_last_call + GMGN_MIN_GAP_S - time.time()))
+    _gmgn_last_call = time.time()
+    query = {**params, "timestamp": int(time.time()), "client_id": str(uuid.uuid4())}
+    req = urllib.request.Request(GMGN_API + path + "?" + urllib.parse.urlencode(query, doseq=True), headers={
+        "X-APIKEY": os.getenv("GMGN_API_KEY", ""), "Content-Type": "application/json",
+        "User-Agent": "surge-alert/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            status, raw, reset = r.status, r.read(), r.headers.get("X-RateLimit-Reset")
+    except urllib.error.HTTPError as e:
+        status, raw, reset = e.code, (e.read() if e.fp else b""), (e.headers or {}).get("X-RateLimit-Reset")
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = {}
+    if status == 200 and body.get("code") == 0:
+        return body.get("data")
+    err = body.get("error") or f"HTTP {status}"
+    if status == 429 or str(err).startswith("RATE_LIMIT"):
+        until = _num(body.get("reset_at") or reset)
+        _gmgn_blocked_until = until if until > time.time() else time.time() + 60
+    raise RuntimeError(f"{err} {body.get('message') or ''}".strip())
 
 
 def post(url: str, data: bytes, headers: dict) -> None:
@@ -204,10 +278,32 @@ def fetch_best_pairs(chain: str, addrs: list[str]) -> dict[str, dict]:
     return best
 
 
+def gmgn_discover(cfg: Config) -> list[str]:
+    """Koin dengan mcap & likuiditas di atas ambang, disaring langsung di server GMGN."""
+    found = []
+    for interval, order_by in GMGN_RANKS:
+        try:
+            data = gmgn_get("/v1/market/rank", {
+                "chain": cfg.chain, "interval": interval, "order_by": order_by, "direction": "desc",
+                "limit": 100, "min_marketcap": f"{cfg.min_mcap_usd:g}", "min_liquidity": f"{cfg.min_liq_usd:g}",
+                # ganti filter default GMGN (verified + renounced) biar koin yang belum renounce tetap masuk
+                "filters": ["not_honeypot"]})
+        except Exception as e:
+            warn_once(f"gmgn-rank-{interval}", f"GMGN trending {interval} gagal: {e}")
+            continue
+        found += [it["address"].lower() for it in (data or {}).get("rank") or [] if it.get("address")]
+    return found
+
+
 def discover(cfg: Config) -> list[str]:
-    """Semua koin yang lagi aktif di chain: profile/boost DexScreener + pool trending (5m/1j/6j),
-    pool baru, & 100 pool volume 24j terbesar GeckoTerminal. Koin mati yang tiba-tiba bangun
-    langsung masuk trending 5m/1j."""
+    """Semua koin yang lagi aktif di chain. Pakai GMGN kalau ada GMGN_API_KEY; kalau gak ada / gagal:
+    profile/boost DexScreener + pool trending (5m/1j), pool baru, & pool volume 24j terbesar
+    GeckoTerminal (digilir per halaman). Koin mati yang tiba-tiba bangun langsung masuk trending."""
+    global _gt_top_cursor
+    if gmgn_enabled():
+        found = gmgn_discover(cfg)
+        if found:
+            return list(dict.fromkeys(found))
     chain, found = cfg.chain, []
     for path in ("/token-profiles/latest/v1", "/token-boosts/latest/v1", "/token-boosts/top/v1"):
         try:
@@ -218,7 +314,9 @@ def discover(cfg: Config) -> list[str]:
         for it in items if isinstance(items, list) else [items]:
             if it.get("chainId") == chain and it.get("tokenAddress"):
                 found.append(it["tokenAddress"].lower())
-    for endpoint, params in GT_DISCOVER:
+    pages = [(_gt_top_cursor + i) % GT_TOP_PAGES + 1 for i in range(GT_TOP_PAGES_PER_ROUND)]
+    _gt_top_cursor = (_gt_top_cursor + GT_TOP_PAGES_PER_ROUND) % GT_TOP_PAGES
+    for endpoint, params in GT_DISCOVER + [("pools", {"sort": "h24_volume_usd_desc", "page": p}) for p in pages]:
         try:
             res = gt_get(f"/networks/{chain}/{endpoint}", params) or {}
         except Exception as e:
@@ -249,8 +347,20 @@ def _ohlcv(chain: str, pool: str, params: dict) -> list[tuple[float, float, floa
 
 
 def fetch_candles(chain: str, pair: dict, days: float, pool_cache: dict) -> list:
-    """Candle 1 jam [(ts, close, volume USD)] urut lama -> baru dari GeckoTerminal. [] kalau gagal."""
+    """Candle 1 jam [(ts, close, volume USD)] urut lama -> baru dari GMGN (kalau ada key) atau
+    GeckoTerminal. [] kalau gagal."""
     token = pair["baseToken"]["address"].lower()
+    if gmgn_enabled():
+        now = int(time.time())
+        try:
+            data = gmgn_get("/v1/market/token_kline", {"chain": chain, "address": token, "resolution": "1h",
+                                                       "from": now - int(days * 86400), "to": now})
+            rows = (data or {}).get("list") or []
+            # "amount" = volume USD ("volume" di GMGN itu jumlah token)
+            return sorted((_num(r.get("time")) / (1000 if _num(r.get("time")) > 1e12 else 1),
+                           _num(r.get("close")), _num(r.get("amount"))) for r in rows if _num(r.get("close")) > 0)
+        except Exception as e:
+            warn_once("gmgn-kline", f"candle GMGN gagal ({e}); coba GeckoTerminal")
     params = {"aggregate": 1, "limit": min(1000, int(days * 24)), "currency": "usd", "token": token}
     pool = pool_cache.get(token) or pair.get("pairAddress")
     try:
@@ -644,26 +754,32 @@ def run(args, cfg: Config) -> None:
     print(f"Notif: {', '.join(['terminal'] + notify.channels)}"
           + ("" if len(notify.channels) > 1 else " (isi notify.env buat notif ke HP)")
           + ". Ctrl+C buat stop.", flush=True)
+    gmgn = gmgn_enabled()
+    every = GMGN_DISCOVER_EVERY_S if gmgn else DISCOVER_EVERY_S
+    if scan:
+        print("Sumber koin: " + ("GMGN (filter mcap & LP langsung di server GMGN)" if gmgn else
+                                 "GeckoTerminal + DexScreener (isi GMGN_API_KEY di notify.env biar lebih lengkap)"),
+              flush=True)
     candle_cache: dict[str, tuple[float, list]] = {}
     live = sys.stdout.isatty()
+    first = True
     while True:
         now = time.time()
-        if scan and now - state.get("last_discover", 0) >= DISCOVER_EVERY_S:
-            first = "last_discover" not in state
+        if scan and (first or now - state.get("last_discover", 0) >= every):
             if first:
-                print(f"Nyari semua koin aktif di {cfg.chain} (±1 menit)…", flush=True)
+                print(f"Nyari semua koin aktif di {cfg.chain}…", flush=True)
             for a in discover(cfg):
                 state["scan"][a] = now
             state["last_discover"] = now
             newest = sorted(state["scan"].items(), key=lambda kv: -kv[1])[:MAX_SCAN_TOKENS]
             state["scan"] = {a: t for a, t in newest if now - t <= cfg.lookback_h * 3600}
             if first:
-                print(f"Ketemu {len(state['scan'])} koin aktif. Diperbarui tiap {DISCOVER_EVERY_S // 60} menit.",
-                      flush=True)
+                print(f"Ketemu {len(state['scan'])} koin aktif. Diperbarui tiap {every // 60} menit.", flush=True)
+                first = False
         tracked = sorted(set(watch) | set(state["scan"]))
         pairs = fetch_best_pairs(cfg.chain, tracked)
         candle_cache = {a: v for a, v in candle_cache.items() if now - v[0] < CANDLE_TTL_S}
-        budget, sent = GT_OHLCV_PER_LOOP, 0
+        budget, sent = (GMGN_OHLCV_PER_LOOP if gmgn else GT_OHLCV_PER_LOOP), 0
         # yang naiknya paling kenceng duluan, biar kebagian jatah candle
         for addr, pair in sorted(pairs.items(), key=lambda kv: -((kv[1].get("priceChange") or {}).get("h1") or 0)):
             if looks_like_surge(pair) and not confirm(pair, cfg) and addr not in candle_cache and budget > 0:

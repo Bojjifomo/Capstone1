@@ -1,3 +1,4 @@
 notify.env
 surge_state.json*
 __pycache__/
+*.pem

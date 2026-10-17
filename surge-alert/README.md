@@ -9,8 +9,8 @@ koin yang volume + chart-nya surging:
 
 Filter default: **mcap ≥ $400k** dan **TVL LP ≥ $5k**.
 
-Data dari DexScreener + GeckoTerminal (dua-duanya gratis, tanpa API key). Cuma butuh Python 3.10+,
-gak perlu install apa-apa.
+Data dari GMGN (pakai API key gratis, disarankan) atau GeckoTerminal, plus DexScreener. Cuma butuh
+Python 3.10+, gak perlu install apa-apa.
 
 ## Cara pakai
 
@@ -66,15 +66,37 @@ python surge_alert.py --test-notify
 
 ## Koin yang dipantau
 
-Tiap 5 menit bot ngumpulin koin yang lagi aktif dari:
+**Pakai GMGN (disarankan).** Kalau `GMGN_API_KEY` diisi di `notify.env`, tiap menit bot minta ke GMGN
+semua koin Robinhood Chain dengan mcap ≥ $400k dan likuiditas ≥ $5k (disaring di server GMGN):
+100 teratas volume 5 menit, 100 teratas volume 1 jam, dan 100 mcap terbesar 24 jam. Candle buat
+sinyal "bangkit dari mati" juga dari GMGN. Pas start, terminal nulis `Sumber koin: GMGN`.
 
-- GeckoTerminal: pool trending 5 menit / 1 jam / 6 jam, pool baru, 100 pool volume 24 jam terbesar
-- DexScreener: token yang baru pasang profile / boost
-- `watchlist.txt`: koin yang pengen selalu kamu pantau (udah ada ZERO, IGNITION, AGEM)
+Cara bikin GMGN API key (gratis, sekali aja):
 
-Koin yang beneran surging pasti nongol di daftar trending. Koin yang udah dipantau tetap dipantau
-24 jam sejak terakhir nongol (maks 500 koin). Koin mati tanpa volume gak ikut dipantau, tapi begitu
-bangun, dia masuk trending 5 menit dan langsung kebawa.
+1. Bikin pasangan kunci. GMGN minta *public key*-nya pas daftar:
+
+   ```bash
+   openssl genpkey -algorithm ed25519 -out ~/gmgn_private.pem
+   ```
+
+   ```bash
+   openssl pkey -in ~/gmgn_private.pem -pubout
+   ```
+
+2. Buka https://gmgn.ai/ai, tempel teks `-----BEGIN PUBLIC KEY----- …` dari langkah 1 ke form
+   pembuatan API key, submit, terus salin API key-nya.
+3. Isi `GMGN_API_KEY=…` di `notify.env`, lalu jalanin ulang bot.
+
+`~/gmgn_private.pem` jangan dibagi ke siapa-siapa. Bot ini gak butuh file itu (cuma buat fitur
+trading GMGN).
+
+**Tanpa GMGN**, bot pakai GeckoTerminal + DexScreener: pool trending 5 menit / 1 jam, pool baru, dan
+pool volume 24 jam terbesar (10 halaman digilir 2 halaman tiap 5 menit). Batas GeckoTerminal tanpa
+key ketat, jadi bot sengaja pelan-pelan (maks ~10 request/menit). Kalau tetap kena limit, bot diem
+sampai limitnya reset, bukan nembak terus.
+
+`watchlist.txt` berisi koin yang pengen selalu kamu pantau (udah ada ZERO, IGNITION, AGEM). Koin
+yang udah ketemu tetap dipantau 24 jam sejak terakhir nongol (maks 500 koin).
 
 Cuma mau pantau watchlist: `python surge_alert.py --no-scan`
 
@@ -132,7 +154,8 @@ Biar hemat rate limit GeckoTerminal, candle cuma diambil buat koin yang lagi nai
 ## Catatan
 
 - Bot cuma jalan selama terminal-nya kebuka dan Mac-nya nyala.
-- Chain id DexScreener & GeckoTerminal: `robinhood`. Kalau GeckoTerminal gagal, bot ngasih warning
-  sekali, sinyal "bangkit dari mati" dilewat, dan scan cuma dari DexScreener. Sinyal lain tetap jalan.
+- Chain id DexScreener, GeckoTerminal, & GMGN: `robinhood`. Kalau sumber candle gagal, bot ngasih
+  warning sekali dan sinyal "bangkit dari mati" dilewat. Sinyal lain tetap jalan.
+- Update bot: `git pull` di folder `~/surge-bot`.
 - Tes: `python -m unittest test_surge_alert`
 - Bukan saran finansial. Mantul abis dump di memecoin sering jadi dead-cat bounce.
