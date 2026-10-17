@@ -318,7 +318,7 @@ class GeckoTerminalTest(unittest.TestCase):
                 mock.patch.object(sa, "gt_get", side_effect=fake_gt):
             found = sa.discover(CFG)
         self.assertEqual(found, ["0xaaa", "0xccc", "0xnew", "0xnoinfo"])
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 15)  # trending x3 + baru x2 + volume terbesar x10
         self.assertEqual(calls.count("/networks/robinhood/trending_pools"), 3)
 
 

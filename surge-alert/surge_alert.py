@@ -35,6 +35,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+VERSION = "4"
 API = "https://api.dexscreener.com"
 # (key priceChange DexScreener, panjang jendela dalam detik)
 WINDOWS = (("m5", 300), ("h1", 3600), ("h6", 21600), ("h24", 86400))
@@ -48,7 +49,7 @@ MAX_SCAN_TOKENS = 500
 GT_DISCOVER = (
     [("trending_pools", {"duration": d}) for d in ("5m", "1h", "6h")]
     + [("new_pools", {"page": p}) for p in (1, 2)]
-    + [("pools", {"sort": "h24_volume_usd_desc", "page": p}) for p in range(1, 6)]
+    + [("pools", {"sort": "h24_volume_usd_desc", "page": p}) for p in range(1, 11)]  # GeckoTerminal maks 10 halaman
 )
 NOTIFY_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notify.env")
 
@@ -637,7 +638,7 @@ def run(args, cfg: Config) -> None:
     scan = not args.no_scan
     if not watch and not scan:
         sys.exit("Gak ada token yang bisa dipantau. Cek watchlist.txt atau jangan pakai --no-scan.")
-    print(f"Pantau {'semua koin aktif + ' if scan else ''}{len(watch)} token watchlist di '{cfg.chain}', "
+    print(f"surge-alert v{VERSION} — pantau {'semua koin aktif + ' if scan else ''}{len(watch)} token watchlist di '{cfg.chain}', "
           f"tiap {args.interval}s. Filter: mcap ≥ {usd(cfg.min_mcap_usd)}, TVL LP ≥ {usd(cfg.min_liq_usd)}.",
           flush=True)
     print(f"Notif: {', '.join(['terminal'] + notify.channels)}"
@@ -648,11 +649,17 @@ def run(args, cfg: Config) -> None:
     while True:
         now = time.time()
         if scan and now - state.get("last_discover", 0) >= DISCOVER_EVERY_S:
+            first = "last_discover" not in state
+            if first:
+                print(f"Nyari semua koin aktif di {cfg.chain} (±1 menit)…", flush=True)
             for a in discover(cfg):
                 state["scan"][a] = now
             state["last_discover"] = now
             newest = sorted(state["scan"].items(), key=lambda kv: -kv[1])[:MAX_SCAN_TOKENS]
             state["scan"] = {a: t for a, t in newest if now - t <= cfg.lookback_h * 3600}
+            if first:
+                print(f"Ketemu {len(state['scan'])} koin aktif. Diperbarui tiap {DISCOVER_EVERY_S // 60} menit.",
+                      flush=True)
         tracked = sorted(set(watch) | set(state["scan"]))
         pairs = fetch_best_pairs(cfg.chain, tracked)
         candle_cache = {a: v for a, v in candle_cache.items() if now - v[0] < CANDLE_TTL_S}
@@ -679,6 +686,7 @@ def run(args, cfg: Config) -> None:
 def main(argv=None) -> None:
     d = Config()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"surge-alert v{VERSION}")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--check", nargs="*", metavar="TOKEN",
                       help="cek status sekarang lalu keluar (tanpa TOKEN = isi watchlist)")
