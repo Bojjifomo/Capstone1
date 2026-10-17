@@ -82,7 +82,11 @@ class ConfirmTest(unittest.TestCase):
         self.assertEqual(sa.confirm(pair(), CFG), [])
 
     def test_fails(self):
-        for kw, word in [({"liq": 1000}, "liq"), ({"v1": 100}, "vol 1j"),
+        small = dict(pair(), fdv=300_000)
+        self.assertTrue(any("mcap $300.0k < $400.0k" in f for f in sa.confirm(small, CFG)))
+        self.assertTrue(any("mcap" in f for f in sa.confirm(dict(pair(), fdv=None), CFG)))
+        self.assertEqual(sa.confirm(dict(pair(liq=6000), fdv=None, marketCap=450_000), CFG), [])
+        for kw, word in [({"liq": 4000}, "liq"), ({"v1": 100}, "vol 1j"),
                          ({"v1": 6000, "v6": 60_000}, "spike"), ({"buys": 40, "sells": 60}, "buy"),
                          ({"buys": 0, "sells": 0}, "buy")]:
             fails = sa.confirm(pair(**kw), CFG)
@@ -112,13 +116,14 @@ class CooldownTest(unittest.TestCase):
 
 class ProcessTest(unittest.TestCase):
     def test_polling_flow_alerts_once(self):
-        state, sent = sa.load_state("/nonexistent"), []
         prices = [1.0, 0.9, 0.7, 0.5, 0.4, 0.42, 0.5, 0.55, 0.58, 0.6]
-        for i, price in enumerate(prices):
-            now = NOW + i * 600
-            sa.process(state, TOKEN, pair(price), now, CFG, sent.append)
-        self.assertEqual(len(sent), 1)
-        self.assertIn("Turun 60%", sent[0])
+        # pump=True (default): ping paling awal di +25%; dasar sama -> sinyal dip nanti gak dobel
+        for pump, first in ((False, "Turun 60%"), (True, "lagi pump")):
+            state, sent = sa.load_state("/nonexistent"), []
+            for i, price in enumerate(prices):
+                sa.process(state, TOKEN, pair(price), NOW + i * 600, CFG, sent.append, pump=pump)
+            self.assertEqual(len(sent), 1, pump)
+            self.assertIn(first, sent[0])
 
     def test_history_pruned_to_lookback(self):
         state = sa.load_state("/nonexistent")
@@ -179,7 +184,7 @@ class PumpTest(unittest.TestCase):
         self.assertIn("Naik +50%", msg)
         self.assertIn("masih -6% dari puncak 24j", msg)
 
-    def test_pump_only_alerts_for_watchlist(self):
+    def test_pump_flag(self):
         p = pair(1.0, {"m5": 3, "h1": 40, "h6": 30, "h24": 20})
         for pump, expected in ((False, 0), (True, 1)):
             state, sent = sa.load_state("/nonexistent"), []
@@ -293,12 +298,77 @@ class GeckoTerminalTest(unittest.TestCase):
                 mock.patch.object(sa, "warn"):
             self.assertEqual(sa.fetch_candles("robinhood", dict(pair(), pairAddress="0x1"), 30, {}), [])
 
-    def test_discover_includes_trending_pools(self):
+    def test_discover_all_active_pools_with_rough_filter(self):
         prof = [{"chainId": "robinhood", "tokenAddress": "0xAAA"}, {"chainId": "base", "tokenAddress": "0xB"}]
-        trending = {"data": [{"relationships": {"base_token": {"data": {"id": "robinhood_0xCCC"}}}}]}
+
+        def gt_pool(addr, mc=None, tvl=None):
+            return {"attributes": {"market_cap_usd": mc, "fdv_usd": None, "reserve_in_usd": tvl},
+                    "relationships": {"base_token": {"data": {"id": f"robinhood_{addr}"}}}}
+        pages = {"trending_pools": [gt_pool("0xCCC", "900000", "40000"),
+                                    gt_pool("0xSMALLCAP", "150000", "40000"),
+                                    gt_pool("0xTHINLP", "900000", "1000")],
+                 "new_pools": [gt_pool("0xNEW", "250000", "3000")],  # di atas setengah ambang: kepantau
+                 "pools": [gt_pool("0xCCC", "900000", "40000"), gt_pool("0xNOINFO")]}
+        calls = []
+
+        def fake_gt(path, params=None):
+            calls.append(path)
+            return {"data": pages[path.rsplit("/", 1)[1]]}
         with mock.patch.object(sa, "get_json", side_effect=lambda p, q=None: prof if "profiles" in p else []), \
-                mock.patch.object(sa, "gt_get", return_value=trending):
-            self.assertEqual(sa.discover("robinhood"), ["0xaaa", "0xccc"])
+                mock.patch.object(sa, "gt_get", side_effect=fake_gt):
+            found = sa.discover(CFG)
+        self.assertEqual(found, ["0xaaa", "0xccc", "0xnew", "0xnoinfo"])
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(calls.count("/networks/robinhood/trending_pools"), 3)
+
+
+class HistoryCompactionTest(unittest.TestCase):
+    def test_old_points_thinned_recent_kept(self):
+        state = sa.load_state("/nonexistent")
+        for m in range(600, -1, -1):  # 10 jam, 1 titik/menit
+            sa.update_history(state, TOKEN, pair(1.0), NOW - m * 60, CFG)
+        hist = state["history"][TOKEN]
+        recent = [t for t, _ in hist if NOW - t <= 3 * 3600]
+        old = [t for t, _ in hist if NOW - t > 3 * 3600]
+        self.assertEqual(len(recent), 181)
+        self.assertLessEqual(len(old), 43)
+        self.assertEqual(len(old), len({int(t // 600) for t in old}))
+
+
+class NotifyTest(unittest.TestCase):
+    def test_env_file(self):
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write("# komentar\nNTFY_TOPIC=rahasia-123\nTELEGRAM_CHAT_ID=\"42\"\nDISCORD_WEBHOOK_URL=\n")
+        try:
+            with mock.patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "dari-shell"}, clear=True):
+                sa.load_env_file(f.name)
+                self.assertEqual(os.environ["NTFY_TOPIC"], "rahasia-123")
+                self.assertEqual(os.environ["TELEGRAM_CHAT_ID"], "dari-shell")
+                self.assertEqual(os.environ["DISCORD_WEBHOOK_URL"], "")
+                with mock.patch.object(sa.sys, "platform", "linux"):
+                    self.assertEqual(sa.make_notifier().channels, ["ntfy"])
+        finally:
+            os.unlink(f.name)
+
+    def test_mac_notification(self):
+        import os
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(sa.sys, "platform", "darwin"), \
+                mock.patch.object(sa.subprocess, "run") as run, mock.patch("builtins.print"):
+            notify = sa.make_notifier()
+            self.assertEqual(notify.channels, ["notif Mac"])
+            notify('🚀 ZERO "lagi" pump — robinhood\nNaik +40%')
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[0], "osascript")
+        self.assertEqual(argv[-2:], ['🚀 ZERO "lagi" pump — robinhood', "Naik +40%"])
+
+    def test_test_notify_flag(self):
+        sent = []
+        with mock.patch.object(sa, "make_notifier", return_value=mock.Mock(side_effect=sent.append, channels=[])), \
+                mock.patch.object(sa, "load_env_file"), mock.patch("builtins.print"):
+            sa.main(["--test-notify"])
+        self.assertIn("Tes notif", sent[0])
 
 
 class WatchlistTest(unittest.TestCase):
@@ -318,7 +388,7 @@ class WatchlistTest(unittest.TestCase):
             sa.main(["--check", "#", "cek", "status", "sekarang"])
             sa.main(["--scan", "#", "pantau", "terus", "+", "kirim", "alert"])
         self.assertEqual(check.call_args[0][0], sa.read_watchlist(sa.WATCHLIST))
-        self.assertTrue(run.call_args[0][0].scan)
+        self.assertFalse(run.call_args[0][0].no_scan)
 
     def test_bundled_watchlist_has_zero(self):
         self.assertIn("0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894", sa.read_watchlist(sa.WATCHLIST))

@@ -10,21 +10,24 @@ Sinyal "bangkit abis jatoh" (semua token):
   1. Harga turun >= --drop % dari puncak ke dasar (dalam --lookback jam)
   2. Dasarnya masih baru (<= --low-age menit lalu)
   3. Harga sekarang udah mantul >= --rebound % dari dasar
-Sinyal "lagi pump" (cuma token di watchlist / --watch):
+Sinyal "lagi pump" (semua token):
   naik >= --pump % dari harga terendah --pump-window menit terakhir
-Dua-duanya harus lolos konfirmasi: likuiditas cukup, volume 1 jam spike, buy > sell.
+Semua sinyal harus lolos filter: mcap >= --min-mcap, TVL LP >= --min-liq, volume 1 jam spike,
+buy > sell.
+
+Yang dipantau: semua koin aktif di chain (trending/baru/volume terbesar) + isi watchlist.txt.
 
 Contoh:
-  python surge_alert.py --check                        # cek semua token di watchlist.txt
-  python surge_alert.py --check 0x316f…2894            # cek 1 token
-  python surge_alert.py                                # pantau watchlist.txt, kirim alert
-  python surge_alert.py --scan                         # + scan token baru di chain
+  python surge_alert.py
+  python surge_alert.py --check
+  python surge_alert.py --test-notify
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -36,12 +39,18 @@ API = "https://api.dexscreener.com"
 # (key priceChange DexScreener, panjang jendela dalam detik)
 WINDOWS = (("m5", 300), ("h1", 3600), ("h6", 21600), ("h24", 86400))
 DISCOVER_EVERY_S = 300  # endpoint profile/boost limitnya 60 req/menit
-MAX_SCAN_TOKENS = 300
 WATCHLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.txt")
 GT_API = "https://api.geckoterminal.com/api/v2"
 GT_MIN_GAP_S = 2.5        # GeckoTerminal keyless ~30 req/menit
 GT_OHLCV_PER_LOOP = 8     # maks ambil candle per putaran polling
 CANDLE_TTL_S = 600
+MAX_SCAN_TOKENS = 500
+GT_DISCOVER = (
+    [("trending_pools", {"duration": d}) for d in ("5m", "1h", "6h")]
+    + [("new_pools", {"page": p}) for p in (1, 2)]
+    + [("pools", {"sort": "h24_volume_usd_desc", "page": p}) for p in range(1, 6)]
+)
+NOTIFY_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notify.env")
 
 
 @dataclass
@@ -51,7 +60,8 @@ class Config:
     rebound_pct: float = 30.0      # min naik dasar -> sekarang
     lookback_h: float = 24.0       # jendela nyari puncak
     max_low_age_min: float = 180   # dasar harus terjadi dalam X menit terakhir
-    min_liq_usd: float = 10_000
+    min_liq_usd: float = 5_000     # TVL LP
+    min_mcap_usd: float = 400_000
     min_vol_h1_usd: float = 5_000
     vol_spike: float = 2.0         # volume 1j vs rata-rata per jam 6j terakhir (maks 6x)
     min_buy_ratio: float = 0.55    # porsi tx buy dalam 1 jam
@@ -143,6 +153,10 @@ def liq(pair: dict) -> float:
     return float((pair.get("liquidity") or {}).get("usd") or 0)
 
 
+def mcap(pair: dict) -> float:
+    return float(pair.get("marketCap") or pair.get("fdv") or 0)
+
+
 def is_address(s: str) -> bool:
     return s.lower().startswith("0x") and len(s) == 42
 
@@ -189,28 +203,37 @@ def fetch_best_pairs(chain: str, addrs: list[str]) -> dict[str, dict]:
     return best
 
 
-def discover(chain: str) -> list[str]:
-    """Token di chain ini yang baru masang profile / boost di DexScreener."""
-    found = []
+def discover(cfg: Config) -> list[str]:
+    """Semua koin yang lagi aktif di chain: profile/boost DexScreener + pool trending (5m/1j/6j),
+    pool baru, & 100 pool volume 24j terbesar GeckoTerminal. Koin mati yang tiba-tiba bangun
+    langsung masuk trending 5m/1j."""
+    chain, found = cfg.chain, []
     for path in ("/token-profiles/latest/v1", "/token-boosts/latest/v1", "/token-boosts/top/v1"):
         try:
             items = get_json(path) or []
         except Exception as e:
-            warn(f"discover {path} gagal: {e}")
+            warn_once(path, f"discover {path} gagal: {e}")
             continue
         for it in items if isinstance(items, list) else [items]:
             if it.get("chainId") == chain and it.get("tokenAddress"):
                 found.append(it["tokenAddress"].lower())
-    # pool yang lagi trending 1 jam terakhir: koin yang baru bangun biasanya masuk sini
-    try:
-        res = gt_get(f"/networks/{chain}/trending_pools", {"duration": "1h"}) or {}
+    for endpoint, params in GT_DISCOVER:
+        try:
+            res = gt_get(f"/networks/{chain}/{endpoint}", params) or {}
+        except Exception as e:
+            warn_once(f"gt-{endpoint}", f"discover GeckoTerminal {endpoint} gagal: {e}")
+            continue
         for pool in res.get("data") or []:
+            attrs = pool.get("attributes") or {}
+            # saring kasar (setengah ambang) biar koin yang mepet ambang tetap kepantau
+            mc = float(attrs.get("market_cap_usd") or attrs.get("fdv_usd") or 0)
+            tvl = float(attrs.get("reserve_in_usd") or 0)
+            if (mc and mc < cfg.min_mcap_usd / 2) or (tvl and tvl < cfg.min_liq_usd / 2):
+                continue
             base = ((pool.get("relationships") or {}).get("base_token") or {}).get("data") or {}
             if base.get("id", "").startswith(chain + "_"):
                 found.append(base["id"].split("_", 1)[1].lower())
-    except Exception as e:
-        warn(f"discover GeckoTerminal trending gagal: {e}")
-    return found
+    return list(dict.fromkeys(found))
 
 
 def _ohlcv(chain: str, pool: str, params: dict) -> list[tuple[float, float, float]]:
@@ -362,6 +385,8 @@ def confirm(pair: dict, cfg: Config) -> list[str]:
     v1, v6 = float(vol.get("h1") or 0), float(vol.get("h6") or 0)
     tx = (pair.get("txns") or {}).get("h1") or {}
     buys, sells = tx.get("buys") or 0, tx.get("sells") or 0
+    if mcap(pair) < cfg.min_mcap_usd:
+        fails.append(f"mcap {usd(mcap(pair))} < {usd(cfg.min_mcap_usd)}")
     if liq(pair) < cfg.min_liq_usd:
         fails.append(f"liq {usd(liq(pair))} < {usd(cfg.min_liq_usd)}")
     if v1 < cfg.min_vol_h1_usd:
@@ -423,7 +448,7 @@ def format_alert(pair: dict, sig: Signal, cfg: Config) -> str:
                 f"Naik +{sig.rebound:.0f}% dalam ≤{cfg.pump_window_min:g} menit "
                 f"({price_str(sig.low)} → {price_str(sig.price)}), {vs_peak}"]
     elif sig.kind == "revival":
-        mc = float(pair.get("marketCap") or fdv or 0)
+        mc = mcap(pair)
 
         def at(p: float) -> str:
             return f" (mcap {usd(mc * p / sig.price)})" if mc else ""
@@ -473,12 +498,22 @@ def update_history(state: dict, addr: str, pair: dict, now: float, cfg: Config) 
         hist.extend([t, p] for t, p in implied_past_prices(pair, now) if t > last_ts)
     if price > 0:
         hist.append([now, price])
-    hist[:] = [h for h in hist if now - h[0] <= cfg.lookback_h * 3600]
+    # ratusan koin x 1 titik/menit bikin state bengkak: yang lebih tua dari 3 jam cukup 1 titik/10 menit
+    kept, last_bucket = [], None
+    for t, p in hist:
+        if now - t > cfg.lookback_h * 3600:
+            continue
+        if now - t > 3 * 3600:
+            if int(t // 600) == last_bucket:
+                continue
+            last_bucket = int(t // 600)
+        kept.append([t, p])
+    hist[:] = kept
     return hist
 
 
 def process(state: dict, addr: str, pair: dict, now: float, cfg: Config, notify,
-            pump: bool = False, candles: list | None = None) -> Signal | None:
+            pump: bool = True, candles: list | None = None) -> Signal | None:
     hist = update_history(state, addr, pair, now, cfg)
     price = float(pair.get("priceUsd") or 0)
     sig = ((detect_revival(candles, price, now, cfg) if candles else None)
@@ -490,8 +525,30 @@ def process(state: dict, addr: str, pair: dict, now: float, cfg: Config, notify,
     return sig
 
 
+def load_env_file(path: str) -> None:
+    """KEY=VALUE per baris (token Telegram, topic ntfy, dll). Env yang udah di-set gak ditimpa."""
+    try:
+        with open(path) as f:
+            for line in f:
+                key, sep, val = line.strip().partition("=")
+                if sep and key and not key.startswith("#"):
+                    os.environ.setdefault(key.strip(), val.strip().strip("\"'"))
+    except FileNotFoundError:
+        pass
+
+
+def mac_notify(msg: str) -> None:
+    title, _, body = msg.partition("\n")
+    # teks dikirim lewat argv biar gak perlu escape AppleScript
+    subprocess.run(["osascript", "-e", "on run argv", "-e",
+                    'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
+                    "-e", "end run", title, body], check=True, capture_output=True, timeout=10)
+
+
 def make_notifier():
     sinks = []
+    if sys.platform == "darwin" and os.getenv("MAC_NOTIFY", "1") != "0":
+        sinks.append(("notif Mac", mac_notify))
     tg_token, tg_chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if tg_token and tg_chat:
         sinks.append(("telegram", lambda m: post_json(
@@ -504,12 +561,13 @@ def make_notifier():
                                              {"Title": "Surge alert", "Tags": "rocket"})))
 
     def notify(msg: str) -> None:
-        print(msg + "\n", flush=True)
+        print("\n" + msg + "\n", flush=True)
         for name, send in sinks:
             try:
                 send(msg)
             except Exception as e:
                 warn(f"gagal kirim ke {name}: {e}")
+    notify.channels = [name for name, _ in sinks]
     return notify
 
 
@@ -576,15 +634,21 @@ def run(args, cfg: Config) -> None:
     state = load_state(args.state)
     notify = make_notifier()
     watch = resolve_all(args.watch, state, cfg)
-    if not watch and not args.scan:
-        sys.exit("Gak ada token yang bisa dipantau. Cek simbol/alamat atau tambah --scan.")
-    print(f"Pantau {len(watch)} token di '{cfg.chain}'" + (" + scan" if args.scan else "")
-          + f", tiap {args.interval}s. Ctrl+C buat stop.", flush=True)
+    scan = not args.no_scan
+    if not watch and not scan:
+        sys.exit("Gak ada token yang bisa dipantau. Cek watchlist.txt atau jangan pakai --no-scan.")
+    print(f"Pantau {'semua koin aktif + ' if scan else ''}{len(watch)} token watchlist di '{cfg.chain}', "
+          f"tiap {args.interval}s. Filter: mcap ≥ {usd(cfg.min_mcap_usd)}, TVL LP ≥ {usd(cfg.min_liq_usd)}.",
+          flush=True)
+    print(f"Notif: {', '.join(['terminal'] + notify.channels)}"
+          + ("" if len(notify.channels) > 1 else " (isi notify.env buat notif ke HP)")
+          + ". Ctrl+C buat stop.", flush=True)
     candle_cache: dict[str, tuple[float, list]] = {}
+    live = sys.stdout.isatty()
     while True:
         now = time.time()
-        if args.scan and now - state.get("last_discover", 0) >= DISCOVER_EVERY_S:
-            for a in discover(cfg.chain):
+        if scan and now - state.get("last_discover", 0) >= DISCOVER_EVERY_S:
+            for a in discover(cfg):
                 state["scan"][a] = now
             state["last_discover"] = now
             newest = sorted(state["scan"].items(), key=lambda kv: -kv[1])[:MAX_SCAN_TOKENS]
@@ -592,17 +656,21 @@ def run(args, cfg: Config) -> None:
         tracked = sorted(set(watch) | set(state["scan"]))
         pairs = fetch_best_pairs(cfg.chain, tracked)
         candle_cache = {a: v for a, v in candle_cache.items() if now - v[0] < CANDLE_TTL_S}
-        budget = GT_OHLCV_PER_LOOP
+        budget, sent = GT_OHLCV_PER_LOOP, 0
         # yang naiknya paling kenceng duluan, biar kebagian jatah candle
         for addr, pair in sorted(pairs.items(), key=lambda kv: -((kv[1].get("priceChange") or {}).get("h1") or 0)):
             if looks_like_surge(pair) and not confirm(pair, cfg) and addr not in candle_cache and budget > 0:
                 budget -= 1
                 candle_cache[addr] = (now, fetch_candles(cfg.chain, pair, cfg.history_days, state["gt_pool"]))
             candles = candle_cache[addr][1] if addr in candle_cache and looks_like_surge(pair) else None
-            process(state, addr, pair, now, cfg, notify, pump=addr in watch, candles=candles)
+            sent += bool(process(state, addr, pair, now, cfg, notify, candles=candles))
         for key in ("history", "gt_pool"):
             state[key] = {a: v for a, v in state[key].items() if a in tracked}
         save_state(args.state, state)
+        lolos = sum(mcap(p) >= cfg.min_mcap_usd and liq(p) >= cfg.min_liq_usd for p in pairs.values())
+        status = (f"[{time.strftime('%H:%M:%S')}] {len(pairs)} koin dipantau · {lolos} lolos filter mcap/LP"
+                  f" · {sent} alert putaran ini")
+        print("\r" + status.ljust(90) if live else status, end="" if live else "\n", flush=True)
         if args.once:
             return
         time.sleep(args.interval)
@@ -617,7 +685,9 @@ def main(argv=None) -> None:
     mode.add_argument("--watch", nargs="*", metavar="TOKEN",
                       help="simbol atau alamat 0x… (tanpa TOKEN = isi watchlist)")
     ap.add_argument("--watchlist", default=WATCHLIST, help="file daftar token (default watchlist.txt)")
-    ap.add_argument("--scan", action="store_true", help="ikut pantau token baru (profile/boost) di chain")
+    ap.add_argument("--no-scan", action="store_true", help="cuma pantau watchlist, gak scan semua koin")
+    ap.add_argument("--scan", action="store_true", help=argparse.SUPPRESS)  # dulu opt-in, sekarang default
+    ap.add_argument("--test-notify", action="store_true", help="kirim notif tes lalu keluar")
     ap.add_argument("--once", action="store_true", help="jalan sekali aja (buat cron)")
     ap.add_argument("--interval", type=int, default=60, help="detik antar polling (default 60)")
     ap.add_argument("--state", default="surge_state.json")
@@ -626,13 +696,16 @@ def main(argv=None) -> None:
     ap.add_argument("--rebound", type=float, default=d.rebound_pct, help=f"min %% mantul (default {d.rebound_pct:g})")
     ap.add_argument("--lookback", type=float, default=d.lookback_h, help=f"jam (default {d.lookback_h:g})")
     ap.add_argument("--low-age", type=float, default=d.max_low_age_min, help=f"menit (default {d.max_low_age_min:g})")
-    ap.add_argument("--min-liq", type=float, default=d.min_liq_usd)
+    ap.add_argument("--min-mcap", type=float, default=d.min_mcap_usd,
+                    help=f"min market cap USD (default {d.min_mcap_usd:g})")
+    ap.add_argument("--min-liq", type=float, default=d.min_liq_usd,
+                    help=f"min likuiditas / TVL LP USD (default {d.min_liq_usd:g})")
     ap.add_argument("--min-vol", type=float, default=d.min_vol_h1_usd, help="min volume 1 jam USD")
     ap.add_argument("--vol-spike", type=float, default=d.vol_spike)
     ap.add_argument("--min-buy", type=float, default=d.min_buy_ratio, help="0-1")
     ap.add_argument("--cooldown", type=float, default=d.cooldown_min, help="menit")
     ap.add_argument("--pump", type=float, default=d.pump_pct,
-                    help=f"watchlist: min %% naik buat alert pump (default {d.pump_pct:g})")
+                    help=f"min %% naik buat alert pump (default {d.pump_pct:g})")
     ap.add_argument("--pump-window", type=float, default=d.pump_window_min,
                     help=f"menit (default {d.pump_window_min:g})")
     ap.add_argument("--dead-hours", type=float, default=d.dead_h,
@@ -647,11 +720,17 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
     cfg = Config(chain=args.chain, drop_pct=args.drop, rebound_pct=args.rebound,
                  lookback_h=args.lookback, max_low_age_min=args.low_age, min_liq_usd=args.min_liq,
+                 min_mcap_usd=args.min_mcap,
                  min_vol_h1_usd=args.min_vol, vol_spike=args.vol_spike, min_buy_ratio=args.min_buy,
                  cooldown_min=args.cooldown, pump_pct=args.pump, pump_window_min=args.pump_window,
                  dead_h=args.dead_hours, dead_drop_pct=args.dead_drop, revival_pct=args.revival)
+    load_env_file(NOTIFY_ENV)
     try:
-        if args.check is not None:
+        if args.test_notify:
+            notify = make_notifier()
+            notify("🔔 Tes notif surge-alert\nKalau ini nyampe, notif udah jalan.")
+            print(f"Dikirim ke: {', '.join(['terminal'] + notify.channels)}")
+        elif args.check is not None:
             items = args.check or read_watchlist(args.watchlist)
             if not items:
                 sys.exit(f"Gak ada token buat dicek. Isi {args.watchlist} atau kasih TOKEN.")

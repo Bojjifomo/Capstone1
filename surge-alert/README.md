@@ -1,66 +1,92 @@
 # Surge alert — Robinhood Chain
 
-Bot alert buat koin yang **bangkit dari mati** (pump → dump → mati lama → surging lagi, kayak
-chart ZERO), **surging abis jatoh** (kayak IGNITION / AGEM), dan **lagi pump lagi**.
-Data dari DexScreener + candle GeckoTerminal (dua-duanya gratis, tanpa API key),
-cuma butuh Python 3.10+ tanpa install apa-apa.
+Bot yang mantau **semua koin aktif di Robinhood Chain** terus-terusan, dan nge-ping kamu kalau ada
+koin yang volume + chart-nya surging:
+
+- **💀→🚀 bangkit dari mati**: pump → dump → mati lama → surging lagi (kayak chart ZERO)
+- **🚀 bangkit abis jatoh**: dump dalam 24 jam terus mantul
+- **🚀 lagi pump**: naik tajam barusan dengan volume spike
+
+Filter default: **mcap ≥ $400k** dan **TVL LP ≥ $5k**.
+
+Data dari DexScreener + GeckoTerminal (dua-duanya gratis, tanpa API key). Cuma butuh Python 3.10+,
+gak perlu install apa-apa.
 
 ## Cara pakai
 
-Cek status semua token di `watchlist.txt`:
-
-```bash
-python surge_alert.py --check
-```
-
-Cek token tertentu:
-
-```bash
-python surge_alert.py --check 0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894
-```
-
-Pantau watchlist terus tiap 60 detik + kirim alert (`Ctrl+C` buat stop):
+Jalanin di dalam folder `surge-alert`. Pantau semua koin terus, tiap 60 detik (`Ctrl+C` buat stop):
 
 ```bash
 python surge_alert.py
 ```
 
-Sama, plus scan token baru di Robinhood Chain:
+Biar Mac gak sleep selama bot jalan:
 
 ```bash
-python surge_alert.py --scan
+caffeinate -i python surge_alert.py
 ```
 
-## Watchlist
-
-Token yang mau dipantau ditaruh di `watchlist.txt`, satu per baris. Udah ada ZERO, IGNITION, AGEM:
+Di terminal ada baris status yang ke-update tiap putaran:
 
 ```
-0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894  # ZERO (ZeroTrace)
-IGNITION
-AGEM
+[14:02:31] 412 koin dipantau · 96 lolos filter mcap/LP · 0 alert putaran ini
 ```
 
-Lebih aman pakai **alamat kontrak** (`0x…`) daripada simbol, soalnya banyak clone dengan ticker sama.
-Kalau simbolnya dobel, bot bakal ngasih warning plus alamat yang dipilih.
-`--watch TOKEN …` bisa dipakai buat ganti isi watchlist sekali jalan.
+Cek status sekarang buat koin di `watchlist.txt` (atau kasih alamat langsung):
 
-## Kirim alert ke HP
+```bash
+python surge_alert.py --check
+```
 
-Set salah satu (atau semua) env var ini sebelum jalanin:
+```bash
+python surge_alert.py --check 0x316fa3AB9A8FD8d7567a823DedecF28d9FEE2894
+```
 
-| Tujuan   | Env var                                    |
-|----------|--------------------------------------------|
-| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`   |
-| Discord  | `DISCORD_WEBHOOK_URL`                      |
-| ntfy.sh  | `NTFY_TOPIC` (install app ntfy, subscribe topic yang sama) |
+Ganti filter, misalnya mcap ≥ $1M dan LP ≥ $20k:
+
+```bash
+python surge_alert.py --min-mcap 1000000 --min-liq 20000
+```
+
+## Notifikasi (ping)
+
+- **Mac**: notif desktop + bunyi, otomatis nyala tanpa setup.
+- **HP**: salin `notify.env.example` jadi `notify.env`, isi salah satu:
+  - **ntfy** (paling gampang): install app *ntfy* di HP, subscribe ke nama topic bikinan sendiri
+    (bikin yang susah ditebak, topic ntfy itu publik), terus isi `NTFY_TOPIC=nama-topic-itu`.
+  - **Telegram**: bikin bot lewat @BotFather (dapet token), ambil chat id dari @userinfobot,
+    isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID`. Kirim `/start` ke bot kamu dulu.
+  - **Discord**: isi `DISCORD_WEBHOOK_URL`.
+
+Cek notifnya nyampe atau gak:
+
+```bash
+python surge_alert.py --test-notify
+```
+
+## Koin yang dipantau
+
+Tiap 5 menit bot ngumpulin koin yang lagi aktif dari:
+
+- GeckoTerminal: pool trending 5 menit / 1 jam / 6 jam, pool baru, 100 pool volume 24 jam terbesar
+- DexScreener: token yang baru pasang profile / boost
+- `watchlist.txt`: koin yang pengen selalu kamu pantau (udah ada ZERO, IGNITION, AGEM)
+
+Koin yang beneran surging pasti nongol di daftar trending. Koin yang udah dipantau tetap dipantau
+24 jam sejak terakhir nongol (maks 500 koin). Koin mati tanpa volume gak ikut dipantau, tapi begitu
+bangun, dia masuk trending 5 menit dan langsung kebawa.
+
+Cuma mau pantau watchlist: `python surge_alert.py --no-scan`
+
+Di `watchlist.txt` lebih aman pakai **alamat kontrak** (`0x…`) daripada simbol, soalnya banyak clone
+dengan ticker sama.
 
 ## Logika sinyal
 
-Ada 3 jenis sinyal (angka default, bisa diubah lewat flag):
+Angka default, bisa diubah lewat flag (`python surge_alert.py --help`).
 
-**💀→🚀 Bangkit dari mati** — semua token (watchlist + scan). Pakai candle 1 jam 30 hari terakhir
-dari GeckoTerminal, karena fase "mati"-nya bisa berhari-hari (DexScreener cuma kasih data 24 jam).
+**💀→🚀 Bangkit dari mati**: pakai candle 1 jam 30 hari terakhir dari GeckoTerminal, karena fase
+"mati"-nya bisa berhari-hari (DexScreener cuma kasih data 24 jam).
 
 | Syarat | Default | Flag |
 |---|---|---|
@@ -69,12 +95,10 @@ dari GeckoTerminal, karena fase "mati"-nya bisa berhari-hari (DexScreener cuma k
 | Breakout di atas atap rentang mati, dalam 6 jam terakhir | ≥ +50% | `--revival` |
 | Volume per jam pas surge vs pas mati | ≥ 5x | — |
 
-Biar hemat rate limit GeckoTerminal, candle cuma diambil buat token yang lagi naik
-(1 jam ≥ +20% atau 6 jam ≥ +40%) dan udah lolos konfirmasi, maks 8 token per putaran.
-`--scan` juga ngambil pool yang lagi trending 1 jam di GeckoTerminal, jadi koin yang baru bangun
-biasanya kebawa.
+Biar hemat rate limit GeckoTerminal, candle cuma diambil buat koin yang lagi naik
+(1 jam ≥ +20% atau 6 jam ≥ +40%) dan udah lolos filter, maks 8 koin per putaran.
 
-**🚀 Bangkit abis jatoh** — semua token (watchlist + scan), versi cepat dalam 24 jam
+**🚀 Bangkit abis jatoh**: versi cepat dalam 24 jam.
 
 | Syarat | Default | Flag |
 |---|---|---|
@@ -82,37 +106,33 @@ biasanya kebawa.
 | Dasarnya masih baru | ≤ 180 menit lalu | `--low-age` |
 | Mantul dari dasar | ≥ 30% | `--rebound` |
 
-**🚀 Lagi pump** — cuma token di watchlist, buat yang "pump lagi" kayak ZERO
-(puncak lamanya bisa udah lewat 24 jam, jadi gak perlu ada dump dulu)
+**🚀 Lagi pump**: gak perlu ada dump dulu.
 
 | Syarat | Default | Flag |
 |---|---|---|
 | Naik dari harga terendah barusan | ≥ 25% dalam 60 menit | `--pump`, `--pump-window` |
 
-Dua-duanya juga harus lolos konfirmasi:
+**Semua sinyal** harus lolos filter ini:
 
 | Syarat | Default | Flag |
 |---|---|---|
-| Likuiditas | ≥ $10k | `--min-liq` |
+| Market cap | ≥ $400k | `--min-mcap` |
+| Likuiditas / TVL LP | ≥ $5k | `--min-liq` |
 | Volume 1 jam | ≥ $5k | `--min-vol` |
 | Volume spike (1j vs rata-rata/jam 6j) | ≥ 2x | `--vol-spike` |
 | Porsi tx buy 1 jam | ≥ 55% | `--min-buy` |
 
-- Pertama kali lihat token, history diisi dari `priceChange` (5m/1j/6j/24j), jadi bisa langsung alert
-  tanpa nunggu. Abis itu history diisi dari polling sendiri (`surge_state.json`), jadi makin akurat.
-- Anti-spam: satu episode cuma di-alert sekali per token (kalau dua sinyal nyala bareng, yang dikirim
-  "bangkit abis jatoh"). Alert lagi kalau ada dasar baru setelah cooldown 60 menit, atau harga udah
-  1.5x dari alert terakhir (masih lanjut terbang).
+- Pertama kali lihat koin, history diisi dari `priceChange` (5m/1j/6j/24j), jadi bisa langsung alert
+  tanpa nunggu. Abis itu history diisi dari polling sendiri (`surge_state.json`).
+- Anti-spam: satu episode cuma di-alert sekali per koin. Alert lagi kalau ada dasar baru setelah
+  cooldown 60 menit, atau harga udah 1.5x dari alert terakhir (masih lanjut terbang). Kebangkitan
+  dari mati yang sama cuma sekali dalam 24 jam.
+- Kalau kebanyakan alert, naikin `--pump`, `--min-mcap`, atau `--min-vol`.
 
 ## Catatan
 
-- Chain id DexScreener diasumsikan `robinhood` (sesuai URL `dexscreener.com/robinhood`). Kalau
-  `--check` bilang "gak ketemu di chain 'robinhood'", lihat daftar chain yang ditampilin lalu pakai `--chain`.
-- `--scan` nangkep token yang masang profile/boost di DexScreener + pool trending GeckoTerminal,
-  jadi bukan semua token di chain.
-- Network id GeckoTerminal juga `robinhood`. Kalau GeckoTerminal gagal, bot cuma ngasih warning
-  sekali dan sinyal "bangkit dari mati" dilewat; dua sinyal lain tetap jalan.
-- Kebangkitan yang sama cuma di-alert sekali (dalam 24 jam), kecuali harganya udah 1.5x dari alert
-  terakhir.
+- Bot cuma jalan selama terminal-nya kebuka dan Mac-nya nyala.
+- Chain id DexScreener & GeckoTerminal: `robinhood`. Kalau GeckoTerminal gagal, bot ngasih warning
+  sekali, sinyal "bangkit dari mati" dilewat, dan scan cuma dari DexScreener. Sinyal lain tetap jalan.
 - Tes: `python -m unittest test_surge_alert`
 - Bukan saran finansial. Mantul abis dump di memecoin sering jadi dead-cat bounce.
