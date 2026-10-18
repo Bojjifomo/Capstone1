@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """RH Wallet Finder: top Uniswap V4 LP wallets on Robinhood Chain.
 
-  python3 finder.py                 dashboard + background sync (default)
+  python3 finder.py                 the Streamlit app + background sync (default)
+  python3 finder.py worker          background sync only, no UI
   python3 finder.py sync            load new LP activity once
   python3 finder.py score           price positions and rank wallets once
   python3 finder.py top [-n 30] [--real] [--1d]
@@ -10,7 +11,8 @@
   python3 finder.py set-rpc URL     save the RPC link to .env
   python3 finder.py import-smart-lp saved wallets + pool rankings from RH Smart LP Finder
 
-Only the Python standard library is used.
+Sync, scoring and the CLI use only the standard library; the app needs
+`pip install -r requirements.txt` (Streamlit).
 """
 import argparse
 import json
@@ -27,7 +29,7 @@ import db  # noqa: E402
 def _rpcs(cfg):
     from rpc import make_rpcs
     if not cfg["RPC_URL"]:
-        sys.exit("No RPC link yet. Run:  python3 finder.py set-rpc 'https://…'  (or use ⚙ Settings in the dashboard)")
+        sys.exit("No RPC link yet. Run:  python3 finder.py set-rpc 'https://…'  (or use the app's Settings tab)")
     return make_rpcs(cfg)
 
 
@@ -54,10 +56,10 @@ def cmd_score(args, cfg):
 
 
 def cmd_top(args, cfg):
-    import server
+    import queries
     con = db.connect()
     view = ("d1" if args.d1 else "") + ("real" if args.real else "raw")
-    rows, _ = server.wallet_rows(con, view)
+    rows, _ = queries.wallet_rows(con, view)
     if not rows:
         sys.exit("No scored wallets yet. Run sync and score first.")
     hdr = f"{'#':>3} {'score':>5}  {'wallet':<42} {'verdict':<7} {'net$':>9} {'roi%':>7} {'win%':>5} " \
@@ -74,10 +76,10 @@ def cmd_top(args, cfg):
 
 def cmd_check(args, cfg):
     import lpagent
-    import server
+    import queries
     con = db.connect()
     addr = args.wallet.lower()
-    d = server.wallet_detail(con, addr)
+    d = queries.wallet_detail(con, addr)
     m = (d["metrics"] or {}).get("real" if args.real else "raw")
     print(f"Wallet {addr}")
     print(f"  LP Agent: {lpagent.link(addr)}")
@@ -104,10 +106,10 @@ def cmd_check(args, cfg):
 
 
 def cmd_import(args, cfg):
-    import server
+    import queries
     con = db.connect()
     text = Path(args.file).read_text() if args.file != "-" else sys.stdin.read()
-    print(server.import_text(con, text, "file"))
+    print(queries.import_text(con, text, "file"))
 
 
 def cmd_import_smart_lp(args, cfg):
@@ -117,6 +119,32 @@ def cmd_import_smart_lp(args, cfg):
         sys.exit("RH Smart LP Finder not found next to this folder. Pass --db path/to/lp-finder.sqlite "
                  "or set SMART_LP_FINDER_DIR.")
     print(f"{path}: {smartlp.import_all(db.connect(), path)}")
+
+
+def cmd_app(args, cfg):
+    """streamlit run streamlit_app.py, from this folder so .streamlit/config.toml applies."""
+    import subprocess
+    here = Path(__file__).resolve().parent
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        sys.exit("Streamlit isn't installed. Run:  python3 -m pip install -r requirements.txt")
+    cmd = [sys.executable, "-m", "streamlit", "run", "streamlit_app.py",
+           "--server.port", str(args.port or cfg["PORT"]), "--server.address", "127.0.0.1"]
+    if args.no_browser:
+        cmd += ["--server.headless", "true"]
+    sys.exit(subprocess.call(cmd, cwd=here))
+
+
+def cmd_worker(args, cfg):
+    from worker import Worker
+    w = Worker()
+    w.start()
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        w.stop()
 
 
 def cmd_set_rpc(args, cfg):
@@ -133,10 +161,10 @@ def cmd_set_rpc(args, cfg):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd")
-    s = sub.add_parser("serve", help="dashboard + background sync")
+    s = sub.add_parser("app", help="the Streamlit app + background sync (default)")
     s.add_argument("--port", type=int)
     s.add_argument("--no-browser", action="store_true")
-    s.add_argument("--no-sync", action="store_true", help="only serve what's in the database")
+    sub.add_parser("worker", help="background sync + scoring only, no UI")
     s = sub.add_parser("sync")
     s.add_argument("--days", type=float, help="history to load (default BACKFILL_DAYS)")
     s.add_argument("--segments", type=int, help="stop after this many segments")
@@ -157,12 +185,9 @@ def main():
     args = ap.parse_args()
     cfg = config.load_env()
     t = time.time()
-    if args.cmd in (None, "serve"):
-        import server
-        server.serve(port=getattr(args, "port", None), open_browser=not getattr(args, "no_browser", False),
-                     run_worker=not getattr(args, "no_sync", False))
-        return
-    {"sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
+    if args.cmd is None:
+        args = ap.parse_args(["app"])
+    {"app": cmd_app, "worker": cmd_worker, "sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
      "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp}[args.cmd](args, cfg)
     if args.cmd in ("sync", "score"):
         print(f"done in {time.time() - t:.0f}s")

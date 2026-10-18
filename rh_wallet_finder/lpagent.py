@@ -1,8 +1,8 @@
 """LP Agent (lpagent.io) check for a wallet on Robinhood Chain.
 
 Without a key: just the portfolio link. With LPAGENT_API_KEY (from the LP
-Agent portal) the dashboard pulls their own numbers next to ours, through
-this server so the key never reaches the browser:
+Agent portal) the app pulls their own numbers next to ours; the call is made
+by the Python side, so the key never reaches the browser:
   GET /lp-positions/overview?owner=..&protocol=uniswap_v4|uniswap_v3&chain=ROBINHOOD
   GET /lp-positions/opening?owner=..&chain=ROBINHOOD
 """

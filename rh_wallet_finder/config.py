@@ -1,7 +1,7 @@
 """Settings, contract addresses and the .env file.
 
 Keys live in rh_wallet_finder/.env (git-ignored), never in the repo: the repo
-is public. The dashboard's Settings panel writes the same file.
+is public. The app's Settings tab writes the same file.
 """
 import os
 from pathlib import Path
@@ -60,7 +60,9 @@ DEFAULTS = {
     "MIN_CLOSED": "3",
     "RPC_WORKERS": "6",
     "LOG_CHUNK": "20000",
-    "PORT": "4664",
+    # Minutes between sync + scoring runs once history is loaded.
+    "SYNC_MINUTES": "5",
+    "PORT": "8501",
 }
 
 

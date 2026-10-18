@@ -1,35 +1,26 @@
-"""Local dashboard server: http://127.0.0.1:4664
+"""Read side of the wallet database: what the Streamlit app and the CLI show.
 
-Listens on 127.0.0.1 only. Anything that changes state (settings, labels,
-imports, sync) needs the random token the page gets when it loads, so another
-website can't post to it.
+Everything here takes an open connection (db.connect()) and returns plain
+dicts / lists.
 """
 import json
 import re
-import secrets
 import threading
 import time
-import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import config
-import db
 import lpagent
 import metrics as M
 import smartlp
-from db import get_meta
+from db import get_meta, set_meta
 
-STATIC = Path(__file__).resolve().parent / "static"
-TOKEN = secrets.token_hex(16)
 ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 VIEWS = ("raw", "real", "d1raw", "d1real")
 SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "BACKFILL_DAYS", "METRIC_DAYS", "SELL_SLIPPAGE_PCT",
-                "MIN_CLOSED", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS")
+                "MIN_CLOSED", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES")
+SECRET_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY")
 _cache = {}
 _cache_lock = threading.Lock()
-worker = None  # set by serve()
 
 
 def wallet_rows(con, view):
@@ -110,9 +101,6 @@ def status(con):
                      "ranked": n("SELECT COUNT(DISTINCT addr) FROM slf_ranks")},
         "settings": {k: (cfg[k] if k not in ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY") else "")
                      for k in SETTING_KEYS},
-        "worker": None if worker is None else {
-            "state": worker.state, "error": worker.error, "progress": worker.progress,
-            "log": list(worker.logs)[-60:]},
         "now": int(time.time()),
     }
 
@@ -157,121 +145,6 @@ def wallet_detail(con, addr):
             "explorer": f"{config.EXPLORER}/address/{addr}"}
 
 
-class Handler(BaseHTTPRequestHandler):
-    server_version = "RHWalletFinder/1.0"
-
-    def log_message(self, *a):
-        pass
-
-    def _send(self, code, body, ctype="application/json"):
-        data = body if isinstance(body, bytes) else json.dumps(body, default=str).encode()
-        self.send_response(code)
-        self.send_header("content-type", ctype)
-        self.send_header("content-length", str(len(data)))
-        self.send_header("cache-control", "no-store")
-        self.send_header("x-content-type-options", "nosniff")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _static(self, name):
-        f = (STATIC / name).resolve()
-        if STATIC not in f.parents or not f.is_file():
-            return self._send(404, {"error": "not found"})
-        ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}.get(f.suffix, "text/plain")
-        body = f.read_bytes()
-        if f.suffix == ".html":
-            body = body.replace(b"{{TOKEN}}", TOKEN.encode())
-        self._send(200, body, ctype)
-
-    def do_GET(self):  # noqa: N802
-        u = urlparse(self.path)
-        q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        if u.path in ("/", "/index.html"):
-            return self._static("index.html")
-        if u.path.startswith("/static/"):
-            return self._static(u.path[len("/static/"):])
-        con = db.connect()
-        try:
-            if u.path == "/api/status":
-                return self._send(200, status(con))
-            if u.path == "/api/wallets":
-                view = q.get("view", "raw")
-                if view not in VIEWS:
-                    return self._send(400, {"error": "bad view"})
-                rows, _ = wallet_rows(con, view)
-                if view.startswith("d1"):
-                    rows = rows[:100]
-                return self._send(200, {"rows": rows})
-            if u.path == "/api/similar":
-                return self._send(200, similar(con, q.get("addr", ""), q.get("view", "raw")))
-            m = re.fullmatch(r"/api/wallet/(0x[0-9a-fA-F]{40})", u.path)
-            if m:
-                return self._send(200, wallet_detail(con, m.group(1).lower()))
-            m = re.fullmatch(r"/api/lpagent/(0x[0-9a-fA-F]{40})", u.path)
-            if m:
-                key = config.load_env()["LPAGENT_API_KEY"]
-                try:
-                    return self._send(200, lpagent.check(con, m.group(1), key, q.get("fresh") == "1"))
-                except lpagent.LPAgentError as e:
-                    return self._send(200, {"link": lpagent.link(m.group(1)), "has_key": True,
-                                            "errors": [str(e)]})
-            if u.path == "/api/labels":
-                return self._send(200, {"rows": [dict(r) for r in con.execute(
-                    "SELECT * FROM labels ORDER BY added DESC")]})
-            return self._send(404, {"error": "not found"})
-        finally:
-            con.close()
-
-    def do_POST(self):  # noqa: N802
-        if self.headers.get("x-token") != TOKEN:
-            return self._send(403, {"error": "bad token, reload the page"})
-        n = int(self.headers.get("content-length") or 0)
-        if n > 2_000_000:
-            return self._send(413, {"error": "too big"})
-        try:
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            return self._send(400, {"error": "bad json"})
-        path = urlparse(self.path).path
-        con = db.connect()
-        try:
-            if path == "/api/label":
-                addr = (body.get("addr") or "").lower()
-                if not ADDR_RE.fullmatch(addr):
-                    return self._send(400, {"error": "bad address"})
-                if body.get("delete"):
-                    con.execute("DELETE FROM labels WHERE addr=?", (addr,))
-                else:
-                    con.execute("""INSERT INTO labels(addr, label, notes, starred, source, added)
-                                   VALUES(?,?,?,?,?,?) ON CONFLICT(addr) DO UPDATE SET
-                                   label=COALESCE(excluded.label, labels.label),
-                                   notes=COALESCE(excluded.notes, labels.notes),
-                                   starred=excluded.starred, added=excluded.added""",
-                                (addr, body.get("label"), body.get("notes"), 1 if body.get("starred") else 0,
-                                 body.get("source") or "manual", int(time.time())))
-                con.commit()
-                return self._send(200, {"ok": True})
-            if path == "/api/import":
-                return self._send(200, import_text(con, body.get("text") or "", body.get("source") or "import"))
-            if path == "/api/settings":
-                upd = {k: str(v).strip() for k, v in body.items() if k in SETTING_KEYS and str(v).strip()}
-                for k in ("RPC_URL", "CALL_RPC_URL"):
-                    if k in upd and not upd[k].startswith(("https://", "http://")):
-                        return self._send(400, {"error": "RPC URLs must start with https://"})
-                config.save_env(upd)
-                if worker:
-                    worker.kick()
-                return self._send(200, {"ok": True, "saved": sorted(upd)})
-            if path == "/api/sync":
-                if worker:
-                    worker.kick()
-                return self._send(200, {"ok": True})
-            return self._send(404, {"error": "not found"})
-        finally:
-            con.close()
-
-
 def import_text(con, text, source):
     """Lines like '0xabc…', '0xabc…,label' or a pasted LP Agent table: every
     address found is saved; text after it on the same line becomes the label."""
@@ -310,38 +183,30 @@ def similar(con, addr, view):
     return {"target": rows[idx], "rows": out[:100]}
 
 
-def serve(port=None, open_browser=True, run_worker=True):
-    global worker
-    cfg = config.load_env()
-    port = int(port or cfg["PORT"])
-    if run_worker:
-        from worker import Worker
-        worker = Worker()
-        worker.start()
-    else:
-        con = db.connect()
-        try:
-            smartlp.import_all(con)
-        finally:
-            con.close()
-    httpd = None
-    for p in range(port, port + 20):
-        try:
-            httpd = ThreadingHTTPServer(("127.0.0.1", p), Handler)
-            port = p
-            break
-        except OSError:
-            continue
-    if httpd is None:
-        raise SystemExit(f"No free port between {port} and {port + 19}")
-    url = f"http://127.0.0.1:{port}/"
-    print(f"RH Wallet Finder → {url}  (Ctrl+C to stop)", flush=True)
-    if open_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if worker:
-            worker.stop()
+def presets(con):
+    """Filter presets saved from the app: [{name, filters, sort}]."""
+    return get_meta(con, "presets") or []
+
+
+def save_presets(con, items):
+    set_meta(con, "presets", items)
+    con.commit()
+
+
+def set_label(con, addr, label=None, notes=None, starred=None, source="manual"):
+    """Upsert one watchlist row; None leaves a field as it is."""
+    addr = addr.lower()
+    if not ADDR_RE.fullmatch(addr):
+        raise ValueError("bad address")
+    con.execute("""INSERT INTO labels(addr, label, notes, starred, source, added) VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(addr) DO UPDATE SET label=COALESCE(excluded.label, labels.label),
+                   notes=COALESCE(excluded.notes, labels.notes),
+                   starred=COALESCE(?, labels.starred)""",
+                (addr, label, notes, 1 if starred else 0, source, int(time.time()),
+                 None if starred is None else (1 if starred else 0)))
+    con.commit()
+
+
+def delete_label(con, addr):
+    con.execute("DELETE FROM labels WHERE addr=?", (addr.lower(),))
+    con.commit()

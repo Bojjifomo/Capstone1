@@ -1,4 +1,4 @@
-"""Background loop for the dashboard: sync, score, repeat."""
+"""Background loop for the app: sync, score, repeat every SYNC_MINUTES."""
 import threading
 import time
 import traceback
@@ -15,12 +15,12 @@ SEGMENTS_PER_CYCLE = 6  # score in between, so a long backfill shows results ear
 
 
 class Worker:
-    def __init__(self, interval=600):
-        self.interval = interval
+    def __init__(self):
         self.logs = deque(maxlen=400)
         self.state = "idle"
         self.error = None
         self.progress = None
+        self.cycle_at = None
         self._wake = threading.Event()
         self._stop = False
 
@@ -55,11 +55,11 @@ class Worker:
     def _loop(self):
         while not self._stop:
             cfg = config.load_env()
-            wait = self.interval
+            wait = max(30, float(cfg.get("SYNC_MINUTES") or 5) * 60)
             self.import_smart_lp()
             if not cfg["RPC_URL"]:
                 self.state = "no_rpc"
-                self.log("No RPC link yet. Open Settings (⚙) and paste your Robinhood Chain RPC URL.")
+                self.log("No RPC link yet. Open the Settings tab and paste your Robinhood Chain RPC URL.")
                 self._wake.wait()
                 self._wake.clear()
                 continue
@@ -96,5 +96,6 @@ class Worker:
                 if con is not None:
                     con.close()
             self.state = "idle"
+            self.cycle_at = time.time()
             self._wake.wait(wait)
             self._wake.clear()

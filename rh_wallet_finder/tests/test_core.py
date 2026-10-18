@@ -3,9 +3,7 @@ import json
 import math
 import sys
 import tempfile
-import threading
 import unittest
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -333,41 +331,62 @@ class SmartLpTest(unittest.TestCase):
             con.close()
 
 
-class ServerTest(unittest.TestCase):
-    def test_import_and_endpoints(self):
-        import server
+class QueriesTest(unittest.TestCase):
+    def test_import_labels_presets(self):
+        import queries
         with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            text = ("No\tWallet Address\tShort\n"
+                    "1\t0x74b26ec2754dcbd27e43a2a527e38005358a772e\t0x74b2...772e\tROBINHOOD\t"
+                    "https://app.lpagent.io/portfolio?address=0x74b2&chain=ROBINHOOD\tCactus\n"
+                    "0xd21556896db6242f6e5823389623728da49118ae\n")
+            self.assertEqual(queries.import_text(con, text, "t")["added"], 2)
+            labs = {r["addr"]: r["label"] for r in con.execute("SELECT * FROM labels")}
+            self.assertEqual(labs["0x74b26ec2754dcbd27e43a2a527e38005358a772e"], "Cactus")
+            self.assertIsNone(labs["0xd21556896db6242f6e5823389623728da49118ae"])
+            a = "0xd21556896db6242f6e5823389623728da49118ae"
+            queries.set_label(con, a, notes="ladder bot", starred=False)
+            row = dict(con.execute("SELECT label, notes, starred FROM labels WHERE addr=?", (a,)).fetchone())
+            self.assertEqual(row, {"label": None, "notes": "ladder bot", "starred": 0})
+            queries.set_label(con, a, label="LB")  # starred=None keeps the star as it is
+            self.assertEqual(con.execute("SELECT label, starred FROM labels WHERE addr=?", (a,)).fetchone()[:], ("LB", 0))
+            queries.delete_label(con, a)
+            self.assertIsNone(con.execute("SELECT 1 FROM labels WHERE addr=?", (a,)).fetchone())
+            with self.assertRaises(ValueError):
+                queries.set_label(con, "0x123")
+            queries.save_presets(con, [{"name": "mine", "filters": {"f_win": 60}}])
+            self.assertEqual(queries.presets(con)[0]["filters"]["f_win"], 60)
+            self.assertEqual(queries.wallet_rows(con, "raw")[0], [])
+            self.assertIn("error", queries.similar(con, a, "raw"))
+            self.assertIn("discovered", queries.status(con))
+            con.close()
+
+
+class AppTest(unittest.TestCase):
+    def test_app_renders(self):
+        try:
+            from streamlit.testing.v1 import AppTest as StAppTest
+        except ImportError:
+            self.skipTest("streamlit not installed")
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            old = {k: os.environ.get(k) for k in ("RHWF_DB", "RHWF_NO_WORKER", "SMART_LP_FINDER_DIR")}
+            os.environ.update(RHWF_DB=str(Path(d) / "w.db"), RHWF_NO_WORKER="1", SMART_LP_FINDER_DIR=d)
             orig = config.DB_PATH
             config.DB_PATH = Path(d) / "w.db"
             try:
-                con = db.connect()
-                text = ("No\tWallet Address\tShort\n"
-                        "1\t0x74b26ec2754dcbd27e43a2a527e38005358a772e\t0x74b2...772e\tROBINHOOD\t"
-                        "https://app.lpagent.io/portfolio?address=0x74b2&chain=ROBINHOOD\tCactus\n"
-                        "0xd21556896db6242f6e5823389623728da49118ae\n")
-                self.assertEqual(server.import_text(con, text, "t")["added"], 2)
-                labs = {r["addr"]: r["label"] for r in con.execute("SELECT * FROM labels")}
-                self.assertEqual(labs["0x74b26ec2754dcbd27e43a2a527e38005358a772e"], "Cactus")
-                self.assertIsNone(labs["0xd21556896db6242f6e5823389623728da49118ae"])
-                httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-                threading.Thread(target=httpd.serve_forever, daemon=True).start()
-                base = f"http://127.0.0.1:{httpd.server_address[1]}"
-                st = json.load(urllib.request.urlopen(base + "/api/status"))
-                self.assertIn("discovered", st)
-                self.assertEqual(json.load(urllib.request.urlopen(base + "/api/wallets?view=raw"))["rows"], [])
-                page = urllib.request.urlopen(base + "/").read().decode()
-                self.assertIn(server.TOKEN, page)
-                req = urllib.request.Request(base + "/api/label", data=b'{"addr":"0x' + b"a" * 40 + b'"}',
-                                             headers={"x-token": "wrong"})
-                with self.assertRaises(urllib.error.HTTPError) as e:
-                    urllib.request.urlopen(req)
-                self.assertEqual(e.exception.code, 403)
-                e.exception.close()
-                httpd.shutdown()
-                httpd.server_close()
-                con.close()
+                at = StAppTest.from_file(str(Path(__file__).resolve().parents[1] / "streamlit_app.py"),
+                                         default_timeout=60).run()
+                self.assertFalse(at.exception, at.exception)
+                self.assertEqual([t.label for t in at.tabs], ["Board", "Last 24h", "Twin finder", "Watchlist", "Settings"])
+                self.assertTrue(any("WALLET FINDER" in m.value for m in at.markdown))
             finally:
                 config.DB_PATH = orig
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
 
 
 if __name__ == "__main__":
