@@ -4,140 +4,150 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RH Wallet Finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/logo.svg">
 </head>
 <body>
-<div class="wrap">
-  <header class="top">
-    <img src="/static/logo.svg" alt="" class="logo">
-    <h1>RH Wallet Finder</h1>
-    <span class="sub">Uniswap V4 LP wallets · Robinhood Chain</span>
-    <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
-  </header>
+<header class="bar">
+  <div class="brand">
+    <img src="/static/logo.svg" alt="" class="mark">
+    <div>
+      <div class="word"><span class="rh">RH</span> WALLET FINDER</div>
+      <div class="tag">LP scanner // Robinhood Chain · Uniswap V4</div>
+    </div>
+  </div>
+  <div class="rail" id="rail">
+    <span class="cell"><i class="led" id="led-sync"></i><b>SYNC</b><span id="rl-sync">–</span></span>
+    <span class="cell"><i class="led" id="led-score"></i><b>RANK</b><span id="rl-score">–</span></span>
+    <span class="cell"><b>HISTORY</b><span id="rl-history">–</span></span>
+    <span class="cell"><b>WINDOW</b><span id="rl-window">30d</span></span>
+    <span class="cell"><b>ETH</b><span id="rl-eth">–</span></span>
+  </div>
+  <button class="icon" id="btn-guide" title="Field guide">?</button>
+  <button class="icon" id="btn-settings" title="Settings">⚙</button>
+</header>
 
-  <section class="cards">
-    <div class="card"><div class="label">Discovered</div><div class="big" id="st-discovered">–</div></div>
-    <div class="card"><div class="label">Scored</div><div class="big" id="st-scored">–</div></div>
-    <div class="card"><div class="label">Categories</div><div class="big" id="st-categories">–</div></div>
+<main class="wrap">
+  <section class="kpis">
+    <div class="kpi"><div class="k">Wallets</div><div class="v" id="k-wallets">–</div><div class="s">LP wallets in the database</div></div>
+    <div class="kpi"><div class="k">Ranked</div><div class="v" id="k-ranked">–</div><div class="s" id="k-ranked-s">enough closed, priced positions</div></div>
+    <div class="kpi"><div class="k">Positions</div><div class="v" id="k-positions">–</div><div class="s">V4 position NFTs indexed</div></div>
+    <div class="kpi"><div class="k">Styles</div><div class="v" id="k-styles">–</div><div class="s">LP styles on the board</div></div>
   </section>
 
-  <div class="pills">
-    <span class="pill"><span class="k">METRICS</span> <b id="pl-metrics">30d</b> · <b>ROI/mo</b></span>
-    <span class="pill"><span class="dot" id="dot-data"></span><span class="k">DATA</span> <b id="pl-data">–</b></span>
-    <span class="pill"><span class="dot" id="dot-score"></span><span class="k">FULL RE-SCORE</span> <b id="pl-score">–</b></span>
-    <span class="pill"><span class="k">HISTORY</span> <b id="pl-history">–</b></span>
-    <span class="pill"><span class="k">ETH</span> <b id="pl-eth">–</b></span>
-  </div>
+  <div id="setup" class="notice hidden"></div>
 
-  <nav class="tabs" id="tabs">
-    <button data-tab="wallets" class="on">Wallets</button>
-    <button data-tab="top1d">Top 100 · 1d</button>
-    <button data-tab="similar">Find similar</button>
-    <button data-tab="watch">Watchlist <span class="count" id="watch-count"></span></button>
-  </nav>
-
-  <details class="explain">
-    <summary><span class="info">i</span> What the columns mean</summary>
-    <div class="explain-body" id="explain-body"></div>
-  </details>
-
-  <div id="setup" class="banner warn hidden"></div>
-
-  <div class="toolbar-right">
-    <label class="toggle" title="Charge every position for selling back the token it returns">
-      <input type="checkbox" id="real-toggle"><span class="sw"></span>
-      <span>💧 Real PnL</span>
+  <div class="navrow">
+    <nav class="seg" id="tabs">
+      <button data-tab="wallets" class="on">Board</button>
+      <button data-tab="top1d">Last 24h</button>
+      <button data-tab="similar">Twin finder</button>
+      <button data-tab="watch">Watchlist <span class="count" id="watch-count"></span></button>
+    </nav>
+    <label class="switch" title="Charge every position for selling back the token it returns">
+      <input type="checkbox" id="real-toggle"><span class="track"><span class="knob"></span></span>
+      <span class="lbl">Real PnL</span>
     </label>
-    <span class="help" title="Real PnL charges each position for selling the non-USDG/ETH token it hands back (pool fee + slippage), then re-ranks the board on those figures.">?</span>
   </div>
 
-  <div class="banner hidden" id="real-banner"></div>
+  <div class="mode hidden" id="real-banner"></div>
 
-  <!-- Wallets / Top 1d -->
+  <!-- board / last 24h -->
   <section id="pane-table">
-    <div class="views">
-      <span class="k">VIEW</span>
-      <select id="view-select"><option value="">— no view —</option></select>
-      <button class="mini" id="view-save">Save as…</button>
-      <button class="mini" id="view-clear">Clear</button>
-      <span class="muted" id="view-note">none saved yet</span>
-      <span class="spacer"></span>
-      <input id="quick" class="quick" placeholder="Search address / label…">
-      <span class="muted" id="row-count"></span>
+    <div class="tools">
+      <div class="presets" id="presets"></div>
+      <span class="grow"></span>
+      <input id="quick" class="search" placeholder="Find wallet or label">
+      <span class="muted mono" id="row-count"></span>
     </div>
-    <div class="table-wrap" id="table-wrap">
-      <table class="grid" id="grid"><thead></thead><tbody></tbody></table>
+    <div class="grid-wrap" id="table-wrap">
+      <table class="grid board" id="grid"><thead></thead><tbody></tbody></table>
       <div class="empty hidden" id="empty"></div>
     </div>
   </section>
 
-  <!-- Find similar -->
+  <!-- twin finder -->
   <section id="pane-similar" class="hidden">
-    <div class="sim-bar">
-      <input id="sim-addr" class="quick wide" placeholder="Wallet address to match (0x…)">
-      <button class="btn" id="sim-go">Find similar</button>
-      <span class="muted">Ranks scored wallets by how they LP: hold time, range width, single-sided share, ETH vs USDG, token size, position size, pace, overlap, win rate.</span>
+    <div class="tools">
+      <input id="sim-addr" class="search wide" placeholder="Wallet to match (0x…)">
+      <button class="btn" id="sim-go">Find twins</button>
+      <span class="muted">Matches how a wallet LPs: hold time, range width, single-sided share, ETH vs USDG, token size, position size, pace, overlap, win rate.</span>
     </div>
-    <div class="sim-target" id="sim-target"></div>
-    <div class="table-wrap"><table class="grid" id="sim-grid"><thead></thead><tbody></tbody></table>
+    <div class="sim-target mono" id="sim-target"></div>
+    <div class="grid-wrap"><table class="grid" id="sim-grid"><thead></thead><tbody></tbody></table>
       <div class="empty hidden" id="sim-empty"></div></div>
   </section>
 
-  <!-- Watchlist -->
+  <!-- watchlist -->
   <section id="pane-watch" class="hidden">
-    <div class="watch-import">
-      <textarea id="import-text" rows="4" placeholder="Paste wallets, one per line. Text after an address becomes its label, e.g.&#10;0x74b26ec2754dcbd27e43a2a527e38005358a772e, Cactus&#10;A pasted LP Agent sheet works too."></textarea>
+    <div class="tools import">
+      <textarea id="import-text" rows="3" placeholder="Paste wallets, one per line. Text after an address becomes its label, e.g.&#10;0x74b26ec2754dcbd27e43a2a527e38005358a772e, Cactus&#10;A pasted LP Agent sheet works too."></textarea>
       <button class="btn" id="import-go">Add to watchlist</button>
     </div>
-    <div class="table-wrap"><table class="grid" id="watch-grid"><thead></thead><tbody></tbody></table>
-      <div class="empty hidden" id="watch-empty">No wallets yet. Star (☆) a wallet in the table or paste some above.</div></div>
+    <div class="grid-wrap"><table class="grid" id="watch-grid"><thead></thead><tbody></tbody></table>
+      <div class="empty hidden" id="watch-empty">Nothing here yet. Star (☆) a wallet on the board or paste some above.</div></div>
   </section>
+</main>
 
-  <footer class="activity">
-    <span class="dot" id="dot-worker"></span>
-    <span id="worker-state">–</span>
-    <button class="mini" id="btn-sync">Sync now</button>
-    <button class="mini" id="btn-log">Log</button>
-    <span class="muted" id="rpc-label"></span>
-    <pre class="log hidden" id="log"></pre>
-  </footer>
-</div>
+<footer class="console">
+  <i class="led" id="led-worker"></i>
+  <span class="mono" id="worker-state">–</span>
+  <button class="chip" id="btn-sync">Sync now</button>
+  <button class="chip" id="btn-log">Log</button>
+  <span class="muted mono" id="rpc-label"></span>
+  <pre class="log hidden" id="log"></pre>
+</footer>
 
-<!-- filter popover -->
 <div class="pop hidden" id="pop"></div>
 
-<!-- wallet drawer -->
-<aside class="drawer hidden" id="drawer">
-  <div class="drawer-head">
+<!-- wallet dossier -->
+<aside class="dossier hidden" id="drawer">
+  <div class="d-head">
     <div>
-      <div class="addr-big" id="dr-addr"></div>
-      <div class="dr-links" id="dr-links"></div>
+      <div class="d-kicker">Wallet dossier</div>
+      <div class="d-addr mono" id="dr-addr"></div>
+      <div class="d-chips" id="dr-chips"></div>
     </div>
-    <button class="icon-btn" id="dr-close">✕</button>
+    <button class="icon" id="dr-close" title="Close (Esc)">✕</button>
   </div>
-  <div class="dr-label">
+  <div class="d-links" id="dr-links"></div>
+  <div class="d-label">
     <button class="star" id="dr-star" title="Watch">☆</button>
     <input id="dr-label" placeholder="Label (e.g. Cactus)">
     <input id="dr-notes" placeholder="Notes">
-    <button class="mini" id="dr-save">Save</button>
+    <button class="chip" id="dr-save">Save</button>
   </div>
-  <div class="dr-metrics" id="dr-metrics"></div>
-  <div class="dr-section">
-    <div class="dr-title">LP Agent check <button class="mini" id="dr-lp">Check now</button></div>
+  <div class="d-kpis" id="dr-metrics"></div>
+  <div class="d-sec">
+    <div class="d-title">Realized PnL over time <span class="muted" id="dr-curve-note"></span></div>
+    <div class="curve" id="dr-curve"></div>
+  </div>
+  <div class="d-sec">
+    <div class="d-title">LP Agent check <button class="chip" id="dr-lp">Check now</button></div>
     <div id="dr-lpagent" class="muted"></div>
   </div>
-  <div class="dr-section">
-    <div class="dr-title">Positions <span class="muted" id="dr-poscount"></span></div>
-    <div class="table-wrap small"><table class="grid compact" id="dr-pos"><thead></thead><tbody></tbody></table></div>
+  <div class="d-sec">
+    <div class="d-title">Positions <span class="muted" id="dr-poscount"></span></div>
+    <div class="grid-wrap small"><table class="grid compact" id="dr-pos"><thead></thead><tbody></tbody></table></div>
   </div>
 </aside>
 
+<!-- field guide -->
+<div class="modal hidden" id="guide">
+  <div class="sheet wide">
+    <div class="d-head"><div><div class="d-kicker">Field guide</div><b>What every column means</b></div><button class="icon" data-close="guide">✕</button></div>
+    <div class="legend" id="legend"></div>
+    <div class="guide" id="guide-body"></div>
+  </div>
+</div>
+
 <!-- settings -->
 <div class="modal hidden" id="settings">
-  <div class="modal-box">
-    <div class="drawer-head"><b>Settings</b><button class="icon-btn" id="set-close">✕</button></div>
-    <p class="muted">Saved to <code>rh_wallet_finder/.env</code> on this computer only (it is git-ignored). Leave a field empty to keep what's there.</p>
+  <div class="sheet">
+    <div class="d-head"><div><div class="d-kicker">Settings</div><b>Connection and scoring</b></div><button class="icon" data-close="settings">✕</button></div>
+    <p class="muted">Saved to <code>rh_wallet_finder/.env</code> on this computer only (git-ignored). Leave a field empty to keep what's there.</p>
     <label>Robinhood Chain RPC URL <span class="muted" id="set-rpc-now"></span>
       <input id="set-RPC_URL" placeholder="https://rpc.solidrpc.io/ak_…/evm/4663" autocomplete="off"></label>
     <label>LP Agent API key <span class="muted" id="set-lp-now"></span>
@@ -150,7 +160,7 @@
       <label>Positions priced per run<input id="set-SCORE_POSITIONS_PER_RUN"></label>
       <label>Parallel RPC requests<input id="set-RPC_WORKERS"></label>
     </div>
-    <div class="modal-foot"><span class="muted" id="set-msg"></span><button class="btn" id="set-save">Save</button></div>
+    <div class="foot"><span class="muted" id="set-msg"></span><button class="btn" id="set-save">Save</button></div>
   </div>
 </div>
 

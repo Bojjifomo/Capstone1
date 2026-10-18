@@ -1,9 +1,10 @@
 # RH Wallet Finder
 
-Database wallet LP **Uniswap V4 di Robinhood Chain** + dashboard buat nyari top wallet,
-tampilannya kayak Apex Discovery: skor, verdict, Net, Float, ROI/bulan, win rate,
-drawdown, copier, style, Real PnL, saved view, "Top 100 · 1d", "Find similar", dan
-tombol buat ngecek wallet di **LP Agent**.
+Database wallet LP **Uniswap V4 di Robinhood Chain** + dashboard buat nyari top wallet:
+skor & tier, realized / unrealized PnL, ROI/bulan, win rate, drawdown, copier,
+style, Real PnL, preset filter, papan 24 jam, twin finder, grafik PnL per wallet,
+dan cek wallet ke **LP Agent**. Tampilannya tema cockpit mecha (logo V-fin + range
+bar, aksen emas, heatmap biru = lebih bagus / merah = lebih jelek).
 
 Semua angka diambil langsung dari chain lewat RPC lu (SolidRPC / Alchemy / dll),
 nggak pakai API pihak ketiga. Cuma butuh Python 3.10+ (standard library aja, nggak
@@ -20,7 +21,7 @@ perlu `pip install`).
    Link + key disimpen di `rh_wallet_finder/.env` di laptop lu doang
    (file itu di-gitignore, **jangan** di-commit: repo ini public).
 4. Biarin jendela Terminal kebuka. Sync jalan di background:
-   - mulai dari blok terbaru, mundur sampai 30 hari (`History` di pill atas),
+   - mulai dari blok terbaru, mundur sampai 30 hari (`HISTORY` di rail atas),
    - tiap beberapa segmen langsung di-score, jadi tabel udah keisi sebelum
      backfill 30 hari selesai,
    - abis itu update sendiri tiap 10 menit (atau klik **Sync now**).
@@ -37,25 +38,25 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 
 | Bagian | Isinya |
 | --- | --- |
-| Discovered / Scored / Categories | Wallet yang pernah LP di data kita / yang udah punya skor / jumlah style yang kepake |
-| Pill `DATA` / `FULL RE-SCORE` | Kapan terakhir sync & scoring (oranye = udah lama) |
-| Tab **Wallets** | Papan utama, window 30 hari |
-| Tab **Top 100 · 1d** | Sama, tapi cuma posisi yang ditutup 24 jam terakhir |
-| Tab **Find similar** | Paste wallet → wallet lain yang gaya LP-nya paling mirip |
+| Wallets / Ranked / Positions / Styles | Wallet di database / yang udah punya skor / posisi V4 yang ke-index / jumlah style LP |
+| Rail atas `SYNC` / `RANK` / `HISTORY` / `ETH` | Kapan terakhir sync & ranking (kuning = udah lama), history yang udah ke-load, harga ETH |
+| Tab **Board** | Papan utama, window 30 hari |
+| Tab **Last 24h** | Sama, tapi cuma posisi yang ditutup 24 jam terakhir |
+| Tab **Twin finder** | Paste wallet → wallet lain yang gaya LP-nya paling mirip |
 | Tab **Watchlist** | Wallet yang di-★ / di-import (bisa paste sheet "LP Agent Wallets - Robinhood Chain" langsung) |
-| Toggle **💧 Real PnL** | Tiap posisi dipotong biaya jual balik token yang dia balikin (fee pool + slippage), terus ranking diulang |
-| VIEW / Save as… / Clear | Simpen kombinasi filter + sort |
-| ▽ di header kolom | Filter min/max (atau teks) per kolom |
-| Klik alamat | Detail wallet: semua posisi, label/notes, **LP Agent check** |
-| `LP ↗` / `Scan ↗` | Buka wallet di LP Agent / Blockscout |
+| Switch **Real PnL** | Tiap posisi dipotong biaya jual balik token yang dia balikin (fee pool + slippage), terus ranking diulang |
+| Chip preset | `Followable winners`, `Low drawdown`, `Size ≥ $1K`, `Active 24h`, `Uncrowded`, plus **+ Save current** buat nyimpen filter + sort sendiri |
+| ◆ di header kolom | Filter min/max (atau teks) per kolom; klik judul kolom buat sort |
+| Klik wallet | **Wallet dossier**: grafik realized PnL, semua posisi, label/notes, **LP Agent check** |
+| Kolom `LP Agent` / `Explorer` | Buka wallet di LP Agent / Blockscout |
 
-Penjelasan tiap kolom ada di **"What the columns mean"** di dashboard.
+Penjelasan tiap kolom + arti warna ada di tombol **?** (Field guide) di pojok kanan atas.
 
 ## LP Agent
 
-- Tiap baris ada link `LP ↗` → `app.lpagent.io/portfolio?address=…&chain=ROBINHOOD`.
+- Tiap baris ada link `LP Agent ↗` → `app.lpagent.io/portfolio?address=…&chain=ROBINHOOD`.
 - Kalau lu punya **API key LP Agent** (dari LP Agent portal), isi di ⚙ Settings.
-  Di detail wallet, tombol **Check now** narik angka LP Agent sendiri
+  Di wallet dossier, tombol **Check now** narik angka LP Agent sendiri
   (`/lp-positions/overview` + `/lp-positions/opening`, uniswap_v4 & v3) dan
   nampilin di sebelah angka kita. Key cuma dipake server lokal, nggak pernah
   dikirim ke browser.
