@@ -126,9 +126,11 @@ def cmd_app(args, cfg):
     import subprocess
     here = Path(__file__).resolve().parent
     try:
-        import streamlit  # noqa: F401
+        import streamlit
     except ImportError:
-        sys.exit("Streamlit isn't installed. Run:  python3 -m pip install -r requirements.txt")
+        sys.exit("Streamlit isn't installed. Run:  python3 -m pip install -U -r requirements.txt")
+    if tuple(int(x) for x in streamlit.__version__.split(".")[:2]) < (1, 40):
+        sys.exit(f"Streamlit {streamlit.__version__} is too old. Run:  python3 -m pip install -U -r requirements.txt")
     cmd = [sys.executable, "-m", "streamlit", "run", "streamlit_app.py",
            "--server.port", str(args.port or cfg["PORT"]), "--server.address", "127.0.0.1"]
     if args.no_browser:

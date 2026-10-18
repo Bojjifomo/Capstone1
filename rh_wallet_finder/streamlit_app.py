@@ -8,7 +8,9 @@ Keys come from .env, the Settings tab, or st.secrets (RPC_URL, CALL_RPC_URL,
 LPAGENT_API_KEY).
 """
 import base64
+import inspect
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -29,13 +31,54 @@ LOGO = HERE / "assets" / "logo.svg"
 st.set_page_config(page_title="RH Wallet Finder", page_icon=str(LOGO), layout="wide",
                    initial_sidebar_state="collapsed")
 
-# st.secrets (Streamlit Cloud / .streamlit/secrets.toml) feed the same settings as .env
-try:
-    for _k in Q.SETTING_KEYS:
-        if _k in st.secrets and not os.environ.get(_k):
-            os.environ[_k] = str(st.secrets[_k])
-except Exception:  # noqa: BLE001 - no secrets file is the normal case
-    pass
+# Works on Streamlit 1.37+ (st.dialog / st.fragment); newer keyword arguments are
+# only passed to versions that know them.
+ST_VER = tuple(int(x) for x in re.findall(r"\d+", st.__version__)[:2])
+if ST_VER < (1, 37):
+    st.error(f"Streamlit {st.__version__} is too old for this app. In Terminal run:\n\n"
+             "`python3 -m pip install -U -r requirements.txt`\n\nthen start it again.")
+    st.stop()
+
+
+def _accepts(fn, name):
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def stretch(fn):
+    """Full-width keyword for fn on this Streamlit: width="stretch" on new
+    versions, use_container_width=True on older ones (it's deprecated later)."""
+    if ST_VER >= (1, 50) and _accepts(fn, "width"):
+        return {"width": "stretch"}
+    if _accepts(fn, "use_container_width"):
+        return {"use_container_width": True}
+    return {}
+
+
+def col(kind, label, **kw):
+    """st.column_config.<kind>(...) minus keywords this Streamlit doesn't have (pinned)."""
+    fn = getattr(st.column_config, kind)
+    return fn(label, **{k: v for k, v in kw.items() if _accepts(fn, k)})
+
+
+def auto_height(n_rows, cap):
+    """Table height that fits n_rows (old Streamlit only takes a number)."""
+    if n_rows > 16:
+        return cap
+    return "auto" if ST_VER >= (1, 50) else 38 + 35 * max(1, n_rows)
+
+# st.secrets (.streamlit/secrets.toml) feed the same settings as .env. Only
+# touched when such a file exists: older Streamlit shows an error box otherwise.
+if any(p.exists() for p in (Path.home() / ".streamlit" / "secrets.toml", Path.cwd() / ".streamlit" / "secrets.toml",
+                            HERE / ".streamlit" / "secrets.toml")):
+    try:
+        for _k in Q.SETTING_KEYS:
+            if _k in st.secrets and not os.environ.get(_k):
+                os.environ[_k] = str(st.secrets[_k])
+    except Exception:  # noqa: BLE001 - a broken secrets file shouldn't stop the app
+        pass
 
 LIVE_SECONDS = 15
 BLUE, RED = "57,135,229", "230,103,103"  # better / worse
@@ -336,11 +379,11 @@ def column_config(keys):
         if k not in keys:
             continue
         if k in ("lp", "scan"):
-            cfg[k] = st.column_config.LinkColumn(label, help=helptext, display_text="open ↗", width="small")
+            cfg[k] = col("LinkColumn", label, help=helptext, display_text="open ↗", width="small")
         else:
             width = "small" if k in ("rank", "star", "copiers", "open") else "medium" if k in ("slf", "wallet") else None
-            cfg[k] = st.column_config.Column(label, help=f"{group} · {helptext}", pinned=k in ("rank", "score", "wallet"),
-                                             width=width)
+            cfg[k] = col("Column", label, help=f"{group} · {helptext}", pinned=k in ("rank", "score", "wallet"),
+                         width=width)
     return cfg
 
 
@@ -380,7 +423,7 @@ def filter_controls(saved_names):
     c1, c2, c3, c4 = st.columns([2.2, 1, 3, 1.2])
     c1.selectbox("Preset", list(BUILTIN) + saved_names, key="preset", on_change=apply_preset,
                  label_visibility="collapsed")
-    with c2.popover("Filters", width="stretch"):
+    with c2.popover("Filters", **stretch(st.popover)):
         a, b = st.columns(2)
         a.multiselect("Tier", ["Elite", "Strong", "Decent", "Weak", "Avoid"], key="f_tiers")
         b.multiselect("Followable", list(FOLLOW.values()), key="f_follow")
@@ -525,18 +568,25 @@ def board(view, key, top=None):
     shown = shown.head(1500)
     keys = [c[0] for c in COLS]
     event = st.dataframe(styled(shown[keys], css_full), column_config=column_config(keys), hide_index=True,
-                         height=620 if len(shown) > 16 else "auto", on_select="rerun", selection_mode="single-row",
+                         **stretch(st.dataframe),
+                         height=auto_height(len(shown), 620), on_select="rerun", selection_mode="single-row",
                          key=f"grid_{key}")
-    sel = event.selection.rows if event and event.selection else []
-    if sel:
-        addr = shown.iloc[sel[0]]["addr"]
-        c1, c2 = st.columns([1, 6])
-        if c1.button("Open dossier", key=f"open_{key}") or st.session_state.get(f"shown_{key}") != addr:
-            st.session_state[f"shown_{key}"] = addr
-            dossier(addr)
-    else:
+    sel = getattr(getattr(event, "selection", None), "rows", None) or []
+    picked = shown.iloc[sel[0]]["addr"] if sel else None
+    # the same dossier from a dropdown too: works on every Streamlit version and without a mouse
+    names = {a: f"#{int(r)} {short(a)}{'  ' + lab if lab else ''}"
+             for a, r, lab in zip(shown["addr"], shown["rank"], shown["label"].fillna(""))}
+    c1, c2 = st.columns([3, 1])
+    choice = c1.selectbox("Open wallet dossier", [""] + list(names), format_func=lambda a: names.get(a, "Open a wallet "
+                          "dossier… (or tick a row above)"), key=f"pick_{key}", label_visibility="collapsed")
+    addr = picked or choice or None
+    again = c2.button("Open dossier", key=f"open_{key}", disabled=not addr)
+    if addr and (again or st.session_state.get(f"shown_{key}") != addr):
+        st.session_state[f"shown_{key}"] = addr
+        dossier(addr)
+    elif not addr:
         st.session_state.pop(f"shown_{key}", None)
-        st.caption("Select a row to open its wallet dossier. Hover a column title for what it means.")
+    st.caption("Tick a row (or pick one in the list) to open its wallet dossier. Hover a column title for what it means.")
 
 
 @st.fragment
@@ -608,7 +658,7 @@ def dossier(addr):
             zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#2b3a4f", strokeDash=[3, 3]).encode(y="y:Q")
             st.altair_chart((zero + line + dots).properties(height=200).configure_view(strokeWidth=0)
                             .configure_axis(gridColor="#1e2938", labelColor="#8592a6", domainColor="#2b3a4f"),
-                            width="stretch")
+                            **stretch(st.altair_chart))
         else:
             st.caption("Needs at least two closed, priced positions.")
 
@@ -620,7 +670,7 @@ def dossier(addr):
         sl["Window"] = ((sl["to_block"] - sl["from_block"]) * 0.1008).map(dur)
         sl["Scanned"] = (now - sl["computed_at"]).map(lambda s: dur(s) + " ago")
         st.dataframe(sl[["Pool", "Rank", "pnl_usd", "pnl_pct", "deposited_usd", "positions", "Window", "Scanned"]],
-                     hide_index=True, width="stretch", column_config={
+                     hide_index=True, **stretch(st.dataframe), column_config={
                          "pnl_usd": st.column_config.NumberColumn("PnL", format="$%.2f"),
                          "pnl_pct": st.column_config.NumberColumn("PnL %", format="%.1f%%"),
                          "deposited_usd": st.column_config.NumberColumn("Deposited", format="$%.0f"),
@@ -650,10 +700,10 @@ def dossier(addr):
                     pct(v * 100 if v <= 1 else v) if kind == "ratio" else f"{v:.0f}"
                 rows.append({"Metric": label, "LP Agent": shown, f"This app ({stt['metric_days']:.0f}d)": ours.get(f, "")})
             st.markdown(f"**{proto}**")
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame(rows), hide_index=True, **stretch(st.dataframe))
         if res.get("opening"):
             st.markdown(f"**Open on LP Agent ({len(res['opening'])})**")
-            st.dataframe(pd.DataFrame(res["opening"]), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame(res["opening"]), hide_index=True, **stretch(st.dataframe))
         if not res.get("overview") and not res.get("opening") and not res.get("errors"):
             st.caption("LP Agent has nothing on this wallet.")
 
@@ -682,7 +732,7 @@ def dossier(addr):
                                                                                                 fill_value=""), axis=None)
         st.dataframe(sty.format({"In": usd, "Out": usd, "Fees": usd, "PnL": lambda v: ("+" if v > 0 else "") + usd(v)},
                                 na_rep="–"),
-                     hide_index=True, width="stretch", height=320,
+                     hide_index=True, **stretch(st.dataframe), height=320,
                      column_config={"NFT": st.column_config.LinkColumn("NFT", display_text=r"#(\d+)$")})
     con.close()
 
@@ -728,9 +778,9 @@ def twins():
     fm = formatters()
     fm["match"] = lambda v: f"{v:.0f}%"
     cc = column_config(keys)
-    cc["match"] = st.column_config.Column("Match", help="How close its LP style is to the target.", pinned=True)
+    cc["match"] = col("Column", "Match", help="How close its LP style is to the target.", pinned=True)
     st.dataframe(sty.format({k: v for k, v in fm.items() if k in keys}, na_rep="–"), column_config=cc,
-                 hide_index=True, height=560)
+                 hide_index=True, height=auto_height(len(df), 560), **stretch(st.dataframe))
 
 
 # ------------------------------------------------------------ watchlist ---
@@ -769,7 +819,7 @@ def watchlist():
     for col in ("Score", "Realized", "ROI/mo", "Win %"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     edited = st.data_editor(
-        df, hide_index=True, width="stretch", key="watch_editor",
+        df, hide_index=True, key="watch_editor", **stretch(st.data_editor),
         disabled=["Wallet", "From", "Smart LP", "Score", "Tier", "Realized", "ROI/mo", "Win %", "Style", "LP Agent"],
         column_config={
             "Score": st.column_config.NumberColumn(format="%.1f"),
