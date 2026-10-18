@@ -75,6 +75,7 @@ button { font: inherit; color: inherit; }
   cursor: pointer; font-size: 15px; display: inline-flex; align-items: center; justify-content: center;
 }
 .icon:hover, .chip:hover, .btn:hover { border-color: var(--gold); color: var(--ink); }
+a.chip { text-decoration: none; }
 
 .wrap { max-width: 1960px; margin: 0 auto; padding: 22px 28px 80px; }
 

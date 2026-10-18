@@ -316,12 +316,14 @@ class Scorer:
         min_closed = int(cfg["MIN_CLOSED"])
         budget = int(cfg["SCORE_POSITIONS_PER_RUN"])
 
-        # candidates: enough closed positions with a known open; labelled wallets first
+        # candidates: enough closed positions with a known open; labelled wallets
+        # first, then ones that placed in an RH Smart LP Finder pool ranking
         cands = [r[0] for r in con.execute("""
             SELECT owner FROM positions
             WHERE owner IS NOT NULL AND minted=1 AND close_ts >= ?
             GROUP BY owner HAVING COUNT(*) >= ?
-            ORDER BY owner IN (SELECT addr FROM labels) DESC, COUNT(*) DESC
+            ORDER BY owner IN (SELECT addr FROM labels) DESC,
+                     owner IN (SELECT addr FROM slf_ranks WHERE pnl_usd > 0) DESC, COUNT(*) DESC
         """, (w0, min_closed))]
         # newest positions per wallet, unpriced ones flagged: [(token_id, closed, valued)]
         newest = {}

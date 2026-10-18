@@ -17,7 +17,9 @@ perlu `pip install`).
    (atau dari Terminal: `python3 rh_wallet_finder/finder.py`).
    Browser kebuka ke **http://127.0.0.1:4664**.
 3. Klik **⚙ Settings**, paste link RPC Robinhood Chain lu, misalnya:
-   `https://rpc.solidrpc.io/ak_…/evm/4663` → Save.
+   `https://rpc.solidrpc.io/ak_…/evm/4663` → Save. Opsional: link Alchemy di
+   "Calls RPC" buat `eth_call` blok lama. (Kalau folder RH Smart LP Finder ada di
+   sebelahnya, langkah ini bisa dilewat: RPC-nya diambil dari sana.)
    Link + key disimpen di `rh_wallet_finder/.env` di laptop lu doang
    (file itu di-gitignore, **jangan** di-commit: repo ini public).
 4. Biarin jendela Terminal kebuka. Sync jalan di background:
@@ -51,6 +53,33 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 | Kolom `LP Agent` / `Explorer` | Buka wallet di LP Agent / Blockscout |
 
 Penjelasan tiap kolom + arti warna ada di tombol **?** (Field guide) di pojok kanan atas.
+
+## Nyambung ke RH Smart LP Finder
+
+Kalau folder **RH Smart LP Finder** lu taruh di sebelah folder ini (sama-sama di
+dalam `Capstone1/`, kayak di Finder lu sekarang), tool ini otomatis:
+
+- **pakai RPC-nya** kalau di sini belum diisi: SolidRPC (`RH_RPC_BACKUP1_LP_FINDER`)
+  buat `eth_getLogs`, Alchemy (`RH_RPC_MAIN_LP_FINDER`) buat `eth_call` blok lama.
+  Jadi nggak perlu isi ⚙ Settings lagi.
+- **ambil saved wallets** dari tabel `smart_lp_wallets` → masuk Watchlist (di-★,
+  labelnya ikut; label yang udah lu tulis di sini nggak ditimpa).
+- **ambil hasil ranking per pool** yang pernah lu jalanin di sana
+  (`pool_lp_finder_cache`) → kolom **Smart LP** (`#3/76 · VRAX/USDG` = peringkat
+  terbaik wallet itu di satu pool), preset **Smart LP top 10**, dan tabel
+  "In RH Smart LP Finder rankings" di wallet dossier. Wallet-wallet ini juga
+  dihitung duluan pas scoring.
+- tombol **Smart LP Finder ↗** di kanan atas buka tool itu (`localhost:8787`).
+
+Database Smart LP Finder cuma dibaca dari salinan sementara, file aslinya nggak
+diubah dan nggak kekunci walaupun servernya lagi jalan. Diulang tiap siklus sync,
+jadi wallet yang baru lu save di sana nongol sendiri. Manual:
+`python3 rh_wallet_finder/finder.py import-smart-lp` (atau `--db path/ke/lp-finder.sqlite`).
+Folder di tempat lain: set `SMART_LP_FINDER_DIR=/path/ke/RH Smart LP Finder`.
+
+Bedanya dua tool ini: Smart LP Finder = **satu pool**, dihitung on-demand pas lu
+klik; Wallet Finder = **semua pool sekaligus**, jalan terus di background dan
+nyimpen hasilnya di database.
 
 ## LP Agent
 

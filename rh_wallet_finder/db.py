@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS labels (
 );
 
 CREATE TABLE IF NOT EXISTS lpagent_cache (addr TEXT PRIMARY KEY, fetched INTEGER, data TEXT);
+
+-- per-pool placings copied from RH Smart LP Finder's scan cache (smartlp.py)
+CREATE TABLE IF NOT EXISTS slf_ranks (
+  addr TEXT, pool TEXT, from_block INTEGER, to_block INTEGER, rank INTEGER, total INTEGER,
+  pnl_usd REAL, pnl_pct REAL, deposited_usd REAL, positions INTEGER, computed_at INTEGER,
+  PRIMARY KEY (addr, pool, from_block, to_block)
+);
 """
 
 _local = threading.local()

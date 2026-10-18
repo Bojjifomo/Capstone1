@@ -25,6 +25,7 @@
     <span class="cell"><b>WINDOW</b><span id="rl-window">30d</span></span>
     <span class="cell"><b>ETH</b><span id="rl-eth">–</span></span>
   </div>
+  <a class="chip hidden" id="smartlp-link" target="_blank" rel="noopener">Smart LP Finder ↗</a>
   <button class="icon" id="btn-guide" title="Field guide">?</button>
   <button class="icon" id="btn-settings" title="Settings">⚙</button>
 </header>
@@ -123,6 +124,10 @@
   <div class="d-sec">
     <div class="d-title">Realized PnL over time <span class="muted" id="dr-curve-note"></span></div>
     <div class="curve" id="dr-curve"></div>
+  </div>
+  <div class="d-sec hidden" id="dr-slf-sec">
+    <div class="d-title">In RH Smart LP Finder rankings</div>
+    <div class="grid-wrap small"><table class="grid compact" id="dr-slf"><thead></thead><tbody></tbody></table></div>
   </div>
   <div class="d-sec">
     <div class="d-title">LP Agent check <button class="chip" id="dr-lp">Check now</button></div>

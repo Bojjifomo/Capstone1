@@ -48,6 +48,9 @@ const verdictTag = (v) => (v ? `<span class="tagv" style="background:${VERDICT_B
 const FOLLOW = { "✓": ["follow-yes", "✓ yes"], "✗": ["follow-no", "✗ bot"], "?": ["follow-q", "? maybe"] };
 const followTag = (v) => { const f = FOLLOW[v]; return f ? `<span class="${f[0]}">${f[1]}</span>` : "–"; };
 
+// RH Smart LP Finder placing: "#3/76 · VRAX/USDG"
+const slfTag = (b) => (b ? `<span title="${esc(`Rank ${b.rank} of ${b.total} in ${b.pair || b.pool} · PnL ${usd(b.pnl_usd)}${b.pools > 1 ? ` · placed in ${b.pools} pools` : ""}`)}">#${b.rank}<span class="muted">/${b.total}</span> · ${esc(b.pair || short(b.pool))}${b.pools > 1 ? ` <span class="muted">+${b.pools - 1}</span>` : ""}</span>` : "–");
+
 // ---------- columns ----------
 // g: column group. heat: "up" higher is better, "down" lower is better (blue = better, red = worse,
 // against the other wallets); "signed": blue above zero, red below, $0 uncoloured.
@@ -57,6 +60,7 @@ const COLS = [
   { g: "id", k: "score", t: "Score", f: f1, heat: "up", filter: "num", d: "0–100. Percentile blend of realized PnL, ROI, win rate, green days, max drawdown, recovery, fees and sample size. Few closed positions pull it toward 50; a losing wallet is capped at 45." },
   { g: "id", k: "addr", t: "Wallet", l: 1, filter: "text", cls: "addr", f: (v, r) => esc(short(v)) + (r.label ? `<span class="lab">${esc(r.label)}</span>` : ""), d: "Click for the wallet dossier: PnL curve, positions, label, LP Agent check." },
   { g: "id", k: "verdict", t: "Tier", c: 1, filter: "text", f: verdictTag, d: "Elite ≥ 70, Strong ≥ 60, Decent ≥ 50, Weak ≥ 40, else Avoid." },
+  { g: "id", k: "slf", t: "Smart LP", l: 1, filter: "num", v: (r) => (r.slf ? r.slf.rank : null), f: (v, r) => slfTag(r.slf), d: "Best place this wallet reached in an RH Smart LP Finder pool ranking you ran (rank / wallets ranked · pool). Filter on the rank." },
   { g: "perf", k: "net", t: "Realized", f: usd, heat: "signed", filter: "num", d: "USD PnL of positions closed in the window: everything taken out + fees − everything put in." },
   { g: "perf", k: "float", t: "Unrealized", f: usd, heat: "signed", filter: "num", d: "PnL of positions still open: current value + unclaimed fees − deposits." },
   { g: "perf", k: "roi", t: "ROI/mo", f: (v) => (num(v) === null ? "–" : f1(v) + "%"), heat: "signed", filter: "num", d: "Realized PnL per month over the capital the wallet keeps deployed (time-weighted, never below its median position)." },
@@ -81,7 +85,7 @@ const COLS = [
   { g: "hold", k: "open_now", t: "Deployed", f: usd, filter: "num", d: "USD sitting in open positions now." },
   { g: "hold", k: "worth", t: "Worth", f: usd, filter: "num", d: "ETH + USDG in the wallet + open LP value." },
   { g: "hold", k: "age", t: "Seen", v: (r) => state.now - r.first_seen, f: (v, r) => (r.first_seen <= (state.status.data_from || 0) + 3600 ? ">" : "") + dur(v), filter: "num", fv: (v) => v / 86400, unit: "days", d: "Since its first LP in our data (\">\" = already active before our history starts)." },
-  { g: "hold", k: "last", t: "Active", v: (r) => state.now - r.last_seen, f: (v) => dur(v) + " ago", filter: "num", fv: (v) => v / 3600, unit: "hours", d: "Since its last LP action." },
+  { g: "hold", k: "last", t: "Active", v: (r) => state.now - r.last_seen, f: (v) => (num(v) === null ? "–" : dur(v) + " ago"), filter: "num", fv: (v) => v / 3600, unit: "hours", d: "Since its last LP action." },
   { g: "links", k: "star", t: "★", c: 1, nosort: 1, f: (v, r) => `<button class="star ${r.starred ? "on" : ""}" data-star="${r.addr}" title="Watchlist">${r.starred ? "★" : "☆"}</button>`, d: "Watchlist: starred wallets get priced first and anchor the Twin column." },
   { g: "links", k: "lp", t: "LP Agent", c: 1, nosort: 1, f: (v, r) => `<a href="https://app.lpagent.io/portfolio?address=${r.addr}&chain=ROBINHOOD" target="_blank" rel="noopener">open ↗</a>`, d: "The wallet on LP Agent." },
   { g: "links", k: "scan", t: "Explorer", c: 1, nosort: 1, f: (v, r) => `<a href="https://robinhoodchain.blockscout.com/address/${r.addr}" target="_blank" rel="noopener">open ↗</a>`, d: "The wallet on the Robinhood Chain explorer." },
@@ -97,6 +101,7 @@ const BUILTIN = [
   { name: "Size ≥ $1K", filters: { size: { min: "1000" } } },
   { name: "Active 24h", filters: { last: { max: "24" } } },
   { name: "Uncrowded", filters: { exposure: { max: "20" }, net: { min: "0.01" } } },
+  { name: "Smart LP top 10", filters: { slf: { max: "10" } } },
 ];
 
 // ---------- state ----------
@@ -137,6 +142,10 @@ async function loadStatus() {
   const busy = w.state === "syncing" || w.state === "scoring";
   $("#led-worker").className = "led " + (w.error ? "bad" : busy ? "busy" : s.has_rpc ? "ok" : "warn");
   $("#worker-state").textContent = w.error ? "error: " + w.error : (w.state || "idle") + (w.progress && !w.progress.done ? " · loading history" : "");
+  const slf = s.smart_lp || {};
+  const sl = $("#smartlp-link");
+  sl.classList.toggle("hidden", !slf.url);
+  if (slf.url) { sl.href = slf.url; sl.title = `RH Smart LP Finder · ${slf.saved} saved wallets, ${slf.ranked} wallets from its pool rankings`; }
   $("#rpc-label").textContent = s.rpc ? "logs " + s.rpc + (s.call_rpc ? " · calls " + s.call_rpc : "") + (s.rpc_source && s.rpc_source !== "settings" ? " (from " + s.rpc_source + ")" : "") : "";
   $("#log").textContent = (w.log || []).join("\n");
   const setup = $("#setup");
@@ -355,7 +364,7 @@ document.addEventListener("click", async (e) => {
   const th = e.target.closest("#grid th[data-sort]");
   if (th && th.dataset.sort) {
     const k = th.dataset.sort;
-    state.sort = state.sort.k === k ? { k, dir: -state.sort.dir } : { k, dir: ["rank", "recover", "last", "age"].includes(k) ? 1 : -1 };
+    state.sort = state.sort.k === k ? { k, dir: -state.sort.dir } : { k, dir: ["rank", "recover", "last", "age", "slf"].includes(k) ? 1 : -1 };
     return render();
   }
   const star = e.target.closest("[data-star]");
@@ -462,6 +471,20 @@ async function openDrawer(addr) {
   ] : [["Not ranked yet", "needs " + (state.status.settings?.MIN_CLOSED || 3) + "+ closed, priced positions"]];
   $("#dr-metrics").innerHTML = cells.map(([k, v]) => `<div><small>${esc(k)}</small><span>${esc(v)}</span></div>`).join("");
   drawCurve(d.positions);
+  const sl = d.smart_lp || [];
+  $("#dr-slf-sec").classList.toggle("hidden", !sl.length);
+  if (sl.length) {
+    const hours = (r) => ((r.to_block - r.from_block) * 0.1008) / 3600;
+    const scols = [
+      { k: "pair", t: "Pool", l: 1, f: (v, r) => esc(v || short(r.pool)) },
+      { k: "rank", t: "Rank", f: (v, r) => `#${v}<span class="muted">/${r.total}</span>` },
+      { k: "pnl_usd", t: "PnL", f: signed }, { k: "pnl_pct", t: "PnL %", f: (v) => (num(v) === null ? "–" : f1(v) + "%") },
+      { k: "deposited_usd", t: "Deposited", f: usd }, { k: "positions", t: "Positions", f: int },
+      { k: "win", t: "Window", v: hours, f: (v) => dur(v * 3600) }, { k: "computed_at", t: "Scanned", f: (v) => dur(state.now - v) + " ago" },
+    ];
+    $("#dr-slf thead").innerHTML = headHtml(scols);
+    $("#dr-slf tbody").innerHTML = sl.map((r) => rowHtml(r, scols, { heat: false })).join("");
+  }
   $("#dr-lpagent").innerHTML = state.status.has_lpagent_key
     ? "Pulls LP Agent's own PnL, win rate and open positions for this wallet, next to ours."
     : `No LP Agent API key yet, so only the <a href="${esc(d.lpagent_link)}" target="_blank" rel="noopener">portfolio link</a> works. Add a key in ⚙ Settings to compare numbers here.`;
@@ -609,11 +632,13 @@ $("#sim-addr").addEventListener("keydown", (e) => { if (e.key === "Enter") runSi
 async function loadWatch() {
   const [lab, wl] = await Promise.all([api("/api/labels"), api("/api/wallets?view=" + (state.real ? "real" : "raw"))]);
   const scored = Object.fromEntries((wl.rows || []).map((r) => [r.addr, r]));
-  const rows = (lab.rows || []).map((l) => ({ ...(scored[l.addr] || {}), addr: l.addr, label: l.label, notes: l.notes, starred: !!l.starred, _scored: !!scored[l.addr] }));
+  const rows = (lab.rows || []).map((l) => ({ ...(scored[l.addr] || {}), addr: l.addr, label: l.label, notes: l.notes, source: l.source, starred: !!l.starred, _scored: !!scored[l.addr] }));
   const keep = state.ranks;
   computeRanks(wl.rows || []);
   const cols = [
     colByKey.addr, { g: "id", k: "notes", t: "Notes", l: 1, f: (v) => esc(v || "") },
+    { g: "id", k: "source", t: "From", l: 1, f: (v) => (v === "smart-lp-finder" ? "Smart LP Finder" : esc(v || "")) },
+    colByKey.slf,
     { g: "id", k: "score", t: "Score", f: (v, r) => (r._scored ? f1(v) : "not ranked yet"), heat: "up" },
     colByKey.verdict, colByKey.net, colByKey.roi, colByKey.win, colByKey.pos, colByKey.style, colByKey.last,
     colByKey.star, colByKey.lp, colByKey.scan,

@@ -298,6 +298,41 @@ class ConfigTest(unittest.TestCase):
                     os.environ["SMART_LP_FINDER_DIR"] = orig_env
 
 
+class SmartLpTest(unittest.TestCase):
+    def test_imports_saved_wallets_and_rankings_from_a_live_wal_db(self):
+        import json
+        import smartlp
+        with tempfile.TemporaryDirectory() as d:
+            theirs = Path(d) / "lp-finder.sqlite"
+            src = __import__("sqlite3").connect(str(theirs))
+            src.execute("PRAGMA journal_mode=WAL")
+            src.executescript("""
+                CREATE TABLE pool_lp_finder_cache (pool_id TEXT, from_block INTEGER, to_block INTEGER,
+                  result_json TEXT, computed_at_ms INTEGER, PRIMARY KEY (pool_id, from_block, to_block));
+                CREATE TABLE smart_lp_wallets (wallet_address TEXT PRIMARY KEY, label TEXT, saved_at_ms INTEGER);""")
+            a, b = "0x" + "aa" * 20, "0x" + "bb" * 20
+            res = {"totalWalletsFound": 40, "wallets": [
+                {"walletAddress": b, "pnlUsd": -5, "totalDepositedUsd": 100, "positionCount": 1},
+                {"walletAddress": a, "pnlUsd": 90, "pnlPercent": 30, "totalDepositedUsd": 300, "positionCount": 4}]}
+            src.execute("INSERT INTO pool_lp_finder_cache VALUES(?,?,?,?,?)",
+                        ("0x" + "cd" * 32, 10, 20, json.dumps(res), 1_790_000_000_000))
+            src.execute("INSERT INTO smart_lp_wallets VALUES(?,?,?)", (a.upper().replace("0X", "0x"), "Cactus", 1))
+            src.commit()  # still only in the -wal file: the connection stays open
+            con = db.connect(Path(d) / "ours.db")
+            con.execute("INSERT INTO labels(addr, label, starred, source, added) VALUES(?, 'mine', 0, 'manual', 1)", (a,))
+            got = smartlp.import_all(con, theirs, log=lambda *_: None)
+            self.assertEqual(got, {"saved": 1, "ranked": 2})
+            lab = dict(con.execute("SELECT label, starred FROM labels WHERE addr=?", (a,)).fetchone())
+            self.assertEqual(lab, {"label": "mine", "starred": 1})  # our label kept, star added
+            best = smartlp.best_ranks(con)
+            self.assertEqual((best[a]["rank"], best[a]["total"], best[a]["pnl_usd"]), (1, 40, 90))
+            self.assertNotIn(b, best)  # losing placings don't count
+            self.assertEqual(smartlp.import_all(con, theirs, log=lambda *_: None)["ranked"], 2)  # idempotent
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM slf_ranks").fetchone()[0], 2)
+            src.close()
+            con.close()
+
+
 class ServerTest(unittest.TestCase):
     def test_import_and_endpoints(self):
         import server

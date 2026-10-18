@@ -7,6 +7,7 @@ from collections import deque
 import config
 import db
 import indexer
+import smartlp
 from rpc import RPCError, make_rpcs
 from scorer import Scorer
 
@@ -38,10 +39,24 @@ class Worker:
         self._stop = True
         self._wake.set()
 
+    def import_smart_lp(self):
+        try:
+            con = db.connect()
+            try:
+                got = smartlp.import_all(con, log=self.log)
+            finally:
+                con.close()
+            if (got["saved"] or got["ranked"]) and got != getattr(self, "_smartlp_last", None):
+                self.log(f"RH Smart LP Finder: {got['saved']} saved wallets, {got['ranked']} pool placings")
+            self._smartlp_last = got
+        except Exception as e:  # noqa: BLE001 - optional extra, never stops the loop
+            self.log(f"RH Smart LP Finder import skipped: {e}")
+
     def _loop(self):
         while not self._stop:
             cfg = config.load_env()
             wait = self.interval
+            self.import_smart_lp()
             if not cfg["RPC_URL"]:
                 self.state = "no_rpc"
                 self.log("No RPC link yet. Open Settings (⚙) and paste your Robinhood Chain RPC URL.")

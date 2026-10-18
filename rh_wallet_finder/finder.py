@@ -8,6 +8,7 @@
   python3 finder.py check 0xWALLET  one wallet: our metrics + LP Agent
   python3 finder.py import FILE     add wallets (one per line, optional label)
   python3 finder.py set-rpc URL     save the RPC link to .env
+  python3 finder.py import-smart-lp saved wallets + pool rankings from RH Smart LP Finder
 
 Only the Python standard library is used.
 """
@@ -109,6 +110,15 @@ def cmd_import(args, cfg):
     print(server.import_text(con, text, "file"))
 
 
+def cmd_import_smart_lp(args, cfg):
+    import smartlp
+    path = Path(args.db) if args.db else smartlp.db_path()
+    if not path:
+        sys.exit("RH Smart LP Finder not found next to this folder. Pass --db path/to/lp-finder.sqlite "
+                 "or set SMART_LP_FINDER_DIR.")
+    print(f"{path}: {smartlp.import_all(db.connect(), path)}")
+
+
 def cmd_set_rpc(args, cfg):
     config.save_env({"RPC_URL": args.url.strip()})
     print(f"Saved to {config.ENV_FILE}: {config.mask(args.url.strip())}")
@@ -140,6 +150,8 @@ def main():
     s.add_argument("--real", action="store_true")
     s = sub.add_parser("import")
     s.add_argument("file")
+    s = sub.add_parser("import-smart-lp", help="saved wallets + pool rankings from RH Smart LP Finder")
+    s.add_argument("--db", help="path to its data/lp-finder.sqlite (default: found next to this folder)")
     s = sub.add_parser("set-rpc")
     s.add_argument("url")
     args = ap.parse_args()
@@ -151,7 +163,7 @@ def main():
                      run_worker=not getattr(args, "no_sync", False))
         return
     {"sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
-     "set-rpc": cmd_set_rpc}[args.cmd](args, cfg)
+     "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp}[args.cmd](args, cfg)
     if args.cmd in ("sync", "score"):
         print(f"done in {time.time() - t:.0f}s")
 

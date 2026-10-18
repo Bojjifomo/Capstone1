@@ -18,6 +18,7 @@ import config
 import db
 import lpagent
 import metrics as M
+import smartlp
 from db import get_meta
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -35,12 +36,15 @@ def wallet_rows(con, view):
     """Every scored wallet for one view, plus labels and nearest-label similarity."""
     scored_at = get_meta(con, "scored_at")
     labels_v = con.execute("SELECT COUNT(*), MAX(added) FROM labels").fetchone()
-    key = (view, scored_at, tuple(labels_v))
+    slf_v = con.execute("SELECT COUNT(*), MAX(computed_at) FROM slf_ranks").fetchone()
+    key = (view, scored_at, tuple(labels_v), tuple(slf_v))
     with _cache_lock:
         if key in _cache:
             return _cache[key]
     eth_usd = get_meta(con, "eth_usd") or 0
     labels = {r["addr"]: dict(r) for r in con.execute("SELECT * FROM labels")}
+    slf = smartlp.best_ranks(con)
+    names = pool_names(con, {v["pool"] for v in slf.values()})
     rows, raw_metrics = [], []
     for r in con.execute("SELECT addr, data, eth_bal, usd_bal, first_seen, last_seen FROM wallets "
                          "WHERE data IS NOT NULL"):
@@ -50,9 +54,11 @@ def wallet_rows(con, view):
             continue
         lab = labels.get(r["addr"], {})
         worth = (r["eth_bal"] or 0) * eth_usd + (r["usd_bal"] or 0) + (m.get("open_now") or 0)
+        best = slf.get(r["addr"])
         rows.append({**m, "addr": r["addr"], "worth": worth, "first_seen": r["first_seen"],
                      "last_seen": r["last_seen"], "label": lab.get("label"), "notes": lab.get("notes"),
-                     "starred": bool(lab.get("starred"))})
+                     "starred": bool(lab.get("starred")),
+                     "slf": {**best, "pair": names.get(best["pool"])} if best else None})
         raw_metrics.append(d.get("raw") or m)
     # PRED-SIM: closest starred/labelled wallet
     feats = M.feature_matrix(raw_metrics)
@@ -99,6 +105,9 @@ def status(con):
         "rpc": config.mask(cfg["RPC_URL"]), "has_rpc": bool(cfg["RPC_URL"]),
         "call_rpc": config.mask(cfg["CALL_RPC_URL"]), "rpc_source": cfg["RPC_SOURCE"],
         "has_lpagent_key": bool(cfg["LPAGENT_API_KEY"]),
+        "smart_lp": {"url": smartlp.server_url(), "db": bool(smartlp.db_path()),
+                     "saved": n("SELECT COUNT(*) FROM labels WHERE source='smart-lp-finder'"),
+                     "ranked": n("SELECT COUNT(DISTINCT addr) FROM slf_ranks")},
         "settings": {k: (cfg[k] if k not in ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY") else "")
                      for k in SETTING_KEYS},
         "worker": None if worker is None else {
@@ -106,6 +115,20 @@ def status(con):
             "log": list(worker.logs)[-60:]},
         "now": int(time.time()),
     }
+
+
+def pool_names(con, pool_ids):
+    """{pool id: 'TOKEN/USDG'} for pools we have indexed."""
+    ids = list(pool_ids)
+    if not ids:
+        return {}
+    tok = {r[0]: r[1] for r in con.execute("SELECT addr, symbol FROM tokens")}
+    out = {}
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        for r in con.execute(f"SELECT id, c0, c1 FROM pools WHERE id IN ({','.join('?' * len(part))})", part):
+            out[r[0]] = f"{tok.get(r[1]) or r[1][:6]}/{tok.get(r[2]) or r[2][:6]}"
+    return out
 
 
 def wallet_detail(con, addr):
@@ -123,7 +146,12 @@ def wallet_detail(con, addr):
         pos.append(p)
     w = con.execute("SELECT * FROM wallets WHERE addr=?", (addr,)).fetchone()
     lab = con.execute("SELECT * FROM labels WHERE addr=?", (addr,)).fetchone()
-    return {"addr": addr, "positions": pos, "wallet": dict(w) if w else None,
+    slf = [dict(r) for r in con.execute("SELECT * FROM slf_ranks WHERE addr=? ORDER BY rank, pnl_usd DESC",
+                                        (addr,))]
+    names = pool_names(con, {r["pool"] for r in slf})
+    for r in slf:
+        r["pair"] = names.get(r["pool"])
+    return {"addr": addr, "positions": pos, "wallet": dict(w) if w else None, "smart_lp": slf,
             "metrics": json.loads(w["data"]) if w and w["data"] else None,
             "label": dict(lab) if lab else None, "lpagent_link": lpagent.link(addr),
             "explorer": f"{config.EXPLORER}/address/{addr}"}
@@ -290,6 +318,12 @@ def serve(port=None, open_browser=True, run_worker=True):
         from worker import Worker
         worker = Worker()
         worker.start()
+    else:
+        con = db.connect()
+        try:
+            smartlp.import_all(con)
+        finally:
+            con.close()
     httpd = None
     for p in range(port, port + 20):
         try:
