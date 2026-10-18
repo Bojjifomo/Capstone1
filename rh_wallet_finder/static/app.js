@@ -137,7 +137,7 @@ async function loadStatus() {
   const busy = w.state === "syncing" || w.state === "scoring";
   $("#led-worker").className = "led " + (w.error ? "bad" : busy ? "busy" : s.has_rpc ? "ok" : "warn");
   $("#worker-state").textContent = w.error ? "error: " + w.error : (w.state || "idle") + (w.progress && !w.progress.done ? " · loading history" : "");
-  $("#rpc-label").textContent = s.rpc ? "rpc " + s.rpc : "";
+  $("#rpc-label").textContent = s.rpc ? "logs " + s.rpc + (s.call_rpc ? " · calls " + s.call_rpc : "") + (s.rpc_source && s.rpc_source !== "settings" ? " (from " + s.rpc_source + ")" : "") : "";
   $("#log").textContent = (w.log || []).join("\n");
   const setup = $("#setup");
   if (!s.has_rpc) {
@@ -637,9 +637,10 @@ $("#import-go").onclick = async () => {
 $("#btn-settings").onclick = () => {
   const s = state.status.settings || {};
   for (const [k, v] of Object.entries(s)) { const el = $("#set-" + k); if (el) el.value = v; }
-  $("#set-RPC_URL").value = "";
-  $("#set-LPAGENT_API_KEY").value = "";
-  $("#set-rpc-now").textContent = state.status.rpc ? "(now: " + state.status.rpc + ")" : "(not set)";
+  ["RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY"].forEach((k) => ($("#set-" + k).value = ""));
+  const src = state.status.rpc_source && state.status.rpc_source !== "settings" ? ", from " + state.status.rpc_source : "";
+  $("#set-rpc-now").textContent = state.status.rpc ? `(now: ${state.status.rpc}${src})` : "(not set)";
+  $("#set-call-now").textContent = state.status.call_rpc ? `(now: ${state.status.call_rpc}${src})` : "(not set: calls use the logs RPC)";
   $("#set-lp-now").textContent = state.status.has_lpagent_key ? "(set)" : "(not set)";
   $("#set-msg").textContent = "";
   $("#settings").classList.remove("hidden");

@@ -199,8 +199,10 @@ def refresh_wallets(con):
     """)
 
 
-def sync(con, rpc, cfg, log=print, max_segments=None, stop=lambda: False):
-    """Catch up to the head, then keep filling history back to BACKFILL_DAYS."""
+def sync(con, rpc, cfg, log=print, max_segments=None, stop=lambda: False, call_rpc=None):
+    """Catch up to the head, then keep filling history back to BACKFILL_DAYS.
+
+    rpc does eth_getLogs; call_rpc (default: the same) the multicalls."""
     head = int(rpc.call("eth_blockNumber", []), 16) - CONFIRMATIONS
     bt = block_time(con, rpc, head)
     target = max(1, head - int(float(cfg["BACKFILL_DAYS"]) * 86400 / bt))
@@ -236,7 +238,7 @@ def sync(con, rpc, cfg, log=print, max_segments=None, stop=lambda: False):
         back = s
         set_meta(con, "back_block", back)
         con.commit()
-    refresh_pools_tokens(con, rpc, log)
+    refresh_pools_tokens(con, call_rpc or rpc, log)
     refresh_wallets(con)
     set_meta(con, "synced_at", int(time.time()))
     set_meta(con, "data_from_ts", con.execute("SELECT MIN(ts) FROM events").fetchone()[0])

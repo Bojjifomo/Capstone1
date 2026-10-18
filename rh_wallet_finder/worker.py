@@ -7,7 +7,7 @@ from collections import deque
 import config
 import db
 import indexer
-from rpc import RPC, RPCError
+from rpc import RPCError, make_rpcs
 from scorer import Scorer
 
 SEGMENTS_PER_CYCLE = 6  # score in between, so a long backfill shows results early
@@ -51,11 +51,11 @@ class Worker:
             con = None
             try:
                 con = db.connect()
-                rpc = RPC(cfg["RPC_URL"], workers=int(cfg["RPC_WORKERS"]))
+                rpc, call_rpc = make_rpcs(cfg)
                 self.state = "syncing"
                 self.log("Sync: scanning new LP activity…")
                 res = indexer.sync(con, rpc, cfg, self.log, max_segments=SEGMENTS_PER_CYCLE,
-                                   stop=lambda: self._stop)
+                                   stop=lambda: self._stop, call_rpc=call_rpc)
                 self.progress = res
                 if not res["done"]:
                     left = res["back"] - res["target"]
@@ -63,9 +63,10 @@ class Worker:
                     wait = 1
                 self.state = "scoring"
                 self.log("Score: pricing positions and ranking wallets…")
-                out = Scorer(con, rpc, cfg, self.log).run(stop=lambda: self._stop)
+                out = Scorer(con, call_rpc, cfg, self.log).run(stop=lambda: self._stop)
+                calls = rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
                 self.log(f"Scored {out['scored']:,} wallets ({out['priced']:,} positions priced, "
-                         f"{rpc.calls:,} RPC calls)")
+                         f"{calls:,} RPC calls)")
                 self.error = None
             except RPCError as e:
                 self.error = str(e)

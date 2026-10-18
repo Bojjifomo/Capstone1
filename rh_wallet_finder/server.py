@@ -24,7 +24,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 TOKEN = secrets.token_hex(16)
 ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 VIEWS = ("raw", "real", "d1raw", "d1real")
-SETTING_KEYS = ("RPC_URL", "LPAGENT_API_KEY", "BACKFILL_DAYS", "METRIC_DAYS", "SELL_SLIPPAGE_PCT",
+SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "BACKFILL_DAYS", "METRIC_DAYS", "SELL_SLIPPAGE_PCT",
                 "MIN_CLOSED", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS")
 _cache = {}
 _cache_lock = threading.Lock()
@@ -97,8 +97,10 @@ def status(con):
         "eth_usd": get_meta(con, "eth_usd"), "sell_fee": get_meta(con, "avg_sell_fee"),
         "slippage": float(cfg["SELL_SLIPPAGE_PCT"]),
         "rpc": config.mask(cfg["RPC_URL"]), "has_rpc": bool(cfg["RPC_URL"]),
+        "call_rpc": config.mask(cfg["CALL_RPC_URL"]), "rpc_source": cfg["RPC_SOURCE"],
         "has_lpagent_key": bool(cfg["LPAGENT_API_KEY"]),
-        "settings": {k: (cfg[k] if k not in ("RPC_URL", "LPAGENT_API_KEY") else "") for k in SETTING_KEYS},
+        "settings": {k: (cfg[k] if k not in ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY") else "")
+                     for k in SETTING_KEYS},
         "worker": None if worker is None else {
             "state": worker.state, "error": worker.error, "progress": worker.progress,
             "log": list(worker.logs)[-60:]},
@@ -226,8 +228,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, import_text(con, body.get("text") or "", body.get("source") or "import"))
             if path == "/api/settings":
                 upd = {k: str(v).strip() for k, v in body.items() if k in SETTING_KEYS and str(v).strip()}
-                if "RPC_URL" in upd and not upd["RPC_URL"].startswith(("https://", "http://", "wss://")):
-                    return self._send(400, {"error": "RPC URL must start with https://"})
+                for k in ("RPC_URL", "CALL_RPC_URL"):
+                    if k in upd and not upd[k].startswith(("https://", "http://")):
+                        return self._send(400, {"error": "RPC URLs must start with https://"})
                 config.save_env(upd)
                 if worker:
                     worker.kick()

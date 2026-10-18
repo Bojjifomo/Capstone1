@@ -269,6 +269,35 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT n_closed FROM wallets WHERE addr=?", (b,)).fetchone()[0], 1)
 
 
+class ConfigTest(unittest.TestCase):
+    def test_borrows_smart_lp_finder_rpcs(self):
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d) / "RH Smart LP Finder"
+            (proj / "lp-finder").mkdir(parents=True)
+            (proj / "lp-finder" / "route.ts").write_text("")
+            (proj / ".env").write_text("RH_RPC_MAIN=https://root-main\nRH_RPC_BACKUP1=https://root-backup\n")
+            (proj / "lp-finder" / ".env").write_text("RH_RPC_BACKUP1_LP_FINDER=https://solid\n")
+            orig_env, orig_file = os.environ.get("SMART_LP_FINDER_DIR"), config.ENV_FILE
+            os.environ["SMART_LP_FINDER_DIR"] = str(proj)
+            config.ENV_FILE = Path(d) / "none.env"
+            try:
+                cfg = config.load_env()
+                self.assertEqual(cfg["RPC_URL"], "https://solid")         # lp-finder/.env wins
+                self.assertEqual(cfg["CALL_RPC_URL"], "https://root-main")  # falls back to RH_RPC_MAIN
+                self.assertEqual(cfg["RPC_SOURCE"], "RH Smart LP Finder/.env")
+                config.ENV_FILE.write_text("RPC_URL=https://mine\n")
+                cfg = config.load_env()
+                self.assertEqual((cfg["RPC_URL"], cfg["CALL_RPC_URL"], cfg["RPC_SOURCE"]),
+                                 ("https://mine", "", "settings"))  # our own setting: borrow nothing
+            finally:
+                config.ENV_FILE = orig_file
+                if orig_env is None:
+                    os.environ.pop("SMART_LP_FINDER_DIR", None)
+                else:
+                    os.environ["SMART_LP_FINDER_DIR"] = orig_env
+
+
 class ServerTest(unittest.TestCase):
     def test_import_and_endpoints(self):
         import server

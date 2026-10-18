@@ -213,3 +213,11 @@ def _result(out, method):
             raise RangeError(msg, _range_hint(msg))
         raise RPCError(f"{method}: {msg}")
     return out.get("result")
+
+
+def make_rpcs(cfg):
+    """(logs RPC, calls RPC). They are the same client unless CALL_RPC_URL is set."""
+    workers = int(cfg.get("RPC_WORKERS") or 6)
+    logs = RPC(cfg["RPC_URL"], workers=workers)
+    calls = RPC(cfg["CALL_RPC_URL"], workers=workers) if cfg.get("CALL_RPC_URL") else logs
+    return logs, calls

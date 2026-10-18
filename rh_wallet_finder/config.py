@@ -43,7 +43,11 @@ LPAGENT_APP = "https://app.lpagent.io/portfolio?address={addr}&chain=ROBINHOOD"
 LPAGENT_API = "https://api.lpagent.io/open-api/v1"
 
 DEFAULTS = {
+    # eth_getLogs goes to RPC_URL (SolidRPC takes ~25k-block ranges). Calls
+    # (archive eth_call, multicalls) go to CALL_RPC_URL when it is set, e.g.
+    # Alchemy, the same split RH Smart LP Finder uses; otherwise RPC_URL too.
     "RPC_URL": "",
+    "CALL_RPC_URL": "",
     "LPAGENT_API_KEY": "",
     # How far back the first sync goes, and the window the metrics cover.
     "BACKFILL_DAYS": "30",
@@ -55,24 +59,65 @@ DEFAULTS = {
     "SCORE_POSITIONS_PER_RUN": "4000",
     "MIN_CLOSED": "3",
     "RPC_WORKERS": "6",
-    "LOG_CHUNK": "5000",
+    "LOG_CHUNK": "20000",
     "PORT": "4664",
 }
 
 
+# RH Smart LP Finder's own variable names: when this tool has no RPC set, it
+# borrows that project's (logs = SolidRPC, calls = Alchemy).
+SMART_LP_ENV = {"RPC_URL": ("RH_RPC_BACKUP1_LP_FINDER", "RH_RPC_BACKUP1"),
+                "CALL_RPC_URL": ("RH_RPC_MAIN_LP_FINDER", "RH_RPC_MAIN")}
+
+
+def _read_env(path):
+    out = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip().removeprefix("export ").strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def smart_lp_finder_dir():
+    """The RH Smart LP Finder project next to this folder, if it's there."""
+    if os.environ.get("SMART_LP_FINDER_DIR"):
+        d = Path(os.environ["SMART_LP_FINDER_DIR"]).expanduser()
+        return d if d.is_dir() else None
+    for d in [HERE.parent / "RH Smart LP Finder", *sorted(HERE.parent.iterdir())]:
+        if d.is_dir() and (d / "lp-finder" / "route.ts").exists():
+            return d
+    return None
+
+
 def load_env():
-    """Settings from the environment, then .env, then DEFAULTS."""
+    """Settings from the environment, then .env, then RH Smart LP Finder's
+    .env files (RPC links only), then DEFAULTS."""
     vals = dict(DEFAULTS)
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            vals[k.strip()] = v.strip().strip('"').strip("'")
+    vals.update({k: v for k, v in _read_env(ENV_FILE).items() if v})
     for k in vals:
         if os.environ.get(k):
             vals[k] = os.environ[k]
+    vals["RPC_SOURCE"] = "settings" if vals["RPC_URL"] else ""
+    if not vals["RPC_URL"]:
+        d = smart_lp_finder_dir()
+        theirs = {}
+        if d:  # lp-finder/.env wins over the root one, as in that project
+            theirs.update(_read_env(d / ".env"))
+            theirs.update({k: v for k, v in _read_env(d / "lp-finder" / ".env").items() if v})
+        theirs.update({k: v for k, v in os.environ.items() if k.startswith("RH_RPC_")})
+        for ours, names in SMART_LP_ENV.items():
+            v = next((theirs[n] for n in names if theirs.get(n)), "")
+            if v and not vals[ours]:
+                vals[ours] = v
+        if vals["RPC_URL"]:
+            vals["RPC_SOURCE"] = f"{d.name}/.env" if d else "RH_RPC_* environment"
     return vals
 
 

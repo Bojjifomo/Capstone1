@@ -23,11 +23,11 @@ import config  # noqa: E402
 import db  # noqa: E402
 
 
-def _rpc(cfg):
-    from rpc import RPC
+def _rpcs(cfg):
+    from rpc import make_rpcs
     if not cfg["RPC_URL"]:
         sys.exit("No RPC link yet. Run:  python3 finder.py set-rpc 'https://…'  (or use ⚙ Settings in the dashboard)")
-    return RPC(cfg["RPC_URL"], workers=int(cfg["RPC_WORKERS"]))
+    return make_rpcs(cfg)
 
 
 def cmd_sync(args, cfg):
@@ -35,9 +35,9 @@ def cmd_sync(args, cfg):
     if args.days:
         cfg["BACKFILL_DAYS"] = str(args.days)
     con = db.connect()
-    rpc = _rpc(cfg)
+    rpc, call_rpc = _rpcs(cfg)
     while True:
-        res = indexer.sync(con, rpc, cfg, max_segments=args.segments)
+        res = indexer.sync(con, rpc, cfg, max_segments=args.segments, call_rpc=call_rpc)
         print(json.dumps(res))
         if res["done"] or args.segments:
             break
@@ -47,9 +47,9 @@ def cmd_sync(args, cfg):
 def cmd_score(args, cfg):
     from scorer import Scorer
     con = db.connect()
-    rpc = _rpc(cfg)
-    print(json.dumps(Scorer(con, rpc, cfg).run()))
-    print(f"{rpc.calls:,} RPC calls")
+    _, call_rpc = _rpcs(cfg)
+    print(json.dumps(Scorer(con, call_rpc, cfg).run()))
+    print(f"{call_rpc.calls:,} RPC calls")
 
 
 def cmd_top(args, cfg):

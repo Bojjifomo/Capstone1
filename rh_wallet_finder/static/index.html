@@ -148,8 +148,10 @@
   <div class="sheet">
     <div class="d-head"><div><div class="d-kicker">Settings</div><b>Connection and scoring</b></div><button class="icon" data-close="settings">✕</button></div>
     <p class="muted">Saved to <code>rh_wallet_finder/.env</code> on this computer only (git-ignored). Leave a field empty to keep what's there.</p>
-    <label>Robinhood Chain RPC URL <span class="muted" id="set-rpc-now"></span>
+    <label>Logs RPC (eth_getLogs) <span class="muted" id="set-rpc-now"></span>
       <input id="set-RPC_URL" placeholder="https://rpc.solidrpc.io/ak_…/evm/4663" autocomplete="off"></label>
+    <label>Calls RPC (archive eth_call, optional) <span class="muted" id="set-call-now"></span>
+      <input id="set-CALL_RPC_URL" placeholder="https://robinhood-mainnet.g.alchemy.com/v2/… (empty = use the logs RPC)" autocomplete="off"></label>
     <label>LP Agent API key <span class="muted" id="set-lp-now"></span>
       <input id="set-LPAGENT_API_KEY" placeholder="from the LP Agent portal (optional)" autocomplete="off"></label>
     <div class="set-grid">
