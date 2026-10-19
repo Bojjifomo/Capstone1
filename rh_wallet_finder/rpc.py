@@ -2,10 +2,12 @@
 provider's block-range limit on its own."""
 import http.client
 import json
+import random
 import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -13,6 +15,13 @@ from concurrent.futures import ThreadPoolExecutor
 class RPCError(Exception):
     pass
 
+
+class QuotaError(RPCError):
+    """The provider says the plan's allowance is used up (e.g. Alchemy's monthly
+    compute units): retrying in a minute won't help."""
+
+
+QUOTA_RETRY_S = 3600  # an RPC whose quota ran out is tried again after this long
 
 class TruncatedError(RPCError):
     """The reply kept getting cut off mid-way (IncompleteRead): usually an
@@ -44,8 +53,11 @@ class RPC:
         if not url:
             raise RPCError("RPC_URL is empty. Paste your RPC link in Settings or in rh_wallet_finder/.env")
         self.url = url
+        self.host = urllib.parse.urlparse(url).hostname or "RPC"
         self.timeout = timeout
         self.workers = max(1, workers)
+        self.fallback = None   # another RPC to send everything to while this one's quota is used up
+        self.exhausted = None  # (when, message) of the last "quota used up" answer
         self.calls = 0
         self.batch_ok = True
         self._lock = threading.Lock()
@@ -54,10 +66,13 @@ class RPC:
 
     # ---- transport -------------------------------------------------------
     def _post(self, payload):
+        if self.fallback and self.exhausted and time.time() - self.exhausted[0] < QUOTA_RETRY_S:
+            return self.fallback._post(payload)
         body = json.dumps(payload).encode()
         last = None
         cut = 0
-        for attempt in range(7):
+        throttled = False
+        for attempt in range(9):  # 7 tries for broken connections, ~5 min of backing off for rate limits
             wait = self._pause_until - time.time()
             if wait > 0:
                 time.sleep(wait)
@@ -70,36 +85,67 @@ class RPC:
                 with self._lock:
                     self.calls += len(payload) if isinstance(payload, list) else 1
                 if isinstance(out, dict) and _throttled(out.get("error")):
-                    raise _Throttle()
+                    raise _Throttle(str(out["error"].get("message", out["error"])
+                                        if isinstance(out["error"], dict) else out["error"]))
                 return out
             except urllib.error.HTTPError as e:
-                last = e
-                if e.code in (429, 500, 502, 503, 504):
-                    self._backoff(attempt, e.code == 429)
+                reply = ""
+                try:
+                    reply = e.read().decode("utf-8", "replace")
+                except (OSError, http.client.HTTPException):
+                    pass
+                if e.code == 429:
+                    if _quota(reply) and self._out_of_quota(reply):
+                        return self.fallback._post(payload)
+                    last, throttled = f"HTTP 429 Too Many Requests {reply[:160]}".strip(), True
+                    self._backoff(attempt, True)
+                    continue
+                if e.code in (500, 502, 503, 504):
+                    last = f"HTTP {e.code} {reply[:160]}".strip()
+                    if attempt >= 6:
+                        break
+                    self._backoff(attempt, False)
                     continue
                 try:
-                    return json.load(e)  # many providers put a JSON-RPC error in the 4xx body
+                    return json.loads(reply)  # many providers put a JSON-RPC error in the 4xx body
                 except ValueError:
-                    raise RPCError(f"HTTP {e.code} from RPC") from e
-            except _Throttle:
-                last = "rate limited"
+                    raise RPCError(f"{self.host}: HTTP {e.code} {reply[:160]}".strip()) from e
+            except _Throttle as e:
+                if _quota(str(e)) and self._out_of_quota(str(e)):
+                    return self.fallback._post(payload)
+                last, throttled = f"rate limited: {e}", True
                 self._backoff(attempt, True)
             except http.client.IncompleteRead as e:
                 last = e
                 cut += 1
                 if cut >= 2:  # same big answer cut off twice: let the caller ask for less
-                    raise TruncatedError(f"RPC reply cut off ({len(e.partial):,} bytes read)") from e
+                    raise TruncatedError(f"{self.host}: reply cut off ({len(e.partial):,} bytes read)") from e
                 self._backoff(attempt, False)
             except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
                 # dropped / reset connections, TLS hiccups, timeouts, half-sent replies
                 last = e
+                if attempt >= 6:
+                    break
                 self._backoff(attempt, False)
-        raise RPCError(f"RPC kept failing: {last}")
+        if throttled:
+            raise RPCError(f"{self.host} kept rate limiting for 5 minutes ({last}). Lower \"Parallel RPC "
+                           f"requests\" in Settings, or use a plan with a higher rate limit.")
+        raise RPCError(f"{self.host} kept failing: {last}")
+
+    def _out_of_quota(self, msg):
+        """True: switch to the fallback RPC for a while. Without one: QuotaError."""
+        text = f"{self.host}: plan limit reached ({msg.strip()[:200]})"
+        if not self.fallback:
+            raise QuotaError(text)
+        self.exhausted = (time.time(), text)
+        return True
 
     def _backoff(self, attempt, throttled):
-        delay = min(30, 0.5 * 2 ** attempt)
         if throttled:  # everyone waits, not just this thread
+            delay = min(60, 2 * 2 ** attempt) * random.uniform(1, 1.25)
             self._pause_until = max(self._pause_until, time.time() + delay)
+        else:
+            delay = min(30, 0.5 * 2 ** attempt)
         time.sleep(delay)
 
     # ---- calls -----------------------------------------------------------
@@ -136,6 +182,9 @@ class RPC:
                 idx = [i for i in idx if isinstance(results[i], RPCError) and _throttled_err(results[i])]
                 if not idx:
                     return
+                spent = next((str(results[i]) for i in idx if _quota(str(results[i]))), None)
+                if spent and self._out_of_quota(spent):
+                    break  # resent below, one by one, through the fallback
                 self._backoff(attempt, True)
             for i in idx:
                 results[i] = self._single(calls[i])
@@ -218,6 +267,14 @@ def _throttled(err):
                                                    "capacity", "throughput"))
 
 
+_QUOTA_WORDS = ("monthly", "quota", "credits", "billing", "daily limit", "capacity limit")
+
+
+def _quota(msg):
+    """A rate-limit answer that means the plan's allowance is spent, not 'slow down'."""
+    return any(w in msg.lower() for w in _QUOTA_WORDS)
+
+
 def _throttled_err(e):
     return _throttled(str(e)) or "missing from batch" in str(e)
 
@@ -239,4 +296,6 @@ def make_rpcs(cfg):
     workers = int(cfg.get("RPC_WORKERS") or 6)
     logs = RPC(cfg["RPC_URL"], workers=workers)
     calls = RPC(cfg["CALL_RPC_URL"], workers=workers) if cfg.get("CALL_RPC_URL") else logs
+    if calls is not logs:
+        calls.fallback = logs  # calls RPC out of quota (e.g. Alchemy's monthly cap): calls go to the logs RPC
     return logs, calls

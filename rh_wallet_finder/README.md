@@ -208,6 +208,10 @@ Wallet yang posisi lamanya belum kehargai diukur dari posisi tertua yang udah
   akal (misal $10⁵⁰ per token). Harga token > $10 juta atau market cap > $10
   miliar, dan posisi yang balik > 1000× setorannya, dianggap nggak bisa
   dihargai dan nggak dihitung.
+- Kalau "Calls RPC" (misal Alchemy) kehabisan kuota bulanan, hitung harga
+  otomatis pindah ke RPC logs (SolidRPC) dan Alchemy dicoba lagi tiap jam;
+  ada catatan kuning di atas. Kena limit per detik (HTTP 429) ditungguin sampai
+  ±5 menit; kalau masih, kurangin "Parallel RPC requests" di Settings.
 - RPC harus support **archive** `eth_call` (state blok lama) dan
   `eth_getLogs`. Alchemy free tier cuma ngizinin `eth_getLogs` 10 blok per
   request, jadi buat backfill 30 hari itu kelamaan; RPC berbayar (kayak

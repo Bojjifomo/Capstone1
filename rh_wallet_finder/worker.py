@@ -8,7 +8,7 @@ import config
 import db
 import indexer
 import smartlp
-from rpc import RPCError, make_rpcs
+from rpc import QUOTA_RETRY_S, RPCError, make_rpcs
 from scorer import Scorer
 
 SEGMENTS_PER_CYCLE = 3  # score in between, so a long backfill shows results early
@@ -19,6 +19,7 @@ class Worker:
         self.logs = deque(maxlen=400)
         self.state = "idle"
         self.error = None
+        self.notice = None  # e.g. "calls RPC out of quota, using the logs RPC"
         self.progress = None
         self.cycle_at = None
         self._wake = threading.Event()
@@ -89,6 +90,12 @@ class Worker:
                 self.log(f"Scored {out['scored']:,} wallets ({out['priced']:,} positions priced, "
                          f"{calls:,} RPC calls)")
                 self.error = None
+                spent = call_rpc.exhausted
+                self.notice = None
+                if spent and time.time() - spent[0] < QUOTA_RETRY_S:
+                    self.notice = (f"{spent[1]}. Price reads go to {rpc.host} (your logs RPC) meanwhile; "
+                                   f"{call_rpc.host} is tried again every hour.")
+                    self.log(self.notice)
             except RPCError as e:
                 self.error = str(e)
                 self.log(f"RPC error: {e}")

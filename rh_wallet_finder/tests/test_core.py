@@ -192,6 +192,53 @@ class RpcTest(unittest.TestCase):
         self.assertEqual(got, ["0x01"] * 7)
         self.assertEqual(max(n for n in cut.asked if n <= 2), 2)
 
+    def test_rate_limits_and_spent_quota(self):
+        import io
+        import urllib.error
+        from unittest import mock
+        main, backup = R.RPC("https://main.example/v2/k"), R.RPC("https://backup.example/rpc")
+        main.fallback = backup
+        for r in (main, backup):
+            r._backoff = lambda *a: None
+        hits = {"main": 0, "backup": 0}
+        plan = {"main": []}
+
+        def urlopen(req, timeout=None):
+            who = "main" if "main" in req.full_url else "backup"
+            hits[who] += 1
+            body = json.loads(req.data)
+            if who == "main" and plan["main"]:
+                code, text = plan["main"].pop(0)
+                raise urllib.error.HTTPError(req.full_url, code, "Too Many Requests", {}, io.BytesIO(text.encode()))
+            res = lambda o: {"jsonrpc": "2.0", "id": o["id"], "result": f"{who}:{o['params'][0]}"}  # noqa: E731
+            return io.BytesIO(json.dumps([res(o) for o in body] if isinstance(body, list) else res(body)).encode())
+
+        with mock.patch("urllib.request.urlopen", urlopen):
+            # "slow down" is waited out on the same RPC
+            plan["main"] = [(429, '{"error":{"code":429,"message":"Too Many Requests"}}')] * 2
+            self.assertEqual(main.call("eth_call", ["a"]), "main:a")
+            # a spent monthly allowance moves everything to the fallback, without asking main again
+            plan["main"] = [(429, '{"jsonrpc":"2.0","id":1,"error":{"code":429,"message":"Monthly capacity '
+                                  'limit exceeded. Visit https://dashboard.alchemy.com/settings/billing"}}')]
+            self.assertEqual(main.call("eth_call", ["b"]), "backup:b")
+            n = hits["main"]
+            self.assertEqual(main.batch([("eth_call", [x]) for x in "cd"]), ["backup:c", "backup:d"])
+            self.assertEqual(hits["main"], n)
+            self.assertIn("main.example", main.exhausted[1])
+            # no fallback: say so plainly instead of retrying for minutes
+            solo = R.RPC("https://main.example/v2/k")
+            plan["main"] = [(429, "Monthly capacity limit exceeded")]
+            with self.assertRaises(R.QuotaError):
+                solo.call("eth_call", ["e"])
+            # a rate limit that never eases names the host
+            solo._backoff = lambda *a: None
+            plan["main"] = [(429, "Too Many Requests")] * 20
+            with self.assertRaisesRegex(R.RPCError, "main.example kept rate limiting"):
+                solo.call("eth_call", ["f"])
+        # Alchemy's free-tier getLogs range error mentions "Upgrade": still a range error, not a spent quota
+        self.assertFalse(R._quota("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 "
+                                  "block range. Upgrade to PAYG for expanded block range."))
+
     def test_get_logs_shrinks_and_resumes(self):
         rpc = R.RPC("http://example.invalid", workers=2)
         seen = []
