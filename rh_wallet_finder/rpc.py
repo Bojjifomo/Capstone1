@@ -118,7 +118,10 @@ class RPC:
                     break
                 payload = [{"jsonrpc": "2.0", "id": i, "method": calls[i][0], "params": calls[i][1]}
                            for i in idx]
-                out = self._post(payload)
+                try:
+                    out = self._post(payload)
+                except TruncatedError:
+                    break  # this batch's reply keeps getting cut off: ask one by one below
                 if not isinstance(out, list):
                     self.batch_ok = False  # this provider doesn't do batches
                     break

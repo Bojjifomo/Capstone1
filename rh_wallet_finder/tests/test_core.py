@@ -162,6 +162,36 @@ class RpcTest(unittest.TestCase):
         self.assertEqual([x["n"] for x in logs], list(range(0, 1000, 10)))
         self.assertLessEqual(chunk, 50)
 
+        # a batch whose reply keeps getting cut off is asked one call at a time
+        rb = R.RPC("http://example.invalid", workers=2)
+
+        def post(payload):
+            if isinstance(payload, list):
+                raise R.TruncatedError("cut off")
+            return {"jsonrpc": "2.0", "id": 1, "result": payload["params"][0]}
+        rb._post = post
+        self.assertEqual(rb.batch([("echo", [i]) for i in range(5)]), list(range(5)))
+
+        # a multicall whose reply is cut off is asked again in halves
+        def reply(n):  # n x (success, 0x01)
+            t = C.word(1) + C.word(0x40) + C.word(1) + "01" + "0" * 62
+            heads = "".join(C.word(0x20 * n + i * len(t) // 2) for i in range(n))
+            return "0x" + C.word(0x20) + C.word(n) + heads + t * n
+
+        class Cut:
+            asked = []
+
+            def call(self, method, params):
+                n = params[0]["data"].count("c0ffee11")
+                self.asked.append(n)
+                if n > 2:
+                    raise R.TruncatedError("cut off")
+                return reply(n)
+        cut = Cut()
+        got = indexer.multicall(cut, [(config.MULTICALL3, "0xc0ffee11")] * 7, "latest")
+        self.assertEqual(got, ["0x01"] * 7)
+        self.assertEqual(max(n for n in cut.asked if n <= 2), 2)
+
     def test_get_logs_shrinks_and_resumes(self):
         rpc = R.RPC("http://example.invalid", workers=2)
         seen = []

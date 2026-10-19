@@ -178,12 +178,21 @@ def refresh_pools_tokens(con, rpc, log):
 
 
 def multicall(rpc, calls, block):
-    """[(target, calldata)] at one block -> [return hex or None]."""
+    """[(target, calldata)] at one block -> [return hex or None]. A reply that
+    keeps getting cut off is asked again in halves."""
+    from rpc import TruncatedError
     out = []
     for i in range(0, len(calls), 300):
         part = calls[i:i + 300]
-        ret = rpc.call("eth_call", [{"to": config.MULTICALL3, "data": C.encode_aggregate3(part)},
-                                    block if isinstance(block, str) else hex(block)])
+        try:
+            ret = rpc.call("eth_call", [{"to": config.MULTICALL3, "data": C.encode_aggregate3(part)},
+                                        block if isinstance(block, str) else hex(block)])
+        except TruncatedError:
+            if len(part) == 1:
+                raise
+            half = len(part) // 2
+            out += multicall(rpc, part[:half], block) + multicall(rpc, part[half:], block)
+            continue
         out += C.decode_aggregate3(ret)
     return out
 
