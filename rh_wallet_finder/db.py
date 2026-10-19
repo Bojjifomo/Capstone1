@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS wallets (
 
 CREATE TABLE IF NOT EXISTS labels (
   addr TEXT PRIMARY KEY, label TEXT, notes TEXT, starred INTEGER DEFAULT 0,
-  source TEXT, added INTEGER
+  source TEXT, added INTEGER,
+  ref TEXT  -- 'multiday' | 'degen': a reference wallet of that player class (also forces its class)
 );
 
 CREATE TABLE IF NOT EXISTS lpagent_cache (addr TEXT PRIMARY KEY, fetched INTEGER, data TEXT);
@@ -86,10 +87,20 @@ def connect(path=None):
 
 
 def _migrate(con):
-    """Columns added after a database was first created."""
+    """Columns added after a database was first created, and the reference
+    wallets a new database starts with (once: deleting them sticks)."""
     have = {r[1] for r in con.execute("PRAGMA table_info(positions)")}
     if "launch" not in have:
         con.execute("ALTER TABLE positions ADD COLUMN launch INTEGER DEFAULT 0")
+    if "ref" not in {r[1] for r in con.execute("PRAGMA table_info(labels)")}:
+        con.execute("ALTER TABLE labels ADD COLUMN ref TEXT")
+    if get_meta(con, "refs_seeded") is None:
+        for addr, (kind, name) in config.REFERENCE_WALLETS.items():
+            con.execute("""INSERT INTO labels(addr, label, starred, source, added, ref) VALUES(?,?,1,'example',
+                           strftime('%s','now'), ?) ON CONFLICT(addr) DO UPDATE SET ref=COALESCE(labels.ref, excluded.ref)""",
+                        (addr, name, kind))
+        set_meta(con, "refs_seeded", 1)
+    con.commit()
 
 
 def get_meta(con, k, default=None):

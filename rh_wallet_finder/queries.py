@@ -16,19 +16,20 @@ from db import get_meta, set_meta
 
 ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 VIEWS = ("raw", "real", "d1raw", "d1real")
-SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "BACKFILL_DAYS", "METRIC_DAYS", "SELL_SLIPPAGE_PCT",
-                "MIN_CLOSED", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES")
+SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "BACKFILL_DAYS", "METRIC_DAYS", "ACTIVE_DAYS",
+                "SELL_SLIPPAGE_PCT", "MIN_CLOSED", "MULTIDAY_HOURS", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES")
 SECRET_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY")
 _cache = {}
 _cache_lock = threading.Lock()
 
 
-def wallet_rows(con, view):
-    """Every scored wallet for one view, plus labels and nearest-label similarity."""
+def wallet_rows(con, view, kind=None):
+    """Scored wallets for one view (all, or one player class ranked on its own),
+    plus labels and how close each is to the nearest reference wallet of its class."""
     scored_at = get_meta(con, "scored_at")
-    labels_v = con.execute("SELECT COUNT(*), MAX(added) FROM labels").fetchone()
+    labels_v = con.execute("SELECT COUNT(*), MAX(added), COUNT(ref), GROUP_CONCAT(ref) FROM labels").fetchone()
     slf_v = con.execute("SELECT COUNT(*), MAX(computed_at) FROM slf_ranks").fetchone()
-    key = (view, scored_at, tuple(labels_v), tuple(slf_v))
+    key = (view, kind, scored_at, tuple(labels_v), tuple(slf_v))
     with _cache_lock:
         if key in _cache:
             return _cache[key]
@@ -46,29 +47,35 @@ def wallet_rows(con, view):
         lab = labels.get(r["addr"], {})
         worth = (r["eth_bal"] or 0) * eth_usd + (r["usd_bal"] or 0) + (m.get("open_now") or 0)
         best = slf.get(r["addr"])
-        rows.append({**m, "addr": r["addr"], "worth": worth, "first_seen": r["first_seen"],
-                     "last_seen": r["last_seen"], "label": lab.get("label"), "notes": lab.get("notes"),
-                     "starred": bool(lab.get("starred")),
+        rows.append({**m, "kind": m.get("kind") or "degen", "addr": r["addr"], "worth": worth,
+                     "first_seen": r["first_seen"], "last_seen": r["last_seen"], "label": lab.get("label"),
+                     "notes": lab.get("notes"), "starred": bool(lab.get("starred")), "ref": lab.get("ref"),
                      "slf": {**best, "pair": names.get(best["pool"])} if best else None})
         raw_metrics.append(d.get("raw") or m)
-    # PRED-SIM: closest starred/labelled wallet
+    # closest reference wallet of the same class (no reference yet: closest starred/labelled wallet)
     feats = M.feature_matrix(raw_metrics)
-    anchors = [(i, rows[i]["label"] or rows[i]["addr"][:8]) for i in range(len(rows))
-               if rows[i]["starred"] or rows[i]["label"]]
+    name_of = lambda i: rows[i]["label"] or rows[i]["addr"][:8]  # noqa: E731
+    refs = {k: [i for i, r in enumerate(rows) if r["ref"] == k] for k in M.KINDS}
+    marked = [i for i, r in enumerate(rows) if r["starred"] or r["label"]]
     for i, row in enumerate(rows):
         best = None
-        for j, name in anchors:
+        for j in (refs.get(row["kind"]) or marked):
             if j == i:
                 continue
             s = M.similarity(feats[i], feats[j])
             if best is None or s > best[1]:
-                best = (name, s)
+                best = (name_of(j), s)
         row["sim_label"], row["sim_pct"] = best if best else (None, None)
-    rows.sort(key=lambda x: -x["score"])
+        row["sim_ref"] = bool(refs.get(row["kind"]))
+    keep = [i for i, r in enumerate(rows) if kind is None or r["kind"] == kind]
+    rows, feats = [rows[i] for i in keep], [feats[i] for i in keep]
+    order = sorted(range(len(rows)), key=lambda i: -rows[i]["score"])
+    rows, feats = [rows[i] for i in order], [feats[i] for i in order]
     for n, row in enumerate(rows, 1):
         row["rank"] = n
     with _cache_lock:
-        _cache.clear()
+        if len(_cache) > 16:
+            _cache.clear()
         _cache[key] = (rows, feats)
     return rows, feats
 
@@ -77,15 +84,14 @@ def status(con):
     cfg = config.load_env()
     n = lambda q: con.execute(q).fetchone()[0]  # noqa: E731
     data_from = get_meta(con, "data_from_ts")
-    styles = set()
+    kinds = {k: 0 for k in M.KINDS}
     for r in con.execute("SELECT data FROM wallets WHERE data IS NOT NULL"):
-        st = (json.loads(r[0]).get("raw") or {}).get("style")
-        if st:
-            styles.add(st)
+        k = (json.loads(r[0]).get("raw") or {}).get("kind") or "degen"
+        kinds[k] = kinds.get(k, 0) + 1
     return {
         "discovered": n("SELECT COUNT(*) FROM wallets"),
         "scored": n("SELECT COUNT(*) FROM wallets WHERE score IS NOT NULL"),
-        "categories": len(styles),
+        "kinds": kinds, "multiday_hours": float(cfg["MULTIDAY_HOURS"]), "active_days": float(cfg["ACTIVE_DAYS"]),
         "positions": n("SELECT COUNT(*) FROM positions"),
         "pools": n("SELECT COUNT(*) FROM pools"),
         "synced_at": get_meta(con, "synced_at"), "scored_at": get_meta(con, "scored_at"),
@@ -123,7 +129,7 @@ def wallet_detail(con, addr):
     pos = []
     tok = {r["addr"]: dict(r) for r in con.execute("SELECT addr, symbol FROM tokens")}
     pools = {r["id"]: dict(r) for r in con.execute("SELECT id, c0, c1, fee FROM pools")}
-    for r in con.execute("""SELECT token_id, pool, tl, tu, open_ts, close_ts, minted, valued, dep_usd, wd_usd,
+    for r in con.execute("""SELECT token_id, pool, tl, tu, open_block, open_ts, close_ts, minted, valued, dep_usd, wd_usd,
                             fee_usd, now_usd, pnl_usd, cost_usd, single, eth_pair, launch FROM positions
                             WHERE owner=? ORDER BY open_ts DESC LIMIT 300""", (addr,)):
         p = dict(r)
@@ -193,17 +199,21 @@ def save_presets(con, items):
     con.commit()
 
 
-def set_label(con, addr, label=None, notes=None, starred=None, source="manual"):
-    """Upsert one watchlist row; None leaves a field as it is."""
+def set_label(con, addr, label=None, notes=None, starred=None, source="manual", ref=None):
+    """Upsert one watchlist row; None leaves a field as it is. ref: 'multiday' |
+    'degen' makes it a reference wallet of that class, '' stops that."""
     addr = addr.lower()
     if not ADDR_RE.fullmatch(addr):
         raise ValueError("bad address")
-    con.execute("""INSERT INTO labels(addr, label, notes, starred, source, added) VALUES(?,?,?,?,?,?)
+    if ref not in (None, "", *M.KINDS):
+        raise ValueError("bad reference class")
+    con.execute("""INSERT INTO labels(addr, label, notes, starred, source, added, ref) VALUES(?,?,?,?,?,?,?)
                    ON CONFLICT(addr) DO UPDATE SET label=COALESCE(excluded.label, labels.label),
                    notes=COALESCE(excluded.notes, labels.notes),
-                   starred=COALESCE(?, labels.starred)""",
-                (addr, label, notes, 1 if starred else 0, source, int(time.time()),
-                 None if starred is None else (1 if starred else 0)))
+                   starred=COALESCE(?, labels.starred),
+                   ref=CASE WHEN ? IS NULL THEN labels.ref ELSE NULLIF(?, '') END""",
+                (addr, label, notes, 1 if starred else 0, source, int(time.time()), ref or None,
+                 None if starred is None else (1 if starred else 0), ref, ref))
     con.commit()
 
 

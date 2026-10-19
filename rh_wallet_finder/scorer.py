@@ -19,9 +19,15 @@ import config
 import metrics as M
 from indexer import multicall
 
-PER_WALLET = 150  # newest positions per wallet that get priced
+PER_WALLET = 500  # newest positions per wallet that get priced: a month of a busy LP
 LAUNCH_SHARE = 0.02  # depositing >= 2% of a token's supply = launching it, not LPing it
 FIRST_PASS = 20   # ...but every wallet gets this many before any gets more
+BOT_DEPTH = 20    # bots (hold < 5 min or > 100 trades a day) get only this many, after everyone else
+SIDE_DUST = 0.01  # under 1% of the deposit on one side = single-sided
+# A pool drained of one token can sit at an absurd price (1e50 $/token): fees or
+# leftovers in that token would read as trillions. Prices past these are unpriceable.
+MAX_TOKEN_USD = 1e7
+MAX_MCAP_USD = 1e10
 
 
 def quote_side(c0, c1):
@@ -45,15 +51,20 @@ def eth_usd(res_slots):
     return None
 
 
-def usd_prices(sqrtp, dec0, dec1, q, kind, eth):
-    """USD per whole token0 and token1 at this pool price."""
+def usd_prices(sqrtp, dec0, dec1, q, kind, eth, supply=None):
+    """USD per whole token0 and token1 at this pool price, or None when the
+    token side's price is past belief (see MAX_TOKEN_USD, MAX_MCAP_USD)."""
     p = C.price1_per0(sqrtp, dec0, dec1)  # token0 in token1
     if not p:
         return None
     qusd = 1.0 if kind == "usd" else eth
     if qusd is None:
         return None
-    return (p * qusd, qusd) if q == 1 else (qusd, qusd / p)
+    out = (p * qusd, qusd) if q == 1 else (qusd, qusd / p)
+    tok = out[1 - q]
+    if tok > MAX_TOKEN_USD or (supply and tok * supply > MAX_MCAP_USD):
+        return None
+    return out
 
 
 class Scorer:
@@ -62,6 +73,7 @@ class Scorer:
         self.pools = {r["id"]: dict(r) for r in con.execute("SELECT * FROM pools")}
         self.tokens = {r["addr"]: dict(r) for r in con.execute("SELECT * FROM tokens")}
         self.slip = float(cfg["SELL_SLIPPAGE_PCT"]) / 100
+        self.multiday_s = float(cfg.get("MULTIDAY_HOURS") or 2) * 3600
 
     def pool_info(self, pid):
         p = self.pools.get(pid)
@@ -72,7 +84,8 @@ class Scorer:
         d1 = (self.tokens.get(p["c1"]) or {}).get("decimals")
         if q is None or d0 is None or d1 is None:
             return None
-        return {**p, "q": q, "kind": kind, "d0": d0, "d1": d1}
+        supply = (self.tokens.get(p["c1"] if q == 0 else p["c0"]) or {}).get("supply")
+        return {**p, "q": q, "kind": kind, "d0": d0, "d1": d1, "supply": supply}
 
     # ---- pricing events --------------------------------------------------
     def value_events(self, token_ids):
@@ -119,7 +132,7 @@ class Scorer:
                 updates += [(2, None, None, None, None, None, None, None, e["block"], e["log_index"]) for e in evs]
                 continue
             prices = usd_prices(slot["sqrtp"], pinfo["d0"], pinfo["d1"], pinfo["q"], pinfo["kind"],
-                                eth_usd(eth_slots))
+                                eth_usd(eth_slots), pinfo["supply"])
             if not prices:
                 updates += [(2, None, None, None, None, None, None, None, e["block"], e["log_index"]) for e in evs]
                 continue
@@ -179,7 +192,8 @@ class Scorer:
                 slot = C.decode_slot0(s0) if s0 else None
                 if not (pinfo and slot and slot["sqrtp"] and pos and fg):
                     continue
-                prices = usd_prices(slot["sqrtp"], pinfo["d0"], pinfo["d1"], pinfo["q"], pinfo["kind"], eth)
+                prices = usd_prices(slot["sqrtp"], pinfo["d0"], pinfo["d1"], pinfo["q"], pinfo["kind"], eth,
+                                    pinfo["supply"])
                 if not prices:
                     continue
                 pi = C.decode_position_info(pos)
@@ -277,7 +291,7 @@ class Scorer:
                 s = C.decode_slot0(r) if r else None
                 if not s or not s["sqrtp"]:
                     continue
-                pr = usd_prices(s["sqrtp"], p["d0"], p["d1"], p["q"], p["kind"], eth)
+                pr = usd_prices(s["sqrtp"], p["d0"], p["d1"], p["q"], p["kind"], eth, p["supply"])
                 if not pr:
                     continue
                 price = pr[1 - p["q"]]
@@ -316,8 +330,10 @@ class Scorer:
         min_closed = int(cfg["MIN_CLOSED"])
         budget = int(cfg["SCORE_POSITIONS_PER_RUN"])
 
-        # candidates: enough closed positions with a known open; labelled wallets
-        # first, then ones that placed in an RH Smart LP Finder pool ranking
+        self.drop_spiked_prices()
+        # candidates: enough closed positions with a known open. Order: labelled and
+        # reference wallets, ones that placed in an RH Smart LP Finder pool ranking,
+        # then people by activity; bots (from open/close times, no prices needed) last
         cands = [r[0] for r in con.execute("""
             SELECT owner FROM positions
             WHERE owner IS NOT NULL AND minted=1 AND close_ts >= ?
@@ -325,24 +341,28 @@ class Scorer:
             ORDER BY owner IN (SELECT addr FROM labels) DESC,
                      owner IN (SELECT addr FROM slf_ranks WHERE pnl_usd > 0) DESC, COUNT(*) DESC
         """, (w0, min_closed))]
+        labelled = {r[0] for r in con.execute("SELECT addr FROM labels")}
+        bots = {w for w, x in self.prescreen(cands, now, w0).items() if x["bot"] and w not in labelled}
+        people = [w for w in cands if w not in bots]
+        cands = people + [w for w in cands if w in bots]
         # newest positions per wallet, unpriced ones flagged: [(token_id, closed, valued)]
         newest = {}
         for w in cands:
             newest[w] = con.execute("""
                 SELECT token_id, close_ts IS NOT NULL, valued FROM positions WHERE owner=? AND minted=1
                   AND (close_ts IS NULL OR close_ts >= ?) ORDER BY open_ts DESC LIMIT ?""",
-                                    (w, w0, PER_WALLET)).fetchall()
-        # breadth first: the newest FIRST_PASS of every wallet, then deeper
+                                    (w, w0, BOT_DEPTH if w in bots else PER_WALLET)).fetchall()
+        # breadth first: the newest FIRST_PASS of every person, then deeper, then bots
         todo, seen = [], set()
-        for depth in (FIRST_PASS, PER_WALLET):
-            for w in cands:
+        for group, depth in ((people, FIRST_PASS), (people, PER_WALLET), (cands[len(people):], BOT_DEPTH)):
+            for w in group:
                 for tid, _, valued in newest[w][:depth]:
                     if len(todo) >= budget:
                         break
                     if valued == 0 and tid not in seen:
                         seen.add(tid)
                         todo.append(tid)
-        self.log(f"  {len(cands):,} candidate wallets, pricing {len(todo):,} positions")
+        self.log(f"  {len(cands):,} candidate wallets ({len(bots):,} bots last), pricing {len(todo):,} positions")
 
         t0 = time.time()
         for i in range(0, len(todo), 400):
@@ -374,6 +394,61 @@ class Scorer:
         con.commit()
         return {"candidates": len(cands), "priced": len(todo), "scored": n}
 
+    def drop_spiked_prices(self):
+        """Once per database: events priced before the MAX_* guard existed at an
+        absurd token price become unpriceable, and their positions get redone."""
+        from db import get_meta, set_meta
+        if get_meta(self.con, "spike_sweep"):
+            return
+        bad = self.con.execute("""
+            SELECT e.block, e.log_index, e.token_id FROM events e JOIN pools p ON p.id = e.pool
+            LEFT JOIN tokens t0 ON t0.addr = p.c0 LEFT JOIN tokens t1 ON t1.addr = p.c1
+            WHERE e.v_state = 1 AND (e.u0 > :px OR e.u1 > :px OR e.u0 * IFNULL(t0.supply, 0) > :mc
+                                     OR e.u1 * IFNULL(t1.supply, 0) > :mc)""",
+                               {"px": MAX_TOKEN_USD, "mc": MAX_MCAP_USD}).fetchall()
+        self.con.executemany("UPDATE events SET v_state=2 WHERE block=? AND log_index=?", [r[:2] for r in bad])
+        self.con.executemany("UPDATE positions SET valued=0 WHERE token_id=?", {(r[2],) for r in bad})
+        set_meta(self.con, "spike_sweep", 1)
+        self.con.commit()
+        if bad:
+            self.log(f"  {len(bad):,} LP events had an impossible token price (drained pool): left out")
+
+    def prescreen(self, wallets, now, w0):
+        """{wallet: {kind, hold, per_day, bot}} from open/close times only."""
+        rows = {}
+        for i in range(0, len(wallets), 400):
+            part = wallets[i:i + 400]
+            for r in self.con.execute(f"""SELECT owner, pool, open_block, open_ts, close_ts FROM positions
+                                          WHERE minted=1 AND owner IN ({",".join("?" * len(part))})
+                                          AND (close_ts IS NULL OR close_ts >= ?)""", (*part, w0)):
+                rows.setdefault(r[0], []).append({"pool": r[1], "open_block": r[2], "open_ts": r[3], "close_ts": r[4]})
+        return {w: M.prescreen(ps, now, self.multiday_s) for w, ps in rows.items()}
+
+    def entry_details(self, per_wallet):
+        """Fill each position's side (bid / ask / both) and the token's market cap
+        when it opened, from its first deposit."""
+        flat = [p for ps in per_wallet.values() for p in ps]
+        first = {}
+        for i in range(0, len(flat), 500):
+            part = [p["token_id"] for p in flat[i:i + 500]]
+            for r in self.con.execute(f"""SELECT token_id, a0, a1, u0, u1 FROM events WHERE v_state=1
+                                          AND token_id IN ({",".join("?" * len(part))})
+                                          AND CAST(delta AS REAL) > 0 ORDER BY block DESC, log_index DESC""", part):
+                first[r[0]] = r  # the last one written is the earliest
+        for p in flat:
+            e, pinfo = first.get(p["token_id"]), self.pool_info(p["pool"])
+            if not e or not pinfo or None in (e[1], e[2], e[3], e[4]):
+                continue
+            q = pinfo["q"]
+            amt, px = (e[1], e[2]), (e[3], e[4])
+            v_tok, v_q = amt[1 - q] * px[1 - q], amt[q] * px[q]
+            tot = v_tok + v_q
+            if tot > 0:
+                p["side"] = "bid" if v_tok < SIDE_DUST * tot else "ask" if v_q < SIDE_DUST * tot else "both"
+            supply = (self.tokens.get(pinfo["c1"] if q == 0 else pinfo["c0"]) or {}).get("supply")
+            if supply and px[1 - q]:
+                p["mcap"] = px[1 - q] * supply
+
     def rank(self, now, days, wallets):
         """Metrics + score for every wallet with enough priced, closed positions."""
         con = self.con
@@ -384,45 +459,61 @@ class Scorer:
         tok_of = {pid: (p["c1"] if p["q"] == 0 else p["c0"])
                   for pid, p in ((pid, self.pool_info(pid)) for pid in self.pools) if p}
 
+        w0 = now - days * 86400
         per_wallet = {}
         for i in range(0, len(wallets), 400):
             part = wallets[i:i + 400]
             q = ",".join("?" * len(part))
-            for r in con.execute(f"""SELECT owner, pool, tl, tu, open_ts, close_ts, dep_usd, wd_usd, fee_usd,
-                                     now_usd, pnl_usd, cost_usd, eth_pair, single, sell_fee
+            for r in con.execute(f"""SELECT token_id, owner, pool, tl, tu, open_block, open_ts, close_ts, dep_usd,
+                                     wd_usd, fee_usd, now_usd, pnl_usd, cost_usd, eth_pair, single, sell_fee
                                      FROM positions WHERE valued=1 AND launch=0 AND owner IN ({q})
-                                     AND (close_ts IS NULL OR close_ts >= ?)""", (*part, now - days * 86400)):
+                                     AND (close_ts IS NULL OR close_ts >= ?)""", (*part, w0)):
                 per_wallet.setdefault(r["owner"], []).append({
-                    "pool": r["pool"], "tl": r["tl"], "tu": r["tu"], "open_ts": r["open_ts"],
+                    "token_id": r["token_id"], "pool": r["pool"], "tl": r["tl"], "tu": r["tu"],
+                    "open_block": r["open_block"], "open_ts": r["open_ts"],
                     "close_ts": r["close_ts"], "dep": r["dep_usd"], "wd": r["wd_usd"], "fee": r["fee_usd"],
                     "now": r["now_usd"] or 0.0, "pnl": r["pnl_usd"], "cost": r["cost_usd"],
                     "eth_pair": r["eth_pair"], "single": r["single"], "sell_fee": r["sell_fee"],
-                    "mcap": mc.get(tok_of.get(r["pool"])),
+                    "mcap": None, "side": None,
                 })
+        self.entry_details(per_wallet)
+        for p in (p for ps in per_wallet.values() for p in ps if p["mcap"] is None):
+            p["mcap"] = mc.get(tok_of.get(p["pool"]))  # no entry price: today's market cap
+        # a wallet whose older positions aren't priced yet is measured over the
+        # stretch that is: from the oldest priced open inside the window
+        partial = {r[0] for r in con.execute(f"""SELECT DISTINCT owner FROM positions WHERE valued=0 AND minted=1
+                                                  AND (close_ts IS NULL OR close_ts >= ?)""", (w0,))}
+        refs = {r[0]: r[1] for r in con.execute("SELECT addr, ref FROM labels WHERE ref IS NOT NULL")}
 
         variants = {"raw": (days, False), "real": (days, True), "d1raw": (1, False), "d1real": (1, True)}
         out = {w: {} for w in per_wallet}
         for name, (wd, real) in variants.items():
             ms = {}
             for w, ps in per_wallet.items():
-                m = M.wallet_metrics(ps, now, wd, data_from, real)
+                start = data_from
+                if w in partial:
+                    start = max(data_from, min((p["open_ts"] for p in ps if p["open_ts"] >= w0), default=data_from))
+                m = M.wallet_metrics(ps, now, wd, start, real, self.multiday_s)
                 if m and m["closed"] >= (min_closed if wd == days else 1):
                     ms[w] = m
-            ws = list(ms)
-            scores = M.score_all([ms[w] for w in ws])
-            for w, s in zip(ws, scores):
-                ms[w].update(score=s, verdict=M.verdict(s), copy=M.copyable(ms[w]))
-                out[w][name] = ms[w]
+            if name == "raw":  # the class comes from the full window; a reference wallet's is set by you
+                kinds = {w: refs.get(w) or m["kind"] for w, m in ms.items()}
+            for kind in M.KINDS:
+                ws = [w for w in ms if kinds.get(w) == kind]
+                for w, sc in zip(ws, M.score_all([ms[w] for w in ws], kind)):
+                    ms[w].update(score=sc, verdict=M.verdict(sc), copy=M.copyable(ms[w]), kind=kind,
+                                 kind_set=w in refs)
+                    out[w][name] = ms[w]
 
         scored = [w for w in out if "raw" in out[w]]
         self.refresh_balances(scored)
         copy = copiers(con, scored, now - days * 86400)
         sell_fees = []
         for w in scored:
-            st, conf = M.style(per_wallet[w], out[w]["raw"])
+            raw = out[w]["raw"]
             c = copy.get(w, {"copiers": 0, "ratio": 0.0})
             for v in out[w].values():
-                v.update(style=st, style_conf=conf, copiers=c["copiers"], exposure=c["ratio"],
+                v.update(style=raw["style"], style_conf=raw["style_conf"], copiers=c["copiers"], exposure=c["ratio"],
                          exposure_usd=c["ratio"] * v["size"])
             sell_fees += [p["sell_fee"] for p in per_wallet[w] if p["sell_fee"]]
         con.executemany("UPDATE wallets SET data=?, score=?, scored_at=? WHERE addr=?",

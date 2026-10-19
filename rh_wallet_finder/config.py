@@ -38,6 +38,14 @@ ETH_USD_POOLS = [
     "0xfcfae8fa0bd6da961bcf5d990f27690932deac4f093e99bf3e871691c6586593",  # WETH/USDG 0.05%
 ]
 
+# Reference wallets the app starts with, one per player class (any wallet can
+# be made a reference in its dossier). Every ranked wallet shows how close it
+# is to the nearest reference of its class.
+REFERENCE_WALLETS = {
+    "0xb1e403dbe003f7a400be3bafda6ce77d17218947": ("multiday", "Multiday example"),
+    "0x57843c3a9d30c55ad5f971a3e42df9e507fb4ffd": ("degen", "Degen example"),
+}
+
 EXPLORER = "https://robinhoodchain.blockscout.com"
 LPAGENT_APP = "https://app.lpagent.io/portfolio?address={addr}&chain=ROBINHOOD"
 LPAGENT_API = "https://api.lpagent.io/open-api/v1"
@@ -49,15 +57,22 @@ DEFAULTS = {
     "RPC_URL": "",
     "CALL_RPC_URL": "",
     "LPAGENT_API_KEY": "",
-    # How far back the first sync goes, and the window the metrics cover.
+    # How far back the first sync goes, and the window the metrics cover: a
+    # wallet needs MIN_CLOSED closed positions inside it to be ranked at all.
     "BACKFILL_DAYS": "30",
     "METRIC_DAYS": "30",
+    # Boards hide wallets with no LP action for this many days (Filters can
+    # widen it; 0 shows everyone ranked).
+    "ACTIVE_DAYS": "7",
     # Real PnL: what it costs to sell back the token side of a position, on
     # top of the pool's own fee.
     "SELL_SLIPPAGE_PCT": "1.0",
     # Scoring budget per run, in positions valued.
     "SCORE_POSITIONS_PER_RUN": "4000",
     "MIN_CLOSED": "3",
+    # Player class: median hold (hours) from which a wallet is a Multiday
+    # player; below it, a Degen player.
+    "MULTIDAY_HOURS": "2",
     "RPC_WORKERS": "6",
     "LOG_CHUNK": "20000",
     # Minutes between sync + scoring runs once history is loaded.

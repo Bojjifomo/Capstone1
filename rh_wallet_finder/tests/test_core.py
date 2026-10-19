@@ -82,6 +82,11 @@ class MathTest(unittest.TestCase):
         self.assertAlmostEqual(u0, 2000)
         self.assertAlmostEqual(u1, 2.0)
         self.assertIsNone(S.usd_prices(sqrtp, 18, 18, 0, "eth", None))
+        # $2 a token is fine for 1B supply ($2B mcap), not for 100B; a drained pool's 1e50 never is
+        self.assertIsNotNone(S.usd_prices(sqrtp, 18, 18, 0, "eth", 2000.0, supply=1e9))
+        self.assertIsNone(S.usd_prices(sqrtp, 18, 18, 0, "eth", 2000.0, supply=1e11))
+        drained = int(math.sqrt(1e-60) * C.Q96)  # almost no token1 per token0 left
+        self.assertIsNone(S.usd_prices(drained, 6, 18, 0, "usd", None))
 
     def test_quote_side(self):
         self.assertEqual(S.quote_side(config.USDG, "0xabc"), (0, "usd"))
@@ -192,23 +197,77 @@ class MetricsTest(unittest.TestCase):
         self.assertIsNone(M.wallet_metrics([_pos(self.now - 9, None, 0)], self.now, 30, 0))
 
     def test_scores_and_verdicts(self):
-        good = {"net": 500, "roi": 40, "win": 80, "daily": 90, "dd": -2, "recover": 3600, "fees": 50, "closed": 40}
-        bad = {"net": -100, "roi": -10, "win": 20, "daily": 10, "dd": -40, "recover": 9e5, "fees": 1, "closed": 40}
-        mid = {"net": 50, "roi": 5, "win": 55, "daily": 50, "dd": -10, "recover": 86400, "fees": 10, "closed": 3}
+        good = {"net": 500, "roi": 40, "pf": 3, "win": 80, "daily": 90, "dd": -2, "recover": 3600, "fees": 50,
+                "closed": 40, "closed_trades": 40}
+        bad = {"net": -100, "roi": -10, "pf": 0.5, "win": 20, "daily": 10, "dd": -40, "recover": 9e5, "fees": 1,
+               "closed": 40, "closed_trades": 40}
+        mid = {"net": 50, "roi": 5, "pf": 1.2, "win": 55, "daily": 50, "dd": -10, "recover": 86400, "fees": 10,
+               "closed": 3, "closed_trades": 3}
         s = M.score_all([good, bad, mid])
         self.assertGreater(s[0], s[2])
         self.assertLessEqual(s[1], 45)
         self.assertEqual(M.verdict(75), "Elite")
         self.assertEqual(M.verdict(10), "Avoid")
+        # multiday players are judged on total PnL: a realized loss with a bigger open gain isn't capped
+        a = {**mid, "net": -20, "total": 300, "closed_trades": 20}
+        b = {**mid, "net": 40, "total": -100, "closed_trades": 20}
+        sa, sb = M.score_all([a, b], "multiday")
+        self.assertGreater(sa, sb)
+        self.assertLessEqual(sb, 45)
 
     def test_copyable_and_style(self):
         self.assertEqual(M.copyable({"duration": 60, "per_day": 5}), "✗")
         self.assertEqual(M.copyable({"duration": 7200, "per_day": 5}), "✓")
         self.assertEqual(M.copyable({"duration": 900, "per_day": 5}), "?")
-        ps = [_pos(0, 600, 1, mcap=2e5), _pos(0, 700, 1, mcap=3e5), _pos(0, 90000, 1, mcap=5e7)]
-        st, conf = M.style(ps, {})
-        self.assertEqual(st, "Scalp·Degen")
-        self.assertEqual(conf, 67)
+        legs = [_pos(0, 600, 1, pool="p", open_block=7, side="bid") for _ in range(5)]
+        single = [_pos(0, 600, 1, pool="p", open_block=9, side="both")]
+        st, conf = M.style(M.trades(legs + single))
+        self.assertEqual((st, conf), ("Ladder ×5 · bid", 50))
+
+    def test_ladder_is_one_trade(self):
+        d = 86400
+        # one 5-range ladder: two legs filled and earned, three were never reached (pnl 0)
+        ladder = [_pos(self.now - 2 * d, self.now - d, x, dep=200, pool="p", open_block=10, side="bid")
+                  for x in (12, 8, 0, 0, 0)]
+        # an untouched ladder: flat, neither a win nor a loss
+        flat = [_pos(self.now - d, self.now - d + 600, 0, dep=200, pool="p", open_block=20, side="bid")
+                for _ in range(5)]
+        loser = [_pos(self.now - 3 * d, self.now - 3 * d + 7200, -5, dep=1000, pool="q", open_block=5, side="both")]
+        m = M.wallet_metrics(ladder + flat + loser, self.now, 30, self.now - 10 * d)
+        self.assertEqual((m["trades"], m["closed_trades"], m["pos"]), (3, 3, 11))
+        self.assertEqual(m["win"], 50)  # 1 win, 1 loss, 1 flat
+        self.assertAlmostEqual(m["flat"], 100 / 3)
+        self.assertAlmostEqual(m["pf"], 20 / 5)
+        self.assertEqual(m["size"], 1000)  # per trade, not per range
+        self.assertEqual(m["legs"], 5)
+        self.assertAlmostEqual(m["net"], 15)  # PnL still adds every position
+
+    def test_player_kind(self):
+        h = 3600
+        self.assertEqual(M.player_kind([20 * 60, 30 * 60, 3 * h], [])[0], "degen")
+        self.assertEqual(M.player_kind([5 * h, 30 * h, 40 * 60], [])[0], "multiday")
+        # long-open trades count once they're past the line; young ones don't
+        self.assertEqual(M.player_kind([30 * 60], [26 * h, 50 * h])[0], "multiday")
+        self.assertEqual(M.player_kind([30 * 60], [10 * 60, 20 * 60])[0], "degen")
+        kind, fit = M.player_kind([5 * h, 6 * h, 7 * h, 60], [])
+        self.assertEqual((kind, fit), ("multiday", 75))
+        d = 86400
+        quick = [_pos(self.now - d + i * 60, self.now - d + i * 60 + 30, 0, pool="p", open_block=i)
+                 for i in range(200)]
+        self.assertTrue(M.prescreen(quick, self.now)["bot"])
+        slow = [_pos(self.now - 3 * d, self.now - 2 * d, 0, pool="p", open_block=1),
+                _pos(self.now - 2 * d, self.now - d, 0, pool="p", open_block=2)]
+        x = M.prescreen(slow, self.now)
+        self.assertEqual((x["kind"], x["bot"]), ("multiday", False))
+
+    def test_roi_over_active_days(self):
+        d = 86400
+        # a wallet that started 3 days ago: $30 on $1000 kept deployed = 1%/day ~ 30%/month
+        ps = [_pos(self.now - 3 * d + i * d, self.now - 2 * d + i * d, 10, dep=1000, pool="p", open_block=i)
+              for i in range(3)]
+        m = M.wallet_metrics(ps, self.now, 30, self.now - 60 * d)
+        self.assertAlmostEqual(m["span_days"], 3)
+        self.assertAlmostEqual(m["roi"], 30, delta=0.5)
 
     def test_similarity(self):
         ms = [{"duration": 600, "range": 50, "single": 100, "eth": 0, "mcap": 1e5, "size": 100, "per_day": 50,
@@ -350,14 +409,39 @@ class QueriesTest(unittest.TestCase):
             self.assertEqual(row, {"label": None, "notes": "ladder bot", "starred": 0})
             queries.set_label(con, a, label="LB")  # starred=None keeps the star as it is
             self.assertEqual(con.execute("SELECT label, starred FROM labels WHERE addr=?", (a,)).fetchone()[:], ("LB", 0))
-            queries.delete_label(con, a)
-            self.assertIsNone(con.execute("SELECT 1 FROM labels WHERE addr=?", (a,)).fetchone())
             with self.assertRaises(ValueError):
                 queries.set_label(con, "0x123")
             queries.save_presets(con, [{"name": "mine", "filters": {"f_win": 60}}])
             self.assertEqual(queries.presets(con)[0]["filters"]["f_win"], 60)
             self.assertEqual(queries.wallet_rows(con, "raw")[0], [])
-            self.assertIn("error", queries.similar(con, a, "raw"))
+            # a new database starts with the two reference wallets
+            refs = dict(con.execute("SELECT addr, ref FROM labels WHERE ref IS NOT NULL").fetchall())
+            self.assertEqual(refs, {k: v[0] for k, v in config.REFERENCE_WALLETS.items()})
+            queries.set_label(con, a, ref="degen")
+            self.assertEqual(con.execute("SELECT ref FROM labels WHERE addr=?", (a,)).fetchone()[0], "degen")
+            queries.set_label(con, a, notes="x")  # ref=None keeps it
+            self.assertEqual(con.execute("SELECT ref FROM labels WHERE addr=?", (a,)).fetchone()[0], "degen")
+            with self.assertRaises(ValueError):
+                queries.set_label(con, a, ref="whale")
+            # boards: one class each, ranked on its own; similarity to that class's reference
+            base = {"score": 50, "net": 1, "float": 0, "roi": 1, "win": 50, "duration": 600, "size": 100,
+                    "per_day": 5, "open_now": 0}
+            for addr, kind, score in (("0x" + "1" * 40, "degen", 70), ("0x" + "2" * 40, "multiday", 60),
+                                      ("0x" + "3" * 40, "degen", 40), (a, "degen", 55)):
+                con.execute("INSERT INTO wallets(addr, data, score) VALUES(?,?,?)",
+                            (addr, json.dumps({"raw": {**base, "kind": kind, "score": score}}), score))
+            con.commit()
+            degen, _ = queries.wallet_rows(con, "raw", "degen")
+            self.assertEqual([(r["rank"], r["score"]) for r in degen], [(1, 70), (2, 55), (3, 40)])
+            self.assertTrue(degen[0]["sim_ref"])
+            self.assertEqual(degen[0]["sim_label"], "LB")  # the degen reference, by its label
+            self.assertEqual([r["kind"] for r in queries.wallet_rows(con, "raw", "multiday")[0]], ["multiday"])
+            self.assertEqual(queries.status(con)["kinds"], {"multiday": 1, "degen": 3})
+            queries.set_label(con, a, ref="")
+            self.assertIsNone(con.execute("SELECT ref FROM labels WHERE addr=?", (a,)).fetchone()[0])
+            self.assertIn("error", queries.similar(con, "0x" + "9" * 40, "raw"))
+            queries.delete_label(con, a)
+            self.assertIsNone(con.execute("SELECT 1 FROM labels WHERE addr=?", (a,)).fetchone())
             self.assertIn("discovered", queries.status(con))
             con.close()
 
@@ -378,7 +462,8 @@ class AppTest(unittest.TestCase):
                 at = StAppTest.from_file(str(Path(__file__).resolve().parents[1] / "streamlit_app.py"),
                                          default_timeout=60).run()
                 self.assertFalse(at.exception, at.exception)
-                self.assertEqual([t.label for t in at.tabs], ["Board", "Last 24h", "Twin finder", "Watchlist", "Settings"])
+                self.assertEqual([t.label for t in at.tabs],
+                                 ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "Settings"])
                 self.assertTrue(any("WALLET FINDER" in m.value for m in at.markdown))
             finally:
                 config.DB_PATH = orig

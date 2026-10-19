@@ -5,7 +5,7 @@
   python3 finder.py worker          background sync only, no UI
   python3 finder.py sync            load new LP activity once
   python3 finder.py score           price positions and rank wallets once
-  python3 finder.py top [-n 30] [--real] [--1d]
+  python3 finder.py top [--kind multiday|degen] [-n 30] [--real] [--1d]
   python3 finder.py check 0xWALLET  one wallet: our metrics + LP Agent
   python3 finder.py import FILE     add wallets (one per line, optional label)
   python3 finder.py set-rpc URL     save the RPC link to .env
@@ -59,18 +59,19 @@ def cmd_top(args, cfg):
     import queries
     con = db.connect()
     view = ("d1" if args.d1 else "") + ("real" if args.real else "raw")
-    rows, _ = queries.wallet_rows(con, view)
+    rows, _ = queries.wallet_rows(con, view, args.kind)
     if not rows:
         sys.exit("No scored wallets yet. Run sync and score first.")
-    hdr = f"{'#':>3} {'score':>5}  {'wallet':<42} {'verdict':<7} {'net$':>9} {'roi%':>7} {'win%':>5} " \
-          f"{'dd%':>6} {'pos':>4} {'hold':>6} {'copy':>4}  style"
+    hdr = f"{'#':>3} {'score':>5}  {'wallet':<42} {'class':<8} {'verdict':<7} {'net$':>9} {'roi%':>7} {'win%':>5} " \
+          f"{'dd%':>6} {'trades':>6} {'hold':>6} {'copy':>4}  style"
     print(hdr)
     print("-" * len(hdr))
     for r in rows[:args.n]:
         hold = r["duration"] or 0
         hold_s = f"{hold / 3600:.1f}h" if hold >= 3600 else f"{hold / 60:.0f}m"
-        print(f"{r['rank']:>3} {r['score']:>5.1f}  {r['addr']:<42} {r['verdict']:<7} {r['net']:>9.0f} "
-              f"{r['roi']:>7.1f} {r['win']:>5.0f} {r['dd']:>6.1f} {r['pos']:>4} {hold_s:>6} {r['copy']:>4}  "
+        win = f"{r['win']:>5.0f}" if r.get("win") is not None else f"{'–':>5}"
+        print(f"{r['rank']:>3} {r['score']:>5.1f}  {r['addr']:<42} {r['kind']:<8} {r['verdict']:<7} {r['net']:>9.0f} "
+              f"{r['roi']:>7.1f} {win} {r['dd']:>6.1f} {r.get('trades', r['pos']):>6} {hold_s:>6} {r['copy']:>4}  "
               f"{r.get('style') or ''}")
 
 
@@ -85,8 +86,11 @@ def cmd_check(args, cfg):
     print(f"  LP Agent: {lpagent.link(addr)}")
     print(f"  Explorer: {d['explorer']}")
     if m:
-        print(f"  score {m['score']} ({m['verdict']}), net ${m['net']:,.0f}, ROI {m['roi']:.1f}%/mo, "
-              f"win {m['win']:.0f}%, closed {m['closed']}, open {m['open']}, style {m.get('style')}")
+        win = f"{m['win']:.0f}%" if m.get("win") is not None else "–"
+        print(f"  {m.get('kind', '?')} player, score {m['score']} ({m['verdict']}), net ${m['net']:,.0f}, "
+              f"total ${m.get('total', m['net']):,.0f}, ROI {m['roi']:.1f}%/mo, win {win}, "
+              f"trades {m.get('trades', m['pos'])} ({m.get('closed_trades', m['closed'])} closed), "
+              f"open {m['open']}, style {m.get('style')}")
     else:
         print(f"  not scored yet ({len(d['positions'])} positions in the database)")
     key = cfg["LPAGENT_API_KEY"]
@@ -172,6 +176,7 @@ def main():
     s.add_argument("--segments", type=int, help="stop after this many segments")
     sub.add_parser("score")
     s = sub.add_parser("top")
+    s.add_argument("--kind", choices=["multiday", "degen"], help="one player class, ranked on its own")
     s.add_argument("-n", type=int, default=30)
     s.add_argument("--real", action="store_true")
     s.add_argument("--1d", dest="d1", action="store_true")
