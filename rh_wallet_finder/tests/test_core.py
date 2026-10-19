@@ -130,6 +130,38 @@ class RpcTest(unittest.TestCase):
         self.assertEqual(R._range_hint(msg), 10)
         self.assertEqual(R._range_hint("block range too large, max 5000 blocks"), 5000)
 
+    def test_cut_off_replies(self):
+        import http.client
+        import io
+        from unittest import mock
+        rpc = R.RPC("http://example.invalid", workers=1)
+        rpc._backoff = lambda *a: None
+        replies = [http.client.IncompleteRead(b"x" * 10), ConnectionResetError("reset"),
+                   io.BytesIO(b'{"jsonrpc":"2.0","id":1,"result":"0x10"}')]
+
+        def urlopen(*a, **k):
+            r = replies.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with mock.patch("urllib.request.urlopen", urlopen):
+            self.assertEqual(rpc.call("eth_blockNumber", []), "0x10")  # one cut, one reset: retried
+            replies[:] = [http.client.IncompleteRead(b"x" * 10)] * 2
+            with self.assertRaises(R.TruncatedError):  # cut twice: give up so the caller asks for less
+                rpc.call("eth_getLogs", [{}])
+
+        # get_logs answers a reply that keeps getting cut by asking for smaller ranges
+        def fake_call(method, params):
+            f = params[0]
+            a, b = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+            if b - a + 1 > 50:
+                raise R.TruncatedError("cut off")
+            return [{"n": n} for n in range(a, b + 1) if n % 10 == 0]
+        rpc.call = fake_call
+        logs, chunk = rpc.get_logs({}, 0, 999, 400)
+        self.assertEqual([x["n"] for x in logs], list(range(0, 1000, 10)))
+        self.assertLessEqual(chunk, 50)
+
     def test_get_logs_shrinks_and_resumes(self):
         rpc = R.RPC("http://example.invalid", workers=2)
         seen = []
@@ -354,6 +386,39 @@ class ScorerTest(unittest.TestCase):
             self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=1").fetchone()[0], 2)
             self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=2").fetchone()[0], 1)
             con.close()
+
+
+class LauncherTest(unittest.TestCase):
+    def test_old_instance_on_the_port_is_replaced(self):
+        import shutil
+        import socket
+        import subprocess
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import finder
+        if not shutil.which("lsof"):
+            self.skipTest("no lsof")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        # an "old" Wallet Finder still holding the port after a git pull
+        old = subprocess.Popen([sys.executable, "-c", "import socket, sys, time; s = socket.socket(); "
+                                f"s.bind(('127.0.0.1', {port})); s.listen(); time.sleep(60)", "streamlit_app.py"],
+                               cwd=Path(finder.__file__).resolve().parent)
+        try:
+            for _ in range(50):
+                if not finder._port_free(port):
+                    break
+                import time as _t
+                _t.sleep(0.1)
+            self.assertEqual(finder._free_port(port), port)
+            self.assertIsNotNone(old.wait(timeout=10))  # stopped
+        finally:
+            old.kill()
+        # something else holding it (here: this test, not run from that folder): the next free port instead
+        with socket.socket() as other:
+            other.bind(("127.0.0.1", port))
+            other.listen()
+            self.assertGreater(finder._free_port(port), port)
 
 
 class ConfigTest(unittest.TestCase):

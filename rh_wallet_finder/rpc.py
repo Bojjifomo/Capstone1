@@ -1,5 +1,6 @@
 """JSON-RPC client: retries, batching, and eth_getLogs that finds the
 provider's block-range limit on its own."""
+import http.client
 import json
 import re
 import threading
@@ -11,6 +12,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 class RPCError(Exception):
     pass
+
+
+class TruncatedError(RPCError):
+    """The reply kept getting cut off mid-way (IncompleteRead): usually an
+    eth_getLogs answer too big for the provider or the network in between."""
 
 
 class RangeError(RPCError):
@@ -50,6 +56,7 @@ class RPC:
     def _post(self, payload):
         body = json.dumps(payload).encode()
         last = None
+        cut = 0
         for attempt in range(7):
             wait = self._pause_until - time.time()
             if wait > 0:
@@ -77,7 +84,14 @@ class RPC:
             except _Throttle:
                 last = "rate limited"
                 self._backoff(attempt, True)
-            except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as e:
+            except http.client.IncompleteRead as e:
+                last = e
+                cut += 1
+                if cut >= 2:  # same big answer cut off twice: let the caller ask for less
+                    raise TruncatedError(f"RPC reply cut off ({len(e.partial):,} bytes read)") from e
+                self._backoff(attempt, False)
+            except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
+                # dropped / reset connections, TLS hiccups, timeouts, half-sent replies
                 last = e
                 self._backoff(attempt, False)
         raise RPCError(f"RPC kept failing: {last}")
@@ -160,6 +174,8 @@ class RPC:
                     return self.call("eth_getLogs", [f])
                 except RangeError as err:
                     return err
+                except TruncatedError as err:  # too much to come back in one piece: smaller ranges
+                    return RangeError(str(err))
 
             with ThreadPoolExecutor(len(spans)) as ex:
                 got = list(ex.map(fetch, spans))

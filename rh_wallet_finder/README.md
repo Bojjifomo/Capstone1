@@ -43,11 +43,13 @@ integrasi RH Smart LP Finder cuma bisa lokal.
 
 Kalau `.command` diblok Gatekeeper: klik kanan → Open, sekali aja.
 
-**Abis `git pull`, restart app-nya**: tutup jendela Terminal-nya, terus buka
-lagi `Buka Wallet Finder.command`. Sync jalan di background proses yang sama,
-jadi tanpa restart dia masih pakai kode lama (app nampilin catatan kuning kalau
-ranking-nya masih dari versi lama). Pas nyala, ranking langsung diulang pakai
-aturan baru dari data yang udah dihargai, sebelum sync jalan.
+**Abis `git pull`, buka lagi `Buka Wallet Finder.command`.** Kalau versi lama
+masih jalan (dari folder ini), dia dimatiin dulu otomatis, terus yang baru
+nyala di port yang sama; port yang dipakai program lain dilewatin ke port
+berikutnya. Sync jalan di background proses yang sama, jadi tanpa restart dia
+masih pakai kode lama (app nampilin catatan kuning kalau ranking-nya masih dari
+versi lama). Pas nyala, ranking langsung diulang pakai aturan baru dari data
+yang udah dihargai, sebelum sync jalan.
 
 Dari Terminal juga bisa simpen RPC-nya + langsung dicek chain id-nya:
 

@@ -125,6 +125,72 @@ def cmd_import_smart_lp(args, cfg):
     print(f"{path}: {smartlp.import_all(db.connect(), path)}")
 
 
+def _port_free(port):
+    import socket
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def _ours_on(port):
+    """pids listening on port that are this folder's app (an older Wallet Finder),
+    found with lsof by their working folder. [] without lsof."""
+    import subprocess
+    here = str(Path(__file__).resolve().parent)
+
+    def run(*cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    out = []
+    for pid in {int(p) for p in run("lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN").split() if p.isdigit()}:
+        cwd = next((ln[1:] for ln in run("lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn").splitlines()
+                    if ln.startswith("n")), "")
+        cmd = run("ps", "-o", "command=", "-p", str(pid))
+        if "streamlit_app.py" in cmd and (cwd == here or here in cmd):
+            out.append(pid)
+    return out
+
+
+def _free_port(port):
+    """The port to run on: an older Wallet Finder still holding it (e.g. one
+    from before a git pull) is stopped; anything else there, the next free port."""
+    import os
+    import signal
+    if _port_free(port):
+        return port
+    ours = _ours_on(port)
+    for pid in ours:
+        print(f"Wallet Finder is already running on port {port} (pid {pid}): stopping it so this one "
+              f"(maybe updated) takes over…")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for _ in range(40 if ours else 0):
+        if _port_free(port):
+            return port
+        time.sleep(0.25)
+    for pid in ours:  # didn't stop politely
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if ours:
+        time.sleep(1)
+        if _port_free(port):
+            return port
+    for p in range(port + 1, port + 20):
+        if _port_free(p):
+            print(f"Port {port} is taken by another program, using {p} instead.")
+            return p
+    sys.exit(f"Ports {port}–{port + 19} are all taken. Close what uses them, or run: python3 finder.py app --port 8600")
+
+
 def cmd_app(args, cfg):
     """streamlit run streamlit_app.py, from this folder so .streamlit/config.toml applies."""
     import subprocess
@@ -135,8 +201,10 @@ def cmd_app(args, cfg):
         sys.exit("Streamlit isn't installed. Run:  python3 -m pip install -U -r requirements.txt")
     if tuple(int(x) for x in streamlit.__version__.split(".")[:2]) < (1, 40):
         sys.exit(f"Streamlit {streamlit.__version__} is too old. Run:  python3 -m pip install -U -r requirements.txt")
+    port = _free_port(int(args.port or cfg["PORT"]))
+    print(f"RH Wallet Finder: http://localhost:{port}  (keep this window open; Ctrl+C stops it)")
     cmd = [sys.executable, "-m", "streamlit", "run", "streamlit_app.py",
-           "--server.port", str(args.port or cfg["PORT"]), "--server.address", "127.0.0.1"]
+           "--server.port", str(port), "--server.address", "127.0.0.1"]
     if args.no_browser:
         cmd += ["--server.headless", "true"]
     sys.exit(subprocess.call(cmd, cwd=here))
