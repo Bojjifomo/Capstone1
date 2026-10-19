@@ -196,48 +196,105 @@ class RpcTest(unittest.TestCase):
         import io
         import urllib.error
         from unittest import mock
-        main, backup = R.RPC("https://main.example/v2/k"), R.RPC("https://backup.example/rpc")
-        main.fallback = backup
-        for r in (main, backup):
-            r._backoff = lambda *a: None
         hits = {"main": 0, "backup": 0}
-        plan = {"main": []}
+        plan = {"main": [], "backup": []}
 
         def urlopen(req, timeout=None):
             who = "main" if "main" in req.full_url else "backup"
             hits[who] += 1
             body = json.loads(req.data)
-            if who == "main" and plan["main"]:
-                code, text = plan["main"].pop(0)
+            if plan[who]:
+                code, text = plan[who].pop(0)
+                if code == 200:  # a JSON-RPC error answer
+                    one = lambda o: {"jsonrpc": "2.0", "id": o["id"], "error": {"code": -32000, "message": text}}  # noqa: E731
+                    return io.BytesIO(json.dumps([one(o) for o in body] if isinstance(body, list) else one(body)).encode())
                 raise urllib.error.HTTPError(req.full_url, code, "Too Many Requests", {}, io.BytesIO(text.encode()))
             res = lambda o: {"jsonrpc": "2.0", "id": o["id"], "result": f"{who}:{o['params'][0]}"}  # noqa: E731
             return io.BytesIO(json.dumps([res(o) for o in body] if isinstance(body, list) else res(body)).encode())
 
+        def pool():
+            ms = [R.RPC("https://main.example/v2/k"), R.RPC("https://backup.example/rpc")]
+            for m in ms:
+                m._backoff = lambda *a: None
+            return R.RPCPool(ms)
+        spent = (429, '{"jsonrpc":"2.0","id":1,"error":{"code":429,"message":"Monthly capacity limit exceeded. '
+                      'Visit https://dashboard.alchemy.com/settings/billing"}}')
         with mock.patch("urllib.request.urlopen", urlopen):
-            # "slow down" is waited out on the same RPC
-            plan["main"] = [(429, '{"error":{"code":429,"message":"Too Many Requests"}}')] * 2
-            self.assertEqual(main.call("eth_call", ["a"]), "main:a")
-            # a spent monthly allowance moves everything to the fallback, without asking main again
-            plan["main"] = [(429, '{"jsonrpc":"2.0","id":1,"error":{"code":429,"message":"Monthly capacity '
-                                  'limit exceeded. Visit https://dashboard.alchemy.com/settings/billing"}}')]
-            self.assertEqual(main.call("eth_call", ["b"]), "backup:b")
+            # work is shared between the two
+            p = pool()
+            self.assertEqual(sorted(p.call("eth_call", [x])[:4] for x in "abcd"), ["back", "back", "main", "main"])
+            # one rate limits: the other takes it at once, no waiting; the first rests
+            p = pool()
+            plan["main"] = [(429, "Too Many Requests")]
+            got = [p.call("eth_call", [x]) for x in "ef"]
+            self.assertTrue(all(g.startswith("backup") for g in got))
+            self.assertGreater(p.members[0].cool_until, 0)
+            # a spent monthly allowance sits that one out, and says so
+            p = pool()
+            plan["main"] = [spent]
             n = hits["main"]
-            self.assertEqual(main.batch([("eth_call", [x]) for x in "cd"]), ["backup:c", "backup:d"])
-            self.assertEqual(hits["main"], n)
-            self.assertIn("main.example", main.exhausted[1])
-            # no fallback: say so plainly instead of retrying for minutes
+            self.assertEqual(p.batch([("eth_call", [x]) for x in "ghij"]), [f"backup:{x}" for x in "ghij"])
+            self.assertEqual(hits["main"], n + 1)
+            self.assertIn("main.example: plan limit reached", p.exhausted[1])
+            self.assertTrue(p.call("eth_call", ["k"]).startswith("backup"))
+            # old block state missing on one: asked of the other
+            p = pool()
+            p._turn = iter([0, 0, 0, 0])
+            plan["main"] = [(200, "missing trie node abc (path )")]
+            self.assertEqual(p.call("eth_call", ["l"]), "backup:l")
+            plan["main"] = [(200, "missing trie node abc")]
+            self.assertEqual(p.batch([("eth_call", [x]) for x in "mn"]), ["backup:m", "backup:n"])
+            # a real error answer is the answer, not something to ask elsewhere
+            p = pool()
+            p._turn = iter([0])
+            plan["main"] = [(200, "execution reverted")]
+            with self.assertRaisesRegex(R.RPCError, "execution reverted"):
+                p.call("eth_call", ["o"])
+            plan["main"] = []
+            # a lone RPC: a spent quota fails at once, a rate limit that never eases names the host
             solo = R.RPC("https://main.example/v2/k")
-            plan["main"] = [(429, "Monthly capacity limit exceeded")]
-            with self.assertRaises(R.QuotaError):
-                solo.call("eth_call", ["e"])
-            # a rate limit that never eases names the host
             solo._backoff = lambda *a: None
+            plan["main"] = [spent]
+            with self.assertRaises(R.QuotaError):
+                solo.call("eth_call", ["p"])
             plan["main"] = [(429, "Too Many Requests")] * 20
-            with self.assertRaisesRegex(R.RPCError, "main.example kept rate limiting"):
-                solo.call("eth_call", ["f"])
+            with self.assertRaisesRegex(R.ThrottledError, "main.example kept rate limiting"):
+                solo.call("eth_call", ["q"])
+            plan["main"] = []
         # Alchemy's free-tier getLogs range error mentions "Upgrade": still a range error, not a spent quota
         self.assertFalse(R._quota("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 "
                                   "block range. Upgrade to PAYG for expanded block range."))
+        # an Alchemy API key on its own becomes its link; links stay as they are
+        self.assertEqual(config.rpc_link(" AbCdEf0123456789xyz_- "),
+                         "https://robinhood-mainnet.g.alchemy.com/v2/AbCdEf0123456789xyz_-")
+        self.assertEqual(config.rpc_link("https://rpc.example/x"), "https://rpc.example/x")
+        cfg = {"RPC_URL": "https://a.example", "CALL_RPC_URL": "https://b.example", "RPC_WORKERS": "2"}
+        logs, calls = R.make_rpcs(cfg)
+        self.assertIs(logs, calls)
+        self.assertEqual(logs.host, "a.example + b.example")
+        one, same = R.make_rpcs({**cfg, "CALL_RPC_URL": ""})
+        self.assertIs(one, same)
+        self.assertIsInstance(one, R.RPC)
+
+    def test_pool_get_logs_carries_on_elsewhere(self):
+        ms = [R.RPC("https://main.example"), R.RPC("https://backup.example")]
+        p = R.RPCPool(ms)
+        calls = {"main": 0, "backup": 0}
+
+        def fake(who):
+            def call(method, params):
+                f = params[0]
+                a, b = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+                calls[who] += 1
+                if who == "main" and a >= 300 and calls["main"] < 20:
+                    ms[0].cool_until = __import__("time").time() + 0.2
+                    raise R.ThrottledError("main: rate limited")
+                return [{"n": n} for n in range(a, b + 1) if n % 10 == 0]
+            return call
+        ms[0].call, ms[1].call = fake("main"), fake("backup")
+        logs, _ = p.get_logs({}, 0, 999, 100)
+        self.assertEqual([x["n"] for x in logs], list(range(0, 1000, 10)))  # complete, in order, no repeats
+        self.assertGreater(calls["backup"], 0)  # the other RPC carried on while the first rested
 
     def test_get_logs_shrinks_and_resumes(self):
         rpc = R.RPC("http://example.invalid", workers=2)

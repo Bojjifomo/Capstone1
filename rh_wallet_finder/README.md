@@ -26,10 +26,14 @@ integrasi RH Smart LP Finder cuma bisa lokal.
    python3 -m pip install -r requirements.txt   # sekali aja
    caffeinate -i python3 finder.py              # caffeinate = Mac nggak sleep
    ```
-3. Buka tab **Settings**, paste link RPC Robinhood Chain lu, misalnya
-   `https://rpc.solidrpc.io/ak_…/evm/4663` → Save. Opsional: link Alchemy di
-   "Calls RPC" buat `eth_call` blok lama. (Kalau folder RH Smart LP Finder ada di
-   sebelahnya, langkah ini bisa dilewat: RPC-nya diambil dari sana.)
+3. Buka tab **Settings**, paste link RPC Robinhood Chain lu di **RPC 1**, misalnya
+   `https://rpc.solidrpc.io/ak_…/evm/4663` → Save. Disarankan: **Alchemy API
+   key** lu di **RPC 2** (cukup key-nya; link-nya dibikin sendiri). Dua RPC itu
+   jalan barengan: hitung harga dibagi rata ke keduanya, dan yang lagi kena
+   rate limit (HTTP 429) atau kuotanya abis istirahat dulu sementara yang satu
+   lanjut; sync tetap di RPC 1 (range blok-nya gede) dan pindah ke RPC 2 cuma
+   pas RPC 1 lagi istirahat. (Kalau folder RH Smart LP Finder ada di sebelahnya,
+   langkah ini bisa dilewat: RPC-nya diambil dari sana.)
    Link + key disimpen di `rh_wallet_finder/.env` di Mac lu doang
    (file itu di-gitignore, **jangan** di-commit: repo ini public).
 4. Biarin jendela Terminal kebuka. Sync jalan di background, di proses yang sama:
@@ -208,10 +212,11 @@ Wallet yang posisi lamanya belum kehargai diukur dari posisi tertua yang udah
   akal (misal $10⁵⁰ per token). Harga token > $10 juta atau market cap > $10
   miliar, dan posisi yang balik > 1000× setorannya, dianggap nggak bisa
   dihargai dan nggak dihitung.
-- Kalau "Calls RPC" (misal Alchemy) kehabisan kuota bulanan, hitung harga
-  otomatis pindah ke RPC logs (SolidRPC) dan Alchemy dicoba lagi tiap jam;
-  ada catatan kuning di atas. Kena limit per detik (HTTP 429) ditungguin sampai
-  ±5 menit; kalau masih, kurangin "Parallel RPC requests" di Settings.
+- Kalau salah satu RPC kehabisan kuota bulanan (misal Alchemy), dia istirahat
+  sejam dan yang satunya lanjut sendiri; ada catatan kuning di atas. Cuma kalau
+  dua-duanya kena limit barengan, app nunggu (sampai ±10 menit); kalau masih,
+  kurangin "Parallel RPC requests" di Settings. Dengan satu RPC aja, limit per
+  detik ditungguin sampai ±5 menit.
 - RPC harus support **archive** `eth_call` (state blok lama) dan
   `eth_getLogs`. Alchemy free tier cuma ngizinin `eth_getLogs` 10 blok per
   request, jadi buat backfill 30 hari itu kelamaan; RPC berbayar (kayak

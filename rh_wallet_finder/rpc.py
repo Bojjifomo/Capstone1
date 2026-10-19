@@ -1,6 +1,7 @@
-"""JSON-RPC client: retries, batching, and eth_getLogs that finds the
-provider's block-range limit on its own."""
+"""JSON-RPC client: retries, batching, eth_getLogs that finds the provider's
+block-range limit on its own, and a pool that runs several RPCs as one."""
 import http.client
+import itertools
 import json
 import random
 import re
@@ -16,12 +17,23 @@ class RPCError(Exception):
     pass
 
 
-class QuotaError(RPCError):
+class TransportError(RPCError):
+    """The provider didn't answer (rate limit, spent quota, broken connection),
+    as opposed to answering with an error: another RPC may do better."""
+
+
+class ThrottledError(TransportError):
+    """Rate limited. A pool member raises it at once and rests until its
+    cool_until while the others carry on; a lone RPC waits it out first."""
+
+
+class QuotaError(TransportError):
     """The provider says the plan's allowance is used up (e.g. Alchemy's monthly
     compute units): retrying in a minute won't help."""
 
 
 QUOTA_RETRY_S = 3600  # an RPC whose quota ran out is tried again after this long
+
 
 class TruncatedError(RPCError):
     """The reply kept getting cut off mid-way (IncompleteRead): usually an
@@ -34,6 +46,14 @@ class RangeError(RPCError):
     def __init__(self, msg, hint=None):
         super().__init__(msg)
         self.hint = hint  # a block count the provider says will work
+
+
+class LogsInterrupted(RPCError):
+    """get_logs stopped part-way: the logs it had, and where to carry on."""
+
+    def __init__(self, cause, logs, next_block, chunk):
+        super().__init__(str(cause))
+        self.cause, self.logs, self.next_block, self.chunk = cause, logs, next_block, chunk
 
 
 _RANGE_WORDS = ("block range", "range is too", "too many", "more than", "exceed", "limit",
@@ -56,8 +76,12 @@ class RPC:
         self.host = urllib.parse.urlparse(url).hostname or "RPC"
         self.timeout = timeout
         self.workers = max(1, workers)
-        self.fallback = None   # another RPC to send everything to while this one's quota is used up
-        self.exhausted = None  # (when, message) of the last "quota used up" answer
+        self.patient = True    # False in a pool: rate limits are handed back instead of waited out
+        self.cool_until = 0.0  # pool member resting after a rate limit, or after it kept failing
+        self.spent_until = 0.0  # ...or after its quota ran out
+        self.spent = None      # (when, message) of that
+        self.strikes = 0       # rate limits in a row
+        self.log_chunk = None  # the eth_getLogs block range that last worked here
         self.calls = 0
         self.batch_ok = True
         self._lock = threading.Lock()
@@ -66,8 +90,6 @@ class RPC:
 
     # ---- transport -------------------------------------------------------
     def _post(self, payload):
-        if self.fallback and self.exhausted and time.time() - self.exhausted[0] < QUOTA_RETRY_S:
-            return self.fallback._post(payload)
         body = json.dumps(payload).encode()
         last = None
         cut = 0
@@ -87,6 +109,7 @@ class RPC:
                 if isinstance(out, dict) and _throttled(out.get("error")):
                     raise _Throttle(str(out["error"].get("message", out["error"])
                                         if isinstance(out["error"], dict) else out["error"]))
+                self.strikes = 0
                 return out
             except urllib.error.HTTPError as e:
                 reply = ""
@@ -95,8 +118,7 @@ class RPC:
                 except (OSError, http.client.HTTPException):
                     pass
                 if e.code == 429:
-                    if _quota(reply) and self._out_of_quota(reply):
-                        return self.fallback._post(payload)
+                    self._throttle(reply or "HTTP 429 Too Many Requests")
                     last, throttled = f"HTTP 429 Too Many Requests {reply[:160]}".strip(), True
                     self._backoff(attempt, True)
                     continue
@@ -109,10 +131,9 @@ class RPC:
                 try:
                     return json.loads(reply)  # many providers put a JSON-RPC error in the 4xx body
                 except ValueError:
-                    raise RPCError(f"{self.host}: HTTP {e.code} {reply[:160]}".strip()) from e
+                    raise TransportError(f"{self.host}: HTTP {e.code} {reply[:160]}".strip()) from e
             except _Throttle as e:
-                if _quota(str(e)) and self._out_of_quota(str(e)):
-                    return self.fallback._post(payload)
+                self._throttle(str(e))
                 last, throttled = f"rate limited: {e}", True
                 self._backoff(attempt, True)
             except http.client.IncompleteRead as e:
@@ -128,17 +149,21 @@ class RPC:
                     break
                 self._backoff(attempt, False)
         if throttled:
-            raise RPCError(f"{self.host} kept rate limiting for 5 minutes ({last}). Lower \"Parallel RPC "
-                           f"requests\" in Settings, or use a plan with a higher rate limit.")
-        raise RPCError(f"{self.host} kept failing: {last}")
+            raise ThrottledError(f"{self.host} kept rate limiting for 5 minutes ({last}). Add a second RPC "
+                                 f"(Settings), lower \"Parallel RPC requests\", or use a plan with a higher limit.")
+        raise TransportError(f"{self.host} kept failing: {last}")
 
-    def _out_of_quota(self, msg):
-        """True: switch to the fallback RPC for a while. Without one: QuotaError."""
-        text = f"{self.host}: plan limit reached ({msg.strip()[:200]})"
-        if not self.fallback:
-            raise QuotaError(text)
-        self.exhausted = (time.time(), text)
-        return True
+    def _throttle(self, msg):
+        """A rate-limit answer. A spent quota fails at once (waiting won't help);
+        a pool member steps aside so the pool sends the work elsewhere."""
+        msg = msg.strip()[:200]
+        if _quota(msg):
+            raise QuotaError(f"{self.host}: plan limit reached ({msg})")
+        if not self.patient:
+            delay = min(60, 2 * 2 ** self.strikes) * random.uniform(1, 1.25)
+            self.strikes += 1
+            self.cool_until = max(self.cool_until, time.time() + delay)
+            raise ThrottledError(f"{self.host}: rate limited ({msg})")
 
     def _backoff(self, attempt, throttled):
         if throttled:  # everyone waits, not just this thread
@@ -168,6 +193,12 @@ class RPC:
                     out = self._post(payload)
                 except TruncatedError:
                     break  # this batch's reply keeps getting cut off: ask one by one below
+                except TransportError as e:
+                    if self.patient:
+                        raise
+                    for i in idx:  # a pool member: the pool sends these elsewhere
+                        results[i] = e
+                    return
                 if not isinstance(out, list):
                     self.batch_ok = False  # this provider doesn't do batches
                     break
@@ -182,9 +213,15 @@ class RPC:
                 idx = [i for i in idx if isinstance(results[i], RPCError) and _throttled_err(results[i])]
                 if not idx:
                     return
-                spent = next((str(results[i]) for i in idx if _quota(str(results[i]))), None)
-                if spent and self._out_of_quota(spent):
-                    break  # resent below, one by one, through the fallback
+                try:
+                    self._throttle(next((str(results[i]) for i in idx if _quota(str(results[i]))),
+                                        str(results[idx[0]])))
+                except TransportError as e:
+                    if self.patient:  # (only a spent quota gets here)
+                        raise
+                    for i in idx:
+                        results[i] = e
+                    return
                 self._backoff(attempt, True)
             for i in idx:
                 results[i] = self._single(calls[i])
@@ -229,8 +266,11 @@ class RPC:
                 except TruncatedError as err:  # too much to come back in one piece: smaller ranges
                     return RangeError(str(err))
 
-            with ThreadPoolExecutor(len(spans)) as ex:
-                got = list(ex.map(fetch, spans))
+            try:
+                with ThreadPoolExecutor(len(spans)) as ex:
+                    got = list(ex.map(fetch, spans))
+            except RPCError as err:  # what we have so far, and where to pick up (another RPC in a pool)
+                raise LogsInterrupted(err, out, b, state["chunk"]) from err
             ok_until = b - 1
             shrink = None
             for span, res in zip(spans, got):
@@ -291,11 +331,172 @@ def _result(out, method):
     return out.get("result")
 
 
+# answers that mean "this RPC can't", where another one might: no old block state
+_ELSEWHERE = ("missing trie node", "pruned", "historical state", "state unavailable", "state not available",
+              "state is not available", "header not found", "unknown block", "archive", "missing from batch")
+
+
+def _elsewhere(err):
+    return isinstance(err, TransportError) or (
+        isinstance(err, RPCError) and any(w in str(err).lower() for w in _ELSEWHERE))
+
+
+class RPCPool:
+    """Several RPCs as one (e.g. SolidRPC + Alchemy). Calls and batches are
+    shared out round-robin; an RPC that rate limits rests while the others carry
+    on, one whose quota is spent sits out for an hour, and a call that needs old
+    state one of them lacks is asked of another. eth_getLogs goes to the first
+    RPC (the one with the big block ranges) and carries on from where it stopped
+    on another while the first rests. Only when all of them rest does anything
+    wait, for up to WAIT_S."""
+    WAIT_S = 600
+
+    def __init__(self, rpcs):
+        self.members = list(rpcs)
+        for m in self.members:
+            m.patient = False
+        self.host = " + ".join(m.host for m in self.members)
+        self.workers = sum(m.workers for m in self.members)
+        self._turn = itertools.count()
+
+    @property
+    def calls(self):
+        return sum(m.calls for m in self.members)
+
+    @property
+    def exhausted(self):
+        """(since, message) of a member sitting out a spent quota, or None."""
+        now = time.time()
+        return next((m.spent for m in self.members if m.spent_until > now), None)
+
+    def _bench(self, m, err):
+        if isinstance(err, QuotaError):
+            m.spent_until = time.time() + QUOTA_RETRY_S
+            m.spent = (time.time(), str(err))
+        elif not isinstance(err, ThrottledError):  # (a rate-limited member set its own rest)
+            m.cool_until = max(m.cool_until, time.time() + 60)
+
+    def _pick(self, skip=(), first=False, deadline=None):
+        """A member that can take a request now (round-robin, or the first one
+        that can); waits while they all rest. None: nobody left, or out of time."""
+        deadline = deadline or time.time() + self.WAIT_S
+        while True:
+            now = time.time()
+            live = [m for m in self.members if m.spent_until <= now and m not in skip]
+            if not live:
+                return None
+            ready = [m for m in live if m.cool_until <= now]
+            if ready:
+                return ready[0] if first else ready[next(self._turn) % len(ready)]
+            if now >= deadline:
+                return None
+            time.sleep(max(0.05, min(deadline, min(m.cool_until for m in live)) - now))
+
+    def _gave_up(self, last):
+        if all(m.spent_until > time.time() for m in self.members):
+            return QuotaError(" · ".join(m.spent[1] for m in self.members))
+        if isinstance(last, ThrottledError) or last is None:
+            return ThrottledError(f"{self.host}: all kept rate limiting for {self.WAIT_S // 60} minutes. "
+                                  f"Lower \"Parallel RPC requests\" in Settings.")
+        return last
+
+    def call(self, method, params):
+        skip, last = [], None
+        deadline = time.time() + self.WAIT_S
+        while True:
+            m = self._pick(skip, deadline=deadline)
+            if m is None:
+                raise self._gave_up(last)
+            try:
+                return m.call(method, params)
+            except RPCError as e:
+                if not _elsewhere(e):
+                    raise  # a real answer (reverted, range too big, cut off): the caller's to handle
+                last = e
+                self._bench(m, e)
+                if not isinstance(e, ThrottledError):
+                    skip.append(m)
+
+    def batch(self, calls, size=40):
+        """Like RPC.batch, chunks spread over the members; entries one couldn't
+        answer go to another."""
+        results = [None] * len(calls)
+        cant = {}  # index -> members that couldn't answer it
+        deadline = time.time() + self.WAIT_S
+        todo = list(range(len(calls)))
+        while todo:
+            served = []
+
+            def run(idx):
+                skip = set().union(*(cant.get(i, set()) for i in idx))
+                m = self._pick(skip, deadline=deadline)
+                if m is None:
+                    return
+                served.append(1)
+                try:
+                    res = m.batch([calls[i] for i in idx], size)
+                except RPCError as e:
+                    res = [e] * len(idx)
+                benched = False
+                for i, r in zip(idx, res):
+                    results[i] = r
+                    if isinstance(r, RPCError) and _elsewhere(r):
+                        if isinstance(r, TransportError) and not benched:
+                            self._bench(m, r)
+                            benched = True
+                        if not isinstance(r, (ThrottledError, QuotaError)):
+                            cant.setdefault(i, set()).add(m)
+            chunks = [todo[i:i + size] for i in range(0, len(todo), size)]
+            with ThreadPoolExecutor(max(1, min(self.workers, len(chunks)))) as ex:
+                list(ex.map(run, chunks))
+            todo = [i for i in todo if (results[i] is None or _elsewhere(results[i]))
+                    and len(cant.get(i, ())) < len(self.members)]
+            if not served or time.time() >= deadline:
+                break
+        gave_up = self._gave_up(None)
+        return [gave_up if r is None else r for r in results]
+
+    def get_logs(self, flt, start, end, chunk, progress=None):
+        """RPC.get_logs on the first member that can; a stretch at a time on the
+        others, so the first takes over again once it has rested."""
+        out, b, skip, last = [], start, [], None
+        deadline = time.time() + self.WAIT_S
+        while b <= end:
+            m = self._pick(skip, first=True, deadline=deadline)
+            if m is None:
+                raise self._gave_up(last)
+            stop = end
+            if m is not self.members[0]:
+                stop = min(end, b + (m.log_chunk or chunk) * m.workers * 2 - 1)
+
+            def prog(done, total, n, b0=b, n0=len(out)):
+                if progress:
+                    progress(b0 - start + done, end - start + 1, n0 + n)
+            try:
+                got, m.log_chunk = m.get_logs(flt, b, stop, m.log_chunk or chunk, prog)
+                out += got
+                b = stop + 1
+                deadline = time.time() + self.WAIT_S
+            except LogsInterrupted as e:
+                out += e.logs
+                if e.next_block > b:
+                    deadline = time.time() + self.WAIT_S
+                b, m.log_chunk, last = e.next_block, e.chunk, e.cause
+                if not _elsewhere(e.cause):
+                    raise e.cause from e
+                self._bench(m, e.cause)
+                if not isinstance(e.cause, ThrottledError):
+                    skip.append(m)
+        return out, self.members[0].log_chunk or chunk
+
+
 def make_rpcs(cfg):
-    """(logs RPC, calls RPC). They are the same client unless CALL_RPC_URL is set."""
+    """(logs RPC, calls RPC): one RPC, or RPC_URL + CALL_RPC_URL as one pool that
+    shares the work (the same object twice)."""
     workers = int(cfg.get("RPC_WORKERS") or 6)
-    logs = RPC(cfg["RPC_URL"], workers=workers)
-    calls = RPC(cfg["CALL_RPC_URL"], workers=workers) if cfg.get("CALL_RPC_URL") else logs
-    if calls is not logs:
-        calls.fallback = logs  # calls RPC out of quota (e.g. Alchemy's monthly cap): calls go to the logs RPC
-    return logs, calls
+    urls = list(dict.fromkeys(u for u in (cfg["RPC_URL"], cfg.get("CALL_RPC_URL")) if u))
+    if len(urls) <= 1:
+        one = RPC(urls[0] if urls else "", workers=workers)
+        return one, one
+    pool = RPCPool([RPC(u, workers=workers) for u in urls])
+    return pool, pool

@@ -4,6 +4,7 @@ Keys live in rh_wallet_finder/.env (git-ignored), never in the repo: the repo
 is public. The app's Settings tab writes the same file.
 """
 import os
+import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -47,6 +48,8 @@ REFERENCE_WALLETS = {
 }
 
 EXPLORER = "https://robinhoodchain.blockscout.com"
+# An Alchemy API key on its own (no https://) in an RPC field becomes this link.
+ALCHEMY_RPC = "https://robinhood-mainnet.g.alchemy.com/v2/{key}"
 LPAGENT_APP = "https://app.lpagent.io/portfolio?address={addr}&chain=ROBINHOOD"
 LPAGENT_API = "https://api.lpagent.io/open-api/v1"
 
@@ -55,7 +58,7 @@ DEFAULTS = {
     # (archive eth_call, multicalls) go to CALL_RPC_URL when it is set, e.g.
     # Alchemy, the same split RH Smart LP Finder uses; otherwise RPC_URL too.
     "RPC_URL": "",
-    "CALL_RPC_URL": "",
+    "CALL_RPC_URL": "",  # second RPC, used together with RPC_URL (an Alchemy API key alone works too)
     "LPAGENT_API_KEY": "",
     # How far back the first sync goes, and the window the metrics cover: a
     # wallet needs MIN_CLOSED closed positions inside it to be ranked at all.
@@ -135,7 +138,17 @@ def load_env():
                 vals[ours] = v
         if vals["RPC_URL"]:
             vals["RPC_SOURCE"] = f"{d.name}/.env" if d else "RH_RPC_* environment"
+    for k in ("RPC_URL", "CALL_RPC_URL"):
+        vals[k] = rpc_link(vals[k])
     return vals
+
+
+def rpc_link(v):
+    """An RPC link as typed: a bare Alchemy API key becomes its Robinhood Chain link."""
+    v = (v or "").strip()
+    if v and "://" not in v and re.fullmatch(r"[A-Za-z0-9_-]{16,64}", v):
+        return ALCHEMY_RPC.format(key=v)
+    return v
 
 
 def save_env(updates):

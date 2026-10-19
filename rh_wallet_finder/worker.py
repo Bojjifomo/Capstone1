@@ -90,11 +90,10 @@ class Worker:
                 self.log(f"Scored {out['scored']:,} wallets ({out['priced']:,} positions priced, "
                          f"{calls:,} RPC calls)")
                 self.error = None
-                spent = call_rpc.exhausted
+                spent = getattr(call_rpc, "exhausted", None)  # a pool member sitting out a spent quota
                 self.notice = None
                 if spent and time.time() - spent[0] < QUOTA_RETRY_S:
-                    self.notice = (f"{spent[1]}. Price reads go to {rpc.host} (your logs RPC) meanwhile; "
-                                   f"{call_rpc.host} is tried again every hour.")
+                    self.notice = f"{spent[1]}. The other RPC carries on alone; this one is tried again every hour."
                     self.log(self.notice)
             except RPCError as e:
                 self.error = str(e)

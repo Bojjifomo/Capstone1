@@ -937,11 +937,13 @@ def settings():
     src = f" (from {cfg['RPC_SOURCE']})" if cfg["RPC_SOURCE"] not in ("", "settings") else ""
     with st.form("settings"):
         st.caption("Saved to rh_wallet_finder/.env on this computer only (git-ignored). Leave a field empty to keep it.")
-        rpc = st.text_input(f"Logs RPC (eth_getLogs) · now: {config.mask(cfg['RPC_URL']) or 'not set'}{src}",
-                            type="password", placeholder="https://rpc.solidrpc.io/ak_…/evm/4663")
-        call = st.text_input(f"Calls RPC (archive eth_call, optional) · now: "
-                             f"{config.mask(cfg['CALL_RPC_URL']) or 'not set: uses the logs RPC'}",
-                             type="password", placeholder="https://robinhood-mainnet.g.alchemy.com/v2/…")
+        rpc = st.text_input(f"RPC 1 · sync goes here first (SolidRPC) · now: {config.mask(cfg['RPC_URL']) or 'not set'}"
+                            f"{src}", type="password", placeholder="https://rpc.solidrpc.io/ak_…/evm/4663")
+        call = st.text_input(f"RPC 2 · works alongside RPC 1 (Alchemy API key, or any RPC link) · now: "
+                             f"{config.mask(cfg['CALL_RPC_URL']) or 'not set: RPC 1 does everything'}",
+                             type="password", placeholder="your Alchemy API key, or https://…",
+                             help="With two RPCs, price reads are shared between them, and whichever one "
+                                  "rate limits or runs out of quota rests while the other carries on (sync too).")
         key = st.text_input(f"LP Agent API key · {'set' if cfg['LPAGENT_API_KEY'] else 'not set'}", type="password")
         a, b, c = st.columns(3)
         vals = {
@@ -964,7 +966,7 @@ def settings():
             upd = {k: v.strip() for k, v in vals.items() if v.strip() and v.strip() != cfg[k]}
             for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key)):
                 if v.strip():
-                    upd[k] = v.strip()
+                    upd[k] = config.rpc_link(v) if k != "LPAGENT_API_KEY" else v.strip()
             bad = [k for k in ("RPC_URL", "CALL_RPC_URL") if k in upd and not upd[k].startswith(("https://", "http://"))]
 
             def not_number(v):
@@ -974,7 +976,7 @@ def settings():
                     return True
             nan = [k for k in vals if k in upd and not_number(upd[k])]
             if bad:
-                st.error("RPC URLs must start with https://")
+                st.error("An RPC needs a link starting with https:// (or, for RPC 2, just an Alchemy API key)")
             elif nan:
                 st.error("These need a number (0 or more): " + ", ".join(nan))
             elif upd:
