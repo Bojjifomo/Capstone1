@@ -272,14 +272,14 @@ COLS = [
     ("verdict", "Tier", "Wallet", "tier", "Elite ≥ 70, Strong ≥ 60, Decent ≥ 50, Weak ≥ 40, else Avoid."),
     ("kind", "Class", "Wallet", None, "Multiday: its trades' median hold is at least the line in Settings (2 h by default); Degen: below it. A reference wallet keeps the class you gave it."),
     ("slf", "Smart LP", "Wallet", None, "Best place this wallet reached in an RH Smart LP Finder pool ranking you ran (rank/wallets · pool)."),
-    ("net", "Realized", "Performance", "signed", "USD PnL of positions closed in the window: everything taken out + fees − everything put in."),
+    ("net", "Realized {d}d", "Performance", "signed", "USD PnL of positions closed in the window: everything taken out + fees − everything put in."),
     ("float", "Unrealized", "Performance", "signed", "PnL of positions still open: current value + unclaimed fees − deposits."),
-    ("total", "Total", "Performance", "signed", "Realized + unrealized."),
+    ("total", "Total {d}d", "Performance", "signed", "Realized + unrealized."),
     ("roi", "ROI/mo", "Performance", "signed", "Realized PnL per month over the capital it keeps deployed, measured over the days it has been active (time-weighted, never below its median trade)."),
     ("win", "Win", "Performance", "up", "Winning trades out of trades that won or lost. A trade is what opened in one transaction (a 5-range ladder is one trade); one that ended within ±0.05% of its deposit, e.g. a ladder the price never reached, is flat and left out."),
     ("pf", "Profit factor", "Performance", "up", "What winning trades made ÷ what losing trades lost. Above 1 makes money; ∞ = no losing trade yet."),
     ("daily", "Green days", "Performance", "up", "Share of days with closes that ended in profit."),
-    ("fees", "Fees", "Performance", "up", "LP fees earned (claimed + unclaimed), USD."),
+    ("fees", "Fees {d}d", "Performance", "up", "LP fees earned (claimed + unclaimed), USD."),
     ("dd", "Max DD", "Risk", "up", "Deepest drop of the realized PnL curve, as % of deployed capital."),
     ("recover", "Recovery", "Risk", "down", "How long the deepest drawdown took to win back (or has lasted so far, if it hasn't)."),
     ("copy", "Followable", "Copy-trade", None, "Can a person follow it by hand? yes: median hold ≥ 30 min and ≤ 30 trades/day. bot: hold < 5 min or > 100 trades/day."),
@@ -303,7 +303,6 @@ COLS = [
     ("lp", "LP Agent", "Links", None, "The wallet on LP Agent."),
     ("scan", "Explorer", "Links", None, "The wallet on the Robinhood Chain explorer."),
 ]
-COL_LABEL = {k: lab for k, lab, *_ in COLS}
 
 
 def frame(rows, now, data_from):
@@ -332,7 +331,11 @@ def frame(rows, now, data_from):
             "star": "★" if r.get("starred") else "",
             "lp": lpagent.link(r["addr"]), "scan": f"{config.EXPLORER}/address/{r['addr']}",
         })
-    return pd.DataFrame(recs).set_index("addr", drop=False)
+    df = pd.DataFrame(recs).set_index("addr", drop=False)
+    nums = ["score", "net", "float", "total", "roi", "win", "pf", "daily", "fees", "dd", "recover", "copiers", "duration",
+            "range", "size", "eth", "mcap", "trades", "open", "concur", "open_now", "worth", "age", "last", "exposure"]
+    df[nums] = df[nums].apply(pd.to_numeric, errors="coerce")  # a missing figure is NaN ("–"), never "None"
+    return df
 
 
 def heat(df):
@@ -392,11 +395,13 @@ def formatters():
     }
 
 
-def column_config(keys):
+def column_config(keys, days):
+    """Column titles + help; {d} in a title is the window in days."""
     cfg = {}
     for k, label, group, _, helptext in COLS:
         if k not in keys:
             continue
+        label = label.format(d=f"{days:g}")
         if k in ("lp", "scan"):
             cfg[k] = col("LinkColumn", label, help=helptext, display_text="open ↗", width="small")
         else:
@@ -415,7 +420,7 @@ def styled(df, css_full):
 # ------------------------------------------------------------- filters ----
 # One set of filter widgets per board: their session keys carry the board's key.
 FILTER_DEFAULTS = {"f_tiers": [], "f_follow": [], "f_score": 0.0, "f_net": None, "f_win": 0, "f_dd": None,
-                   "f_size": None, "f_active_d": 7.0, "f_crowd": None, "f_slf": 0, "f_style": "", "f_watch": False,
+                   "f_size": None, "f_active_d": 0.0, "f_crowd": None, "f_slf": 0, "f_style": "", "f_watch": False,
                    "f_bots": False}
 BUILTIN = {
     "All wallets": {},
@@ -423,7 +428,7 @@ BUILTIN = {
     "Low drawdown": {"f_net": 0.01, "f_dd": -10.0},
     "Size ≥ $1K": {"f_size": 1000.0},
     "Active 24h": {"f_active_d": 1.0},
-    "Idle wallets too": {"f_active_d": 0.0},
+    "Active 3 days": {"f_active_d": 3.0},
     "Uncrowded": {"f_crowd": 20.0, "f_net": 0.01},
     "Ladders": {"f_style": "ladder"},
     "Smart LP top 10": {"f_slf": 10},
@@ -435,28 +440,19 @@ def fk(board, name):
     return f"{board}_{name}"
 
 
-def filter_defaults():
-    """FILTER_DEFAULTS, with "active within" from Settings (ACTIVE_DAYS)."""
-    try:
-        active = max(0.0, float(config.load_env()["ACTIVE_DAYS"]))
-    except ValueError:
-        active = FILTER_DEFAULTS["f_active_d"]
-    return {**FILTER_DEFAULTS, "f_active_d": active}
-
-
 def apply_preset(board):
     name = st.session_state.get(fk(board, "preset"))
     con = conn()
     saved = {p["name"]: p["filters"] for p in Q.presets(con)}
     con.close()
     values = BUILTIN.get(name, saved.get(name, {}))
-    for k, v in filter_defaults().items():
+    for k, v in FILTER_DEFAULTS.items():
         st.session_state[fk(board, k)] = values.get(k, v)
 
 
 def filter_controls(board, saved_names):
     k = lambda name: fk(board, name)  # noqa: E731
-    for name, v in filter_defaults().items():
+    for name, v in FILTER_DEFAULTS.items():
         st.session_state.setdefault(k(name), v)
     c1, c2, c3, c4 = st.columns([2.2, 1, 3, 1.2])
     c1.selectbox("Preset", list(BUILTIN) + saved_names, key=k("preset"), on_change=apply_preset, args=(board,),
@@ -472,7 +468,8 @@ def filter_controls(board, saved_names):
                        placeholder="any, e.g. -10")
         a.number_input("Min size $", value=None, min_value=0.0, step=100.0, key=k("f_size"), placeholder="any")
         b.number_input("Active within (days, 0 = any)", min_value=0.0, step=1.0, key=k("f_active_d"),
-                       help="Hide wallets whose last LP action (open, add, remove, close) is older than this.")
+                       help="Only wallets whose last LP action (open, add, remove, close) is newer than this. "
+                            "Wallets idle longer than Settings → Leave out wallets idle for are never ranked.")
         a.number_input("Max crowding %", value=None, min_value=0.0, step=10.0, key=k("f_crowd"), placeholder="any")
         b.number_input("Smart LP rank ≤ (0 = any)", min_value=0, step=1, key=k("f_slf"))
         a.text_input("Style contains", key=k("f_style"), placeholder="ladder, bid, 2-sided…")
@@ -496,7 +493,7 @@ def filter_controls(board, saved_names):
 
 
 def apply_filters(df, board):
-    s = {name: st.session_state.get(fk(board, name), v) for name, v in {**filter_defaults(), "quick": ""}.items()}
+    s = {name: st.session_state.get(fk(board, name), v) for name, v in {**FILTER_DEFAULTS, "quick": ""}.items()}
     m = pd.Series(True, index=df.index)
     if s["quick"]:
         q = s["quick"].lower()
@@ -569,6 +566,11 @@ def header(stt, w):
                     '(your SolidRPC link works). The first sync starts right after.</div>', unsafe_allow_html=True)
     elif w and w.error:
         st.markdown(f'<div class="notice">Worker error: {w.error}</div>', unsafe_allow_html=True)
+    if stt["scored"] and stt["rank_version"] != stt["rank_current"]:
+        st.markdown('<div class="notice">These rankings were made by an older version of the app, so some figures '
+                    'are off and every wallet sits in one class. The worker re-ranks with the current rules right '
+                    'after it starts. If this note stays, the old worker is still running: close the Terminal window '
+                    'and open <b>Buka Wallet Finder.command</b> again.</div>', unsafe_allow_html=True)
     elif not stt["scored"] and not stt["discovered"]:
         st.markdown('<div class="notice">First sync running: scanning Uniswap V4 LP activity from the newest blocks '
                     'backwards. Wallets appear after the first ranking pass.</div>', unsafe_allow_html=True)
@@ -595,12 +597,14 @@ def board(view, key, kind=None, top=None):
     rows, _ = Q.wallet_rows(con, view, kind)
     saved_names = [p["name"] for p in Q.presets(con)]
     con.close()
+    days = 1 if view.startswith("d1") else stt["metric_days"]
     if kind:
-        active = st.session_state.get(fk(key, "f_active_d"), stt["active_days"])
-        st.caption(KIND_BLURB[kind].format(h=stt["multiday_hours"]) + f" Performance = the last "
-                   f"{stt['metric_days']:g} days only: a wallet needs {stt['settings']['MIN_CLOSED']}+ closed positions "
-                   f"in them to be here" + (f", and wallets idle for more than {active:g} days are hidden (Filters)."
-                                            if active else "."))
+        hist = (stt["now"] - stt["data_from"]) / 86400 if stt["data_from"] else 0
+        st.caption(KIND_BLURB[kind].format(h=stt["multiday_hours"]) + f" Performance = the last {days:g} days only"
+                   + (f" (history loaded so far: {hist:.1f} days)" if hist < days - 0.5 else "")
+                   + f": a wallet needs {stt['settings']['MIN_CLOSED']}+ closed positions in them"
+                   + (f" and an LP action in the last {stt['active_days']:g} days" if stt["active_days"] else "")
+                   + " to be ranked at all.")
     df = frame(rows, stt["now"], stt["data_from"])
     count_slot = filter_controls(key, saved_names)
     if df.empty:
@@ -616,7 +620,7 @@ def board(view, key, kind=None, top=None):
                         f"{len(shown):,} / {len(df):,} wallets</div>", unsafe_allow_html=True)
     shown = shown.head(1500)
     keys = [c[0] for c in COLS if not (kind and c[0] == "kind")]
-    event = st.dataframe(styled(shown[keys], css_full), column_config=column_config(keys), hide_index=True,
+    event = st.dataframe(styled(shown[keys], css_full), column_config=column_config(keys, days), hide_index=True,
                          **stretch(st.dataframe),
                          height=auto_height(len(shown), 620), on_select="rerun", selection_mode="single-row",
                          key=f"grid_{key}")
@@ -845,7 +849,7 @@ def twins():
     sty = df[keys].style.apply(lambda _: css.loc[df.index, keys], axis=None)
     fm = formatters()
     fm["match"] = lambda v: f"{v:.0f}%"
-    cc = column_config(keys)
+    cc = column_config(keys, (st.session_state.get("status") or {}).get("metric_days", 30))
     cc["match"] = col("Column", "Match", help="How close its LP style is to the target.", pinned=True)
     st.dataframe(sty.format({k: v for k, v in fm.items() if k in keys}, na_rep="–"), column_config=cc,
                  hide_index=True, height=auto_height(len(df), 560), **stretch(st.dataframe))
@@ -943,8 +947,8 @@ def settings():
             "METRIC_DAYS": b.text_input("Performance window (days)", cfg["METRIC_DAYS"],
                                         help="Every figure covers this many days; a wallet needs Min closed "
                                              "positions inside it to be ranked at all."),
-            "ACTIVE_DAYS": c.text_input("Hide wallets idle for (days, 0 = never)", cfg["ACTIVE_DAYS"],
-                                        help="Boards leave out wallets with no LP action for this long."),
+            "ACTIVE_DAYS": c.text_input("Leave out wallets idle for (days, 0 = never)", cfg["ACTIVE_DAYS"],
+                                        help="Wallets with no LP action for this long aren't ranked or shown."),
             "MIN_CLOSED": a.text_input("Min closed positions", cfg["MIN_CLOSED"]),
             "MULTIDAY_HOURS": b.text_input("Multiday from (median hold, hours)", cfg["MULTIDAY_HOURS"],
                                            help="Wallets whose trades' median hold reaches this are Multiday "
@@ -998,8 +1002,9 @@ def field_guide():
     body = f'<div class="legend">Cell colour against the other ranked wallets (Realized / Unrealized / ROI: above or ' \
            f'below zero): <span>worse</span>{legend}<span>better</span> · uncoloured columns describe style, not quality</div>'
     groups = {}
+    days = (st.session_state.get("status") or {}).get("metric_days", 30)
     for k, label, group, _, helptext in COLS:
-        groups.setdefault(group, []).append((label, helptext))
+        groups.setdefault(group, []).append((label.format(d=f"{days:g}"), helptext))
     body += '<div class="guide">' + "".join(
         f"<h4>{g}</h4>" + "".join(f"<p><b>{lab}</b>{h}</p>" for lab, h in items) for g, items in groups.items()) + \
         "<h4>Player classes</h4><p><b>Multiday</b>Its trades' median hold is at least the line in Settings (2 h by " \

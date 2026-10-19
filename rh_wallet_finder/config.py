@@ -61,9 +61,9 @@ DEFAULTS = {
     # wallet needs MIN_CLOSED closed positions inside it to be ranked at all.
     "BACKFILL_DAYS": "30",
     "METRIC_DAYS": "30",
-    # Boards hide wallets with no LP action for this many days (Filters can
-    # widen it; 0 shows everyone ranked).
-    "ACTIVE_DAYS": "7",
+    # Wallets with no LP action for this many days aren't ranked or shown at
+    # all (0 = keep everyone).
+    "ACTIVE_DAYS": "14",
     # Real PnL: what it costs to sell back the token side of a position, on
     # top of the pool's own fee.
     "SELL_SLIPPAGE_PCT": "1.0",

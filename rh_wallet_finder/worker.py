@@ -11,7 +11,7 @@ import smartlp
 from rpc import RPCError, make_rpcs
 from scorer import Scorer
 
-SEGMENTS_PER_CYCLE = 6  # score in between, so a long backfill shows results early
+SEGMENTS_PER_CYCLE = 3  # score in between, so a long backfill shows results early
 
 
 class Worker:
@@ -23,6 +23,7 @@ class Worker:
         self.cycle_at = None
         self._wake = threading.Event()
         self._stop = False
+        self._ranked_once = False
 
     def log(self, msg):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -67,6 +68,11 @@ class Worker:
             try:
                 con = db.connect()
                 rpc, call_rpc = make_rpcs(cfg)
+                if not self._ranked_once:  # current rules on the board now, not after a long sync
+                    self._ranked_once = True
+                    self.state = "scoring"
+                    self.log("Rank: re-ranking what is already priced with the current rules…")
+                    self.log(f"Ranked {Scorer(con, call_rpc, cfg, self.log).rerank():,} wallets")
                 self.state = "syncing"
                 self.log("Sync: scanning new LP activity…")
                 res = indexer.sync(con, rpc, cfg, self.log, max_segments=SEGMENTS_PER_CYCLE,

@@ -28,6 +28,8 @@ SIDE_DUST = 0.01  # under 1% of the deposit on one side = single-sided
 # leftovers in that token would read as trillions. Prices past these are unpriceable.
 MAX_TOKEN_USD = 1e7
 MAX_MCAP_USD = 1e10
+# ...and a position paying back over 1000x its deposit (and $10k+ more) is one too
+MAX_RETURN = 1000
 
 
 def quote_side(c0, c1):
@@ -260,6 +262,9 @@ class Scorer:
                     fee_ppm = pinfo["fee"] if pinfo["fee"] < 1_000_000 else 0
                 sell_fee = min(fee_ppm, 1_000_000) / 1e6 + self.slip
                 pnl = wd + fee + now - dep
+                if wd + fee + now > MAX_RETURN * dep and pnl > 1e4:
+                    rows.append((2, None, None, None, None, None, None, None, None, None, None, 0, tid))
+                    continue
                 rows.append((1, dep, wd, fee, now, tok_out, pnl, tok_out * sell_fee,
                              1 if pinfo["kind"] == "eth" else 0, single, sell_fee, launch, tid))
         self.con.executemany("""UPDATE positions SET valued=?, dep_usd=?, wd_usd=?, fee_usd=?, now_usd=?,
@@ -331,20 +336,9 @@ class Scorer:
         budget = int(cfg["SCORE_POSITIONS_PER_RUN"])
 
         self.drop_spiked_prices()
-        # candidates: enough closed positions with a known open. Order: labelled and
-        # reference wallets, ones that placed in an RH Smart LP Finder pool ranking,
-        # then people by activity; bots (from open/close times, no prices needed) last
-        cands = [r[0] for r in con.execute("""
-            SELECT owner FROM positions
-            WHERE owner IS NOT NULL AND minted=1 AND close_ts >= ?
-            GROUP BY owner HAVING COUNT(*) >= ?
-            ORDER BY owner IN (SELECT addr FROM labels) DESC,
-                     owner IN (SELECT addr FROM slf_ranks WHERE pnl_usd > 0) DESC, COUNT(*) DESC
-        """, (w0, min_closed))]
-        labelled = {r[0] for r in con.execute("SELECT addr FROM labels")}
-        bots = {w for w, x in self.prescreen(cands, now, w0).items() if x["bot"] and w not in labelled}
-        people = [w for w in cands if w not in bots]
-        cands = people + [w for w in cands if w in bots]
+        people, bots = self.candidates(now, w0)
+        cands = people + bots
+        bots = set(bots)
         # newest positions per wallet, unpriced ones flagged: [(token_id, closed, valued)]
         newest = {}
         for w in cands:
@@ -394,11 +388,42 @@ class Scorer:
         con.commit()
         return {"candidates": len(cands), "priced": len(todo), "scored": n}
 
+    def candidates(self, now, w0):
+        """Wallets to price and rank: MIN_CLOSED closed positions in the window and
+        an LP action within ACTIVE_DAYS (older ones are left out entirely). Order:
+        labelled and reference wallets, ones that placed in an RH Smart LP Finder
+        pool ranking, then people by activity; bots (from open/close times, no
+        prices needed) last. -> (people, bots)"""
+        active_days = float(self.cfg.get("ACTIVE_DAYS") or 0)
+        since = now - active_days * 86400 if active_days > 0 else 0
+        cands = [r[0] for r in self.con.execute("""
+            SELECT owner FROM positions
+            WHERE owner IS NOT NULL AND minted=1 AND close_ts >= ?
+              AND owner IN (SELECT addr FROM wallets WHERE last_seen >= ?)
+            GROUP BY owner HAVING COUNT(*) >= ?
+            ORDER BY owner IN (SELECT addr FROM labels) DESC,
+                     owner IN (SELECT addr FROM slf_ranks WHERE pnl_usd > 0) DESC, COUNT(*) DESC
+        """, (w0, since, int(self.cfg["MIN_CLOSED"])))]
+        labelled = {r[0] for r in self.con.execute("SELECT addr FROM labels")}
+        bots = {w for w, x in self.prescreen(cands, now, w0).items() if x["bot"] and w not in labelled}
+        return [w for w in cands if w not in bots], [w for w in cands if w in bots]
+
+    def rerank(self):
+        """Rank again from what is already priced, without pricing anything new:
+        quick, so the app shows the current rules right after it starts."""
+        now = time.time()
+        days = float(self.cfg["METRIC_DAYS"])
+        self.drop_spiked_prices()
+        people, bots = self.candidates(now, now - days * 86400)
+        n = self.rank(now, days, people + bots, balances=False)
+        self.con.commit()
+        return n
+
     def drop_spiked_prices(self):
-        """Once per database: events priced before the MAX_* guard existed at an
-        absurd token price become unpriceable, and their positions get redone."""
+        """Once per database: what was priced before the MAX_* guards existed at
+        an absurd token price, or paying back an absurd multiple, is left out."""
         from db import get_meta, set_meta
-        if get_meta(self.con, "spike_sweep"):
+        if (get_meta(self.con, "spike_sweep") or 0) >= 2:
             return
         bad = self.con.execute("""
             SELECT e.block, e.log_index, e.token_id FROM events e JOIN pools p ON p.id = e.pool
@@ -408,10 +433,14 @@ class Scorer:
                                {"px": MAX_TOKEN_USD, "mc": MAX_MCAP_USD}).fetchall()
         self.con.executemany("UPDATE events SET v_state=2 WHERE block=? AND log_index=?", [r[:2] for r in bad])
         self.con.executemany("UPDATE positions SET valued=0 WHERE token_id=?", {(r[2],) for r in bad})
-        set_meta(self.con, "spike_sweep", 1)
+        n = self.con.execute("""UPDATE positions SET valued=2 WHERE valued=1 AND dep_usd > 0
+                                AND wd_usd + fee_usd + IFNULL(now_usd, 0) > ? * dep_usd AND pnl_usd > 1e4""",
+                             (MAX_RETURN,)).rowcount
+        set_meta(self.con, "spike_sweep", 2)
         self.con.commit()
-        if bad:
-            self.log(f"  {len(bad):,} LP events had an impossible token price (drained pool): left out")
+        if bad or n:
+            self.log(f"  left out {len(bad):,} LP events at an impossible token price (drained pool) and "
+                     f"{n:,} positions paying back over {MAX_RETURN}x")
 
     def prescreen(self, wallets, now, w0):
         """{wallet: {kind, hold, per_day, bot}} from open/close times only."""
@@ -449,7 +478,7 @@ class Scorer:
             if supply and px[1 - q]:
                 p["mcap"] = px[1 - q] * supply
 
-    def rank(self, now, days, wallets):
+    def rank(self, now, days, wallets, balances=True):
         """Metrics + score for every wallet with enough priced, closed positions."""
         con = self.con
         from db import get_meta, set_meta
@@ -506,7 +535,8 @@ class Scorer:
                     out[w][name] = ms[w]
 
         scored = [w for w in out if "raw" in out[w]]
-        self.refresh_balances(scored)
+        if balances:  # RPC: the quick re-rank on start leaves them for the next full run
+            self.refresh_balances(scored)
         copy = copiers(con, scored, now - days * 86400)
         sell_fees = []
         for w in scored:
@@ -524,6 +554,7 @@ class Scorer:
         if sell_fees:  # median: a few 20%-fee pools shouldn't set the banner
             set_meta(con, "avg_sell_fee", statistics.median(sell_fees))
         set_meta(con, "scored_at", int(now))
+        set_meta(con, "rank_version", M.RANK_VERSION)
         return len(scored)
 
 

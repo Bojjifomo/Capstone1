@@ -43,6 +43,12 @@ integrasi RH Smart LP Finder cuma bisa lokal.
 
 Kalau `.command` diblok Gatekeeper: klik kanan → Open, sekali aja.
 
+**Abis `git pull`, restart app-nya**: tutup jendela Terminal-nya, terus buka
+lagi `Buka Wallet Finder.command`. Sync jalan di background proses yang sama,
+jadi tanpa restart dia masih pakai kode lama (app nampilin catatan kuning kalau
+ranking-nya masih dari versi lama). Pas nyala, ranking langsung diulang pakai
+aturan baru dari data yang udah dihargai, sebelum sync jalan.
+
 Dari Terminal juga bisa simpen RPC-nya + langsung dicek chain id-nya:
 
 ```bash
@@ -60,9 +66,9 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 | Tab **Last 24h** | Dua kelas campur, cuma posisi yang ditutup 24 jam terakhir (ada kolom Class) |
 | Tab **Twin finder** | Pilih / paste wallet → wallet lain yang gaya LP-nya paling mirip |
 | Tab **Watchlist** | Wallet yang di-★ / di-import (bisa paste sheet "LP Agent Wallets - Robinhood Chain" langsung); label, notes, ★, Reference bisa diedit langsung di tabel |
-| Tab **Settings** | RPC, API key LP Agent, window performa, batas idle, batas multiday, slippage, interval sync, tombol **Sync now**, log worker |
+| Tab **Settings** | RPC, API key LP Agent, window performa (30 hari), batas wallet idle (14 hari), batas multiday, slippage, interval sync, tombol **Sync now**, log worker |
 | Toggle **Real PnL** | Tiap posisi dipotong biaya jual balik token yang dia balikin (fee pool + slippage), terus ranking diulang |
-| Preset + **Filters** | Per papan sendiri-sendiri: `Followable winners`, `Low drawdown`, `Size ≥ $1K`, `Active 24h`, `Idle wallets too`, `Uncrowded`, `Ladders`, `Smart LP top 10`, `Watchlist only`; filter sendiri bisa di-save jadi preset |
+| Preset + **Filters** | Per papan sendiri-sendiri: `Followable winners`, `Low drawdown`, `Size ≥ $1K`, `Active 24h`, `Active 3 days`, `Uncrowded`, `Ladders`, `Smart LP top 10`, `Watchlist only`; filter sendiri bisa di-save jadi preset |
 | Klik judul kolom | Sort; arahin mouse ke judul buat penjelasan kolomnya |
 | Centang satu baris | **Wallet dossier**: kelas + seberapa cocok, grafik realized PnL, label/notes/★/Reference, ranking Smart LP Finder, **LP Agent check**, semua posisi (ladder ditandain) |
 | Kolom `LP Agent` / `Explorer` | Buka wallet di LP Agent / Blockscout |
@@ -95,10 +101,12 @@ closed): ±300 multiday, ±1.000 degen, ±800 bot.
   reference kelasnya. Wallet mana aja bisa dijadiin reference di dossier
   (atau kolom Reference di Watchlist); reference juga ngunci kelasnya.
 - **Cuma performa 30 hari**: semua angka dari 30 hari terakhir
-  (`METRIC_DAYS`); wallet yang di 30 hari itu nggak punya ≥ 3 posisi closed
-  nggak ditampilin sama sekali. Wallet yang nggak ada aksi LP 7 hari terakhir
-  (`ACTIVE_DAYS`) juga disembunyiin dari papan (Filters → Active within, atau
-  preset `Idle wallets too` buat liat lagi).
+  (`METRIC_DAYS`, kolomnya ditulis `Realized 30d`, `Total 30d`, `Fees 30d`);
+  wallet yang di 30 hari itu nggak punya ≥ 3 posisi closed nggak masuk list.
+- **Wallet nggak aktif dibuang**: wallet yang nggak ada aksi LP (buka / tambah /
+  tarik / tutup) lebih dari 14 hari (`ACTIVE_DAYS`, ubah di Settings) nggak
+  di-ranking dan nggak ditampilin sama sekali. Mau lebih ketat: Filters →
+  Active within, atau preset `Active 24h` / `Active 3 days`.
 
 ## Nyambung ke RH Smart LP Finder
 
@@ -194,6 +202,10 @@ Wallet yang posisi lamanya belum kehargai diukur dari posisi tertua yang udah
   awalnya nggak ketahuan). Makanya `Age` bisa nampil `>14d`.
 - Harga pakai state 1 blok sebelum transaksi (~0.1 detik), jadi bisa beda
   dikit dari harga persis di dalam tx.
+- Pool yang likuiditasnya kesedot habis bisa nyangkut di harga nggak masuk
+  akal (misal $10⁵⁰ per token). Harga token > $10 juta atau market cap > $10
+  miliar, dan posisi yang balik > 1000× setorannya, dianggap nggak bisa
+  dihargai dan nggak dihitung.
 - RPC harus support **archive** `eth_call` (state blok lama) dan
   `eth_getLogs`. Alchemy free tier cuma ngizinin `eth_getLogs` 10 blok per
   request, jadi buat backfill 30 hari itu kelamaan; RPC berbayar (kayak

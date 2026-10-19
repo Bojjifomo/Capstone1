@@ -19,6 +19,7 @@ FLAT = 0.0005  # a trade within ±0.05% of its deposit did nothing (a ladder the
 PF_CAP = 99.0
 MULTIDAY_S = 2 * 3600  # median hold from here up = Multiday player, below = Degen player
 KINDS = ("multiday", "degen")
+RANK_VERSION = 2  # bump when the stored metrics change shape; the app re-ranks on start
 KIND_NAME = {"multiday": "Multiday", "degen": "Degen"}
 BOT_HOLD_S = 300
 BOT_PER_DAY = 100

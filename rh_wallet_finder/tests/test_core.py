@@ -326,6 +326,36 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT n_closed FROM wallets WHERE addr=?", (b,)).fetchone()[0], 1)
 
 
+class ScorerTest(unittest.TestCase):
+    def test_idle_wallets_left_out_and_absurd_returns_dropped(self):
+        import time as _t
+        now = _t.time()
+        active, idle = "0x" + "a" * 40, "0x" + "b" * 40
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            tid = 0
+            for owner, last in ((active, now - 3 * 86400), (idle, now - 20 * 86400)):
+                con.execute("INSERT INTO wallets(addr, last_seen) VALUES(?,?)", (owner, last))
+                for k in range(3):
+                    tid += 1
+                    con.execute("""INSERT INTO positions(token_id, owner, pool, open_block, open_ts, close_ts, minted,
+                                   valued, dep_usd, wd_usd, fee_usd, now_usd, pnl_usd)
+                                   VALUES(?,?,'p',?,?,?,1,1,100,100,1,0,1)""",
+                                (tid, owner, tid, last - 7200 - k, last - k))
+            # a drained pool's leftovers valued at a crazy price: $10 in, $5M out
+            con.execute("UPDATE positions SET wd_usd=5e6, pnl_usd=5e6-10, dep_usd=10 WHERE token_id=1")
+            con.commit()
+            sc = S.Scorer(con, None, dict(config.DEFAULTS), log=lambda *a: None)
+            people, bots = sc.candidates(now, now - 30 * 86400)
+            self.assertEqual((people, bots), ([active], []))  # idle for 20 days > ACTIVE_DAYS (14)
+            sc.cfg["ACTIVE_DAYS"] = "0"
+            self.assertEqual(sorted(sc.candidates(now, now - 30 * 86400)[0]), [active, idle])
+            sc.drop_spiked_prices()
+            self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=1").fetchone()[0], 2)
+            self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=2").fetchone()[0], 1)
+            con.close()
+
+
 class ConfigTest(unittest.TestCase):
     def test_borrows_smart_lp_finder_rpcs(self):
         import os
