@@ -74,7 +74,10 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 | Tab **Watchlist** | Wallet yang di-★ / di-import (bisa paste sheet "LP Agent Wallets - Robinhood Chain" langsung); label, notes, ★, Reference bisa diedit langsung di tabel |
 | Tab **Settings** | RPC, API key LP Agent, window performa (30 hari), batas wallet idle (14 hari), batas multiday, slippage, interval sync, tombol **Sync now**, log worker |
 | Toggle **Real PnL** | Tiap posisi dipotong biaya jual balik token yang dia balikin (fee pool + slippage), terus ranking diulang |
-| Preset + **Filters** | Per papan sendiri-sendiri: `Followable winners`, `Low drawdown`, `Size ≥ $1K`, `Active 24h`, `Active 3 days`, `Uncrowded`, `Ladders`, `Smart LP top 10`, `Watchlist only`; filter sendiri bisa di-save jadi preset |
+| Strip status | `X ranked · Y rated of Z found · N positions in queue · ranked … ago`: wallet yang ke-ranking, yang udah punya posisi kehargai, yang ketemu, dan posisi yang masih antre dihargai |
+| **Filter bar** (selalu kelihatan) | Search, Min closed, Active within, Min/Max avg size, Min net worth, Min ROI 30D, 7D/30D, Min USDG %, Min win, Max open loss, Max drawdown, Min tier, Followable, Style + centang `30D profit only`, `7D profit only`, `USDG pairs only`, `Watchlist only`, `Smart LP top 10`, `Show bots`. Di bawahnya: "Showing X of Y · Z hidden by filters", tombol **Clear filters** |
+| Preset | Per papan sendiri-sendiri: `Proven earners` (≥ 30 trade closed, aktif 7 hari, avg size ≥ $300, net worth ≥ $1k, profit 30D, USDG doang), `Hot this week`, `Followable winners`, `Low drawdown`, `Size $1k+`, `Ladders`, `Smart LP top 10`, `Watchlist only`; filter sendiri bisa di-save jadi preset |
+| Kolom performa | `Net worth`, `PnL 30D`, `ROI 30D`, `PnL 7D`, `7D/30D` (porsi PnL 30 hari yang dibikin 7 hari terakhir: ±0,23 = rata, tinggi = lagi panas, ~0 = udah sepi), `PnL 24h`, `Open PnL`, `Total 30D`, `ROI/mo`, `Win`, `Profit factor`, `Green days`, `Fees 30D`, `Max DD`, `USDG %` |
 | Klik judul kolom | Sort; arahin mouse ke judul buat penjelasan kolomnya |
 | Centang satu baris | **Wallet dossier**: kelas + seberapa cocok, grafik realized PnL, label/notes/★/Reference, ranking Smart LP Finder, **LP Agent check**, semua posisi (ladder ditandain) |
 | Kolom `LP Agent` / `Explorer` | Buka wallet di LP Agent / Blockscout |

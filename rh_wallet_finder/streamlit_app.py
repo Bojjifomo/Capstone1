@@ -152,6 +152,19 @@ button[role="tab"][aria-selected="true"] { background: #182232 !important; }
 .guide h4 { font-size: 11px !important; letter-spacing:.22em; color: var(--gold); text-transform: uppercase; margin: 10px 0 4px; }
 .guide p { margin: 0 0 4px; font-size: 13px; color: var(--ink2); }
 .guide p b { font-family: "JetBrains Mono", monospace; color: var(--ink); margin-right: 6px; }
+.pills { display:flex; gap:6px; flex-wrap:wrap; margin: 2px 0 10px; }
+.pills span { border:1px solid var(--line2); background: var(--panel); padding: 3px 10px; font: 12px "JetBrains Mono", monospace; color: var(--muted); }
+.pills b { color: var(--ink); font-weight: 600; }
+.showing { margin: -2px 0 8px; font: 12px "JetBrains Mono", monospace; color: var(--muted); }
+.showing b { color: var(--gold); }
+[class*="st-key-fbar"] { background: linear-gradient(160deg, var(--panel2), var(--panel)); border: 1px solid var(--line);
+       border-left: 3px solid var(--gold); padding: 10px 14px 4px; margin-bottom: 10px; }
+[class*="st-key-fbar"] [data-testid="stVerticalBlock"] { gap: .35rem; }
+[class*="st-key-fbar"] [data-testid="stWidgetLabel"] p { font: 600 10px "Chakra Petch", sans-serif !important;
+       letter-spacing: .14em; text-transform: uppercase; color: var(--muted) !important; }
+[class*="st-key-fbar"] [data-baseweb="select"] > div, [class*="st-key-fbar"] input { min-height: 32px; font-size: 12.5px; }
+[class*="st-key-fbar"] [data-testid="stCheckbox"] label p { font: 12px "JetBrains Mono", monospace !important;
+       text-transform: none; letter-spacing: 0; color: var(--ink2) !important; }
 @media (max-width: 900px) { .kpis { grid-template-columns: 1fr 1fr; } .rail { margin-left: 0; } .dk { grid-template-columns: 1fr 1fr; } }
 </style>""", unsafe_allow_html=True)
 
@@ -240,11 +253,10 @@ def pf_fmt(v):
 
 KIND_LABEL = {"multiday": "Multiday", "degen": "Degen"}
 KIND_BLURB = {
-    "multiday": "Holds trades for hours to days: median hold ≥ {h:g} h. Ranked against each other on total PnL "
-                "(open positions count), ROI, green days, max drawdown, win rate, fees, recovery and trade count.",
-    "degen": "In and out fast: median hold under {h:g} h. Ranked against each other on realized PnL, ROI, profit "
-             "factor, win rate, green days, max drawdown, fees and trade count. Bots (hold < 5 min or > 100 "
-             "trades a day) are hidden unless you tick Show bots in Filters.",
+    "multiday": "Multiday players: median hold ≥ {h:g} h, scored against each other on total PnL (open positions "
+                "count), ROI, green days and drawdown.",
+    "degen": "Degen players: median hold under {h:g} h, scored against each other on realized PnL, ROI, profit "
+             "factor and win rate. Bots stay hidden unless you tick Show bots.",
 }
 
 
@@ -264,45 +276,50 @@ def conn():
     return db.connect()
 
 
-# (key, label, group, heat, help)
+# (key, label, group, heat, help); {d} in a label is the window in days
 COLS = [
     ("rank", "#", "Wallet", None, "Place on the board, by score."),
     ("score", "Score", "Wallet", "up", "0–100, against wallets of the same class only. Degen: realized PnL, ROI, profit factor, win rate, green days, max drawdown, fees, trade count. Multiday: total PnL (open positions count), ROI, green days, max drawdown, win rate, fees, recovery, trade count. Few trades pull it toward 50; a losing wallet is capped at 45."),
     ("wallet", "Wallet", "Wallet", None, "Select a row to open the wallet dossier: PnL curve, positions, label, LP Agent check. ◆ = a reference wallet of its class."),
-    ("verdict", "Tier", "Wallet", "tier", "Elite ≥ 70, Strong ≥ 60, Decent ≥ 50, Weak ≥ 40, else Avoid."),
     ("kind", "Class", "Wallet", None, "Multiday: its trades' median hold is at least the line in Settings (2 h by default); Degen: below it. A reference wallet keeps the class you gave it."),
-    ("slf", "Smart LP", "Wallet", None, "Best place this wallet reached in an RH Smart LP Finder pool ranking you ran (rank/wallets · pool)."),
-    ("net", "Realized {d}d", "Performance", "signed", "USD PnL of positions closed in the window: everything taken out + fees − everything put in."),
-    ("float", "Unrealized", "Performance", "signed", "PnL of positions still open: current value + unclaimed fees − deposits."),
-    ("total", "Total {d}d", "Performance", "signed", "Realized + unrealized."),
-    ("roi", "ROI/mo", "Performance", "signed", "Realized PnL per month over the capital it keeps deployed, measured over the days it has been active (time-weighted, never below its median trade)."),
+    ("verdict", "Tier", "Wallet", "tier", "Elite ≥ 70, Strong ≥ 60, Decent ≥ 50, Weak ≥ 40, else Avoid."),
+    ("worth", "Net worth", "Wallet", None, "ETH + USDG in the wallet + what its open positions are worth (other tokens it holds aren't counted)."),
+    ("net", "PnL {d}D", "Performance", "signed", "Realized: positions closed in the window, everything taken out + fees − everything put in."),
+    ("roi_win", "ROI {d}D", "Performance", "signed", "PnL {d}D over the capital it kept deployed in that time (time-weighted, never below its median trade)."),
+    ("net_7d", "PnL 7D", "Performance", "signed", "Realized PnL of positions closed in the last 7 days."),
+    ("momentum", "7D/{d}D", "Performance", None, "Share of the window's PnL made in the last 7 days (when that PnL is positive). About 0.23 is an even pace; higher = heating up, near 0 = gone quiet."),
+    ("net_1d", "PnL 24h", "Performance", "signed", "Realized PnL of positions closed in the last 24 hours."),
+    ("float", "Open PnL", "Performance", "signed", "PnL of positions still open: current value + unclaimed fees − deposits."),
+    ("total", "Total {d}D", "Performance", "signed", "PnL {d}D + open PnL."),
+    ("roi", "ROI/mo", "Performance", "signed", "PnL per month over the capital it keeps deployed, measured over the days it has been active: a wallet active for 5 days isn't counted as idle for the other 25."),
     ("win", "Win", "Performance", "up", "Winning trades out of trades that won or lost. A trade is what opened in one transaction (a 5-range ladder is one trade); one that ended within ±0.05% of its deposit, e.g. a ladder the price never reached, is flat and left out."),
     ("pf", "Profit factor", "Performance", "up", "What winning trades made ÷ what losing trades lost. Above 1 makes money; ∞ = no losing trade yet."),
     ("daily", "Green days", "Performance", "up", "Share of days with closes that ended in profit."),
-    ("fees", "Fees {d}d", "Performance", "up", "LP fees earned (claimed + unclaimed), USD."),
+    ("fees", "Fees {d}D", "Performance", "up", "LP fees earned (claimed + unclaimed), USD."),
     ("dd", "Max DD", "Risk", "up", "Deepest drop of the realized PnL curve, as % of deployed capital."),
     ("recover", "Recovery", "Risk", "down", "How long the deepest drawdown took to win back (or has lasted so far, if it hasn't)."),
+    ("usdg", "USDG %", "Style", None, "Share of its deposits in USDG-paired pools (the rest ETH-paired)."),
+    ("size", "Avg size", "Style", None, "Median USD deposited per trade."),
+    ("duration", "Hold", "Style", None, "Median time a trade stays open."),
+    ("trades", "Trades", "Style", None, "Trades in the window (closed in it, or still open). Ranges opened in one transaction count once."),
+    ("style", "Style", "Style", None, "How its trades are built, and the share that fit: Ladder ×N (N ranges opened together) or Single range · bid (only USDG/ETH in: buys the token as price falls into it), ask (only the token in: sells it on the way up) or 2-sided."),
+    ("sim", "Like ref", "Style", None, "Closest reference wallet of its class (set in a dossier; the app starts with one of each), and how close its LP style is. Without a reference: the closest starred / labelled wallet."),
+    ("range", "Range", "Style", None, "Median range a trade covers (a ladder: lowest to highest price): upper / lower − 1."),
+    ("mcap", "Entry mcap", "Style", None, "Median market cap of the token when it opened a trade (supply × pool price then)."),
+    ("open", "Open", "Style", None, "Positions open right now."),
+    ("concur", "Parallel", "Style", None, "Average number of trades open at the same time."),
     ("copy", "Followable", "Copy-trade", None, "Can a person follow it by hand? yes: median hold ≥ 30 min and ≤ 30 trades/day. bot: hold < 5 min or > 100 trades/day."),
     ("copiers", "Copiers", "Copy-trade", None, "Other wallets that opened the same pool with the exact same range within 60 s after this wallet, at least twice."),
     ("exposure", "Crowding", "Copy-trade", None, "Liquidity copiers add per open, as a share of the wallet's own. ⚠ from 50%: following it means sharing the range."),
-    ("style", "Style", "Style", None, "How its trades are built, and the share that fit: Ladder ×N (N ranges opened together) or Single range · bid (only USDG/ETH in: buys the token as price falls into it), ask (only the token in: sells it on the way up) or 2-sided."),
-    ("sim", "Like ref", "Style", None, "Closest reference wallet of its class (set in a dossier; the app starts with one of each), and how close its LP style is. Without a reference: the closest starred / labelled wallet."),
-    ("duration", "Hold", "Style", None, "Median time a trade stays open."),
-    ("range", "Range", "Style", None, "Median range a trade covers (a ladder: lowest to highest price): upper / lower − 1."),
-    ("size", "Size", "Style", None, "Median USD deposited per trade."),
-    ("eth", "ETH pair", "Style", None, "Share of deposits in ETH-paired pools (the rest is USDG-paired)."),
-    ("mcap", "Entry mcap", "Style", None, "Median market cap of the token when it opened a trade (supply × pool price then)."),
-    ("trades", "Trades", "Style", None, "Trades in the window (closed in it, or still open). Ranges opened in one transaction count once."),
-    ("open", "Open", "Style", None, "Positions open right now."),
-    ("concur", "Parallel", "Style", None, "Average number of trades open at the same time."),
+    ("slf", "Smart LP", "Copy-trade", None, "Best place this wallet reached in an RH Smart LP Finder pool ranking you ran (rank/wallets · pool)."),
     ("open_now", "Deployed", "Holdings", None, "USD sitting in open positions now."),
-    ("worth", "Worth", "Holdings", None, "ETH + USDG in the wallet + open LP value."),
     ("age", "Seen", "Holdings", None, "Since its first LP in our data (it may be older than our history)."),
     ("last", "Active", "Holdings", None, "Since its last LP action."),
     ("star", "★", "Links", None, "On your watchlist."),
     ("lp", "LP Agent", "Links", None, "The wallet on LP Agent."),
     ("scan", "Explorer", "Links", None, "The wallet on the Robinhood Chain explorer."),
 ]
+SHORT_WINDOW_ONLY = ("net_7d", "momentum", "net_1d")  # meaningless on the 24 h board
 
 
 def frame(rows, now, data_from):
@@ -314,8 +331,9 @@ def frame(rows, now, data_from):
         slf = r.get("slf")
         recs.append({
             **{k: r.get(k) for k in ("rank", "score", "verdict", "net", "float", "total", "roi", "win", "pf", "daily",
-                                     "fees", "dd", "recover", "copy", "copiers", "duration", "range", "size", "eth",
-                                     "mcap", "trades", "open", "concur", "open_now", "worth")},
+                                     "fees", "dd", "recover", "copy", "copiers", "duration", "range", "size", "usdg",
+                                     "mcap", "trades", "open", "concur", "open_now", "worth", "net_7d", "net_1d",
+                                     "momentum", "roi_win", "closed_trades")},
             "addr": r["addr"], "label": r.get("label"), "starred": r.get("starred"),
             "kind": KIND_LABEL.get(r.get("kind"), "–"),
             "wallet": ("◆ " if r.get("ref") else "") + short(r["addr"]) + (f"  {r['label']}" if r.get("label") else ""),
@@ -333,7 +351,8 @@ def frame(rows, now, data_from):
         })
     df = pd.DataFrame(recs).set_index("addr", drop=False)
     nums = ["score", "net", "float", "total", "roi", "win", "pf", "daily", "fees", "dd", "recover", "copiers", "duration",
-            "range", "size", "eth", "mcap", "trades", "open", "concur", "open_now", "worth", "age", "last", "exposure"]
+            "range", "size", "usdg", "mcap", "trades", "open", "concur", "open_now", "worth", "age", "last", "exposure",
+            "net_7d", "net_1d", "momentum", "roi_win", "closed_trades"]
     df[nums] = df[nums].apply(pd.to_numeric, errors="coerce")  # a missing figure is NaN ("–"), never "None"
     return df
 
@@ -384,12 +403,13 @@ def heat(df):
 
 def formatters():
     return {
-        "rank": lambda v: f"{v:.0f}", "score": f1, "net": usd, "float": usd, "total": usd,
+        "rank": lambda v: f"{v:.0f}", "score": f1, "net": usd, "float": usd, "total": usd, "net_7d": usd, "net_1d": usd,
+        "roi_win": lambda v: pct(v, 1), "momentum": lambda v: f"{v:.2f}", "usdg": pct,
         "roi": lambda v: pct(v, 1), "win": pct, "pf": pf_fmt, "daily": pct, "fees": usd, "dd": lambda v: pct(v, 1),
         "recover": lambda v: dur(v) if num(v) else "–",
         "copy": lambda v: FOLLOW.get(v, "–"), "copiers": lambda v: f"{v:.0f}" if num(v) is not None else "–",
         "exposure": lambda v: f"⚠ {v:.0f}%" if num(v) and v >= 50 else f"{num(v) or 0:.0f}%",
-        "duration": dur, "range": range_fmt, "size": usd, "eth": pct, "mcap": usd,
+        "duration": dur, "range": range_fmt, "size": usd, "mcap": usd,
         "trades": lambda v: f"{v:.0f}", "open": lambda v: f"{v:.0f}", "concur": lambda v: f"{v:.1f}×" if num(v) is not None else "–",
         "open_now": usd, "worth": usd, "age": dur, "last": lambda v: dur(v) + " ago" if num(v) is not None else "–",
     }
@@ -405,7 +425,7 @@ def column_config(keys, days):
         if k in ("lp", "scan"):
             cfg[k] = col("LinkColumn", label, help=helptext, display_text="open ↗", width="small")
         else:
-            width = "small" if k in ("rank", "star", "copiers", "open", "trades") else \
+            width = "small" if k in ("rank", "star", "copiers", "open", "trades", "momentum", "usdg") else \
                 "medium" if k in ("slf", "wallet", "style", "sim") else None
             cfg[k] = col("Column", label, help=f"{group} · {helptext}", pinned=k in ("rank", "score", "wallet"),
                          width=width)
@@ -418,20 +438,54 @@ def styled(df, css_full):
 
 
 # ------------------------------------------------------------- filters ----
-# One set of filter widgets per board: their session keys carry the board's key.
-FILTER_DEFAULTS = {"f_tiers": [], "f_follow": [], "f_score": 0.0, "f_net": None, "f_win": 0, "f_dd": None,
-                   "f_size": None, "f_active_d": 0.0, "f_crowd": None, "f_slf": 0, "f_style": "", "f_watch": False,
-                   "f_bots": False}
+# Always-visible filter bar, one per board (session keys carry the board's key).
+# Each select: (key, label, options, how an option reads, help); ANY = no limit.
+ANY = "any"
+
+
+def _money(v):
+    return f"${v / 1000:g}k" if v >= 1000 else f"${v:g}"
+
+
+SELECTS = [
+    ("f_closed", "Min closed", [ANY, 3, 10, 30, 100], lambda v: f"{v} trades",
+     "Closed trades in the window (ranges opened together count once)."),
+    ("f_active", "Active within", [ANY, 1, 3, 7], lambda v: "24h" if v == 1 else f"{v}d",
+     "Last LP action (open, add, remove, close) this recent. Wallets idle past Settings' limit are never ranked."),
+    ("f_size_min", "Min avg size", [ANY, 100, 300, 1000, 5000], _money, "Median USD per trade at least this."),
+    ("f_size_max", "Max avg size", [ANY, 1000, 5000, 20000, 100000], _money, "Median USD per trade at most this."),
+    ("f_worth", "Min net worth", [ANY, 1000, 10000, 100000], _money, "ETH + USDG in the wallet + open positions."),
+    ("f_roi", "Min ROI {d}D", [ANY, 0, 10, 25, 50, 100], lambda v: f"{v}%", "PnL over the window ÷ deployed capital."),
+    ("f_mom", "7D/{d}D at least", [ANY, 0.1, 0.25, 0.5], lambda v: f"{v:g}",
+     "Share of the window's PnL made in the last 7 days: still making money now, not just weeks ago."),
+    ("f_usdg", "Min USDG %", [ANY, 50, 90, 100], lambda v: f"{v}%", "Share of deposits in USDG-paired pools."),
+    ("f_win", "Min win", [ANY, 50, 60, 70, 80, 90], lambda v: f"{v}%", "Winning trades out of decided ones."),
+    ("f_float", "Max open loss", [ANY, 100, 1000, 10000], lambda v: "-" + _money(v), "Open PnL no worse than this."),
+    ("f_dd", "Max drawdown", [ANY, 5, 10, 25, 50], lambda v: f"-{v}%", "Deepest drop no worse than this."),
+    ("f_tier", "Min tier", [ANY, "Elite", "Strong", "Decent"], lambda v: f"{v}+" if v != "Elite" else v, ""),
+    ("f_follow", "Followable", [ANY, "yes", "yes or maybe"], str, "Hand-followable pace (see the Followable column)."),
+    ("f_style", "Style", [ANY, "ladder", "single", "bid", "ask", "2-sided"], str, "Words in the Style column."),
+]
+CHECKS = [
+    ("f_p30", "{d}D profit only", "PnL over the window above zero."),
+    ("f_p7", "7D profit only", "PnL of the last 7 days above zero."),
+    ("f_usdg_only", "USDG pairs only", "Every deposit in USDG-paired pools."),
+    ("f_watch", "Watchlist only", "Starred wallets."),
+    ("f_slf", "Smart LP top 10", "Placed top 10 in an RH Smart LP Finder pool ranking."),
+    ("f_bots", "Show bots", "Hold < 5 min or > 100 trades a day: nobody can follow those."),
+]
+FILTER_DEFAULTS = {**{k: ANY for k, *_ in SELECTS}, **{k: False for k, *_ in CHECKS}}
+TIERS = ["Elite", "Strong", "Decent", "Weak", "Avoid"]
 BUILTIN = {
     "All wallets": {},
-    "Followable winners": {"f_follow": ["✓ yes"], "f_net": 0.01, "f_win": 55},
-    "Low drawdown": {"f_net": 0.01, "f_dd": -10.0},
-    "Size ≥ $1K": {"f_size": 1000.0},
-    "Active 24h": {"f_active_d": 1.0},
-    "Active 3 days": {"f_active_d": 3.0},
-    "Uncrowded": {"f_crowd": 20.0, "f_net": 0.01},
+    "Proven earners": {"f_closed": 30, "f_active": 7, "f_size_min": 300, "f_worth": 1000, "f_p30": True,
+                       "f_usdg_only": True},
+    "Hot this week": {"f_active": 3, "f_p7": True, "f_mom": 0.25},
+    "Followable winners": {"f_follow": "yes", "f_p30": True, "f_win": 60},
+    "Low drawdown": {"f_p30": True, "f_dd": 10},
+    "Size $1k+": {"f_size_min": 1000},
     "Ladders": {"f_style": "ladder"},
-    "Smart LP top 10": {"f_slf": 10},
+    "Smart LP top 10": {"f_slf": True},
     "Watchlist only": {"f_watch": True},
 }
 
@@ -447,83 +501,93 @@ def apply_preset(board):
     con.close()
     values = BUILTIN.get(name, saved.get(name, {}))
     for k, v in FILTER_DEFAULTS.items():
-        st.session_state[fk(board, k)] = values.get(k, v)
+        got = values.get(k, v)
+        options = next((o for key, _, o, *_ in SELECTS if key == k), None)
+        st.session_state[fk(board, k)] = got if options is None or got in options else v
 
 
-def filter_controls(board, saved_names):
+def clear_filters(board):
+    for k, v in FILTER_DEFAULTS.items():
+        st.session_state[fk(board, k)] = v
+    st.session_state[fk(board, "quick")] = ""
+    st.session_state[fk(board, "preset")] = "All wallets"
+
+
+def filter_controls(board, saved_names, days):
+    """The filter bar; returns the slot for the 'showing x of y' line."""
     k = lambda name: fk(board, name)  # noqa: E731
     for name, v in FILTER_DEFAULTS.items():
         st.session_state.setdefault(k(name), v)
-    c1, c2, c3, c4 = st.columns([2.2, 1, 3, 1.2])
-    c1.selectbox("Preset", list(BUILTIN) + saved_names, key=k("preset"), on_change=apply_preset, args=(board,),
-                 label_visibility="collapsed")
-    with c2.popover("Filters", **stretch(st.popover)):
-        a, b = st.columns(2)
-        a.multiselect("Tier", ["Elite", "Strong", "Decent", "Weak", "Avoid"], key=k("f_tiers"))
-        b.multiselect("Followable", list(FOLLOW.values()), key=k("f_follow"))
-        a.number_input("Min score", 0.0, 100.0, step=5.0, key=k("f_score"))
-        b.number_input("Min realized $", value=None, step=10.0, key=k("f_net"), placeholder="any")
-        a.slider("Min win %", 0, 100, key=k("f_win"))
-        b.number_input("Max DD at least (%)", value=None, max_value=0.0, step=5.0, key=k("f_dd"),
-                       placeholder="any, e.g. -10")
-        a.number_input("Min size $", value=None, min_value=0.0, step=100.0, key=k("f_size"), placeholder="any")
-        b.number_input("Active within (days, 0 = any)", min_value=0.0, step=1.0, key=k("f_active_d"),
-                       help="Only wallets whose last LP action (open, add, remove, close) is newer than this. "
-                            "Wallets idle longer than Settings → Leave out wallets idle for are never ranked.")
-        a.number_input("Max crowding %", value=None, min_value=0.0, step=10.0, key=k("f_crowd"), placeholder="any")
-        b.number_input("Smart LP rank ≤ (0 = any)", min_value=0, step=1, key=k("f_slf"))
-        a.text_input("Style contains", key=k("f_style"), placeholder="ladder, bid, 2-sided…")
-        b.checkbox("Watchlist only", key=k("f_watch"))
-        b.checkbox("Show bots", key=k("f_bots"), help="Hold < 5 min or > 100 trades a day: nobody can follow those.")
-        st.divider()
-        name = st.text_input("Save these filters as", placeholder="preset name", key=k("preset_name"))
-        if st.button("Save preset", disabled=not name, key=k("save_preset")):
-            con = conn()
-            items = [p for p in Q.presets(con) if p["name"] != name]
-            items.append({"name": name, "filters": {f: st.session_state[k(f)] for f in FILTER_DEFAULTS}})
-            Q.save_presets(con, items)
-            con.close()
-            st.toast(f"Saved preset “{name}”")
-        if st.session_state.get(k("preset")) in saved_names and st.button("Delete this preset", key=k("del_preset")):
-            con = conn()
-            Q.save_presets(con, [p for p in Q.presets(con) if p["name"] != st.session_state[k("preset")]])
-            con.close()
-    c3.text_input("Search", key=k("quick"), placeholder="Find wallet or label", label_visibility="collapsed")
-    return c4
+    box = st.container(**({"key": f"fbar_{board}"} if _accepts(st.container, "key") else {}))
+    with box:
+        row1 = st.columns([2.4] + [1] * 7)
+        row1[0].text_input("Search", key=k("quick"), placeholder="Address or label…")
+        row2 = st.columns(8)
+        for (key, label, options, fmt, helptext), slot in zip(SELECTS, row1[1:] + row2[:7]):
+            slot.selectbox(label.format(d=f"{days:g}"), options, key=k(key), help=helptext or None,
+                           format_func=lambda v, fmt=fmt: v if v == ANY else fmt(v))
+        row2[7].selectbox("Preset", list(BUILTIN) + saved_names, key=k("preset"), on_change=apply_preset,
+                          args=(board,))
+        row3 = st.columns([1.25] * len(CHECKS) + [1.1, 1, 1])
+        for (key, label, helptext), slot in zip(CHECKS, row3):
+            slot.checkbox(label.format(d=f"{days:g}"), key=k(key))
+        with row3[len(CHECKS) + 1].popover("Save preset", **stretch(st.popover)):
+            name = st.text_input("Name", placeholder="preset name", key=k("preset_name"))
+            if st.button("Save", disabled=not name, key=k("save_preset")):
+                con = conn()
+                items = [p for p in Q.presets(con) if p["name"] != name]
+                items.append({"name": name, "filters": {f: st.session_state[k(f)] for f in FILTER_DEFAULTS}})
+                Q.save_presets(con, items)
+                con.close()
+                st.toast(f"Saved preset “{name}”")
+            if st.session_state.get(k("preset")) in saved_names and st.button("Delete this preset",
+                                                                                key=k("del_preset")):
+                con = conn()
+                Q.save_presets(con, [p for p in Q.presets(con) if p["name"] != st.session_state[k("preset")]])
+                con.close()
+        row3[len(CHECKS) + 2].button("Clear filters", key=k("clear"), on_click=clear_filters, args=(board,),
+                                     **stretch(st.button))
+    return st.empty()
 
 
 def apply_filters(df, board):
     s = {name: st.session_state.get(fk(board, name), v) for name, v in {**FILTER_DEFAULTS, "quick": ""}.items()}
+    s = {name: None if v == ANY else v for name, v in s.items()}
     m = pd.Series(True, index=df.index)
     if s["quick"]:
-        q = s["quick"].lower()
+        q = s["quick"].strip().lower()
         m &= df["addr"].str.contains(q, regex=False) | df["label"].fillna("").str.lower().str.contains(q, regex=False)
     if not s["f_bots"]:
         m &= df["copy"] != "✗"
-    if s["f_tiers"]:
-        m &= df["verdict"].isin(s["f_tiers"])
-    if s["f_follow"]:
-        m &= df["copy"].map(FOLLOW).isin(s["f_follow"])
-    if s["f_score"]:
-        m &= df["score"] >= s["f_score"]
-    if s["f_net"] is not None:
-        m &= df["net"] >= s["f_net"]
-    if s["f_win"]:
-        m &= df["win"] >= s["f_win"]
+    at_least = {"f_closed": "closed_trades", "f_size_min": "size", "f_worth": "worth", "f_roi": "roi_win",
+                "f_mom": "momentum", "f_usdg": "usdg", "f_win": "win"}
+    for f, c in at_least.items():
+        if s[f] is not None:
+            m &= df[c] >= s[f]
+    if s["f_active"] is not None:
+        m &= df["last"] <= s["f_active"] * 86400
+    if s["f_size_max"] is not None:
+        m &= df["size"] <= s["f_size_max"]
+    if s["f_float"] is not None:
+        m &= df["float"].fillna(0) >= -s["f_float"]
     if s["f_dd"] is not None:
-        m &= df["dd"] >= s["f_dd"]
-    if s["f_size"] is not None:
-        m &= df["size"] >= s["f_size"]
-    if s["f_active_d"]:
-        m &= df["last"] <= s["f_active_d"] * 86400
-    if s["f_crowd"] is not None:
-        m &= df["exposure"] <= s["f_crowd"]
-    if s["f_slf"]:
-        m &= df["slf_rank"].notna() & (df["slf_rank"] <= s["f_slf"])
+        m &= df["dd"] >= -s["f_dd"]
+    if s["f_tier"]:
+        m &= df["verdict"].isin(TIERS[:TIERS.index(s["f_tier"]) + 1])
+    if s["f_follow"]:
+        m &= df["copy"].isin(["✓"] if s["f_follow"] == "yes" else ["✓", "?"])
     if s["f_style"]:
-        m &= df["style"].str.lower().str.contains(s["f_style"].lower(), regex=False)
+        m &= df["style"].str.lower().str.contains(s["f_style"], regex=False)
+    if s["f_p30"]:
+        m &= df["net"] > 0
+    if s["f_p7"]:
+        m &= df["net_7d"] > 0
+    if s["f_usdg_only"]:
+        m &= df["usdg"] >= 99.95
     if s["f_watch"]:
         m &= df["starred"].fillna(False).astype(bool)
+    if s["f_slf"]:
+        m &= df["slf_rank"].notna() & (df["slf_rank"] <= 10)
     return df[m]
 
 
@@ -602,26 +666,30 @@ def board(view, key, kind=None, top=None):
     days = 1 if view.startswith("d1") else stt["metric_days"]
     if kind:
         hist = (stt["now"] - stt["data_from"]) / 86400 if stt["data_from"] else 0
-        st.caption(KIND_BLURB[kind].format(h=stt["multiday_hours"]) + f" Performance = the last {days:g} days only"
-                   + (f" (history loaded so far: {hist:.1f} days)" if hist < days - 0.5 else "")
-                   + f": a wallet needs {stt['settings']['MIN_CLOSED']}+ closed positions in them"
-                   + (f" and an LP action in the last {stt['active_days']:g} days" if stt["active_days"] else "")
-                   + " to be ranked at all.")
+        st.caption(KIND_BLURB[kind].format(h=stt["multiday_hours"]) + f" Figures cover the last {days:g} days"
+                   + (f" ({hist:.1f} loaded so far)" if hist < days - 0.5 else "")
+                   + f"; ranked: {stt['settings']['MIN_CLOSED']}+ closed positions in them"
+                   + (f" and an LP action within {stt['active_days']:g} days." if stt["active_days"] else "."))
     df = frame(rows, stt["now"], stt["data_from"])
-    count_slot = filter_controls(key, saved_names)
+    what = f"{KIND_LABEL[kind].lower()} " if kind else ""
+    pills = [f"<b>{len(df):,}</b> ranked {what}", f"<b>{stt['rated']:,}</b> rated of <b>{stt['discovered']:,}</b> found",
+             f"<b>{stt['queue']:,}</b> positions in queue", f"ranked <b>{ago(stt['scored_at'], stt['now'])}</b>"]
+    st.markdown('<div class="pills">' + "".join(f"<span>{x}</span>" for x in pills) + "</div>", unsafe_allow_html=True)
+    count_slot = filter_controls(key, saved_names, days)
     if df.empty:
         st.info("No wallet closed a priced position in the last 24 h yet." if top else
-                f"No ranked {KIND_LABEL.get(kind, '').lower()} wallets yet. They appear after the first sync + "
-                "ranking pass (see the Settings tab log).")
+                f"No ranked {what}wallets yet. They appear after the first sync + ranking pass (see the Settings tab "
+                "log).")
         return
     css_full = heat(df)
     shown = apply_filters(df, key)
     if top:
         shown = shown.head(top)
-    count_slot.markdown(f"<div style='padding-top:8px;font:12px JetBrains Mono,monospace;color:#8592a6'>"
-                        f"{len(shown):,} / {len(df):,} wallets</div>", unsafe_allow_html=True)
+    hidden = len(df) - len(shown)
+    count_slot.markdown(f"<div class='showing'>Showing <b>{len(shown):,}</b> of {len(df):,}"
+                        + (f" · {hidden:,} hidden by filters" if hidden else "") + "</div>", unsafe_allow_html=True)
     shown = shown.head(1500)
-    keys = [c[0] for c in COLS if not (kind and c[0] == "kind")]
+    keys = [c[0] for c in COLS if not (kind and c[0] == "kind") and not (days == 1 and c[0] in SHORT_WINDOW_ONLY)]
     event = st.dataframe(styled(shown[keys], css_full), column_config=column_config(keys, days), hide_index=True,
                          **stretch(st.dataframe),
                          height=auto_height(len(shown), 620), on_select="rerun", selection_mode="single-row",
@@ -695,14 +763,19 @@ def dossier(addr):
         recover = "–" if not m.get("recover") and not m.get("recover_open") else \
             (">" if m.get("recover_open") else "") + dur(m["recover"])
         trades = m.get("trades", m.get("pos"))
-        cells = [("Score", f1(m["score"])), ("Realized", usd(m["net"])), ("Unrealized", usd(m["float"])),
-                 ("Total", usd(m.get("total", m["net"] + m["float"]))), ("ROI/mo", pct(m["roi"], 1)),
-                 ("Win", pct(m["win"])), ("Profit factor", pf_fmt(m.get("pf"))), ("Green days", pct(m["daily"])),
-                 ("Max DD", pct(m["dd"], 1)), ("Recovery", recover), ("Fees", usd(m["fees"])),
-                 ("Size / trade", usd(m["size"])), ("Hold", dur(m["duration"])), ("Range", range_fmt(m["range"])),
+        days = f"{stt['metric_days']:g}D"
+        mom = m.get("momentum")
+        cells = [("Score", f1(m["score"])), (f"PnL {days}", usd(m["net"])), (f"ROI {days}", pct(m.get("roi_win"), 1)),
+                 ("ROI/mo", pct(m["roi"], 1)),
+                 ("PnL 7D", usd(m.get("net_7d"))), (f"7D/{days}", "–" if mom is None else f"{mom:.2f}"),
+                 ("PnL 24h", usd(m.get("net_1d"))), ("Open PnL", usd(m["float"])),
+                 (f"Total {days}", usd(m.get("total", m["net"] + m["float"]))), ("Win", pct(m["win"])),
+                 ("Profit factor", pf_fmt(m.get("pf"))), ("Green days", pct(m["daily"])),
+                 ("Max DD", pct(m["dd"], 1)), ("Recovery", recover), (f"Fees {days}", usd(m["fees"])),
+                 ("Avg size", usd(m["size"])), ("Hold", dur(m["duration"])), ("Range", range_fmt(m["range"])),
                  ("Trades", f"{trades} · {m.get('closed_trades', m['closed'])} closed"),
                  ("Flat trades", pct(m.get("flat"))), ("Open", f"{m['open']} positions"),
-                 ("Deployed", usd(m["open_now"])), ("Parallel", f"{m['concur']:.1f}×"),
+                 ("Deployed", usd(m["open_now"])), ("USDG %", pct(m.get("usdg"))),
                  ("Entry mcap", usd(m.get("mcap")))]
         st.markdown('<div class="dk">' + "".join(f"<div><small>{k}</small><span>{v}</span></div>" for k, v in cells)
                     + "</div>", unsafe_allow_html=True)
@@ -844,8 +917,8 @@ def twins():
     stt = st.session_state.get("status") or {}
     df = frame(res["rows"], stt.get("now", time.time()), stt.get("data_from"))
     df["match"] = [r["sim"] for r in res["rows"]]
-    keys = ["match", "score", "wallet", "kind", "verdict", "net", "total", "roi", "win", "pf", "dd", "style", "duration",
-            "range", "size", "eth", "mcap", "trades", "concur", "star", "lp"]
+    keys = ["match", "score", "wallet", "kind", "verdict", "net", "net_7d", "total", "roi", "win", "pf", "dd", "style",
+            "duration", "range", "size", "usdg", "mcap", "trades", "concur", "star", "lp"]
     css = heat(df)
     css["match"] = ""
     sty = df[keys].style.apply(lambda _: css.loc[df.index, keys], axis=None)
@@ -1003,26 +1076,32 @@ def settings():
 def field_guide():
     legend = "".join(f'<span class="sw" style="background:rgba({RED},{a})"></span>' for a in reversed(STEPS)) + \
         '<span class="sw"></span>' + "".join(f'<span class="sw" style="background:rgba({BLUE},{a})"></span>' for a in STEPS)
-    body = f'<div class="legend">Cell colour against the other ranked wallets (Realized / Unrealized / ROI: above or ' \
+    body = f'<div class="legend">Cell colour against the other ranked wallets (PnL / Open PnL / ROI: above or ' \
            f'below zero): <span>worse</span>{legend}<span>better</span> · uncoloured columns describe style, not quality</div>'
     groups = {}
     days = (st.session_state.get("status") or {}).get("metric_days", 30)
     for k, label, group, _, helptext in COLS:
         groups.setdefault(group, []).append((label.format(d=f"{days:g}"), helptext))
+    d = f"{days:g}"
+    groups["Filters"] = [(lab.format(d=d), h) for _, lab, _, _, h in SELECTS if h] + \
+        [(lab.format(d=d), h) for _, lab, h in CHECKS]
+    groups["Player classes"] = [
+        ("Multiday", "Its trades' median hold is at least the line in Settings (2 h by default). Ranked only against "
+                     "other multiday players, with open positions counted (total PnL)."),
+        ("Degen", "Median hold under that line. Ranked only against other degen players, on realized PnL and how "
+                  "reliably the trades pay (profit factor). Bots are hidden unless you tick Show bots."),
+        ("Trades", "Ranges opened in one transaction (a ladder) are one trade for win rate, size, hold and pace. PnL, "
+                   "fees and the PnL curve still add up every position."),
+        ("Reference", "Make any wallet a reference of its class in its dossier (◆ on the board). The app starts with "
+                      "your two examples.")]
+    groups["Modes"] = [
+        ("Real PnL", "Charges each position for selling back the token it returns (pool fee + slippage from Settings) "
+                     "and re-ranks on those figures."),
+        ("Last 24h", "The same board on positions closed in the last 24 hours."),
+        ("Token launches", "Positions that seed 2%+ of a token's supply are launches, not trading, and are left out.")]
     body += '<div class="guide">' + "".join(
         f"<h4>{g}</h4>" + "".join(f"<p><b>{lab}</b>{h}</p>" for lab, h in items) for g, items in groups.items()) + \
-        "<h4>Player classes</h4><p><b>Multiday</b>Its trades' median hold is at least the line in Settings (2 h by " \
-        "default). Ranked only against other multiday players, with open positions counted (total PnL).</p>" \
-        "<p><b>Degen</b>Median hold under that line. Ranked only against other degen players, on realized PnL and " \
-        "how reliably the trades pay (profit factor). Bots are hidden unless you tick Show bots.</p>" \
-        "<p><b>Trades</b>Ranges opened in one transaction (a ladder) are one trade for win rate, size, hold and " \
-        "pace. PnL, fees and the PnL curve still add up every position.</p>" \
-        "<p><b>Reference</b>Make any wallet a reference of its class in its dossier (◆ on the board). The app " \
-        "starts with your two examples.</p>" \
-        "<h4>Modes</h4><p><b>Real PnL</b>Charges each position for selling back the token it returns (pool fee + " \
-        "slippage from Settings) and re-ranks on those figures.</p><p><b>Last 24h</b>The same board on positions " \
-        "closed in the last 24 hours.</p><p><b>Token launches</b>Positions that seed 2%+ of a token's supply are " \
-        "launches, not trading, and are left out.</p></div>"
+        "</div>"
     st.markdown(body, unsafe_allow_html=True)
 
 

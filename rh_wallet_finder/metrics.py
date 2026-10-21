@@ -19,7 +19,7 @@ FLAT = 0.0005  # a trade within ±0.05% of its deposit did nothing (a ladder the
 PF_CAP = 99.0
 MULTIDAY_S = 2 * 3600  # median hold from here up = Multiday player, below = Degen player
 KINDS = ("multiday", "degen")
-RANK_VERSION = 2  # bump when the stored metrics change shape; the app re-ranks on start
+RANK_VERSION = 3  # bump when the stored metrics change shape; the app re-ranks on start
 KIND_NAME = {"multiday": "Multiday", "degen": "Degen"}
 BOT_HOLD_S = 300
 BOT_PER_DAY = 100
@@ -170,6 +170,10 @@ def wallet_metrics(positions, now, window_days, data_from, real=False, multiday_
         "single": single, "per_day": len(tr) / max(1.0, active / DAY), "span_days": active / DAY,
         "kind": kind, "kind_fit": kind_fit,
     }
+    # the same realized PnL over shorter stretches, and how much of it is recent
+    net7 = sum(pnl(p) for p in closed if p["close_ts"] >= now - 7 * DAY)
+    m.update(net_7d=net7, net_1d=sum(pnl(p) for p in closed if p["close_ts"] >= now - DAY),
+             momentum=net7 / net if net > 0 else None, roi_win=net / capital * 100, usdg=100 - eth_share)
     m["style"], m["style_conf"] = style(tr)
     return m
 

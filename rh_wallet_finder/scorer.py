@@ -17,6 +17,7 @@ import time
 import chain as C
 import config
 import metrics as M
+from db import get_meta, set_meta
 from indexer import multicall
 
 PER_WALLET = 500  # newest positions per wallet that get priced: a month of a busy LP
@@ -356,6 +357,7 @@ class Scorer:
                     if valued == 0 and tid not in seen:
                         seen.add(tid)
                         todo.append(tid)
+        pending = sum(1 for w in cands for _, _, valued in newest[w] if valued == 0)
         self.log(f"  {len(cands):,} candidate wallets ({len(bots):,} bots last), pricing {len(todo):,} positions")
 
         t0 = time.time()
@@ -372,7 +374,6 @@ class Scorer:
         # open positions get re-valued every run (their value moves)
         open_ids = [tid for rows in newest.values() for tid, closed, valued in rows
                     if not closed and (valued == 1 or tid in seen)]
-        from db import get_meta
         head = get_meta(con, "fwd_block")
         open_vals = self.value_open(open_ids, head if head else "latest")
         self.aggregate(set(todo) | set(open_ids), open_vals)
@@ -382,9 +383,9 @@ class Scorer:
             "SELECT DISTINCT pool FROM positions WHERE valued=1 AND (close_ts IS NULL OR close_ts >= ?)", (w0,))]
         eth = self.refresh_tokens(pool_ids)
         if eth:
-            from db import set_meta
             set_meta(con, "eth_usd", eth)
         n = self.rank(now, days, cands)
+        set_meta(con, "price_queue", max(0, pending - len(todo)))  # still to price after this run
         con.commit()
         return {"candidates": len(cands), "priced": len(todo), "scored": n}
 
@@ -422,7 +423,6 @@ class Scorer:
     def drop_spiked_prices(self):
         """Once per database: what was priced before the MAX_* guards existed at
         an absurd token price, or paying back an absurd multiple, is left out."""
-        from db import get_meta, set_meta
         if (get_meta(self.con, "spike_sweep") or 0) >= 2:
             return
         bad = self.con.execute("""
@@ -481,7 +481,6 @@ class Scorer:
     def rank(self, now, days, wallets, balances=True):
         """Metrics + score for every wallet with enough priced, closed positions."""
         con = self.con
-        from db import get_meta, set_meta
         data_from = get_meta(con, "data_from_ts") or now - days * 86400
         min_closed = int(self.cfg["MIN_CLOSED"])
         mc = {a: t.get("mcap") for a, t in self.tokens.items()}
@@ -555,6 +554,7 @@ class Scorer:
             set_meta(con, "avg_sell_fee", statistics.median(sell_fees))
         set_meta(con, "scored_at", int(now))
         set_meta(con, "rank_version", M.RANK_VERSION)
+        set_meta(con, "rated", len(per_wallet))  # wallets with priced positions in the window
         return len(scored)
 
 

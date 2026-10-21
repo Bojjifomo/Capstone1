@@ -93,6 +93,7 @@ def status(con):
         "scored": n("SELECT COUNT(*) FROM wallets WHERE score IS NOT NULL"),
         "kinds": kinds, "multiday_hours": float(cfg["MULTIDAY_HOURS"]), "active_days": float(cfg["ACTIVE_DAYS"]),
         "rank_version": get_meta(con, "rank_version"), "rank_current": M.RANK_VERSION,
+        "rated": get_meta(con, "rated") or 0, "queue": get_meta(con, "price_queue") or 0,
         "positions": n("SELECT COUNT(*) FROM positions"),
         "pools": n("SELECT COUNT(*) FROM pools"),
         "synced_at": get_meta(con, "synced_at"), "scored_at": get_meta(con, "scored_at"),
