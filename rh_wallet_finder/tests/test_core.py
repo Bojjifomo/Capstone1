@@ -831,32 +831,53 @@ class PublishTest(unittest.TestCase):
             self.skipTest("no node")
         fn = Path(__file__).resolve().parents[1] / "web" / "api" / "snapshot.js"
 
-        def run(env):
+        def run(env, headers=None, stores=("AbC9",)):
+            """The function with these env vars and request headers; the Blob host
+            serves the file only for the stores listed -> what it asked and answered."""
             with tempfile.TemporaryDirectory() as d:
                 gz = Path(d) / "s.gz"
                 gz.write_bytes(gzip.compress(b'{"v":1,"views":{"raw":[]}}'))
                 js = f"""
                   Object.assign(process.env, {json.dumps(env)});
-                  let asked; const buf = require("fs").readFileSync({json.dumps(str(gz))});
-                  let auth;
-                  globalThis.fetch = async (u, o) => (asked = u, auth = o.headers.authorization, {{ ok: true,
-                    status: 200, arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
+                  const buf = require("fs").readFileSync({json.dumps(str(gz))});
+                  const asked = [];
+                  globalThis.fetch = async (u, o) => {{
+                    asked.push([u.split("?")[0], o.headers.authorization]);
+                    const ok = {json.dumps(list(stores))}.some(s => u.startsWith(`https://${{s}}.private.`));
+                    return {{ ok, status: ok ? 200 : 404,
+                      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }};
+                  }};
                   const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
-                                 end(b) {{ console.log(JSON.stringify({{ asked, auth, status: this.statusCode,
+                                 end(b) {{ console.log(JSON.stringify({{ asked, status: this.statusCode,
                                    cache: this.headers["cache-control"], body: String(b) }})); }} }};
-                  require({json.dumps(str(fn))})({{}}, res);
+                  require({json.dumps(str(fn))})({{ headers: {json.dumps(headers or {})} }}, res);
                 """
                 return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True,
                                                  timeout=30).stdout)
 
-        # the store connected with the default prefix, or with its own (RH_BLOB_READ_WRITE_TOKEN)
+        url = "https://AbC9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"
+        snap = '{"v":1,"views":{"raw":[]}}'
+        # a store connected the current way: its id in BLOB_STORE_ID, read with the call's OIDC token
+        out = run({"BLOB_STORE_ID": "store_AbC9"}, {"x-vercel-oidc-token": "oidc.jwt"})
+        self.assertEqual((out["asked"], out["status"], out["body"]), ([[url, "Bearer oidc.jwt"]], 200, snap))
+        self.assertIn("s-maxage=60", out["cache"])
+        # a read-write token, with the default prefix or another one
         for name in ("BLOB_READ_WRITE_TOKEN", "RH_BLOB_READ_WRITE_TOKEN"):
             out = run({name: "vercel_blob_rw_AbC9_x"})
-            self.assertTrue(out["asked"].startswith("https://AbC9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"))
-            self.assertEqual(out["auth"], "Bearer vercel_blob_rw_AbC9_x")
-            self.assertEqual((out["status"], out["body"]), (200, '{"v":1,"views":{"raw":[]}}'))
-            self.assertIn("s-maxage=60", out["cache"])
-        out = run({})  # no store connected (or connected after this deployment): say what to do
+            self.assertEqual((out["asked"], out["status"]), ([[url, "Bearer vercel_blob_rw_AbC9_x"]], 200))
+        # both: the connected store first; a token for another (e.g. deleted) store is only a fallback
+        out = run({"BLOB_STORE_ID": "store_AbC9", "BLOB_READ_WRITE_TOKEN": "vercel_blob_rw_Old1_x"},
+                  {"x-vercel-oidc-token": "oidc.jwt"})
+        self.assertEqual((len(out["asked"]), out["status"]), (1, 200))
+        out = run({"BLOB_STORE_ID": "store_New2", "BLOB_READ_WRITE_TOKEN": "vercel_blob_rw_AbC9_x"},
+                  {"x-vercel-oidc-token": "oidc.jwt"})
+        self.assertEqual((out["asked"][-1], out["status"]), ([url, "Bearer vercel_blob_rw_AbC9_x"], 200))
+        # nothing uploaded yet: a 404 that says so, and which reads were tried
+        out = run({"BLOB_STORE_ID": "store_New2"}, {"x-vercel-oidc-token": "oidc.jwt"}, stores=())
+        self.assertEqual(out["status"], 404)
+        self.assertIn("Publish now", out["body"])
+        self.assertEqual(json.loads(out["body"])["tried"], ["oidc private 404", "oidc public 404"])
+        out = run({})  # no store reaches this deployment: say what to do
         self.assertEqual(out["status"], 503)
         self.assertIn("Redeploy", out["body"])
 
