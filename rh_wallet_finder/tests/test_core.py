@@ -614,14 +614,22 @@ class PublishTest(unittest.TestCase):
                 self.assertTrue(url.endswith("/rhwf/snapshot.json.gz"))
                 self.assertEqual(seen["path"], "/api/blob/?pathname=rhwf%2Fsnapshot.json.gz")
                 h = seen["headers"]
-                self.assertEqual((h["authorization"], h["x-vercel-blob-access"], h["x-add-random-suffix"],
-                                  h["x-allow-overwrite"], h["x-api-version"]),
-                                 ("Bearer vercel_blob_rw_S1_secret", "public", "0", "1", "13"))
+                self.assertEqual((h["authorization"], h["x-vercel-blob-store-id"], h["x-vercel-blob-access"],
+                                  h["x-add-random-suffix"], h["x-allow-overwrite"], h["x-api-version"]),
+                                 ("Bearer vercel_blob_rw_S1_secret", "S1", "public", "0", "1", "13"))
                 self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
                 self.assertEqual(publish.last(con)["url"], url)
                 with self.assertRaisesRegex(publish.PublishError, "403: Access denied"):
                     publish.publish(con, "vercel_blob_rw_wrong_x", log=lambda *x: None)
                 self.assertIn("403", publish.last(con)["error"])
+                # a whole .env line pasted instead of the value: the token is picked out of it
+                publish.publish(con, 'BLOB_READ_WRITE_TOKEN="vercel_blob_rw_S1_secret"', log=lambda *x: None)
+                self.assertEqual(seen["headers"]["authorization"], "Bearer vercel_blob_rw_S1_secret")
+                # not a Blob token at all: said plainly, nothing sent
+                seen.clear()
+                with self.assertRaisesRegex(publish.PublishError, "isn't a Vercel Blob read-write token"):
+                    publish.publish(con, "abc123", log=lambda *x: None)
+                self.assertEqual(seen, {})
                 con.close()
         finally:
             publish.BLOB_API = old

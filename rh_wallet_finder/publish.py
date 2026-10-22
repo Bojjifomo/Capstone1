@@ -67,11 +67,21 @@ def snapshot(con):
     return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views}
 
 
+BAD_TOKEN = ("That isn't a Vercel Blob read-write token. It looks like vercel_blob_rw_<store id>_<secret>: in "
+             "Vercel open Storage → your Blob store → .env.local and copy the value of BLOB_READ_WRITE_TOKEN "
+             "(only what's between the quotes) into Settings.")
+
+
 def upload(data, token, pathname=PATHNAME, timeout=60):
     """PUT bytes to the Blob store behind token -> the blob's public URL."""
+    token = config.blob_token(token)
+    store = config.blob_store_id(token)
+    if not store:
+        raise PublishError(BAD_TOKEN)
     req = urllib.request.Request(
         BLOB_API + "?" + urllib.parse.urlencode({"pathname": pathname}), data=data, method="PUT", headers={
-            "authorization": f"Bearer {token}", "x-api-version": "13", "x-vercel-blob-access": "public",
+            "authorization": f"Bearer {token}", "x-vercel-blob-store-id": store,
+            "x-api-version": "13", "x-vercel-blob-access": "public",
             "x-content-type": "application/gzip", "x-add-random-suffix": "0", "x-allow-overwrite": "1",
             "x-cache-control-max-age": "60", "content-type": "application/octet-stream",
             "user-agent": "rh-wallet-finder/1.0"})
@@ -84,7 +94,9 @@ def upload(data, token, pathname=PATHNAME, timeout=60):
             msg = json.loads(body)["error"]["message"]
         except (ValueError, KeyError, TypeError):
             msg = body or e.reason
-        hint = " Check the Vercel Blob token in Settings." if e.code in (401, 403) else ""
+        hint = f" {BAD_TOKEN}" if "store id" in msg.lower() else \
+            " Check the Vercel Blob token in Settings: copy it again from the Blob store's .env.local tab." \
+            if e.code in (401, 403) else ""
         raise PublishError(f"Vercel Blob said HTTP {e.code}: {msg}.{hint}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise PublishError(f"Can't reach Vercel Blob: {e}") from e

@@ -143,9 +143,12 @@ Setup sekali:
 3. Project itu → **Storage → Create → Blob** → bikin store, **Connect** ke
    project (semua environment). Vercel nambahin `BLOB_READ_WRITE_TOKEN` ke
    project; **Redeploy** sekali biar fungsinya kebaca token itu.
-4. Di Blob store → tab **.env.local**, copy nilai `BLOB_READ_WRITE_TOKEN`
-   (`vercel_blob_rw_…`). Paste di Wallet Finder → **Settings → Web showcase ·
-   Vercel Blob token** → Save → klik **Publish now**.
+4. Di Blob store → tab **.env.local** (klik ikon mata biar kelihatan), copy
+   nilai `BLOB_READ_WRITE_TOKEN`: yang di dalam tanda kutip, bentuknya
+   `vercel_blob_rw_<id store>_<rahasia>`. Paste di Wallet Finder → **Settings →
+   Web showcase · Vercel Blob token** → Save → klik **Publish now**. (Kalau
+   ke-paste satu baris penuh `BLOB_READ_WRITE_TOKEN="…"`, app ngambil
+   token-nya sendiri.)
 5. Buka `https://<nama-project>.vercel.app`, share link-nya.
 
 Upload otomatis maksimal sekali tiap `PUBLISH_MINUTES` (default 30 menit, ubah

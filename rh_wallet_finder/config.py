@@ -144,7 +144,24 @@ def load_env():
             vals["RPC_SOURCE"] = f"{d.name}/.env" if d else "RH_RPC_* environment"
     for k in ("RPC_URL", "CALL_RPC_URL"):
         vals[k] = rpc_link(vals[k])
+    vals["VERCEL_BLOB_TOKEN"] = blob_token(vals["VERCEL_BLOB_TOKEN"])
     return vals
+
+
+# vercel_blob_rw_<store id>_<secret>: the store id is what Vercel looks for
+BLOB_TOKEN_RE = re.compile(r"vercel_blob_rw_([A-Za-z0-9]+)_([^\s\"'`]+)")
+
+
+def blob_token(v):
+    """The Blob read-write token out of whatever was pasted: the bare value, a
+    whole BLOB_READ_WRITE_TOKEN="…" line, quotes or spaces around it."""
+    m = BLOB_TOKEN_RE.search(v or "")
+    return m.group(0) if m else (v or "").strip().strip("\"'")
+
+
+def blob_store_id(token):
+    m = BLOB_TOKEN_RE.fullmatch(token or "")
+    return m.group(1) if m else None
 
 
 def rpc_link(v):

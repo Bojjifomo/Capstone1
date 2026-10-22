@@ -1048,7 +1048,9 @@ def settings():
             for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key),
                          ("VERCEL_BLOB_TOKEN", blob)):
                 if v.strip():
-                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else v.strip()
+                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else \
+                        config.blob_token(v) if k == "VERCEL_BLOB_TOKEN" else v.strip()
+            bad_blob = "VERCEL_BLOB_TOKEN" in upd and not config.blob_store_id(upd["VERCEL_BLOB_TOKEN"])
             bad = [k for k in ("RPC_URL", "CALL_RPC_URL") if k in upd and not upd[k].startswith(("https://", "http://"))]
 
             def not_number(v):
@@ -1059,6 +1061,9 @@ def settings():
             nan = [k for k in vals if k in upd and not_number(upd[k])]
             if bad:
                 st.error("An RPC needs a link starting with https:// (or, for RPC 2, just an Alchemy API key)")
+            elif bad_blob:
+                import publish
+                st.error(publish.BAD_TOKEN)
             elif nan:
                 st.error("These need a number (0 or more): " + ", ".join(nan))
             elif upd:
