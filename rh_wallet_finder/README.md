@@ -183,19 +183,19 @@ Setup sekali:
    `Bojjifomo/Capstone1`.
    - **Root Directory**: `rh_wallet_finder/web`
    - Framework Preset: **Other** (nggak ada build step) → **Deploy**.
-   - Kode ini ada di branch `claude/zealous-cori-4ictv9`, belum di `main`:
-     di project Vercel → **Settings → Git → Production Branch** isi
-     `claude/zealous-cori-4ictv9` (atau merge branch-nya ke `main` dulu).
 3. Project itu → **Storage → Create → Blob** → bikin store (akses **Private**
    atau Public, dua-duanya jalan: private lebih aman, file snapshot-nya cuma
-   kebaca lewat web lu), **Connect** ke project (semua environment). Vercel nambahin `BLOB_READ_WRITE_TOKEN` ke
-   project; **Redeploy** sekali biar fungsinya kebaca token itu.
+   kebaca lewat web lu), **Connect** ke project (Production + Preview), terus
+   **Redeploy** sekali. Web-nya baca store yang ke-connect pakai token OIDC
+   bawaan Vercel (`BLOB_STORE_ID`), jadi nggak perlu nyalin token ke project.
+   Kalau store-nya dihapus terus bikin baru, connect yang baru, Redeploy, dan
+   ganti token di Mac (langkah 4).
 4. Di Blob store → tab **.env.local** (klik ikon mata biar kelihatan), copy
    nilai `BLOB_READ_WRITE_TOKEN`: yang di dalam tanda kutip, bentuknya
    `vercel_blob_rw_<id store>_<rahasia>`. Paste di Wallet Finder → **Settings →
    Web showcase · Vercel Blob token** → Save → klik **Publish now**. (Kalau
    ke-paste satu baris penuh `BLOB_READ_WRITE_TOKEN="…"`, app ngambil
-   token-nya sendiri.)
+   token-nya sendiri.) Token ini cuma buat Mac (upload); jangan taruh di repo.
 5. Buka `https://<nama-project>.vercel.app`, share link-nya.
 
 Upload otomatis maksimal sekali tiap `PUBLISH_MINUTES` (default 30 menit, ubah
