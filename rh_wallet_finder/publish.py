@@ -7,12 +7,17 @@ Only public chain data goes out: wallet addresses and the figures worked out
 from their LP positions. Labels, notes, the watchlist, LP Agent results, RH
 Smart LP Finder rankings and every key stay here.
 
-Upload, as @vercel/blob's put() does it (its source, api version 13):
-  PUT https://vercel.com/api/blob/?pathname=rhwf/snapshot.json.gz
-  authorization: Bearer <BLOB_READ_WRITE_TOKEN>, x-vercel-blob-access: private | public, ...
+Two ways up:
+  - through the site (VERCEL_PUBLISH_URL, https://<site>/api/publish?key=…): PUT
+    the gzipped file with the key; the site's own function writes it to the
+    project's Blob store with Vercel's OIDC credential. Nothing to renew.
+  - straight to Blob (VERCEL_BLOB_TOKEN), as @vercel/blob's put() does it (api
+    version 13): PUT https://vercel.com/api/blob/?pathname=rhwf/snapshot.json.gz
+    with authorization: Bearer <BLOB_READ_WRITE_TOKEN>, x-vercel-blob-access, ...
+    The tokens the Vercel dashboard shows for a store now expire, so this one
+    stops working after a while.
 A Blob store is created either private or public and only takes uploads of its
-own kind: the first upload finds out which, and later ones remember it. The
-site's /api/snapshot reads the file with the project's own token either way.
+own kind: the first upload finds out which, and later ones remember it.
 """
 import gzip
 import json
@@ -79,6 +84,8 @@ def snapshot(con):
     return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views}
 
 
+EXPIRED = ("Blob tokens copied from the Vercel dashboard expire now. Publish through your site instead: paste its "
+           "publish link (https://<your site>/api/publish?key=…) in Settings → Web showcase.")
 BAD_TOKEN = ("That isn't a Vercel Blob read-write token. It looks like vercel_blob_rw_<store id>_<secret>: in "
              "Vercel open Storage → your Blob store → .env.local and copy the value of BLOB_READ_WRITE_TOKEN "
              "(only what's between the quotes) into Settings.")
@@ -109,9 +116,7 @@ def upload(data, token, pathname=PATHNAME, access="private", timeout=60):
         for kind in ("private", "public"):  # "Cannot use public access on a private store."
             if f"on a {kind} store" in msg.lower():
                 raise WrongAccess(msg, kind) from e
-        hint = f" {BAD_TOKEN}" if "store id" in msg.lower() else \
-            " Check the Vercel Blob token in Settings: copy it again from the Blob store's .env.local tab." \
-            if e.code in (401, 403) else ""
+        hint = f" {BAD_TOKEN}" if "store id" in msg.lower() else f" {EXPIRED}" if e.code in (401, 403) else ""
         raise PublishError(f"Vercel Blob said HTTP {e.code}: {msg}.{hint}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise PublishError(f"Can't reach Vercel Blob: {e}") from e
@@ -120,21 +125,51 @@ def upload(data, token, pathname=PATHNAME, access="private", timeout=60):
     return out["url"]
 
 
-def publish(con, token=None, log=print):
-    """Build the snapshot and upload it; remembers when and where in meta."""
-    token = token or config.load_env()["VERCEL_BLOB_TOKEN"]
-    if not token:
-        raise PublishError("No Vercel Blob token: paste it in Settings (Web showcase).")
+def upload_site(data, link, timeout=60):
+    """PUT the gzipped snapshot to the site's /api/publish -> the blob's URL."""
+    endpoint, key = config.split_publish_link(link)
+    if not key:
+        raise PublishError("The publish link has no key: copy the whole link, …/api/publish?key=…")
+    req = urllib.request.Request(endpoint, data=data, method="PUT", headers={
+        "authorization": f"Bearer {key}", "content-type": "application/octet-stream",
+        "user-agent": "rh-wallet-finder/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read()[:400].decode("utf-8", "replace")
+        try:
+            msg = json.loads(body)["error"]
+        except (ValueError, KeyError, TypeError):
+            msg = f"HTTP {e.code}" + (": the site has no /api/publish yet (redeploy it)" if e.code == 404 else "")
+        raise PublishError(f"The web showcase said: {msg}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise PublishError(f"Can't reach the web showcase: {e}") from e
+    if not isinstance(out, dict) or "url" not in out:
+        raise PublishError(f"Unexpected answer from the web showcase: {str(out)[:200]}")
+    return out["url"]
+
+
+def publish(con, cfg=None, log=print):
+    """Build the snapshot and upload it (through the site's publish link if set,
+    else straight to Blob); remembers when and where in meta."""
+    cfg = cfg or config.load_env()
+    link, token = cfg.get("VERCEL_PUBLISH_URL"), cfg.get("VERCEL_BLOB_TOKEN")
+    if not (link or token):
+        raise PublishError("Nowhere to publish yet: paste the site's publish link in Settings (Web showcase).")
     snap = snapshot(con)
     data = gzip.compress(json.dumps(snap, separators=(",", ":")).encode(), 9)
-    access = get_meta(con, "blob_access") or "private"
     try:
-        try:
-            url = upload(data, token, access=access)
-        except WrongAccess as e:  # the store is the other kind: say so once, then remember it
-            access = e.access
-            url = upload(data, token, access=access)
-        set_meta(con, "blob_access", access)
+        if link:
+            url = upload_site(data, link)
+        else:
+            access = get_meta(con, "blob_access") or "private"
+            try:
+                url = upload(data, token, access=access)
+            except WrongAccess as e:  # the store is the other kind: say so once, then remember it
+                access = e.access
+                url = upload(data, token, access=access)
+            set_meta(con, "blob_access", access)
     except PublishError as e:
         set_meta(con, "publish_error", str(e))
         con.commit()

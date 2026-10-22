@@ -1088,11 +1088,13 @@ def settings():
                              help="With two RPCs, price reads are shared between them, and whichever one "
                                   "rate limits or runs out of quota rests while the other carries on (sync too).")
         key = st.text_input(f"LP Agent API key · {'set' if cfg['LPAGENT_API_KEY'] else 'not set'}", type="password")
-        blob = st.text_input(f"Web showcase · Vercel Blob token · {'set' if cfg['VERCEL_BLOB_TOKEN'] else 'not set'}",
-                             type="password", placeholder="vercel_blob_rw_…",
-                             help="From your Vercel project: Storage → your Blob store → .env.local "
-                                  "(BLOB_READ_WRITE_TOKEN). With it, the worker uploads a read-only copy of the "
-                                  "boards after each ranking. Labels, notes, the watchlist and keys never go out.")
+        now_pub = "publish link set" if cfg["VERCEL_PUBLISH_URL"] else \
+            "Blob token set (these expire: use the publish link)" if cfg["VERCEL_BLOB_TOKEN"] else "not set"
+        blob = st.text_input(f"Web showcase · publish link · {now_pub}", type="password",
+                             placeholder="https://<your site>.vercel.app/api/publish?key=…",
+                             help="Your site's publish link (README: Web showcase). With it, the worker uploads a "
+                                  "read-only copy of the boards after each ranking. Labels, notes, the watchlist "
+                                  "and keys never go out. A Blob read-write token works here too, until it expires.")
         a, b, c = st.columns(3)
         since_launch = int((time.time() - config.CHAIN_LAUNCH_TS) / 86400) + 1
         vals = {
@@ -1120,12 +1122,18 @@ def settings():
         }
         if st.form_submit_button("Save", type="primary"):
             upd = {k: v.strip() for k, v in vals.items() if v.strip() and v.strip() != cfg[k]}
-            for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key),
-                         ("VERCEL_BLOB_TOKEN", blob)):
+            for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key)):
                 if v.strip():
-                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else \
-                        config.blob_token(v) if k == "VERCEL_BLOB_TOKEN" else v.strip()
-            bad_blob = "VERCEL_BLOB_TOKEN" in upd and not config.blob_store_id(upd["VERCEL_BLOB_TOKEN"])
+                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else v.strip()
+            bad_blob = False
+            if blob.strip():  # the site's publish link, or a Blob token
+                link = config.publish_link(blob)
+                if link and config.split_publish_link(link)[1]:
+                    upd["VERCEL_PUBLISH_URL"] = link
+                elif config.blob_store_id(config.blob_token(blob)):
+                    upd["VERCEL_BLOB_TOKEN"] = config.blob_token(blob)
+                else:
+                    bad_blob = True
             bad = [k for k in ("RPC_URL", "CALL_RPC_URL") if k in upd and not upd[k].startswith(("https://", "http://"))]
 
             def not_number(v):
@@ -1137,8 +1145,8 @@ def settings():
             if bad:
                 st.error("An RPC needs a link starting with https:// (or, for RPC 2, just an Alchemy API key)")
             elif bad_blob:
-                import publish
-                st.error(publish.BAD_TOKEN)
+                st.error("Paste the site's whole publish link, https://<your site>.vercel.app/api/publish?key=… "
+                         "(or a Blob read-write token, vercel_blob_rw_…).")
             elif nan:
                 st.error("These need a number (0 or more): " + ", ".join(nan))
             elif upd:
@@ -1161,13 +1169,13 @@ def settings():
         st.caption(f"RH Smart LP Finder: {slf.get('saved', 0)} saved wallets and {slf.get('ranked', 0)} wallets from "
                    f"its pool rankings imported.")
     pub = stt.get("published") or {}
-    if stt.get("has_blob_token") or pub:
+    if stt.get("has_publish") or pub:
         c1, c2 = st.columns([1, 5])
-        if c1.button("Publish now", disabled=not stt.get("has_blob_token")):
+        if c1.button("Publish now", disabled=not stt.get("has_publish")):
             import publish
             con = conn()
             try:
-                publish.publish(con, cfg["VERCEL_BLOB_TOKEN"], log=lambda *a: None)
+                publish.publish(con, cfg, log=lambda *a: None)
                 st.toast("Published to the web showcase")
             except publish.PublishError as e:
                 st.error(str(e))

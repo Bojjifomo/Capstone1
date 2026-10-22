@@ -201,7 +201,7 @@ def cmd_publish(args, cfg):
         print(f"Wrote {args.out}")
         return
     try:
-        print(publish.publish(con, cfg["VERCEL_BLOB_TOKEN"]))
+        print(publish.publish(con, cfg))
     except publish.PublishError as e:
         sys.exit(str(e))
 

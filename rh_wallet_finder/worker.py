@@ -58,13 +58,13 @@ class Worker:
     def publish(self, con, cfg):
         """Upload the boards to the web showcase, if it's set up and the last
         upload is PUBLISH_MINUTES old; never stops the loop."""
-        if not cfg.get("VERCEL_BLOB_TOKEN"):
+        if not (cfg.get("VERCEL_PUBLISH_URL") or cfg.get("VERCEL_BLOB_TOKEN")):
             return
         last = (publish.last(con) or {}).get("at") or 0
         if time.time() - last < float(cfg.get("PUBLISH_MINUTES") or 30) * 60:
             return
         try:
-            publish.publish(con, cfg["VERCEL_BLOB_TOKEN"], self.log)
+            publish.publish(con, cfg, self.log)
         except Exception as e:  # noqa: BLE001 - the showcase is optional
             self.log(f"Web showcase not updated: {e}")
 
