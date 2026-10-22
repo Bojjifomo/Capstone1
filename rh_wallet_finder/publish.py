@@ -9,7 +9,10 @@ Smart LP Finder rankings and every key stay here.
 
 Upload, as @vercel/blob's put() does it (its source, api version 13):
   PUT https://vercel.com/api/blob/?pathname=rhwf/snapshot.json.gz
-  authorization: Bearer <BLOB_READ_WRITE_TOKEN>, x-vercel-blob-access: public, ...
+  authorization: Bearer <BLOB_READ_WRITE_TOKEN>, x-vercel-blob-access: private | public, ...
+A Blob store is created either private or public and only takes uploads of its
+own kind: the first upload finds out which, and later ones remember it. The
+site's /api/snapshot reads the file with the project's own token either way.
 """
 import gzip
 import json
@@ -29,14 +32,23 @@ MAX_ROWS = 2000  # per view
 VIEWS = ("raw", "real", "d1raw", "d1real")
 
 # what the page shows and filters on; nothing personal
-FIELDS = ("addr", "kind", "kind_fit", "score", "verdict", "worth", "net", "roi_win", "net_7d", "momentum", "net_1d",
-          "float", "total", "roi", "win", "pf", "daily", "fees", "dd", "recover", "recover_open", "usdg", "size",
-          "duration", "trades", "closed_trades", "closed", "flat", "style", "style_conf", "sim_pct", "range", "mcap",
-          "open", "concur", "copy", "copiers", "exposure", "open_now", "first_seen", "last_seen", "span_days")
+FIELDS = ("addr", "kind", "kind_fit", "score", "verdict", "worth", "net", "roi_nw", "roi_win", "net_7d", "momentum",
+          "net_1d", "avg_month", "pnl_3m", "pnl_all", "roi_all", "hist_from", "float", "total", "roi", "win", "win_pos",
+          "pf", "daily", "fees", "dd", "recover", "recover_open", "usdg", "size", "duration", "trades", "closed_trades",
+          "closed", "flat", "style", "style_conf", "sim_pct", "range", "mcap", "open", "concur", "copy", "copiers",
+          "exposure", "open_now", "first_seen", "last_seen", "span_days")
 
 
 class PublishError(Exception):
     pass
+
+
+class WrongAccess(PublishError):
+    """The store only takes the other kind of upload (private / public)."""
+
+    def __init__(self, msg, access):
+        super().__init__(msg)
+        self.access = access
 
 
 def _num(v):
@@ -67,11 +79,21 @@ def snapshot(con):
     return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views}
 
 
-def upload(data, token, pathname=PATHNAME, timeout=60):
-    """PUT bytes to the Blob store behind token -> the blob's public URL."""
+BAD_TOKEN = ("That isn't a Vercel Blob read-write token. It looks like vercel_blob_rw_<store id>_<secret>: in "
+             "Vercel open Storage → your Blob store → .env.local and copy the value of BLOB_READ_WRITE_TOKEN "
+             "(only what's between the quotes) into Settings.")
+
+
+def upload(data, token, pathname=PATHNAME, access="private", timeout=60):
+    """PUT bytes to the Blob store behind token -> the blob's URL."""
+    token = config.blob_token(token)
+    store = config.blob_store_id(token)
+    if not store:
+        raise PublishError(BAD_TOKEN)
     req = urllib.request.Request(
         BLOB_API + "?" + urllib.parse.urlencode({"pathname": pathname}), data=data, method="PUT", headers={
-            "authorization": f"Bearer {token}", "x-api-version": "13", "x-vercel-blob-access": "public",
+            "authorization": f"Bearer {token}", "x-vercel-blob-store-id": store,
+            "x-api-version": "13", "x-vercel-blob-access": access,
             "x-content-type": "application/gzip", "x-add-random-suffix": "0", "x-allow-overwrite": "1",
             "x-cache-control-max-age": "60", "content-type": "application/octet-stream",
             "user-agent": "rh-wallet-finder/1.0"})
@@ -84,7 +106,12 @@ def upload(data, token, pathname=PATHNAME, timeout=60):
             msg = json.loads(body)["error"]["message"]
         except (ValueError, KeyError, TypeError):
             msg = body or e.reason
-        hint = " Check the Vercel Blob token in Settings." if e.code in (401, 403) else ""
+        for kind in ("private", "public"):  # "Cannot use public access on a private store."
+            if f"on a {kind} store" in msg.lower():
+                raise WrongAccess(msg, kind) from e
+        hint = f" {BAD_TOKEN}" if "store id" in msg.lower() else \
+            " Check the Vercel Blob token in Settings: copy it again from the Blob store's .env.local tab." \
+            if e.code in (401, 403) else ""
         raise PublishError(f"Vercel Blob said HTTP {e.code}: {msg}.{hint}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise PublishError(f"Can't reach Vercel Blob: {e}") from e
@@ -100,8 +127,14 @@ def publish(con, token=None, log=print):
         raise PublishError("No Vercel Blob token: paste it in Settings (Web showcase).")
     snap = snapshot(con)
     data = gzip.compress(json.dumps(snap, separators=(",", ":")).encode(), 9)
+    access = get_meta(con, "blob_access") or "private"
     try:
-        url = upload(data, token)
+        try:
+            url = upload(data, token, access=access)
+        except WrongAccess as e:  # the store is the other kind: say so once, then remember it
+            access = e.access
+            url = upload(data, token, access=access)
+        set_meta(con, "blob_access", access)
     except PublishError as e:
         set_meta(con, "publish_error", str(e))
         con.commit()

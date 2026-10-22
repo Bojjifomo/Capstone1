@@ -22,6 +22,9 @@ POSITION_MANAGER = "0x58daec3116aae6d93017baaea7749052e8a04fa7"
 STATE_VIEW = "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
 MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11"
 
+# Public mainnet launch (1 Jul 2026): "ALL" history can't start earlier.
+CHAIN_LAUNCH_TS = 1782864000
+
 ZERO = "0x" + "0" * 40  # native ETH as a V4 currency
 WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
 USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
@@ -144,7 +147,24 @@ def load_env():
             vals["RPC_SOURCE"] = f"{d.name}/.env" if d else "RH_RPC_* environment"
     for k in ("RPC_URL", "CALL_RPC_URL"):
         vals[k] = rpc_link(vals[k])
+    vals["VERCEL_BLOB_TOKEN"] = blob_token(vals["VERCEL_BLOB_TOKEN"])
     return vals
+
+
+# vercel_blob_rw_<store id>_<secret>: the store id is what Vercel looks for
+BLOB_TOKEN_RE = re.compile(r"vercel_blob_rw_([A-Za-z0-9]+)_([^\s\"'`]+)")
+
+
+def blob_token(v):
+    """The Blob read-write token out of whatever was pasted: the bare value, a
+    whole BLOB_READ_WRITE_TOKEN="…" line, quotes or spaces around it."""
+    m = BLOB_TOKEN_RE.search(v or "")
+    return m.group(0) if m else (v or "").strip().strip("\"'")
+
+
+def blob_store_id(token):
+    m = BLOB_TOKEN_RE.fullmatch(token or "")
+    return m.group(1) if m else None
 
 
 def rpc_link(v):

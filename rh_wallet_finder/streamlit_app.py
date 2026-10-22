@@ -284,16 +284,22 @@ COLS = [
     ("kind", "Class", "Wallet", None, "Multiday: its trades' median hold is at least the line in Settings (2 h by default); Degen: below it. A reference wallet keeps the class you gave it."),
     ("verdict", "Tier", "Wallet", "tier", "Elite ≥ 70, Strong ≥ 60, Decent ≥ 50, Weak ≥ 40, else Avoid."),
     ("worth", "Net worth", "Wallet", None, "ETH + USDG in the wallet + what its open positions are worth (other tokens it holds aren't counted)."),
-    ("net", "PnL {d}D", "Performance", "signed", "Realized: positions closed in the window, everything taken out + fees − everything put in."),
-    ("roi_win", "ROI {d}D", "Performance", "signed", "PnL {d}D over the capital it kept deployed in that time (time-weighted, never below its median trade)."),
+    ("net", "PnL {d}D", "Performance", "signed", "Realized: positions closed in the window, everything taken out + fees − everything put in. A wallet whose older positions are still being priced is measured over part of the window (its dossier says how much)."),
+    ("roi_nw", "ROI {d}D", "Performance", "signed", "PnL {d}D ÷ net worth now, the way RH Discovery reads ROI. A wallet that took its profit out reads high."),
     ("net_7d", "PnL 7D", "Performance", "signed", "Realized PnL of positions closed in the last 7 days."),
     ("momentum", "7D/{d}D", "Performance", None, "Share of the window's PnL made in the last 7 days (when that PnL is positive). About 0.23 is an even pace; higher = heating up, near 0 = gone quiet."),
     ("net_1d", "PnL 24h", "Performance", "signed", "Realized PnL of positions closed in the last 24 hours."),
+    ("avg_month", "Avg / month", "History", "signed", "PnL ALL ÷ calendar months since its first LP (first LP on 14 Aug, now October = 3 months)."),
+    ("pnl_3m", "PnL 3M", "History", "signed", "Realized PnL of positions closed in the last 90 days."),
+    ("pnl_all", "PnL ALL", "History", "signed", "Realized PnL of every priced position. For a wallet already active when our data starts it runs from there (the header's History), not from its first LP: load more with Backfill days in Settings."),
+    ("roi_all", "ROI ALL", "History", "signed", "PnL ALL ÷ everything those positions ever deposited."),
     ("float", "Open PnL", "Performance", "signed", "PnL of positions still open: current value + unclaimed fees − deposits."),
     ("total", "Total {d}D", "Performance", "signed", "PnL {d}D + open PnL."),
-    ("roi", "ROI/mo", "Performance", "signed", "PnL per month over the capital it keeps deployed, measured over the days it has been active: a wallet active for 5 days isn't counted as idle for the other 25."),
-    ("win", "Win", "Performance", "up", "Winning trades out of trades that won or lost. A trade is what opened in one transaction (a 5-range ladder is one trade); one that ended within ±0.05% of its deposit, e.g. a ladder the price never reached, is flat and left out."),
+    ("win_pos", "Win", "Performance", "up", "Winning positions out of positions that won or lost, as RH Discovery counts it. A range that ended within ±0.05% of its deposit (one the price never reached) is flat and left out."),
+    ("win", "Trade win", "Performance", "up", "The same per trade: what opened in one transaction counts once (a 5-range ladder is one trade), so a ladder with one losing leg can still be a winning trade. The score uses this one."),
     ("pf", "Profit factor", "Performance", "up", "What winning trades made ÷ what losing trades lost. Above 1 makes money; ∞ = no losing trade yet."),
+    ("roi_win", "Capital ROI {d}D", "Performance", "signed", "PnL {d}D over the capital it kept deployed in that time (time-weighted, never below its median trade). Unlike ROI {d}D it doesn't change when the wallet moves money out."),
+    ("roi", "ROI/mo", "Performance", "signed", "PnL per month over the capital it keeps deployed, measured over the days it has been active: a wallet active for 5 days isn't counted as idle for the other 25."),
     ("daily", "Green days", "Performance", "up", "Share of days with closes that ended in profit."),
     ("fees", "Fees {d}D", "Performance", "up", "LP fees earned (claimed + unclaimed), USD."),
     ("dd", "Max DD", "Risk", "up", "Deepest drop of the realized PnL curve, as % of deployed capital."),
@@ -320,6 +326,9 @@ COLS = [
     ("scan", "Explorer", "Links", None, "The wallet on the Robinhood Chain explorer."),
 ]
 SHORT_WINDOW_ONLY = ("net_7d", "momentum", "net_1d")  # meaningless on the 24 h board
+NUM_KEYS = ["score", "net", "float", "total", "roi", "win", "win_pos", "pf", "daily", "fees", "dd", "recover", "copiers",
+            "duration", "range", "size", "usdg", "mcap", "trades", "open", "concur", "open_now", "worth", "net_7d",
+            "net_1d", "momentum", "roi_win", "roi_nw", "closed_trades", "pnl_all", "pnl_3m", "avg_month", "roi_all"]
 
 
 def frame(rows, now, data_from):
@@ -330,10 +339,7 @@ def frame(rows, now, data_from):
     for r in rows:
         slf = r.get("slf")
         recs.append({
-            **{k: r.get(k) for k in ("rank", "score", "verdict", "net", "float", "total", "roi", "win", "pf", "daily",
-                                     "fees", "dd", "recover", "copy", "copiers", "duration", "range", "size", "usdg",
-                                     "mcap", "trades", "open", "concur", "open_now", "worth", "net_7d", "net_1d",
-                                     "momentum", "roi_win", "closed_trades")},
+            **{k: r.get(k) for k in ("rank", "verdict", "copy", *NUM_KEYS)},
             "addr": r["addr"], "label": r.get("label"), "starred": r.get("starred"),
             "kind": KIND_LABEL.get(r.get("kind"), "–"),
             "wallet": ("◆ " if r.get("ref") else "") + short(r["addr"]) + (f"  {r['label']}" if r.get("label") else ""),
@@ -350,9 +356,7 @@ def frame(rows, now, data_from):
             "lp": lpagent.link(r["addr"]), "scan": f"{config.EXPLORER}/address/{r['addr']}",
         })
     df = pd.DataFrame(recs).set_index("addr", drop=False)
-    nums = ["score", "net", "float", "total", "roi", "win", "pf", "daily", "fees", "dd", "recover", "copiers", "duration",
-            "range", "size", "usdg", "mcap", "trades", "open", "concur", "open_now", "worth", "age", "last", "exposure",
-            "net_7d", "net_1d", "momentum", "roi_win", "closed_trades"]
+    nums = NUM_KEYS + ["age", "last", "exposure"]
     df[nums] = df[nums].apply(pd.to_numeric, errors="coerce")  # a missing figure is NaN ("–"), never "None"
     return df
 
@@ -404,8 +408,9 @@ def heat(df):
 def formatters():
     return {
         "rank": lambda v: f"{v:.0f}", "score": f1, "net": usd, "float": usd, "total": usd, "net_7d": usd, "net_1d": usd,
-        "roi_win": lambda v: pct(v, 1), "momentum": lambda v: f"{v:.2f}", "usdg": pct,
-        "roi": lambda v: pct(v, 1), "win": pct, "pf": pf_fmt, "daily": pct, "fees": usd, "dd": lambda v: pct(v, 1),
+        "roi_win": lambda v: pct(v, 1), "roi_nw": lambda v: pct(v, 1), "momentum": lambda v: f"{v:.2f}", "usdg": pct,
+        "pnl_all": usd, "pnl_3m": usd, "avg_month": usd, "roi_all": lambda v: pct(v, 1),
+        "roi": lambda v: pct(v, 1), "win": pct, "win_pos": pct, "pf": pf_fmt, "daily": pct, "fees": usd, "dd": lambda v: pct(v, 1),
         "recover": lambda v: dur(v) if num(v) else "–",
         "copy": lambda v: FOLLOW.get(v, "–"), "copiers": lambda v: f"{v:.0f}" if num(v) is not None else "–",
         "exposure": lambda v: f"⚠ {v:.0f}%" if num(v) and v >= 50 else f"{num(v) or 0:.0f}%",
@@ -455,11 +460,11 @@ SELECTS = [
     ("f_size_min", "Min avg size", [ANY, 100, 300, 1000, 5000], _money, "Median USD per trade at least this."),
     ("f_size_max", "Max avg size", [ANY, 1000, 5000, 20000, 100000], _money, "Median USD per trade at most this."),
     ("f_worth", "Min net worth", [ANY, 1000, 10000, 100000], _money, "ETH + USDG in the wallet + open positions."),
-    ("f_roi", "Min ROI {d}D", [ANY, 0, 10, 25, 50, 100], lambda v: f"{v}%", "PnL over the window ÷ deployed capital."),
+    ("f_roi", "Min ROI {d}D", [ANY, 0, 10, 25, 50, 100], lambda v: f"{v}%", "PnL over the window ÷ net worth now."),
     ("f_mom", "7D/{d}D at least", [ANY, 0.1, 0.25, 0.5], lambda v: f"{v:g}",
      "Share of the window's PnL made in the last 7 days: still making money now, not just weeks ago."),
     ("f_usdg", "Min USDG %", [ANY, 50, 90, 100], lambda v: f"{v}%", "Share of deposits in USDG-paired pools."),
-    ("f_win", "Min win", [ANY, 50, 60, 70, 80, 90], lambda v: f"{v}%", "Winning trades out of decided ones."),
+    ("f_win", "Min win", [ANY, 50, 60, 70, 80, 90], lambda v: f"{v}%", "Winning positions out of decided ones."),
     ("f_float", "Max open loss", [ANY, 100, 1000, 10000], lambda v: "-" + _money(v), "Open PnL no worse than this."),
     ("f_dd", "Max drawdown", [ANY, 5, 10, 25, 50], lambda v: f"-{v}%", "Deepest drop no worse than this."),
     ("f_tier", "Min tier", [ANY, "Elite", "Strong", "Decent"], lambda v: f"{v}+" if v != "Elite" else v, ""),
@@ -559,8 +564,8 @@ def apply_filters(df, board):
         m &= df["addr"].str.contains(q, regex=False) | df["label"].fillna("").str.lower().str.contains(q, regex=False)
     if not s["f_bots"]:
         m &= df["copy"] != "✗"
-    at_least = {"f_closed": "closed_trades", "f_size_min": "size", "f_worth": "worth", "f_roi": "roi_win",
-                "f_mom": "momentum", "f_usdg": "usdg", "f_win": "win"}
+    at_least = {"f_closed": "closed_trades", "f_size_min": "size", "f_worth": "worth", "f_roi": "roi_nw",
+                "f_mom": "momentum", "f_usdg": "usdg", "f_win": "win_pos"}
     for f, c in at_least.items():
         if s[f] is not None:
             m &= df[c] >= s[f]
@@ -666,14 +671,20 @@ def board(view, key, kind=None, top=None):
     days = 1 if view.startswith("d1") else stt["metric_days"]
     if kind:
         hist = (stt["now"] - stt["data_from"]) / 86400 if stt["data_from"] else 0
+        cut = stt["data_from"] and stt["data_from"] > stt["launch"] + 86400
         st.caption(KIND_BLURB[kind].format(h=stt["multiday_hours"]) + f" Figures cover the last {days:g} days"
                    + (f" ({hist:.1f} loaded so far)" if hist < days - 0.5 else "")
                    + f"; ranked: {stt['settings']['MIN_CLOSED']}+ closed positions in them"
-                   + (f" and an LP action within {stt['active_days']:g} days." if stt["active_days"] else "."))
+                   + (f" and an LP action within {stt['active_days']:g} days." if stt["active_days"] else ".")
+                   + (f" PnL ALL / 3M / Avg per month see {hist:.0f} days back (since "
+                      f"{time.strftime('%d %b', time.gmtime(stt['data_from']))}), not to the chain's launch: "
+                      f"History to load in Settings." if cut else ""))
     df = frame(rows, stt["now"], stt["data_from"])
     what = f"{KIND_LABEL[kind].lower()} " if kind else ""
     pills = [f"<b>{len(df):,}</b> ranked {what}", f"<b>{stt['rated']:,}</b> rated of <b>{stt['discovered']:,}</b> found",
              f"<b>{stt['queue']:,}</b> positions in queue", f"ranked <b>{ago(stt['scored_at'], stt['now'])}</b>"]
+    if stt.get("history_queue"):
+        pills.insert(3, f"<b>{stt['history_queue']:,}</b> older ones for PnL ALL")
     st.markdown('<div class="pills">' + "".join(f"<span>{x}</span>" for x in pills) + "</div>", unsafe_allow_html=True)
     count_slot = filter_controls(key, saved_names, days)
     if df.empty:
@@ -765,11 +776,16 @@ def dossier(addr):
         trades = m.get("trades", m.get("pos"))
         days = f"{stt['metric_days']:g}D"
         mom = m.get("momentum")
-        cells = [("Score", f1(m["score"])), (f"PnL {days}", usd(m["net"])), (f"ROI {days}", pct(m.get("roi_win"), 1)),
+        since = f" (since {time.strftime('%d %b', time.gmtime(m['hist_from']))})" if m.get("hist_from") else ""
+        cells = [("Score", f1(m["score"])), ("Net worth", usd(m.get("worth"))), (f"PnL {days}", usd(m["net"])),
+                 (f"ROI {days}", pct(m.get("roi_nw"), 1)), (f"Capital ROI {days}", pct(m.get("roi_win"), 1)),
                  ("ROI/mo", pct(m["roi"], 1)),
                  ("PnL 7D", usd(m.get("net_7d"))), (f"7D/{days}", "–" if mom is None else f"{mom:.2f}"),
                  ("PnL 24h", usd(m.get("net_1d"))), ("Open PnL", usd(m["float"])),
-                 (f"Total {days}", usd(m.get("total", m["net"] + m["float"]))), ("Win", pct(m["win"])),
+                 (f"Total {days}", usd(m.get("total", m["net"] + m["float"]))),
+                 ("Avg / month", usd(m.get("avg_month"))), ("PnL 3M", usd(m.get("pnl_3m"))),
+                 ("PnL ALL" + since, usd(m.get("pnl_all"))), ("ROI ALL", pct(m.get("roi_all"), 1)),
+                 ("Win", pct(m.get("win_pos"))), ("Trade win", pct(m["win"])),
                  ("Profit factor", pf_fmt(m.get("pf"))), ("Green days", pct(m["daily"])),
                  ("Max DD", pct(m["dd"], 1)), ("Recovery", recover), (f"Fees {days}", usd(m["fees"])),
                  ("Avg size", usd(m["size"])), ("Hold", dur(m["duration"])), ("Range", range_fmt(m["range"])),
@@ -779,9 +795,13 @@ def dossier(addr):
                  ("Entry mcap", usd(m.get("mcap")))]
         st.markdown('<div class="dk">' + "".join(f"<div><small>{k}</small><span>{v}</span></div>" for k, v in cells)
                     + "</div>", unsafe_allow_html=True)
-        if m.get("span_days") is not None and m["span_days"] < stt["metric_days"] - 0.5:
-            st.caption(f"Measured over its last {m['span_days']:.1f} days: active that long, or older positions "
-                       "not priced yet.")
+        if m.get("priced_from"):
+            st.caption(f"PnL {days} covers only its last {(now - m['priced_from']) / 86400:.1f} days so far: its "
+                       "older positions in the window are still in the pricing queue.")
+        elif m.get("span_days") is not None and m["span_days"] < stt["metric_days"] - 0.5:
+            st.caption(f"Measured over its last {m['span_days']:.1f} days: it has been active that long.")
+        if m.get("hist_gap"):
+            st.caption(f"PnL ALL leaves out {m['hist_gap']:,} older positions not priced yet.")
 
     pos = pd.DataFrame(d["positions"])
     if not pos.empty:
@@ -1003,6 +1023,56 @@ def watchlist():
         dossier(pick)
 
 
+# ------------------------------------------------------ vs RH Discovery ---
+def rhd_check():
+    import compare
+    st.markdown("#### Check our figures against RH Discovery")
+    st.caption("On RH Discovery, select rows of its table (the header row too, if you like), copy them (⌘C) and "
+               "paste them here. Each wallet is matched to ours by its short address and its figures are set next "
+               "to ours: ✓ within tolerance, ✗ further apart. Both sides count PnL, net worth, ROI and win rate "
+               "the same way (see the field guide).")
+    text = st.text_area("RH Discovery rows", key="rhd_text", height=150,
+                        placeholder="46\t79.0\t0x5784…4ffd\t$2866\t+$3858\t+134.6%\t…")
+    if not text.strip():
+        return
+    rows = compare.parse(text)
+    if not rows:
+        st.warning("No rows with a wallet (0x…) cell found in what you pasted.")
+        return
+    con = conn()
+    res = compare.compare(con, rows)
+    con.close()
+    s = res["summary"]
+    pills = [f"<b>{s['pasted']}</b> pasted", f"<b>{s['ranked']}</b> ranked by us",
+             f"<b>{s['not_ranked']}</b> found, not ranked", f"<b>{s['not_in_data']}</b> not in our data"]
+    if s["ambiguous"]:
+        pills.append(f"<b>{s['ambiguous']}</b> ambiguous")
+    pills += [f"{p['label']} <b>{p['same']}/{p['compared']}</b> ✓" for p in s["per_metric"].values() if p["compared"]]
+    st.markdown('<div class="pills">' + "".join(f"<span>{x}</span>" for x in pills) + "</div>", unsafe_allow_html=True)
+    fmt = {"win_pos": lambda v: pct(v, 1), "roi_nw": lambda v: pct(v, 1), "roi_all": lambda v: pct(v, 1)}
+    recs, css = [], []
+    for r in res["rows"]:
+        rec = {"Wallet": r["wallet"], "Ours": r["status"] + (f": {r['reason']}" if r["reason"] else "")}
+        mark = {"Wallet": "", "Ours": "" if r["status"] == "ranked" else "color: #fab219"}
+        for c in r["checks"] or [{"key": k, "label": lab, "theirs": r["rhd"].get(k), "ours": None, "same": None}
+                                 for k, lab, _ in compare.CHECKS]:
+            f = fmt.get(c["key"], usd)
+            rec[f"{c['label']} · RHD"] = f(c["theirs"]) if c["theirs"] is not None else "–"
+            rec[f"{c['label']} · ours"] = (f(c["ours"]) if c["ours"] is not None else "–") +                 ("" if c["same"] is None else " ✓" if c["same"] else " ✗")
+            mark[f"{c['label']} · RHD"] = ""
+            mark[f"{c['label']} · ours"] = "" if c["same"] is None else \
+                f"background-color: rgba({BLUE},0.22)" if c["same"] else f"background-color: rgba({RED},0.22)"
+        rec["Notes"] = " · ".join(r["notes"])
+        mark["Notes"] = ""
+        recs.append(rec)
+        css.append(mark)
+    df, cdf = pd.DataFrame(recs), pd.DataFrame(css)
+    st.dataframe(df.style.apply(lambda _: cdf[df.columns], axis=None), hide_index=True, **stretch(st.dataframe),
+                 height=auto_height(len(df), 620))
+    for note in compare.explain(s):
+        st.caption(note)
+
+
 # ------------------------------------------------------------- settings ---
 def settings():
     stt = st.session_state.get("status") or {}
@@ -1024,8 +1094,13 @@ def settings():
                                   "(BLOB_READ_WRITE_TOKEN). With it, the worker uploads a read-only copy of the "
                                   "boards after each ranking. Labels, notes, the watchlist and keys never go out.")
         a, b, c = st.columns(3)
+        since_launch = int((time.time() - config.CHAIN_LAUNCH_TS) / 86400) + 1
         vals = {
-            "BACKFILL_DAYS": a.text_input("History to load (days)", cfg["BACKFILL_DAYS"]),
+            "BACKFILL_DAYS": a.text_input("History to load (days)", cfg["BACKFILL_DAYS"],
+                                          help=f"PnL ALL, PnL 3M and Avg / month only see this far back. RH "
+                                               f"Discovery's go back to the chain's launch (1 Jul 2026): "
+                                               f"{since_launch} days. More history = more blocks to sync and more "
+                                               f"positions to price (after the window's own)."),
             "METRIC_DAYS": b.text_input("Performance window (days)", cfg["METRIC_DAYS"],
                                         help="Every figure covers this many days; a wallet needs Min closed "
                                              "positions inside it to be ranked at all."),
@@ -1048,7 +1123,9 @@ def settings():
             for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key),
                          ("VERCEL_BLOB_TOKEN", blob)):
                 if v.strip():
-                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else v.strip()
+                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else \
+                        config.blob_token(v) if k == "VERCEL_BLOB_TOKEN" else v.strip()
+            bad_blob = "VERCEL_BLOB_TOKEN" in upd and not config.blob_store_id(upd["VERCEL_BLOB_TOKEN"])
             bad = [k for k in ("RPC_URL", "CALL_RPC_URL") if k in upd and not upd[k].startswith(("https://", "http://"))]
 
             def not_number(v):
@@ -1059,6 +1136,9 @@ def settings():
             nan = [k for k in vals if k in upd and not_number(upd[k])]
             if bad:
                 st.error("An RPC needs a link starting with https:// (or, for RPC 2, just an Alchemy API key)")
+            elif bad_blob:
+                import publish
+                st.error(publish.BAD_TOKEN)
             elif nan:
                 st.error("These need a number (0 or more): " + ", ".join(nan))
             elif upd:
@@ -1145,8 +1225,8 @@ def main():
                     f'position returns (median <b>{fee}%</b>: pool fee + {stt.get("slippage", 1)}% slippage), and the '
                     f'board is re-ranked on those numbers.</div>', unsafe_allow_html=True)
     real = st.session_state.get("real", False)
-    t_multi, t_degen, t_day, t_twin, t_watch, t_set = st.tabs(
-        ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "Settings"])
+    t_multi, t_degen, t_day, t_twin, t_watch, t_rhd, t_set = st.tabs(
+        ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "vs RH Discovery", "Settings"])
     for tab, kind in ((t_multi, "multiday"), (t_degen, "degen")):
         with tab:
             live_board("real" if real else "raw", kind, kind=kind)
@@ -1158,6 +1238,8 @@ def main():
         twins()
     with t_watch:
         watchlist()
+    with t_rhd:
+        rhd_check()
     with t_set:
         settings()
 

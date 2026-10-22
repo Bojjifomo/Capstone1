@@ -58,15 +58,21 @@ const COLS = [
   ["verdict", "Tier", "Wallet", "tier", v => v || "–", "Elite ≥ 70, Strong ≥ 60, Decent ≥ 50, Weak ≥ 40, else Avoid."],
   ["worth", "Net worth", "Wallet", null, usd, "ETH + USDG in the wallet + what its open positions are worth (other tokens it holds aren't counted)."],
   ["net", "PnL {d}D", "Performance", "signed", usd, "Realized: positions closed in the window, everything taken out + fees − everything put in."],
-  ["roi_win", "ROI {d}D", "Performance", "signed", v => pct(v, 1), "PnL {d}D over the capital it kept deployed in that time (time-weighted, never below its median trade)."],
+  ["roi_nw", "ROI {d}D", "Performance", "signed", v => pct(v, 1), "PnL {d}D ÷ net worth now (how RH Discovery reads ROI). A wallet that took its profit out reads high."],
   ["net_7d", "PnL 7D", "Performance", "signed", usd, "Realized PnL of positions closed in the last 7 days."],
   ["momentum", "7D/{d}D", "Performance", null, v => num(v) === null ? "–" : (+v).toFixed(2), "Share of the window's PnL made in the last 7 days (when that PnL is positive). About 0.23 is an even pace; higher = heating up, near 0 = gone quiet."],
   ["net_1d", "PnL 24h", "Performance", "signed", usd, "Realized PnL of positions closed in the last 24 hours."],
+  ["avg_month", "Avg / month", "History", "signed", usd, "PnL ALL ÷ calendar months since its first LP."],
+  ["pnl_3m", "PnL 3M", "History", "signed", usd, "Realized PnL of positions closed in the last 90 days."],
+  ["pnl_all", "PnL ALL", "History", "signed", usd, "Realized PnL of every priced position, as far back as the scanner's history goes."],
+  ["roi_all", "ROI ALL", "History", "signed", v => pct(v, 1), "PnL ALL ÷ everything those positions ever deposited."],
   ["float", "Open PnL", "Performance", "signed", usd, "PnL of positions still open: current value + unclaimed fees − deposits."],
   ["total", "Total {d}D", "Performance", "signed", usd, "PnL {d}D + open PnL."],
-  ["roi", "ROI/mo", "Performance", "signed", v => pct(v, 1), "PnL per month over the capital it keeps deployed, measured over the days it has been active."],
-  ["win", "Win", "Performance", "up", pct, "Winning trades out of trades that won or lost. Ranges opened in one transaction (a ladder) are one trade; one that ended within ±0.05% of its deposit is flat and left out."],
+  ["win_pos", "Win", "Performance", "up", pct, "Winning positions out of positions that won or lost (RH Discovery's count). A range that ended within ±0.05% of its deposit is flat and left out."],
+  ["win", "Trade win", "Performance", "up", pct, "The same per trade: ranges opened in one transaction (a ladder) count once."],
   ["pf", "Profit factor", "Performance", "up", pfFmt, "What winning trades made ÷ what losing trades lost. Above 1 makes money; ∞ = no losing trade yet."],
+  ["roi_win", "Capital ROI {d}D", "Performance", "signed", v => pct(v, 1), "PnL {d}D over the capital it kept deployed in that time (time-weighted, never below its median trade)."],
+  ["roi", "ROI/mo", "Performance", "signed", v => pct(v, 1), "PnL per month over the capital it keeps deployed, measured over the days it has been active."],
   ["daily", "Green days", "Performance", "up", pct, "Share of days with closes that ended in profit."],
   ["fees", "Fees {d}D", "Performance", "up", usd, "LP fees earned (claimed + unclaimed), USD."],
   ["dd", "Max DD", "Risk", "up", v => pct(v, 1), "Deepest drop of the realized PnL curve, as % of deployed capital."],
@@ -99,10 +105,10 @@ const SELECTS = [
   ["f_size_min", "Min avg size", ["any", 100, 300, 1000, 5000], money, "Median USD per trade at least this."],
   ["f_size_max", "Max avg size", ["any", 1000, 5000, 20000, 100000], money, "Median USD per trade at most this."],
   ["f_worth", "Min net worth", ["any", 1000, 10000, 100000], money, "ETH + USDG in the wallet + open positions."],
-  ["f_roi", "Min ROI {d}D", ["any", 0, 10, 25, 50, 100], v => `${v}%`, "PnL over the window ÷ deployed capital."],
+  ["f_roi", "Min ROI {d}D", ["any", 0, 10, 25, 50, 100], v => `${v}%`, "PnL over the window ÷ net worth now."],
   ["f_mom", "7D/{d}D at least", ["any", 0.1, 0.25, 0.5], v => `${v}`, "Share of the window's PnL made in the last 7 days: still making money now."],
   ["f_usdg", "Min USDG %", ["any", 50, 90, 100], v => `${v}%`, "Share of deposits in USDG-paired pools."],
-  ["f_win", "Min win", ["any", 50, 60, 70, 80, 90], v => `${v}%`, "Winning trades out of decided ones."],
+  ["f_win", "Min win", ["any", 50, 60, 70, 80, 90], v => `${v}%`, "Winning positions out of decided ones."],
   ["f_float", "Max open loss", ["any", 100, 1000, 10000], v => "-" + money(v), "Open PnL no worse than this."],
   ["f_dd", "Max drawdown", ["any", 5, 10, 25, 50], v => `-${v}%`, "Deepest drop no worse than this."],
   ["f_tier", "Min tier", ["any", "Elite", "Strong", "Decent"], v => v === "Elite" ? v : `${v}+`, "Tier at least this."],
@@ -164,8 +170,8 @@ function boardRows() {
 function applyFilters(rows) {
   const f = filters();
   const v = k => f[k] === "any" ? null : f[k];
-  const atLeast = { f_closed: "closed_trades", f_size_min: "size", f_worth: "worth", f_roi: "roi_win", f_mom: "momentum",
-                    f_usdg: "usdg", f_win: "win" };
+  const atLeast = { f_closed: "closed_trades", f_size_min: "size", f_worth: "worth", f_roi: "roi_nw", f_mom: "momentum",
+                    f_usdg: "usdg", f_win: "win_pos" };
   const q = (f.q || "").trim().toLowerCase();
   return rows.filter(r => {
     if (q && !r.addr.includes(q)) return false;
@@ -375,9 +381,12 @@ function openDrawer(addr) {
   lastFocus = document.activeElement;
   const d = `${days()}D`;
   const mom = num(r.momentum);
-  const cells = [["Score", f1(r.score)], [`PnL ${d}`, usd(r.net)], [`ROI ${d}`, pct(r.roi_win, 1)], ["ROI/mo", pct(r.roi, 1)],
-    ["PnL 7D", usd(r.net_7d)], [`7D/${d}`, mom === null ? "–" : mom.toFixed(2)], ["PnL 24h", usd(r.net_1d)], ["Open PnL", usd(r.float)],
-    [`Total ${d}`, usd(r.total)], ["Win", pct(r.win)], ["Profit factor", pfFmt(r.pf)], ["Green days", pct(r.daily)],
+  const since = r.hist_from ? ` (since ${new Date(r.hist_from * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })})` : "";
+  const cells = [["Score", f1(r.score)], [`PnL ${d}`, usd(r.net)], [`ROI ${d}`, pct(r.roi_nw, 1)], [`Capital ROI ${d}`, pct(r.roi_win, 1)],
+    ["ROI/mo", pct(r.roi, 1)], ["PnL 7D", usd(r.net_7d)], [`7D/${d}`, mom === null ? "–" : mom.toFixed(2)], ["PnL 24h", usd(r.net_1d)],
+    ["Open PnL", usd(r.float)], [`Total ${d}`, usd(r.total)], ["Avg / month", usd(r.avg_month)], ["PnL 3M", usd(r.pnl_3m)],
+    [`PnL ALL${since}`, usd(r.pnl_all)], ["ROI ALL", pct(r.roi_all, 1)], ["Win", pct(r.win_pos)], ["Trade win", pct(r.win)],
+    ["Profit factor", pfFmt(r.pf)], ["Green days", pct(r.daily)],
     ["Max DD", pct(r.dd, 1)], ["Recovery", cell({ k: "recover" }, r)], [`Fees ${d}`, usd(r.fees)], ["Avg size", usd(r.size)],
     ["Hold", dur(r.duration)], ["Range", rangeFmt(r.range)], ["Trades", `${int(r.trades)} · ${int(r.closed_trades)} closed`],
     ["Flat trades", pct(r.flat)], ["Open", `${int(r.open)} positions`], ["Deployed", usd(r.open_now)], ["Net worth", usd(r.worth)],
