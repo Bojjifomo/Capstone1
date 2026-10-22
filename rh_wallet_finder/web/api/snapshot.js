@@ -1,11 +1,22 @@
 // The latest snapshot of the boards, as the Wallet Finder on the Mac uploaded it
 // to this project's Vercel Blob store (rh_wallet_finder/publish.py).
-// Vercel adds BLOB_READ_WRITE_TOKEN once a Blob store is connected to the project;
-// the store's host comes from that token, as @vercel/blob works it out. A private
-// store is read with the token; a public one answers either way.
+// Vercel adds BLOB_READ_WRITE_TOKEN once a Blob store is connected to the project
+// (<PREFIX>_READ_WRITE_TOKEN when it was connected with another prefix), and only
+// to deployments made after that. The store's host comes from the token, as
+// @vercel/blob works it out. A private store is read with the token; a public
+// one answers either way.
 const zlib = require("zlib");
 
 const PATHNAME = "rhwf/snapshot.json.gz";
+
+const NO_TOKEN = "This deployment has no Blob token. In Vercel: Storage → your Blob store → Connect Project → " +
+  "this project (Production), then Deployments → the latest one → ⋯ → Redeploy.";
+
+function blobToken(env) {
+  if ((env.BLOB_READ_WRITE_TOKEN || "").startsWith("vercel_blob_rw_")) return env.BLOB_READ_WRITE_TOKEN;
+  const k = Object.keys(env).sort().find(n => n.endsWith("READ_WRITE_TOKEN") && String(env[n]).startsWith("vercel_blob_rw_"));
+  return k ? env[k] : "";
+}
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -13,10 +24,10 @@ function send(res, status, body) {
 }
 
 module.exports = async (req, res) => {
-  const token = process.env.BLOB_READ_WRITE_TOKEN || "";
+  const token = blobToken(process.env);
   const storeId = token.split("_")[3];
   res.setHeader("content-type", "application/json; charset=utf-8");
-  if (!storeId) return send(res, 503, { error: "No Blob store is connected to this Vercel project yet." });
+  if (!storeId) return send(res, 503, { error: NO_TOKEN });
   let r = null;
   try {
     for (const access of ["private", "public"]) {

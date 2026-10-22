@@ -830,25 +830,35 @@ class PublishTest(unittest.TestCase):
         if not shutil.which("node"):
             self.skipTest("no node")
         fn = Path(__file__).resolve().parents[1] / "web" / "api" / "snapshot.js"
-        with tempfile.TemporaryDirectory() as d:
-            gz = Path(d) / "s.gz"
-            gz.write_bytes(gzip.compress(b'{"v":1,"views":{"raw":[]}}'))
-            js = f"""
-              process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_AbC9_x";
-              let asked; const buf = require("fs").readFileSync({json.dumps(str(gz))});
-              let auth;
-              globalThis.fetch = async (u, o) => (asked = u, auth = o.headers.authorization, {{ ok: true, status: 200,
-                arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
-              const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
-                             end(b) {{ console.log(JSON.stringify({{ asked, auth, status: this.statusCode,
-                               cache: this.headers["cache-control"], body: String(b) }})); }} }};
-              require({json.dumps(str(fn))})({{}}, res);
-            """
-            out = json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
-        self.assertTrue(out["asked"].startswith("https://AbC9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"))
-        self.assertEqual(out["auth"], "Bearer vercel_blob_rw_AbC9_x")
-        self.assertEqual((out["status"], out["body"]), (200, '{"v":1,"views":{"raw":[]}}'))
-        self.assertIn("s-maxage=60", out["cache"])
+
+        def run(env):
+            with tempfile.TemporaryDirectory() as d:
+                gz = Path(d) / "s.gz"
+                gz.write_bytes(gzip.compress(b'{"v":1,"views":{"raw":[]}}'))
+                js = f"""
+                  Object.assign(process.env, {json.dumps(env)});
+                  let asked; const buf = require("fs").readFileSync({json.dumps(str(gz))});
+                  let auth;
+                  globalThis.fetch = async (u, o) => (asked = u, auth = o.headers.authorization, {{ ok: true,
+                    status: 200, arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
+                  const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                                 end(b) {{ console.log(JSON.stringify({{ asked, auth, status: this.statusCode,
+                                   cache: this.headers["cache-control"], body: String(b) }})); }} }};
+                  require({json.dumps(str(fn))})({{}}, res);
+                """
+                return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True,
+                                                 timeout=30).stdout)
+
+        # the store connected with the default prefix, or with its own (RH_BLOB_READ_WRITE_TOKEN)
+        for name in ("BLOB_READ_WRITE_TOKEN", "RH_BLOB_READ_WRITE_TOKEN"):
+            out = run({name: "vercel_blob_rw_AbC9_x"})
+            self.assertTrue(out["asked"].startswith("https://AbC9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"))
+            self.assertEqual(out["auth"], "Bearer vercel_blob_rw_AbC9_x")
+            self.assertEqual((out["status"], out["body"]), (200, '{"v":1,"views":{"raw":[]}}'))
+            self.assertIn("s-maxage=60", out["cache"])
+        out = run({})  # no store connected (or connected after this deployment): say what to do
+        self.assertEqual(out["status"], 503)
+        self.assertIn("Redeploy", out["body"])
 
 
 class ConfigTest(unittest.TestCase):
