@@ -555,6 +555,105 @@ class LauncherTest(unittest.TestCase):
             self.assertGreater(finder._free_port(port), port)
 
 
+class PublishTest(unittest.TestCase):
+    """The web showcase: what goes out, how it's uploaded, how the site reads it back."""
+
+    def _db(self, d):
+        import queries
+        con = db.connect(Path(d) / "w.db")
+        a = "0x" + "1" * 40
+        con.execute("INSERT INTO wallets(addr, data, score, first_seen, last_seen) VALUES(?,?,?,?,?)",
+                    (a, json.dumps({"raw": {"score": 70, "net": 12.345678, "kind": "degen", "verdict": "Elite",
+                                            "copy": "✓", "duration": 900, "size": 100, "per_day": 3, "open_now": 0}}),
+                     70, 1, 2))
+        con.commit()
+        queries.set_label(con, a, label="My secret label", notes="private note", starred=True)
+        return con, a
+
+    def test_snapshot_is_public_data_only(self):
+        import publish
+        with tempfile.TemporaryDirectory() as d:
+            con, a = self._db(d)
+            snap = publish.snapshot(con)
+            text = json.dumps(snap)
+            self.assertEqual(snap["views"]["raw"][0]["addr"], a)
+            self.assertEqual(snap["views"]["raw"][0]["net"], 12.35)  # 4 significant digits
+            for private in ("My secret label", "private note", "starred", "Degen example", "Multiday example"):
+                self.assertNotIn(private, text)
+            con.close()
+
+    def test_upload_request_and_errors(self):
+        import gzip
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import publish
+        seen = {}
+
+        class Blob(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                seen["path"] = self.path
+                seen["headers"] = {k.lower(): v for k, v in self.headers.items()}
+                seen["body"] = self.rfile.read(int(self.headers["content-length"]))
+                bad = "wrong" in self.headers["authorization"]
+                body = {"error": {"code": "forbidden", "message": "Access denied"}} if bad else \
+                    {"url": "https://s1.public.blob.vercel-storage.com/rhwf/snapshot.json.gz"}
+                self.send_response(403 if bad else 200)
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
+
+            def log_message(self, *a):
+                pass
+        srv = HTTPServer(("127.0.0.1", 0), Blob)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        old = publish.BLOB_API
+        publish.BLOB_API = f"http://127.0.0.1:{srv.server_port}/api/blob/"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                con, a = self._db(d)
+                url = publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
+                self.assertTrue(url.endswith("/rhwf/snapshot.json.gz"))
+                self.assertEqual(seen["path"], "/api/blob/?pathname=rhwf%2Fsnapshot.json.gz")
+                h = seen["headers"]
+                self.assertEqual((h["authorization"], h["x-vercel-blob-access"], h["x-add-random-suffix"],
+                                  h["x-allow-overwrite"], h["x-api-version"]),
+                                 ("Bearer vercel_blob_rw_S1_secret", "public", "0", "1", "13"))
+                self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
+                self.assertEqual(publish.last(con)["url"], url)
+                with self.assertRaisesRegex(publish.PublishError, "403: Access denied"):
+                    publish.publish(con, "vercel_blob_rw_wrong_x", log=lambda *x: None)
+                self.assertIn("403", publish.last(con)["error"])
+                con.close()
+        finally:
+            publish.BLOB_API = old
+            srv.shutdown()
+            srv.server_close()
+
+    def test_site_function_reads_the_blob(self):
+        import gzip
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("no node")
+        fn = Path(__file__).resolve().parents[1] / "web" / "api" / "snapshot.js"
+        with tempfile.TemporaryDirectory() as d:
+            gz = Path(d) / "s.gz"
+            gz.write_bytes(gzip.compress(b'{"v":1,"views":{"raw":[]}}'))
+            js = f"""
+              process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_AbC9_x";
+              let asked; const buf = require("fs").readFileSync({json.dumps(str(gz))});
+              globalThis.fetch = async u => (asked = u, {{ ok: true, status: 200,
+                arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
+              const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                             end(b) {{ console.log(JSON.stringify({{ asked, status: this.statusCode,
+                               cache: this.headers["cache-control"], body: String(b) }})); }} }};
+              require({json.dumps(str(fn))})({{}}, res);
+            """
+            out = json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+        self.assertTrue(out["asked"].startswith("https://AbC9.public.blob.vercel-storage.com/rhwf/snapshot.json.gz"))
+        self.assertEqual((out["status"], out["body"]), (200, '{"v":1,"views":{"raw":[]}}'))
+        self.assertIn("s-maxage=60", out["cache"])
+
+
 class ConfigTest(unittest.TestCase):
     def test_borrows_smart_lp_finder_rpcs(self):
         import os

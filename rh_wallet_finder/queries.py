@@ -16,9 +16,9 @@ from db import get_meta, set_meta
 
 ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 VIEWS = ("raw", "real", "d1raw", "d1real")
-SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "BACKFILL_DAYS", "METRIC_DAYS", "ACTIVE_DAYS",
-                "SELL_SLIPPAGE_PCT", "MIN_CLOSED", "MULTIDAY_HOURS", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES")
-SECRET_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY")
+SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "VERCEL_BLOB_TOKEN", "BACKFILL_DAYS", "METRIC_DAYS", "ACTIVE_DAYS",
+                "SELL_SLIPPAGE_PCT", "MIN_CLOSED", "MULTIDAY_HOURS", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES", "PUBLISH_MINUTES")
+SECRET_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "VERCEL_BLOB_TOKEN")
 _cache = {}
 _cache_lock = threading.Lock()
 
@@ -103,12 +103,12 @@ def status(con):
         "slippage": float(cfg["SELL_SLIPPAGE_PCT"]),
         "rpc": config.mask(cfg["RPC_URL"]), "has_rpc": bool(cfg["RPC_URL"]),
         "call_rpc": config.mask(cfg["CALL_RPC_URL"]), "rpc_source": cfg["RPC_SOURCE"],
-        "has_lpagent_key": bool(cfg["LPAGENT_API_KEY"]),
+        "has_lpagent_key": bool(cfg["LPAGENT_API_KEY"]), "has_blob_token": bool(cfg["VERCEL_BLOB_TOKEN"]),
+        "published": get_meta(con, "published"), "publish_error": get_meta(con, "publish_error"),
         "smart_lp": {"url": smartlp.server_url(), "db": bool(smartlp.db_path()),
                      "saved": n("SELECT COUNT(*) FROM labels WHERE source='smart-lp-finder'"),
                      "ranked": n("SELECT COUNT(DISTINCT addr) FROM slf_ranks")},
-        "settings": {k: (cfg[k] if k not in ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY") else "")
-                     for k in SETTING_KEYS},
+        "settings": {k: (cfg[k] if k not in SECRET_KEYS else "") for k in SETTING_KEYS},
         "now": int(time.time()),
     }
 

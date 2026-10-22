@@ -7,6 +7,7 @@ from collections import deque
 import config
 import db
 import indexer
+import publish
 import smartlp
 from rpc import QUOTA_RETRY_S, RPCError, make_rpcs
 from scorer import Scorer
@@ -54,6 +55,19 @@ class Worker:
         except Exception as e:  # noqa: BLE001 - optional extra, never stops the loop
             self.log(f"RH Smart LP Finder import skipped: {e}")
 
+    def publish(self, con, cfg):
+        """Upload the boards to the web showcase, if it's set up and the last
+        upload is PUBLISH_MINUTES old; never stops the loop."""
+        if not cfg.get("VERCEL_BLOB_TOKEN"):
+            return
+        last = (publish.last(con) or {}).get("at") or 0
+        if time.time() - last < float(cfg.get("PUBLISH_MINUTES") or 30) * 60:
+            return
+        try:
+            publish.publish(con, cfg["VERCEL_BLOB_TOKEN"], self.log)
+        except Exception as e:  # noqa: BLE001 - the showcase is optional
+            self.log(f"Web showcase not updated: {e}")
+
     def _loop(self):
         while not self._stop:
             cfg = config.load_env()
@@ -74,6 +88,7 @@ class Worker:
                     self.state = "scoring"
                     self.log("Rank: re-ranking what is already priced with the current rules…")
                     self.log(f"Ranked {Scorer(con, call_rpc, cfg, self.log).rerank():,} wallets")
+                    self.publish(con, cfg)
                 self.state = "syncing"
                 self.log("Sync: scanning new LP activity…")
                 res = indexer.sync(con, rpc, cfg, self.log, max_segments=SEGMENTS_PER_CYCLE,
@@ -89,6 +104,7 @@ class Worker:
                 calls = rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
                 self.log(f"Scored {out['scored']:,} wallets ({out['priced']:,} positions priced, "
                          f"{calls:,} RPC calls)")
+                self.publish(con, cfg)
                 self.error = None
                 spent = getattr(call_rpc, "exhausted", None)  # a pool member sitting out a spent quota
                 self.notice = None

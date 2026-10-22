@@ -1018,6 +1018,11 @@ def settings():
                              help="With two RPCs, price reads are shared between them, and whichever one "
                                   "rate limits or runs out of quota rests while the other carries on (sync too).")
         key = st.text_input(f"LP Agent API key · {'set' if cfg['LPAGENT_API_KEY'] else 'not set'}", type="password")
+        blob = st.text_input(f"Web showcase · Vercel Blob token · {'set' if cfg['VERCEL_BLOB_TOKEN'] else 'not set'}",
+                             type="password", placeholder="vercel_blob_rw_…",
+                             help="From your Vercel project: Storage → your Blob store → .env.local "
+                                  "(BLOB_READ_WRITE_TOKEN). With it, the worker uploads a read-only copy of the "
+                                  "boards after each ranking. Labels, notes, the watchlist and keys never go out.")
         a, b, c = st.columns(3)
         vals = {
             "BACKFILL_DAYS": a.text_input("History to load (days)", cfg["BACKFILL_DAYS"]),
@@ -1034,12 +1039,16 @@ def settings():
             "SCORE_POSITIONS_PER_RUN": a.text_input("Positions priced per run", cfg["SCORE_POSITIONS_PER_RUN"]),
             "SYNC_MINUTES": b.text_input("Minutes between syncs", cfg["SYNC_MINUTES"]),
             "RPC_WORKERS": c.text_input("Parallel RPC requests", cfg["RPC_WORKERS"]),
+            "PUBLISH_MINUTES": a.text_input("Web showcase: upload every (minutes)", cfg["PUBLISH_MINUTES"],
+                                            help="Each upload is one write to your Vercel Blob store; fewer "
+                                                 "uploads keep you well inside the free plan."),
         }
         if st.form_submit_button("Save", type="primary"):
             upd = {k: v.strip() for k, v in vals.items() if v.strip() and v.strip() != cfg[k]}
-            for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key)):
+            for k, v in (("RPC_URL", rpc), ("CALL_RPC_URL", call), ("LPAGENT_API_KEY", key),
+                         ("VERCEL_BLOB_TOKEN", blob)):
                 if v.strip():
-                    upd[k] = config.rpc_link(v) if k != "LPAGENT_API_KEY" else v.strip()
+                    upd[k] = config.rpc_link(v) if k in ("RPC_URL", "CALL_RPC_URL") else v.strip()
             bad = [k for k in ("RPC_URL", "CALL_RPC_URL") if k in upd and not upd[k].startswith(("https://", "http://"))]
 
             def not_number(v):
@@ -1071,6 +1080,23 @@ def settings():
     if slf.get("url") or slf.get("saved") or slf.get("ranked"):
         st.caption(f"RH Smart LP Finder: {slf.get('saved', 0)} saved wallets and {slf.get('ranked', 0)} wallets from "
                    f"its pool rankings imported.")
+    pub = stt.get("published") or {}
+    if stt.get("has_blob_token") or pub:
+        c1, c2 = st.columns([1, 5])
+        if c1.button("Publish now", disabled=not stt.get("has_blob_token")):
+            import publish
+            con = conn()
+            try:
+                publish.publish(con, cfg["VERCEL_BLOB_TOKEN"], log=lambda *a: None)
+                st.toast("Published to the web showcase")
+            except publish.PublishError as e:
+                st.error(str(e))
+            con.close()
+        note = (f"Web showcase: last upload {ago(pub['at'], stt.get('now', time.time()))} · {pub.get('wallets', 0):,} "
+                f"wallets · {pub.get('bytes', 0) / 1024:.0f} KB") if pub.get("at") else "Web showcase: nothing uploaded yet"
+        if stt.get("publish_error"):
+            note += f" · last try failed: {stt['publish_error']}"
+        c2.caption(note)
 
 
 def field_guide():

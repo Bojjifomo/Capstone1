@@ -60,6 +60,10 @@ DEFAULTS = {
     "RPC_URL": "",
     "CALL_RPC_URL": "",  # second RPC, used together with RPC_URL (an Alchemy API key alone works too)
     "LPAGENT_API_KEY": "",
+    # Web showcase on Vercel: the project's Blob read-write token. With it the
+    # worker uploads a read-only snapshot of the boards after each ranking.
+    "VERCEL_BLOB_TOKEN": "",
+    "PUBLISH_MINUTES": "30",  # at most one upload per this many minutes (each one is a Blob write)
     # How far back the first sync goes, and the window the metrics cover: a
     # wallet needs MIN_CLOSED closed positions inside it to be ranked at all.
     "BACKFILL_DAYS": "30",

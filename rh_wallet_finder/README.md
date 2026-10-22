@@ -117,6 +117,43 @@ closed): ±300 multiday, ±1.000 degen, ±800 bot.
   di-ranking dan nggak ditampilin sama sekali. Mau lebih ketat: Filters →
   Active within, atau preset `Active 24h` / `Active 3 days`.
 
+## Etalase web di Vercel (bisa dibuka orang lain)
+
+Mac lu tetap jadi mesinnya (sync, harga, ranking). Tiap beberapa menit worker
+upload **snapshot read-only** board-nya ke Vercel Blob, dan halaman di
+`web/` nampilin itu: tab Multiday / Degen / Last 24h, Real PnL, filter bar,
+preset, tabel heatmap, sortir per kolom, detail wallet, link LP Agent &
+Explorer. Halamannya refresh sendiri tiap 2 menit; kalau snapshot-nya udah
+lebih dari 30 menit, muncul catatan "scanner may be offline".
+
+**Yang keluar cuma data publik dari chain**: alamat wallet + angka-angkanya.
+Label, notes, watchlist, hasil LP Agent, ranking RH Smart LP Finder, dan semua
+key/RPC tetap di Mac.
+
+Setup sekali:
+
+1. `git pull` di Mac, terus buka lagi `Buka Wallet Finder.command`.
+2. Di [vercel.com](https://vercel.com): **Add New → Project** → import repo
+   `Bojjifomo/Capstone1`.
+   - **Root Directory**: `rh_wallet_finder/web`
+   - Framework Preset: **Other** (nggak ada build step) → **Deploy**.
+   - Kode ini ada di branch `claude/zealous-cori-4ictv9`, belum di `main`:
+     di project Vercel → **Settings → Git → Production Branch** isi
+     `claude/zealous-cori-4ictv9` (atau merge branch-nya ke `main` dulu).
+3. Project itu → **Storage → Create → Blob** → bikin store, **Connect** ke
+   project (semua environment). Vercel nambahin `BLOB_READ_WRITE_TOKEN` ke
+   project; **Redeploy** sekali biar fungsinya kebaca token itu.
+4. Di Blob store → tab **.env.local**, copy nilai `BLOB_READ_WRITE_TOKEN`
+   (`vercel_blob_rw_…`). Paste di Wallet Finder → **Settings → Web showcase ·
+   Vercel Blob token** → Save → klik **Publish now**.
+5. Buka `https://<nama-project>.vercel.app`, share link-nya.
+
+Upload otomatis maksimal sekali tiap `PUBLISH_MINUTES` (default 30 menit, ubah
+di Settings): tiap upload itu satu operasi tulis ke Blob, jadi nggak boros
+kuota paket gratis Vercel. Dari Terminal: `python3 finder.py publish` (upload
+sekarang) atau `python3 finder.py publish --out board.json` (simpen file-nya
+aja). Selama Mac mati, halaman tetap kebuka dengan snapshot terakhir.
+
 ## Nyambung ke RH Smart LP Finder
 
 Kalau folder **RH Smart LP Finder** lu taruh di sebelah folder ini (sama-sama di
@@ -166,6 +203,7 @@ python3 finder.py top --kind multiday -n 30   # top wallet di terminal (--kind d
 python3 finder.py check 0x…       # satu wallet + LP Agent
 python3 finder.py import wallets.txt
 python3 finder.py import-smart-lp # saved wallets + ranking dari RH Smart LP Finder
+python3 finder.py publish         # upload board ke etalase web (Vercel), atau --out file.json
 ```
 
 Database-nya `rh_wallet_finder/data/wallets.db` (SQLite). Bisa dibuka pakai

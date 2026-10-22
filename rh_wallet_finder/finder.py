@@ -10,6 +10,7 @@
   python3 finder.py import FILE     add wallets (one per line, optional label)
   python3 finder.py set-rpc URL     save the RPC link to .env
   python3 finder.py import-smart-lp saved wallets + pool rankings from RH Smart LP Finder
+  python3 finder.py publish [--out FILE]  upload the boards to the web showcase (or write them to FILE)
 
 Sync, scoring and the CLI use only the standard library; the app needs
 `pip install -r requirements.txt` (Streamlit).
@@ -191,6 +192,19 @@ def _free_port(port):
     sys.exit(f"Ports {port}–{port + 19} are all taken. Close what uses them, or run: python3 finder.py app --port 8600")
 
 
+def cmd_publish(args, cfg):
+    import publish
+    con = db.connect()
+    if args.out:
+        Path(args.out).write_text(json.dumps(publish.snapshot(con), separators=(",", ":")))
+        print(f"Wrote {args.out}")
+        return
+    try:
+        print(publish.publish(con, cfg["VERCEL_BLOB_TOKEN"]))
+    except publish.PublishError as e:
+        sys.exit(str(e))
+
+
 def cmd_app(args, cfg):
     """streamlit run streamlit_app.py, from this folder so .streamlit/config.toml applies."""
     import subprocess
@@ -255,6 +269,8 @@ def main():
     s.add_argument("file")
     s = sub.add_parser("import-smart-lp", help="saved wallets + pool rankings from RH Smart LP Finder")
     s.add_argument("--db", help="path to its data/lp-finder.sqlite (default: found next to this folder)")
+    s = sub.add_parser("publish", help="upload the boards to the web showcase (Vercel)")
+    s.add_argument("--out", help="write the snapshot JSON to this file instead of uploading it")
     s = sub.add_parser("set-rpc")
     s.add_argument("url")
     args = ap.parse_args()
@@ -263,7 +279,7 @@ def main():
     if args.cmd is None:
         args = ap.parse_args(["app"])
     {"app": cmd_app, "worker": cmd_worker, "sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
-     "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp}[args.cmd](args, cfg)
+     "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp, "publish": cmd_publish}[args.cmd](args, cfg)
     if args.cmd in ("sync", "score"):
         print(f"done in {time.time() - t:.0f}s")
 
