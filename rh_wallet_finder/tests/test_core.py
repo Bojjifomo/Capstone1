@@ -761,6 +761,7 @@ class PublishTest(unittest.TestCase):
         from http.server import BaseHTTPRequestHandler, HTTPServer
         import publish
         seen = {}
+        tok = lambda t: {"VERCEL_PUBLISH_URL": "", "VERCEL_BLOB_TOKEN": t}  # noqa: E731
 
         class Blob(BaseHTTPRequestHandler):
             def do_PUT(self):
@@ -791,13 +792,13 @@ class PublishTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d:
                 con, a = self._db(d)
                 seen["store"] = "public"  # a public store: the first (private) try is refused, then remembered
-                url = publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
+                url = publish.publish(con, tok("vercel_blob_rw_S1_secret"), log=lambda *x: None)
                 self.assertEqual((url, seen["accesses"]), ("https://s1.public.blob.vercel-storage.com/x",
                                                            ["private", "public"]))
-                publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
+                publish.publish(con, tok("vercel_blob_rw_S1_secret"), log=lambda *x: None)
                 self.assertEqual(seen["accesses"][-1], "public")  # straight away the next time
                 seen["store"] = "private"  # e.g. a new store connected later: switches back
-                url = publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
+                url = publish.publish(con, tok("vercel_blob_rw_S1_secret"), log=lambda *x: None)
                 self.assertTrue(url.startswith("https://s1.private."))
                 self.assertEqual(seen["path"], "/api/blob/?pathname=rhwf%2Fsnapshot.json.gz")
                 h = seen["headers"]
@@ -806,22 +807,125 @@ class PublishTest(unittest.TestCase):
                                  ("Bearer vercel_blob_rw_S1_secret", "S1", "private", "0", "1", "13"))
                 self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
                 self.assertEqual(publish.last(con)["url"], url)
-                with self.assertRaisesRegex(publish.PublishError, "403: Access denied"):
-                    publish.publish(con, "vercel_blob_rw_wrong_x", log=lambda *x: None)
+                with self.assertRaisesRegex(publish.PublishError, "403: Access denied.*expire now"):
+                    publish.publish(con, tok("vercel_blob_rw_wrong_x"), log=lambda *x: None)
                 self.assertIn("403", publish.last(con)["error"])
                 # a whole .env line pasted instead of the value: the token is picked out of it
-                publish.publish(con, 'BLOB_READ_WRITE_TOKEN="vercel_blob_rw_S1_secret"', log=lambda *x: None)
+                publish.publish(con, tok('BLOB_READ_WRITE_TOKEN="vercel_blob_rw_S1_secret"'), log=lambda *x: None)
                 self.assertEqual(seen["headers"]["authorization"], "Bearer vercel_blob_rw_S1_secret")
                 # not a Blob token at all: said plainly, nothing sent
                 seen.clear()
                 with self.assertRaisesRegex(publish.PublishError, "isn't a Vercel Blob read-write token"):
-                    publish.publish(con, "abc123", log=lambda *x: None)
+                    publish.publish(con, tok("abc123"), log=lambda *x: None)
                 self.assertEqual(seen, {})
                 con.close()
         finally:
             publish.BLOB_API = old
             srv.shutdown()
             srv.server_close()
+
+    def test_upload_through_the_site(self):
+        import gzip
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import publish
+        seen = {}
+
+        class Site(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                seen["path"] = self.path
+                seen["headers"] = {k.lower(): v for k, v in self.headers.items()}
+                seen["body"] = self.rfile.read(int(self.headers["content-length"]))
+                if self.path != "/api/publish":
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"<html>Not found</html>")
+                    return
+                ok = self.headers["authorization"] == "Bearer K123"
+                self.send_response(200 if ok else 401)
+                self.end_headers()
+                self.wfile.write(json.dumps({"url": "https://s.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"}
+                                            if ok else {"error": "Wrong publish key: copy the publish link again."})
+                                 .encode())
+
+            def log_message(self, *a):
+                pass
+        srv = HTTPServer(("127.0.0.1", 0), Site)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        site = f"http://127.0.0.1:{srv.server_port}"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                con, a = self._db(d)
+                # the link wins over an (expired) Blob token; the key goes in a header, not the URL
+                cfg = {"VERCEL_PUBLISH_URL": f"{site}/api/publish?key=K123", "VERCEL_BLOB_TOKEN": "vercel_blob_rw_S1_x"}
+                url = publish.publish(con, cfg, log=lambda *x: None)
+                self.assertEqual((url, seen["path"], seen["headers"]["authorization"]),
+                                 ("https://s.private.blob.vercel-storage.com/rhwf/snapshot.json.gz", "/api/publish",
+                                  "Bearer K123"))
+                self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
+                self.assertEqual(publish.last(con)["url"], url)
+                # a bare site link gets /api/publish; a wrong key is said as the site says it
+                with self.assertRaisesRegex(publish.PublishError, "Wrong publish key"):
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": f"{site}?key=nope"}, log=lambda *x: None)
+                self.assertEqual(seen["path"], "/api/publish")
+                self.assertIn("Wrong publish key", publish.last(con)["error"])
+                with self.assertRaisesRegex(publish.PublishError, "redeploy"):  # an old deployment, no endpoint yet
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": f"{site}/api/old?key=K123"}, log=lambda *x: None)
+                with self.assertRaisesRegex(publish.PublishError, "has no key"):
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": f"{site}/api/publish"}, log=lambda *x: None)
+                with self.assertRaisesRegex(publish.PublishError, "Nowhere to publish"):
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": "", "VERCEL_BLOB_TOKEN": ""}, log=lambda *x: None)
+                con.close()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_site_publish_function(self):
+        import gzip
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("no node")
+        fn = Path(__file__).resolve().parents[1] / "web" / "api" / "publish.js"
+        snap = gzip.compress(b'{"v":1,"views":{"raw":[{"addr":"0xa"}]}}')
+
+        def run(env, auth, body, store_kind="private"):
+            js = f"""
+              Object.assign(process.env, {json.dumps(env)});
+              const body = Buffer.from({json.dumps(body.hex())}, "hex");
+              const puts = [];
+              globalThis.fetch = async (u, o) => {{
+                puts.push([u, o.headers]);
+                const wrong = o.headers["x-vercel-blob-access"] !== {json.dumps(store_kind)};
+                return {{ ok: !wrong, status: wrong ? 400 : 200, text: async () => JSON.stringify(wrong
+                  ? {{ error: {{ message: `Cannot use ${{o.headers["x-vercel-blob-access"]}} access on a ` +
+                                          `${{{json.dumps(store_kind)}}} store.` }} }}
+                  : {{ url: "https://abc9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz" }}) }};
+              }};
+              const req = {{ method: "PUT", headers: {{ authorization: {json.dumps(auth)}, "x-vercel-oidc-token": "oidc.jwt" }},
+                             async *[Symbol.asyncIterator]() {{ yield body; }} }};
+              const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                             end(b) {{ console.log(JSON.stringify({{ status: this.statusCode, body: JSON.parse(String(b)), puts }})); }} }};
+              require({json.dumps(str(fn))})(req, res);
+            """
+            return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+
+        env = {"PUBLISH_KEY": "k" * 32, "BLOB_STORE_ID": "store_AbC9"}
+        out = run(env, "Bearer " + "k" * 32, snap)
+        self.assertEqual((out["status"], out["body"]["wallets"], out["body"]["via"]), (200, 1, "oidc"))
+        u, h = out["puts"][0]
+        self.assertEqual(u, "https://vercel.com/api/blob/?pathname=rhwf%2Fsnapshot.json.gz")
+        self.assertEqual((h["authorization"], h["x-vercel-blob-store-id"], h["x-vercel-blob-access"],
+                          h["x-allow-overwrite"], h["x-add-random-suffix"]),
+                         ("Bearer oidc.jwt", "AbC9", "private", "1", "0"))
+        out = run(env, "Bearer " + "k" * 32, snap, store_kind="public")  # a public store: tries again as public
+        self.assertEqual((out["status"], [p[1]["x-vercel-blob-access"] for p in out["puts"]]), (200, ["private", "public"]))
+        self.assertEqual(run(env, "Bearer wrong", snap)["status"], 401)
+        self.assertEqual(run(env, "", snap)["status"], 401)
+        out = run(env, "Bearer " + "k" * 32, b"not a snapshot")
+        self.assertEqual((out["status"], out["puts"]), (400, []))
+        self.assertEqual(run({"BLOB_STORE_ID": "store_AbC9"}, "Bearer x", snap)["status"], 503)  # no PUBLISH_KEY
+        self.assertEqual(run({"PUBLISH_KEY": "k" * 32}, "Bearer " + "k" * 32, snap)["status"], 503)  # no store
 
     def test_site_function_reads_the_blob(self):
         import gzip

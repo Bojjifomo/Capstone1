@@ -63,8 +63,11 @@ DEFAULTS = {
     "RPC_URL": "",
     "CALL_RPC_URL": "",  # second RPC, used together with RPC_URL (an Alchemy API key alone works too)
     "LPAGENT_API_KEY": "",
-    # Web showcase on Vercel: the project's Blob read-write token. With it the
-    # worker uploads a read-only snapshot of the boards after each ranking.
+    # Web showcase on Vercel: where the worker uploads a read-only snapshot of
+    # the boards after each ranking. The site's publish link
+    # (https://<site>/api/publish?key=…), or a Blob read-write token to write
+    # to the store straight (the ones the Vercel dashboard shows now expire).
+    "VERCEL_PUBLISH_URL": "",
     "VERCEL_BLOB_TOKEN": "",
     "PUBLISH_MINUTES": "30",  # at most one upload per this many minutes (each one is a Blob write)
     # How far back the first sync goes, and the window the metrics cover: a
@@ -148,6 +151,7 @@ def load_env():
     for k in ("RPC_URL", "CALL_RPC_URL"):
         vals[k] = rpc_link(vals[k])
     vals["VERCEL_BLOB_TOKEN"] = blob_token(vals["VERCEL_BLOB_TOKEN"])
+    vals["VERCEL_PUBLISH_URL"] = publish_link(vals["VERCEL_PUBLISH_URL"])
     return vals
 
 
@@ -165,6 +169,25 @@ def blob_token(v):
 def blob_store_id(token):
     m = BLOB_TOKEN_RE.fullmatch(token or "")
     return m.group(1) if m else None
+
+
+PUBLISH_LINK_RE = re.compile(r"https?://[^\s\"'`<>]+")
+
+
+def publish_link(v):
+    """The site's publish link out of whatever was pasted, or ''."""
+    m = PUBLISH_LINK_RE.search(v or "")
+    return m.group(0).rstrip(".,;)") if m else ""
+
+
+def split_publish_link(link):
+    """'https://site.vercel.app/api/publish?key=K' -> ('https://site.vercel.app/api/publish', 'K').
+    A bare site link gets /api/publish added."""
+    from urllib.parse import parse_qs, urlsplit, urlunsplit
+    u = urlsplit(link or "")
+    key = (parse_qs(u.query).get("key") or [""])[0]
+    path = u.path if u.path.rstrip("/") else "/api/publish"
+    return urlunsplit((u.scheme, u.netloc, path, "", "")), key
 
 
 def rpc_link(v):

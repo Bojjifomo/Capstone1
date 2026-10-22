@@ -185,21 +185,21 @@ Setup sekali:
    - Framework Preset: **Other** (nggak ada build step) → **Deploy**.
 3. Project itu → **Storage → Create → Blob** → bikin store (akses **Private**
    atau Public, dua-duanya jalan: private lebih aman, file snapshot-nya cuma
-   kebaca lewat web lu), **Connect** ke project (Production + Preview), terus
-   **Redeploy** sekali. Web-nya baca store yang ke-connect pakai token OIDC
-   bawaan Vercel (`BLOB_STORE_ID`), jadi nggak perlu nyalin token ke project.
-   Kalau store-nya dihapus terus bikin baru, connect yang baru, Redeploy, dan
-   ganti token di Mac (langkah 4).
-4. Di Blob store → tab **.env.local** (klik ikon mata biar kelihatan), copy
-   nilai `BLOB_READ_WRITE_TOKEN`: yang di dalam tanda kutip, bentuknya
-   `vercel_blob_rw_<id store>_<rahasia>`. Paste di Wallet Finder → **Settings →
-   Web showcase · Vercel Blob token** → Save → klik **Publish now**. (Kalau
-   ke-paste satu baris penuh `BLOB_READ_WRITE_TOKEN="…"`, app ngambil
-   token-nya sendiri.) Token ini cuma buat Mac (upload); jangan taruh di repo.
+   kebaca lewat web lu), **Connect** ke project (Production + Preview). Web-nya
+   baca dan nulis store itu pakai credential OIDC bawaan Vercel
+   (`BLOB_STORE_ID`), jadi nggak ada token Blob yang perlu disalin.
+4. Project itu → **Settings → Environment Variables** → tambah `PUBLISH_KEY`
+   (Production), isinya kata sandi acak yang panjang (32+ karakter), terus
+   **Redeploy**. Di Wallet Finder → **Settings → Web showcase · publish link**
+   paste `https://<nama-project>.vercel.app/api/publish?key=<PUBLISH_KEY>` →
+   Save → klik **Publish now**. Mac upload ke web lu sendiri (`/api/publish`),
+   dan web itu yang nyimpen ke Blob. (Token Blob dari tab `.env.local` di
+   dashboard Vercel sekarang kedaluwarsa sendiri, makanya nggak dipakai lagi;
+   kalau masih ada di Settings, publish link yang didahulukan.)
 5. Buka `https://<nama-project>.vercel.app`, share link-nya.
 
 Upload otomatis maksimal sekali tiap `PUBLISH_MINUTES` (default 30 menit, ubah
-di Settings): tiap upload itu satu operasi tulis ke Blob, jadi nggak boros
+di Settings) selama app jalan: tiap upload itu satu operasi tulis ke Blob, jadi nggak boros
 kuota paket gratis Vercel. Dari Terminal: `python3 finder.py publish` (upload
 sekarang) atau `python3 finder.py publish --out board.json` (simpen file-nya
 aja). Selama Mac mati, halaman tetap kebuka dengan snapshot terakhir.
