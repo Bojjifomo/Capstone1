@@ -140,8 +140,9 @@ Setup sekali:
    - Kode ini ada di branch `claude/zealous-cori-4ictv9`, belum di `main`:
      di project Vercel → **Settings → Git → Production Branch** isi
      `claude/zealous-cori-4ictv9` (atau merge branch-nya ke `main` dulu).
-3. Project itu → **Storage → Create → Blob** → bikin store, **Connect** ke
-   project (semua environment). Vercel nambahin `BLOB_READ_WRITE_TOKEN` ke
+3. Project itu → **Storage → Create → Blob** → bikin store (akses **Private**
+   atau Public, dua-duanya jalan: private lebih aman, file snapshot-nya cuma
+   kebaca lewat web lu), **Connect** ke project (semua environment). Vercel nambahin `BLOB_READ_WRITE_TOKEN` ke
    project; **Redeploy** sekali biar fungsinya kebaca token itu.
 4. Di Blob store → tab **.env.local** (klik ikon mata biar kelihatan), copy
    nilai `BLOB_READ_WRITE_TOKEN`: yang di dalam tanda kutip, bentuknya

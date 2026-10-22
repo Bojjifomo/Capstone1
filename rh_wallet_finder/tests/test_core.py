@@ -595,9 +595,16 @@ class PublishTest(unittest.TestCase):
                 seen["headers"] = {k.lower(): v for k, v in self.headers.items()}
                 seen["body"] = self.rfile.read(int(self.headers["content-length"]))
                 bad = "wrong" in self.headers["authorization"]
+                public = self.headers["x-vercel-blob-access"] == "public"
+                seen.setdefault("accesses", []).append(self.headers["x-vercel-blob-access"])
                 body = {"error": {"code": "forbidden", "message": "Access denied"}} if bad else \
-                    {"url": "https://s1.public.blob.vercel-storage.com/rhwf/snapshot.json.gz"}
-                self.send_response(403 if bad else 200)
+                    {"error": {"code": "bad_request", "message": "Cannot use public access on a private store. "
+                                                                 "The store is configured with private access."}} \
+                    if public and seen.get("store") == "private" else \
+                    {"error": {"code": "bad_request", "message": "Cannot use private access on a public store."}} \
+                    if not public and seen.get("store") == "public" else \
+                    {"url": f"https://s1.{self.headers['x-vercel-blob-access']}.blob.vercel-storage.com/x"}
+                self.send_response(403 if bad else 400 if "error" in body else 200)
                 self.end_headers()
                 self.wfile.write(json.dumps(body).encode())
 
@@ -610,13 +617,20 @@ class PublishTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 con, a = self._db(d)
+                seen["store"] = "public"  # a public store: the first (private) try is refused, then remembered
                 url = publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
-                self.assertTrue(url.endswith("/rhwf/snapshot.json.gz"))
+                self.assertEqual((url, seen["accesses"]), ("https://s1.public.blob.vercel-storage.com/x",
+                                                           ["private", "public"]))
+                publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
+                self.assertEqual(seen["accesses"][-1], "public")  # straight away the next time
+                seen["store"] = "private"  # e.g. a new store connected later: switches back
+                url = publish.publish(con, "vercel_blob_rw_S1_secret", log=lambda *x: None)
+                self.assertTrue(url.startswith("https://s1.private."))
                 self.assertEqual(seen["path"], "/api/blob/?pathname=rhwf%2Fsnapshot.json.gz")
                 h = seen["headers"]
                 self.assertEqual((h["authorization"], h["x-vercel-blob-store-id"], h["x-vercel-blob-access"],
                                   h["x-add-random-suffix"], h["x-allow-overwrite"], h["x-api-version"]),
-                                 ("Bearer vercel_blob_rw_S1_secret", "S1", "public", "0", "1", "13"))
+                                 ("Bearer vercel_blob_rw_S1_secret", "S1", "private", "0", "1", "13"))
                 self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
                 self.assertEqual(publish.last(con)["url"], url)
                 with self.assertRaisesRegex(publish.PublishError, "403: Access denied"):
@@ -649,15 +663,17 @@ class PublishTest(unittest.TestCase):
             js = f"""
               process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_AbC9_x";
               let asked; const buf = require("fs").readFileSync({json.dumps(str(gz))});
-              globalThis.fetch = async u => (asked = u, {{ ok: true, status: 200,
+              let auth;
+              globalThis.fetch = async (u, o) => (asked = u, auth = o.headers.authorization, {{ ok: true, status: 200,
                 arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
               const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
-                             end(b) {{ console.log(JSON.stringify({{ asked, status: this.statusCode,
+                             end(b) {{ console.log(JSON.stringify({{ asked, auth, status: this.statusCode,
                                cache: this.headers["cache-control"], body: String(b) }})); }} }};
               require({json.dumps(str(fn))})({{}}, res);
             """
             out = json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
-        self.assertTrue(out["asked"].startswith("https://AbC9.public.blob.vercel-storage.com/rhwf/snapshot.json.gz"))
+        self.assertTrue(out["asked"].startswith("https://AbC9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"))
+        self.assertEqual(out["auth"], "Bearer vercel_blob_rw_AbC9_x")
         self.assertEqual((out["status"], out["body"]), (200, '{"v":1,"views":{"raw":[]}}'))
         self.assertIn("s-maxage=60", out["cache"])
 
