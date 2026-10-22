@@ -9,7 +9,7 @@ import db
 import indexer
 import publish
 import smartlp
-from rpc import QUOTA_RETRY_S, RPCError, make_rpcs
+from rpc import QUOTA_RETRY_S, QuotaError, RPCError, make_rpcs
 from scorer import Scorer
 
 SEGMENTS_PER_CYCLE = 3  # score in between, so a long backfill shows results early
@@ -111,6 +111,12 @@ class Worker:
                 if spent and time.time() - spent[0] < QUOTA_RETRY_S:
                     self.notice = f"{spent[1]}. The other RPC carries on alone; this one is tried again every hour."
                     self.log(self.notice)
+            except QuotaError as e:  # every RPC's allowance is spent: asking again each minute won't help
+                self.error = (f"{e}. Your RPC plan's allowance is used up; the worker tries again in "
+                              f"{QUOTA_RETRY_S // 60} minutes. Add a second RPC in Settings (e.g. an Alchemy key "
+                              f"as RPC 2) so sync carries on while this one rests.")
+                self.log(f"RPC quota spent: {e}")
+                wait = QUOTA_RETRY_S
             except RPCError as e:
                 self.error = str(e)
                 self.log(f"RPC error: {e}")

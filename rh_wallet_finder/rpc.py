@@ -176,7 +176,7 @@ class RPC:
     # ---- calls -----------------------------------------------------------
     def call(self, method, params):
         out = self._post({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        return _result(out, method)
+        return _result(out, method, self.host)
 
     def batch(self, calls, size=40):
         """[(method, params), ...] -> [result or RPCError, ...] in order."""
@@ -206,7 +206,7 @@ class RPC:
                 for i in idx:
                     o = by_id.get(i)
                     try:
-                        results[i] = _result(o, calls[i][0]) if o else RPCError("missing from batch reply")
+                        results[i] = _result(o, calls[i][0], self.host) if o else RPCError("missing from batch reply")
                     except RPCError as e:
                         results[i] = e
                 # a provider can rate limit single entries of a batch: back off, resend those
@@ -319,7 +319,7 @@ def _throttled_err(e):
     return _throttled(str(e)) or "missing from batch" in str(e)
 
 
-def _result(out, method):
+def _result(out, method, host="RPC"):
     if not isinstance(out, dict):
         raise RPCError(f"bad reply to {method}")
     err = out.get("error")
@@ -327,6 +327,10 @@ def _result(out, method):
         msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
         if method == "eth_getLogs" and any(w in msg.lower() for w in _RANGE_WORDS):
             raise RangeError(msg, _range_hint(msg))
+        # some providers answer a spent allowance as an error inside a normal reply
+        # (SolidRPC: "Daily response quota exceeded"), not as HTTP 429
+        if _quota(msg) and any(w in msg.lower() for w in ("exceed", "reached", "limit", "used up", "exhausted")):
+            raise QuotaError(f"{host}: plan limit reached ({msg.strip()[:200]})")
         raise RPCError(f"{method}: {msg}")
     return out.get("result")
 

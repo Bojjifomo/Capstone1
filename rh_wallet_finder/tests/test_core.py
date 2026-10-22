@@ -237,6 +237,15 @@ class RpcTest(unittest.TestCase):
             self.assertEqual(hits["main"], n + 1)
             self.assertIn("main.example: plan limit reached", p.exhausted[1])
             self.assertTrue(p.call("eth_call", ["k"]).startswith("backup"))
+            # ...also when it comes as an error inside a normal reply (SolidRPC's daily quota)
+            p = pool()
+            plan["main"] = [(200, "Daily response quota exceeded")]
+            self.assertEqual(p.batch([("eth_call", [x]) for x in "wxyz"]), [f"backup:{x}" for x in "wxyz"])
+            self.assertIn("main.example: plan limit reached (Daily response quota exceeded)", p.exhausted[1])
+            plan["main"] = [(200, "Daily response quota exceeded")]
+            p = pool()
+            p._turn = iter([0, 0])
+            self.assertTrue(p.call("eth_call", ["v"]).startswith("backup"))
             # old block state missing on one: asked of the other
             p = pool()
             p._turn = iter([0, 0, 0, 0])
