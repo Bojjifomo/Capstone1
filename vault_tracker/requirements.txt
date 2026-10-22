@@ -1,0 +1,4 @@
+requests>=2.31
+base58>=2.1
+solders>=0.21
+rich>=13.0
