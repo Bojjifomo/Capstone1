@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RH Wallet Finder</title>
+<meta name="description" content="Top Uniswap V4 LP wallets on Robinhood Chain: multiday and degen players, ranked from on-chain data.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <header class="bar">
+    <div class="brand"><img src="logo.svg" alt="">
+      <div><div class="word"><b>RH</b> WALLET FINDER</div><div class="tag">LP scanner // Robinhood Chain · Uniswap V4 · public board</div></div>
+    </div>
+    <div class="rail" id="rail"></div>
+  </header>
+  <section class="kpis" id="kpis"></section>
+  <div class="notice" id="notice" hidden></div>
+
+  <div class="tabrow">
+    <nav class="tabs" role="tablist" aria-label="Boards">
+      <button role="tab" data-board="multiday">Multiday</button>
+      <button role="tab" data-board="degen">Degen</button>
+      <button role="tab" data-board="day">Last 24h</button>
+    </nav>
+    <label class="toggle" title="Charge every position for selling back the token it returns (pool fee + slippage)">
+      <input type="checkbox" id="real"><span class="knob"></span>Real PnL
+    </label>
+  </div>
+  <p class="blurb" id="blurb"></p>
+  <div class="mode" id="mode" hidden></div>
+  <div class="pills" id="pills"></div>
+
+  <form class="fbar" id="fbar" autocomplete="off" onsubmit="return false">
+    <div class="fgrid" id="fgrid"></div>
+    <div class="frow">
+      <div class="checks" id="checks"></div>
+      <div class="factions">
+        <label class="fld preset"><span>Preset</span><select id="preset"></select></label>
+        <button type="button" class="btn" id="clear">Clear filters</button>
+      </div>
+    </div>
+  </form>
+  <div class="showing" id="showing"></div>
+
+  <div class="tablewrap" id="tablewrap">
+    <table id="board"><thead></thead><tbody></tbody></table>
+  </div>
+  <button type="button" class="btn more" id="more" hidden>Show more</button>
+  <p class="hint">Click a row for the wallet's details. Hover a column title for what it means.</p>
+
+  <details class="guide" id="guide"><summary>Field guide: what every column means</summary><div id="guidebody"></div></details>
+
+  <footer class="foot">
+    A read-only copy of RH Wallet Finder, refreshed from the scanner every few minutes. Figures come from Uniswap V4
+    position events on Robinhood Chain, priced from chain state; they can be wrong. Not financial advice.
+  </footer>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle" hidden>
+  <div class="dhead">
+    <div><div class="kick">Wallet</div><div class="addr" id="dtitle"></div></div>
+    <button type="button" class="x" id="dclose" aria-label="Close">×</button>
+  </div>
+  <div id="dbody"></div>
+</aside>
+</body>
+</html>
