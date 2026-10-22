@@ -22,6 +22,7 @@ import streamlit as st
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import analysis as A  # noqa: E402
 import config  # noqa: E402
 import db  # noqa: E402
 import lpagent  # noqa: E402
@@ -165,6 +166,39 @@ button[role="tab"][aria-selected="true"] { background: #182232 !important; }
 [class*="st-key-fbar"] [data-baseweb="select"] > div, [class*="st-key-fbar"] input { min-height: 32px; font-size: 12.5px; }
 [class*="st-key-fbar"] [data-testid="stCheckbox"] label p { font: 12px "JetBrains Mono", monospace !important;
        text-transform: none; letter-spacing: 0; color: var(--ink2) !important; }
+.dk em { display:block; font: normal 11px "JetBrains Mono", monospace; color: var(--muted); margin-top: 2px; }
+.an-hero { margin: 4px 0 10px; } .an-hero b { display:block; font: 600 17px "Chakra Petch", sans-serif; letter-spacing:.06em; color: var(--ink); }
+.an-hero span, .an-empty span { font-size: 13px; color: var(--muted); }
+.an-empty { text-align:center; padding: 46px 20px; margin-top: 14px; border: 1px solid rgba(255,197,51,.35);
+       background: linear-gradient(160deg, var(--panel2), var(--panel)); box-shadow: 0 0 30px rgba(255,197,51,.06); }
+.an-empty b { display:block; font: 600 20px "Chakra Petch", sans-serif; letter-spacing:.06em; color: var(--ink); margin-bottom: 6px; }
+.an-empty i { color: var(--gold); font-style: normal; }
+.an-done { border: 1px solid var(--line); background: var(--panel); padding: 9px 14px; margin: 8px 0;
+       font: 12.5px "JetBrains Mono", monospace; color: var(--ink2); }
+.an-card { border: 1px solid var(--line); border-top: 2px solid var(--gold); background: linear-gradient(160deg, var(--panel2), var(--panel));
+       padding: 16px 20px 14px; margin: 10px 0 14px; }
+.an-title { display:flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+       font: 700 22px "Chakra Petch", sans-serif; letter-spacing:.06em; color: var(--ink); }
+.an-tags { display:flex; gap:6px; } .an-tags i { font: 600 11px "Chakra Petch", sans-serif; letter-spacing:.14em; padding: 4px 10px; font-style: normal; }
+.an-chips { display:flex; gap:6px; flex-wrap: wrap; margin-top: 10px; }
+.an-chips span { border: 1px solid var(--line2); padding: 2px 9px; font: 500 11px "JetBrains Mono", monospace; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.an-chips span.an-addr { color: var(--gold); border-color: rgba(255,197,51,.4); }
+.an-big { grid-template-columns: repeat(3, 1fr); }
+.an-big .kpi::before { background: var(--acc, var(--gold)); }
+.an-qual { display:grid; grid-template-columns: repeat(3, 1fr); gap:1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 8px; }
+.an-qual > div { background: var(--panel); padding: 12px 14px; }
+.an-qual small { display:block; font: 600 10px "Chakra Petch", sans-serif; letter-spacing:.18em; text-transform:uppercase; color: var(--muted); }
+.an-qual b { display:block; font: 700 19px "Chakra Petch", sans-serif; letter-spacing:.08em; margin: 2px 0 4px; color: var(--ink); }
+.an-qual p, .an-qual li { font-size: 12.5px; color: var(--ink2); margin: 0; }
+.an-qual ul { margin: 6px 0 0 16px; padding: 0; }
+.an-flag { font-size: 13px; color: var(--ink2); padding: 5px 12px; border-left: 3px solid var(--line2); margin: 3px 0; background: var(--panel); }
+.an-flag.good { border-color: #3987e5; } .an-flag.good b { color: #5aa2ff; }
+.an-flag.bad { border-color: #e66767; } .an-flag.bad b { color: #ff7b7b; }
+.an-sec { margin: 22px 0 6px; padding-bottom: 5px; border-bottom: 1px solid var(--line); }
+.an-sec b { font: 600 15px "Chakra Petch", sans-serif; letter-spacing:.1em; text-transform: uppercase; color: var(--ink); margin-right: 10px; }
+.an-sec span { font: 12px "JetBrains Mono", monospace; color: var(--muted); }
+.dk.dk3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px) { .an-big, .an-qual { grid-template-columns: 1fr; } .dk.dk3 { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) { .kpis { grid-template-columns: 1fr 1fr; } .rail { margin-left: 0; } .dk { grid-template-columns: 1fr 1fr; } }
 </style>""", unsafe_allow_html=True)
 
@@ -903,6 +937,418 @@ def dossier(addr):
     con.close()
 
 
+# -------------------------------------------------------------- analyze ---
+VERDICT_COLOR = {"COPY": "57,135,229", "WATCH": "250,178,25", "REJECT": "230,103,103"}
+TONE_ICON = {"good": "▲", "bad": "▼", "info": "●"}
+MODES = ("Single wallet", "Compare wallets")
+OOR_LABEL = {"above": "out of range ↑", "below": "out of range ↓", None: "in range", "?": "–"}
+
+
+def money(v, sign=False):
+    """$ with a + on gains (sign=True), – when unknown."""
+    v = num(v)
+    if v is None:
+        return "–"
+    return ("+" if sign and v > 0.005 else "") + usd(v)
+
+
+def esc(text):
+    """Markdown text with $ kept as $ (two of them would start a formula)."""
+    return text.replace("$", "\\$")
+
+
+def grid(cells, cols=4):
+    """A .dk grid of (title, value, small print) cells."""
+    return (f'<div class="dk{" dk3" if cols == 3 else ""}">'
+            + "".join(f"<div><small>{k}</small><span>{v}</span>" + (f"<em>{s}</em>" if s else "") + "</div>"
+                      for k, v, s in cells) + "</div>")
+
+
+def section(title, sub=""):
+    st.markdown(f'<div class="an-sec"><b>{title}</b>{f"<span>{sub}</span>" if sub else ""}</div>',
+                unsafe_allow_html=True)
+
+
+def bars(rows, label, value="share", fmt=".0f", suffix="%", color="#3987e5", height=None):
+    """Horizontal bars, one row per (name, value), in the given order."""
+    df = pd.DataFrame(rows, columns=[label, value])
+    if df.empty:
+        st.caption("Nothing to show.")
+        return
+    base = alt.Chart(df).encode(y=alt.Y(f"{label}:N", sort=list(df[label]), title=None,
+                                        axis=alt.Axis(labelOverlap=False, labelLimit=170, ticks=False)),
+                                x=alt.X(f"{value}:Q", title=None, axis=None))
+    chart = base.mark_bar(color=color, cornerRadiusEnd=2) + base.mark_text(
+        align="left", dx=4, color="#b4bfcd", font="JetBrains Mono", fontSize=11).encode(
+        text=alt.Text(f"{value}:Q", format=fmt))
+    st.altair_chart(chart.properties(height=height or 30 * len(df) + 30, title=alt.TitleParams(
+        suffix and f"{label} ({suffix})" or label, anchor="start", color="#8592a6", fontSize=11, font="Chakra Petch"))
+                    .configure_view(strokeWidth=0).configure_axis(labelColor="#b4bfcd", domainColor="#2b3a4f",
+                                                                  labelFont="JetBrains Mono", grid=False),
+                    **stretch(st.altair_chart))
+
+
+def pnl_chart(daily, height=230):
+    """Daily realized PnL (bars) and the running total (line)."""
+    df = pd.DataFrame(daily)
+    df["when"] = pd.to_datetime(df["day"], unit="s")
+    base = alt.Chart(df).encode(x=alt.X("when:T", title=None))
+    tip = [alt.Tooltip("when:T", title="day"), alt.Tooltip("pnl:Q", title="that day", format="$,.2f"),
+           alt.Tooltip("cum:Q", title="running total", format="$,.2f")]
+    day = base.mark_bar(opacity=.8).encode(
+        y=alt.Y("pnl:Q", title="USD"), tooltip=tip,
+        color=alt.condition("datum.pnl >= 0", alt.value("#3987e5"), alt.value("#e66767")))
+    cum = base.mark_line(color="#ffc533", strokeWidth=2, interpolate="monotone").encode(y="cum:Q", tooltip=tip)
+    zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#2b3a4f", strokeDash=[3, 3]).encode(y="y:Q")
+    st.altair_chart((zero + day + cum).properties(height=height).configure_view(strokeWidth=0)
+                    .configure_axis(gridColor="#1e2938", labelColor="#8592a6", domainColor="#2b3a4f"),
+                    **stretch(st.altair_chart))
+
+
+def an_prefill():
+    """Fill the form from a shared link (?w=0x…&p=30 days&m=compare) once."""
+    qp = st.query_params
+    if st.session_state.get("an_prefilled"):
+        return
+    st.session_state["an_prefilled"] = True
+    if qp.get("w"):
+        st.session_state["an_text"] = qp["w"].replace(",", ", ")
+        if qp.get("p") in A.PERIODS:
+            st.session_state["an_period"] = qp["p"]
+        st.session_state["an_mode"] = MODES[1] if qp.get("m") == "compare" else MODES[0]
+        st.session_state["an_run"] = (tuple(Q.parse_addrs(qp["w"])), st.session_state.get("an_period", "30 days"),
+                                      st.session_state["an_mode"])
+
+
+def an_load(addrs):
+    st.session_state["an_text"] = ", ".join(addrs)
+
+
+def analyze_tab():
+    an_prefill()
+    con = conn()
+    stt = Q.status(con)
+    labs = [dict(r) for r in con.execute("SELECT addr, label FROM labels ORDER BY starred DESC, added DESC")]
+    con.close()
+    st.markdown('<div class="an-hero"><b>Paste a wallet to dissect its LP game on Robinhood Chain</b>'
+                '<span>PnL, capital ROI, risk, profit quality, how it LPs, and whether it is worth copying. '
+                'Uniswap V4 positions, priced from chain state.</span></div>', unsafe_allow_html=True)
+    mode = st.radio("Mode", MODES, horizontal=True, key="an_mode", label_visibility="collapsed")
+    if labs:
+        with st.expander("★ Saved wallets — quick load & compare"):
+            names = {x["addr"]: f"{short(x['addr'])}  {x['label'] or ''}" for x in labs}
+            pick = st.multiselect("Saved wallets", list(names), format_func=names.get, label_visibility="collapsed",
+                                  placeholder="Pick one (or several to combine / compare)…")
+            st.button("Load into the box", disabled=not pick, on_click=an_load, args=(pick,))
+    with st.form("an_form", border=False):
+        c1, c2, c3 = st.columns([5, 1.6, 1.2], vertical_alignment="bottom")
+        c1.text_input("Wallet", key="an_text", label_visibility="collapsed",
+                      placeholder="0x… (or paste several, comma/space, to combine)" if mode == MODES[0]
+                      else "0x…, 0x…  (2–6 wallets side by side)")
+        c2.selectbox("Period", A.PERIODS, key="an_period",
+                     **({} if "an_period" in st.session_state else {"index": A.PERIODS.index("30 days")}))
+        go = c3.form_submit_button("Analyze", type="primary", **stretch(st.form_submit_button))
+    if go:
+        addrs = Q.parse_addrs(st.session_state.get("an_text"))
+        if not addrs:
+            st.warning("Paste a wallet address (0x + 40 hex).")
+            return
+        st.session_state["an_run"] = (tuple(addrs), st.session_state["an_period"], mode)
+        st.query_params.update({"w": ",".join(addrs), "p": st.session_state["an_period"],
+                                "m": "compare" if mode == MODES[1] else "single"})
+    run = st.session_state.get("an_run")
+    if not run:
+        st.markdown('<div class="an-empty"><b>Run a wallet through the terminal</b><span>Paste a wallet address above '
+                    'and hit <i>Analyze</i> to break down its PnL, risk profile, capital deployment and LP gameplay '
+                    'over the selected period. Every Uniswap V4 LP wallet the sync has seen is in the database.'
+                    '</span></div>', unsafe_allow_html=True)
+        return
+    addrs, per, mode = run
+    if mode == MODES[1] and len(addrs) > 1:
+        an_compare(list(addrs)[:6], per, stt)
+    else:
+        an_report(list(addrs), per, stt)
+
+
+def an_price_button(addrs, start, n, key):
+    """Price a wallet's unpriced positions right now, with the RPC from Settings."""
+    cfg = config.load_env()
+    if not cfg["RPC_URL"]:
+        st.caption("Add an RPC in Settings to price them now; otherwise ★ the wallet and the worker does it first "
+                   "on its next run.")
+        return
+    if st.button(f"Price {n:,} position(s) now", key=key, type="primary"):
+        from rpc import make_rpcs
+        from scorer import Scorer
+        bar = st.progress(0.0, text="Pricing positions from chain state…")
+        c = conn()
+        try:
+            _, call_rpc = make_rpcs(cfg)
+            Scorer(c, call_rpc, cfg, log=lambda *_: None).price_wallets(
+                addrs, start, progress=lambda i, t: bar.progress(i / t, text=f"Priced {i:,}/{t:,} positions…"))
+        except Exception as e:  # noqa: BLE001 - show it, keep the page
+            st.error(f"Pricing stopped: {e}")
+        finally:
+            c.close()
+        st.rerun()
+
+
+def an_report(addrs, per, stt):
+    real = st.session_state.get("real", False)
+    con = conn()
+    res = Q.analyze(con, addrs, per, real)
+    lab = {r["addr"]: r["label"] for r in con.execute(
+        f"SELECT addr, label FROM labels WHERE addr IN ({','.join('?' * len(addrs))})", addrs)}
+    con.close()
+    a, sk = res["analysis"], res["skipped"]
+    now = stt["now"]
+    who = " + ".join(short(x) for x in addrs) if len(addrs) > 1 else short(addrs[0])
+    if res["first_seen"] is None:
+        since = time.strftime("%d %b", time.gmtime(res["data_from"])) if res["data_from"] else "–"
+        st.warning(f"{who}: no Uniswap V4 LP position in the database (history loaded since {since}). Check the "
+                   "address, or load more history with Backfill days in Settings.")
+        return
+    notes = []
+    if sk["unpriced"]:
+        notes.append(f"{sk['unpriced']:,} position(s) in the period aren't priced yet")
+    if sk["launch"]:
+        notes.append(f"{sk['launch']:,} token launch(es) left out (seeded 2%+ of a supply)")
+    if sk["unpriceable"]:
+        notes.append(f"{sk['unpriceable']:,} in pools without ETH/USDG (can't be priced)")
+    if sk["before"]:
+        notes.append(f"{sk['before']:,} opened before our history (deposit unknown)")
+    head = f"Analysis complete · {a['positions'] if a else 0:,} positions" + (" · " + " · ".join(notes) if notes else "")
+    st.markdown(f'<div class="an-done">✓ {head}</div>', unsafe_allow_html=True)
+    if sk["unpriced"]:
+        an_price_button(addrs, res["start"], sk["unpriced"], f"price_{'_'.join(addrs)}_{per}")
+    if not a:
+        st.info("Nothing priced in this period yet. Pick a longer period, or price its positions above.")
+        return
+
+    age = (now - res["first_seen"]) / 86400
+    vc = VERDICT_COLOR[a["verdict"]]
+    chips = [f'<span class="an-addr">{who}</span>', f"<span>{per}</span>", f"<span>{a['positions']} positions</span>",
+             f"<span>LP age · {age:.0f}d</span>"]
+    if len(addrs) == 1 and lab.get(addrs[0]):
+        chips.insert(1, f"<span>{lab[addrs[0]]}</span>")
+    st.markdown(f"""
+<div class="an-card">
+  <div class="an-title">Wallet Analysis<div class="an-tags"><i style="background:rgba(255,197,51,.16);color:#ffc533">
+  {KIND_LABEL[a['kind']]}</i><i style="background:rgba({vc},.2);color:rgb({vc})">{a['verdict']}</i></div></div>
+  <div class="an-chips">{''.join(chips)}</div>
+</div>
+<div class="kpis an-big">
+  <div class="kpi" style="--acc:rgb({'57,135,229' if a['net'] >= 0 else '230,103,103'})"><div class="k">Net PnL</div>
+    <div class="v">{money(a['net'], True)}</div><div class="s">{a['wins']}W / {a['losses']}L · {a['flat']} flat</div></div>
+  <div class="kpi"><div class="k">Capital ROI</div><div class="v">{pct(a['roi'], 2)}</div>
+    <div class="s">over {a['active_days']:.1f}d active · ≈{pct(a['roi_30d'], 1)}/30d</div></div>
+  <div class="kpi"><div class="k">Win rate</div><div class="v">{pct(a['win'], 1)}</div>
+    <div class="s">{a['closed']} closed positions · {pct(a['trade_win'])} per trade</div></div>
+</div>""", unsafe_allow_html=True)
+
+    why = "".join(f"<li>{w}</li>" for w in a["why"])
+    fl = "".join(f'<div class="an-flag {t}"><b>{TONE_ICON[t]} {h}</b> — {x}</div>' for t, h, x in a["flags"])
+    st.markdown(f"""
+<div class="an-qual">
+  <div><small>Quality</small><b style="color:rgb({vc})">{a['verdict']}</b><p>{A.VERDICT_TEXT[a['verdict']]}</p>
+    {f'<ul>{why}</ul>' if why else ''}</div>
+  <div><small>Trader type</small><b style="color:#ffc533">{KIND_LABEL[a['kind']]}</b>
+    <p>{A.KIND_TEXT[a['kind']]} {a['kind_fit']}% of its trades fit.</p></div>
+  <div><small>Gameplay</small><b>{a['play']}</b><p>{a['play_text']}</p></div>
+</div>{fl}""", unsafe_allow_html=True)
+
+    section("Performance & returns", "USD · Real PnL toggle (top right) charges selling the token back")
+    st.markdown(grid([
+        ("Total profit", money(a["profit"]), f"{a['wins']} winning positions"),
+        ("Total loss", money(-a["loss"]), f"{a['losses']} losing positions"),
+        ("Profit / position", money(a["per_position"], True), "net ÷ closed positions"),
+        ("Profit factor", pf_fmt(a["pf"]), "$ made per $1 lost · > 2 strong"),
+        ("Median deployed", money(a["capital"]), "typical capital in positions (time-weighted)"),
+        ("Peak deployed", money(a["peak"]), "most it had in at once"),
+        ("Currently open", money(a["open_now"]), f"{a['open']} open now" if a["live"] else "period already over"),
+        ("Floating PnL", money(a["float"], True), "open positions, incl. unclaimed fees"),
+        ("Net PnL incl. floating", money(a["total"], True), f"closed {money(a['net'], True)} · floating "
+                                                            f"{money(a['float'], True)}"),
+        ("Fees earned", money(a["fees"]), "LP fees over the period"),
+        ("Median trade size", money(a["size"]), f"{a['trades']} trades · ladders count once"),
+        ("ETH-paired", pct(a["eth_share"]), "of deposits (rest USDG pools)"),
+    ]), unsafe_allow_html=True)
+
+    section("Daily & cumulative PnL", "bars = realized that day · gold line = running total")
+    if len(a["daily"]) >= 2:
+        pnl_chart(a["daily"])
+    else:
+        st.caption("Needs closes on at least two days.")
+
+    rec = lambda v: "–" if v is None or not a["avg_green"] else f"≈ {abs(v) / a['avg_green']:.1f} green days to recover"  # noqa: E731
+    section("Risk management", "how big and how often the losses get")
+    st.markdown(grid([
+        ("Max PnL drawdown", pct(a["dd"], 1), f"biggest drop from a high ({money(a['dd_usd'])}), of median capital"),
+        ("Worst single day", money(a["worst_day"]), rec(a["worst_day"])),
+        ("Out-of-range rate", pct(a["oor_rate"], 1), f"{a['oor_n']} of {a['oor_of']} closed out of range at a loss"),
+        ("Worst OOR loss", money(a["oor_worst"]), rec(a["oor_worst"])),
+        ("Median OOR loss", money(a["oor_median"]), rec(a["oor_median"])),
+        ("Followable", FOLLOW.get(a["follow"], "–"), f"median hold {dur(a['hold'])} · {a['per_day']:.1f} trades/day"),
+    ], 3), unsafe_allow_html=True)
+
+    section("Profit quality", "is the profit steady or carried by a few lucky days")
+    st.markdown(grid([
+        ("Avg daily profit", money(a["avg_green"]), f"across {a['green_days']} green days"),
+        ("Avg daily loss", money(a["avg_red"]), f"across {a['red_days']} red days"),
+        ("Profit concentration", pct(a["concentration"], 1), "from its top 2 days"),
+    ], 3), unsafe_allow_html=True)
+
+    section("Recommended filter", "entry filters a copier can apply: which would have kept the most PnL")
+    f = a["filters"]
+    if f["best"]:
+        rows = [{"Filter": r["name"], "Trades": r["trades"], "PnL": r["pnl"], "Win": r["win"],
+                 "vs everything": r["pnl"] - f["all"]["pnl"]} for r in [f["all"]] + f["best"]]
+        st.dataframe(pd.DataFrame(rows).style.format({"PnL": lambda v: money(v, True), "Win": lambda v: pct(v),
+                                                      "vs everything": lambda v: money(v, True)}, na_rep="–"),
+                     hide_index=True, **stretch(st.dataframe))
+        st.caption(f"Combinations of entry market cap × side × ETH/USDG pool with at least {A.FILTER_MIN_TRADES} "
+                   "closed trades. Past fit, not a promise.")
+    else:
+        st.caption(f"No filter beats taking every trade (combinations need {A.FILTER_MIN_TRADES}+ closed trades).")
+
+    section("Position sizing", "scale its trades to your capital")
+    c1, c2 = st.columns(2)
+    mine_addr = c2.text_input("Use my wallet (reads ETH + USDG + open positions)", key="an_mine_addr",
+                              placeholder="0x… your wallet")
+    worth = None
+    if Q.ADDR_RE.fullmatch(mine_addr.strip()) and config.load_env()["RPC_URL"]:
+        try:
+            from rpc import make_rpcs
+            c = conn()
+            worth = Q.net_worth(c, make_rpcs(config.load_env())[1], mine_addr.strip().lower())
+            c.close()
+            c2.caption(esc(f"{worth['eth']:.4f} ETH + {usd(worth['usdg'])} USDG + {usd(worth['positions'])} in "
+                           "positions"))
+        except Exception as e:  # noqa: BLE001
+            c2.caption(f"Couldn't read it: {e}")
+    mine = c1.number_input("Your capital (USD)", min_value=0.0, step=100.0,
+                           value=float(round(worth["worth"])) if worth else 0.0, key=f"an_mine_{bool(worth)}")
+    sz = A.sizing(a, mine)
+    st.caption(esc(f"Its median deployed {money(a['capital'])} · peak {money(a['peak'])} · largest position "
+                   f"{money(a['largest'])} · median trade {money(a['size'])} · open now {money(a['open_now'])}"))
+    if sz:
+        st.markdown(grid([("Sizing ratio", f"{sz['ratio']:.3f}×", "your capital ÷ its median deployed"),
+                          ("Per trade", money(sz["per_trade"]), "its median trade, scaled"),
+                          ("Max per position", money(sz["max_position"]), "its largest position, scaled"),
+                          ("Peak at once", money(sz["peak"]), "its peak deployed, scaled")]), unsafe_allow_html=True)
+
+    section("How it LPs", f"{a['style'] or ''} · median range {range_fmt(a['range'])} · hold {dur(a['hold'])} · "
+                          f"entry mcap {usd(a['mcap'])}")
+    c1, c2 = st.columns(2)
+    with c1:
+        bars(a["sides"], "Deposit side")
+        bars(a["range_dist"], "Range width")
+    with c2:
+        bars(a["hold_dist"], "Hold time")
+        bars(a["mcap_dist"], "Entry market cap")
+    st.caption("Range = upper / lower price − 1 of a trade (a ladder: lowest to highest). Entry market cap = token "
+               f"supply × pool price when it opened ({a['mcap_known']} of {a['trades']} trades known; the rest use "
+               "today's).")
+
+    section("Pools", "where the PnL came from")
+    pools = pd.DataFrame(a["pools"])
+    pools["Win"] = pools.apply(lambda r: r["wins"] / r["closed"] * 100 if r["closed"] else None, axis=1)
+    st.dataframe(pools[["pair", "positions", "closed", "open", "pnl", "fees", "dep", "Win"]].style.format(
+        {"pnl": lambda v: money(v, True), "fees": usd, "dep": usd, "Win": lambda v: pct(v)}, na_rep="–"),
+        hide_index=True, **stretch(st.dataframe), height=auto_height(len(pools), 300),
+        column_config={"pair": "Pool", "positions": "Positions", "closed": "Closed", "open": "Open", "pnl": "PnL",
+                       "fees": "Fees", "dep": "Deposited"})
+
+    with st.expander(f"Per-position detail ({len(res['positions'])})"):
+        pos = pd.DataFrame(res["positions"])
+        pos["PnL"] = pos["pnl"] - (pos["cost"].fillna(0) if real else 0)
+        view = pd.DataFrame({
+            "Pool": pos["pair"], "Opened": pd.to_datetime(pos["open_ts"], unit="s"),
+            "Hold": pos.apply(lambda r: dur((r["close_ts"] if pd.notna(r["close_ts"]) else now) - r["open_ts"])
+                              + ("" if pd.notna(r["close_ts"]) else " · open"), axis=1),
+            "Range": pos.apply(lambda r: range_fmt(A.M.range_pct(r)), axis=1),
+            "Side": pos["side"].map(lambda s: A.SIDE_LABEL.get(s, "–")),
+            "Mcap": pos["mcap"], "In": pos["dep"], "Fees": pos["fee"], "PnL": pos["PnL"],
+            "Closed": [OOR_LABEL.get(p.get("oor", "?")) if p["close_ts"] else "open" for p in res["positions"]],
+        }).sort_values("Opened", ascending=False)
+        st.dataframe(view.style.format({"Mcap": usd, "In": usd, "Fees": usd, "PnL": lambda v: money(v, True)},
+                                       na_rep="–"), hide_index=True, **stretch(st.dataframe), height=360)
+        st.download_button("Download positions (CSV)", view.to_csv(index=False),
+                           f"{'_'.join(x[:8] for x in addrs)}_{per.replace(' ', '')}.csv", "text/csv")
+
+    c = conn()
+    w = c.execute("SELECT data FROM wallets WHERE addr=?", (addrs[0],)).fetchone() if len(addrs) == 1 else None
+    me = (__import__("json").loads(w[0]) if w and w[0] else {}).get("real" if real else "raw")
+    better = Q.better_wallets(c, a["kind"], me["score"] if me else None, "real" if real else "raw")
+    c.close()
+    section(f"Better {KIND_LABEL[a['kind']].lower()} wallets", "same class, higher score on the board"
+            + (f" (this one: {me['score']:.1f})" if me else ""))
+    if better:
+        for b in better:
+            cols = st.columns([4, 1])
+            cols[0].markdown(esc(f"`{short(b['addr'])}` {b.get('label') or ''} · score **{b['score']:.1f}** · "
+                                 f"PnL {money(b['net'], True)} · win {pct(b.get('win_pos'))} · {b.get('style') or ''}"))
+            cols[1].button("Analyze", key=f"better_{b['addr']}", on_click=an_open, args=(b["addr"],))
+    else:
+        st.caption("None above it on the board.")
+
+    c1, c2 = st.columns([1, 3])
+    if len(addrs) == 1 and c1.button("★ Save wallet", key=f"save_{addrs[0]}"):
+        c = conn()
+        Q.set_label(c, addrs[0], starred=True, source="analyze")
+        c.close()
+        st.toast("Saved to the watchlist")
+    c2.caption("Share: this page's address now opens this analysis (wallet + period are in the link).")
+
+
+def an_open(addr):
+    st.session_state["an_text"] = addr
+    st.session_state["an_run"] = ((addr,), st.session_state.get("an_period", "30 days"), MODES[0])
+    st.query_params.update({"w": addr, "m": "single"})
+
+
+def an_compare(addrs, per, stt):
+    real = st.session_state.get("real", False)
+    con = conn()
+    results = {x: Q.analyze(con, [x], per, real) for x in addrs}
+    con.close()
+    rows = [("Verdict", lambda a: a["verdict"]), ("Class", lambda a: KIND_LABEL[a["kind"]]),
+            ("Gameplay", lambda a: a["play"]), ("Net PnL", lambda a: money(a["net"], True)),
+            ("Floating PnL", lambda a: money(a["float"], True)), ("Capital ROI", lambda a: pct(a["roi"], 1)),
+            ("ROI / 30d", lambda a: pct(a["roi_30d"], 1)), ("Win rate", lambda a: pct(a["win"], 1)),
+            ("Profit factor", lambda a: pf_fmt(a["pf"])), ("Fees", lambda a: money(a["fees"])),
+            ("Median deployed", lambda a: money(a["capital"])), ("Peak deployed", lambda a: money(a["peak"])),
+            ("Max drawdown", lambda a: pct(a["dd"], 1)), ("Worst day", lambda a: money(a["worst_day"])),
+            ("OOR loss rate", lambda a: pct(a["oor_rate"], 1)),
+            ("Top-2-day share", lambda a: pct(a["concentration"], 1)), ("Median hold", lambda a: dur(a["hold"])),
+            ("Median range", lambda a: range_fmt(a["range"])), ("Entry mcap", lambda a: usd(a["mcap"])),
+            ("Trade size", lambda a: money(a["size"])), ("Trades / day", lambda a: f"{a['per_day']:.1f}"),
+            ("Closed / open", lambda a: f"{a['closed']} / {a['open']}"), ("Followable", lambda a: FOLLOW[a["follow"]])]
+    table = {"Metric": [r[0] for r in rows]}
+    curves = []
+    for x, res in results.items():
+        a = res["analysis"]
+        table[short(x)] = [f(a) if a else "–" for _, f in rows]
+        for d in (a or {}).get("daily", []):
+            curves.append({"wallet": short(x), "when": pd.to_datetime(d["day"], unit="s"), "cum": d["cum"]})
+    st.markdown(f'<div class="an-done">✓ Compared {len(addrs)} wallets · {per}</div>', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(table), hide_index=True, **stretch(st.dataframe), height=38 + 35 * len(rows))
+    missing = [short(x) for x, r in results.items() if not r["analysis"]]
+    if missing:
+        st.caption("Nothing priced in this period for " + ", ".join(missing) + ". Open it alone to price it.")
+    if curves:
+        section("Cumulative realized PnL")
+        st.altair_chart(alt.Chart(pd.DataFrame(curves)).mark_line(strokeWidth=2, interpolate="monotone").encode(
+            x=alt.X("when:T", title=None), y=alt.Y("cum:Q", title="USD"), color=alt.Color("wallet:N", title=None),
+            tooltip=["wallet", alt.Tooltip("when:T"), alt.Tooltip("cum:Q", format="$,.2f")])
+            .properties(height=260).configure_view(strokeWidth=0)
+            .configure_axis(gridColor="#1e2938", labelColor="#8592a6", domainColor="#2b3a4f")
+            .configure_legend(labelColor="#b4bfcd"), **stretch(st.altair_chart))
+    cols = st.columns(min(len(addrs), 6))
+    for c, x in zip(cols, addrs):
+        c.button(f"Open {short(x)}", key=f"cmp_{x}", on_click=an_open, args=(x,))
+
+
 # ------------------------------------------------------------ twin tab ----
 def twins():
     con = conn()
@@ -1225,8 +1671,10 @@ def main():
                     f'position returns (median <b>{fee}%</b>: pool fee + {stt.get("slippage", 1)}% slippage), and the '
                     f'board is re-ranked on those numbers.</div>', unsafe_allow_html=True)
     real = st.session_state.get("real", False)
-    t_multi, t_degen, t_day, t_twin, t_watch, t_rhd, t_set = st.tabs(
-        ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "vs RH Discovery", "Settings"])
+    t_an, t_multi, t_degen, t_day, t_twin, t_watch, t_rhd, t_set = st.tabs(
+        ["Analyze", "Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "vs RH Discovery", "Settings"])
+    with t_an:
+        analyze_tab()
     for tab, kind in ((t_multi, "multiday"), (t_degen, "degen")):
         with tab:
             live_board("real" if real else "raw", kind, kind=kind)

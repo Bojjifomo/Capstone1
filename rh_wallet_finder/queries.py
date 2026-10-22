@@ -8,6 +8,7 @@ import re
 import threading
 import time
 
+import analysis as A
 import config
 import lpagent
 import metrics as M
@@ -161,6 +162,106 @@ def wallet_detail(con, addr):
     return {"addr": addr, "positions": pos, "wallet": dict(w) if w else None, "smart_lp": slf, "metrics": metrics,
             "label": dict(lab) if lab else None, "lpagent_link": lpagent.link(addr),
             "explorer": f"{config.EXPLORER}/address/{addr}"}
+
+
+def parse_addrs(text):
+    """Every 0x address in pasted text, lowercased, in order, once."""
+    return list(dict.fromkeys(a.lower() for a in ADDR_RE.findall(text or "")))
+
+
+def analysis_positions(con, addrs, since):
+    """Positions of these wallets that were open at some point after `since`,
+    as analysis.analyze takes them (priced ones only), plus what was left out.
+    -> (positions, {unpriced, unpriceable, launch, before, unpriced_ids})"""
+    import scorer  # the pricing helpers know each pool's quote side and token supply
+    sc = scorer.Scorer(con, None, config.load_env())
+    names = pool_names(con, {r[0] for r in con.execute(
+        f"SELECT DISTINCT pool FROM positions WHERE owner IN ({','.join('?' * len(addrs))})", addrs)})
+    pos, skipped = [], {"unpriced": 0, "unpriceable": 0, "launch": 0, "before": 0, "unpriced_ids": []}
+    for r in con.execute(f"""SELECT token_id, owner, pool, tl, tu, open_block, open_ts, close_ts, minted, valued,
+                             launch, dep_usd, wd_usd, fee_usd, now_usd, pnl_usd, cost_usd, eth_pair, single, sell_fee
+                             FROM positions WHERE owner IN ({','.join('?' * len(addrs))})
+                             AND (close_ts IS NULL OR close_ts >= ?)""", (*addrs, since)):
+        if not r["minted"]:
+            skipped["before"] += 1
+        elif r["valued"] == 0:
+            skipped["unpriced"] += 1
+            skipped["unpriced_ids"].append(r["token_id"])
+        elif r["valued"] == 2:
+            skipped["unpriceable"] += 1
+        elif r["launch"]:
+            skipped["launch"] += 1
+        else:
+            pos.append({"token_id": r["token_id"], "owner": r["owner"], "pool": r["pool"], "tl": r["tl"],
+                        "tu": r["tu"], "open_block": r["open_block"], "open_ts": r["open_ts"],
+                        "close_ts": r["close_ts"], "dep": r["dep_usd"], "wd": r["wd_usd"], "fee": r["fee_usd"],
+                        "now": r["now_usd"] or 0.0, "pnl": r["pnl_usd"], "cost": r["cost_usd"],
+                        "eth_pair": r["eth_pair"], "single": r["single"], "sell_fee": r["sell_fee"],
+                        "mcap": None, "side": None, "pair": names.get(r["pool"])})
+    sc.entry_details({"_": pos})
+    mc = {a: t.get("mcap") for a, t in sc.tokens.items()}
+    for p in pos:
+        info = sc.pool_info(p["pool"])
+        if p["mcap"] is None and info:
+            p["mcap"] = mc.get(info["c1"] if info["q"] == 0 else info["c0"])  # no entry price: today's
+    # out of range at the close: the last withdrawal came back all in one token
+    last = {}
+    ids = [p["token_id"] for p in pos if p["close_ts"]]
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        for r in con.execute(f"""SELECT token_id, a0, a1, u0, u1 FROM events WHERE v_state=1 AND CAST(delta AS REAL) < 0
+                                 AND token_id IN ({','.join('?' * len(part))}) ORDER BY block, log_index""", part):
+            last[r[0]] = r
+    for p in pos:
+        e, info = last.get(p["token_id"]), sc.pool_info(p["pool"])
+        if not e or not info or None in (e[1], e[2], e[3], e[4]):
+            continue
+        q = info["q"]
+        v = (e[1] * e[3], e[2] * e[4])
+        tot = v[0] + v[1]
+        if tot <= 0:
+            continue
+        # all quote back: the token ran above the range; all token back: it fell below
+        p["oor"] = "above" if v[1 - q] < scorer.SIDE_DUST * tot else "below" if v[q] < scorer.SIDE_DUST * tot else None
+    return pos, skipped
+
+
+def analyze(con, addrs, period_name, real=False, now=None):
+    """The Analyze tab for one wallet or a few combined.
+    -> {analysis (None = nothing priced in the period), skipped, addrs, period, start, end}"""
+    now = now or time.time()
+    start, end = A.period(period_name, now)
+    pos, skipped = analysis_positions(con, addrs, start)
+    cfg = config.load_env()
+    a = A.analyze(pos, now, start, end, real, float(cfg.get("MULTIDAY_HOURS") or 2) * 3600)
+    first = con.execute(f"SELECT MIN(open_ts) FROM positions WHERE owner IN ({','.join('?' * len(addrs))})",
+                        addrs).fetchone()[0]
+    if a:
+        a["filters"] = A.recommend_filters([p for p in pos if p["close_ts"] and p["close_ts"] >= start
+                                            and (end is None or p["close_ts"] <= end)],
+                                           (lambda p: p["pnl"] - (p["cost"] or 0)) if real else (lambda p: p["pnl"]))
+    return {"analysis": a, "skipped": skipped, "addrs": addrs, "period": period_name, "start": start, "end": end,
+            "first_seen": first, "positions": pos, "data_from": get_meta(con, "data_from_ts")}
+
+
+def net_worth(con, rpc, addr):
+    """Your wallet's ETH + USDG now (read from the chain) + its open positions we
+    have priced, in USD -> {eth, usdg, positions, worth}."""
+    import chain as C
+    from indexer import multicall
+    eb, ub = multicall(rpc, [(config.MULTICALL3, C.cd_simple(C.SEL_ETH_BALANCE, addr)),
+                             (config.USDG, C.cd_simple(C.SEL_BALANCE_OF, addr))], "latest")
+    eth = int(eb, 16) / 1e18 if eb else 0.0
+    usdg = int(ub, 16) / 1e6 if ub else 0.0
+    pos = con.execute("SELECT SUM(now_usd) FROM positions WHERE owner=? AND close_ts IS NULL AND valued=1",
+                      (addr,)).fetchone()[0] or 0.0
+    return {"eth": eth, "usdg": usdg, "positions": pos, "worth": eth * (get_meta(con, "eth_usd") or 0) + usdg + pos}
+
+
+def better_wallets(con, kind, than, view="raw", n=5):
+    """Ranked wallets of the same class that score above `than` (None = the top)."""
+    rows, _ = wallet_rows(con, view, kind)
+    return [r for r in rows if than is None or r["score"] > than][:n]
 
 
 def import_text(con, text, source):

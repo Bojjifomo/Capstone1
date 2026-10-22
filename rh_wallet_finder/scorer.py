@@ -426,6 +426,33 @@ class Scorer:
         con.commit()
         return {"candidates": len(cands), "priced": len(todo), "scored": n}
 
+    def price_wallets(self, wallets, since, stop=lambda: False, progress=None):
+        """Price these wallets' unpriced positions open after `since` right now (the
+        Analyze tab), re-value their open ones, and refresh their tokens' prices.
+        -> positions priced"""
+        con = self.con
+        q = ",".join("?" * len(wallets))
+        todo = [r[0] for r in con.execute(f"""SELECT token_id FROM positions WHERE owner IN ({q}) AND minted=1
+                                              AND valued=0 AND (close_ts IS NULL OR close_ts >= ?)
+                                              ORDER BY open_ts DESC""", (*wallets, since))]
+        for i in range(0, len(todo), 200):
+            if stop():
+                break
+            self.value_events(todo[i:i + 200])
+            con.commit()
+            if progress:
+                progress(min(i + 200, len(todo)), len(todo))
+        open_ids = [r[0] for r in con.execute(f"""SELECT token_id FROM positions WHERE owner IN ({q}) AND minted=1
+                                                  AND close_ts IS NULL AND valued != 2""", wallets)]
+        head = get_meta(con, "fwd_block")
+        self.aggregate(set(todo) | set(open_ids), self.value_open(open_ids, head if head else "latest"))
+        pools = [r[0] for r in con.execute(f"SELECT DISTINCT pool FROM positions WHERE owner IN ({q})", wallets)]
+        eth = self.refresh_tokens(pools)
+        if eth:
+            set_meta(con, "eth_usd", eth)
+        con.commit()
+        return len(todo)
+
     def _owner_chunks(self, wallets, sql, args=()):
         for i in range(0, len(wallets), 400):
             part = wallets[i:i + 400]

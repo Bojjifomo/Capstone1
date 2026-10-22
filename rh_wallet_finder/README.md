@@ -67,6 +67,7 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 | --- | --- |
 | Wallets / Multiday / Degen / Positions | Wallet di database (+ yang udah ranked) / jumlah multiday player / degen player / posisi V4 yang ke-index |
 | Rail atas `WORKER` / `SYNC` / `RANK` / `HISTORY` / `ETH` | Status sync di background, kapan terakhir sync & ranking (kuning = udah lama), history yang udah ke-load, harga ETH |
+| Tab **Analyze** | Versi Robinhood Chain dari Apex Liquidity: paste 1 wallet (atau beberapa, digabung) → bedah performanya buat copytrade. Lihat [Analyze](#analyze-cek-1-wallet-buat-copytrade) |
 | Tab **Multiday** | Wallet yang trade-nya ditahan berjam-jam sampai berhari-hari (median hold ≥ 2 jam). Diranking sesama multiday, posisi yang masih open ikut dihitung (Total PnL) |
 | Tab **Degen** | Wallet yang keluar-masuk cepet (median hold < 2 jam). Diranking sesama degen, pakai realized PnL + profit factor. Bot (hold < 5 menit / > 100 trade sehari) disembunyiin, centang **Show bots** di Filters kalau mau liat |
 | Tab **Last 24h** | Dua kelas campur, cuma posisi yang ditutup 24 jam terakhir (ada kolom Class) |
@@ -260,6 +261,37 @@ python3 finder.py compare baris.txt  # angka kita vs baris yang dicopy dari RH D
 Database-nya `rh_wallet_finder/data/wallets.db` (SQLite). Bisa dibuka pakai
 DB Browser for SQLite / pandas kalau mau olah sendiri. Tabel: `wallets`,
 `positions`, `events`, `transfers`, `pools`, `tokens`, `labels`.
+
+## Analyze: cek 1 wallet buat copytrade
+
+Tab pertama. Paste wallet LP (0x…), pilih period (24 jam, 7 / 14 / 30 hari, bulan
+ini, bulan lalu, semua history), klik **Analyze**. Semua angka dalam USD, dari
+posisi Uniswap V4 wallet itu yang ada di database.
+
+- **Verdict**: `COPY` (profit, profit factor ≥ 1.5, win ≥ 50%, drawdown < 30%,
+  profit nggak numpuk di 2 hari terbaik (< 60%), ≥ 10 posisi closed, bisa diikutin
+  manual), `WATCH` (profit tapi ada yang kurang, alasannya ditulis), `REJECT`
+  (rugi / profit factor < 1). Plus kelas (Multiday / Degen) dan gameplay
+  (scalper, intraday range LP, swing, wide holder…).
+- **Performance & returns**: total profit / loss, profit per posisi, profit
+  factor, modal ke-deploy (median time-weighted & peak), yang lagi open +
+  floating PnL (fee belum di-claim ikut), fee, ukuran trade, porsi pool ETH.
+- **Grafik PnL harian + kumulatif**.
+- **Risk**: max drawdown, hari terburuk (≈ berapa hari hijau buat nutup),
+  out-of-range rate (posisi yang ditutup full satu token & rugi), OOR loss
+  terburuk / median, bisa diikutin manual atau pace bot.
+- **Profit quality**: rata-rata hari hijau / merah, konsentrasi profit 2 hari terbaik.
+- **Recommended filter**: kombinasi filter yang bisa lu pasang pas copy
+  (mcap token pas masuk × sisi deposit × pool ETH/USDG) yang paling banyak
+  nyimpen PnL.
+- **Position sizing**: isi modal lu (atau paste wallet lu, dibaca ETH + USDG +
+  posisi open) → rasio, size per trade, max per posisi.
+- **How it LPs**: sisi deposit, lebar range, lama hold, mcap pas masuk;
+  tabel pool, detail per posisi (+ download CSV), wallet sekelas yang skornya lebih tinggi.
+- **Compare wallets**: 2–6 wallet berjejer + kurva PnL kumulatif barengan.
+- Link halaman ikut nyimpen wallet + period (`?w=0x…&p=30 days`), jadi bisa di-share / di-bookmark.
+- Posisi wallet yang belum dihargai: klik **Price … position(s) now** (pakai RPC
+  di Settings), atau ★ wallet-nya biar worker ngerjain duluan.
 
 ## Cara kerjanya
 
