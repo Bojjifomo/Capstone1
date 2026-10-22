@@ -23,6 +23,13 @@ _cache = {}
 _cache_lock = threading.Lock()
 
 
+def holdings(w, m, eth_usd):
+    """Net worth (ETH + USDG in the wallet + its open positions) and ROI the way
+    RH Discovery reads it: the window's PnL over that net worth."""
+    worth = (w["eth_bal"] or 0) * eth_usd + (w["usd_bal"] or 0) + (m.get("open_now") or 0)
+    return {"worth": worth, "roi_nw": m["net"] / worth * 100 if worth >= 1 else None}
+
+
 def wallet_rows(con, view, kind=None):
     """Scored wallets for one view (all, or one player class ranked on its own),
     plus labels and how close each is to the nearest reference wallet of its class."""
@@ -45,9 +52,8 @@ def wallet_rows(con, view, kind=None):
         if not m:
             continue
         lab = labels.get(r["addr"], {})
-        worth = (r["eth_bal"] or 0) * eth_usd + (r["usd_bal"] or 0) + (m.get("open_now") or 0)
         best = slf.get(r["addr"])
-        rows.append({**m, "kind": m.get("kind") or "degen", "addr": r["addr"], "worth": worth,
+        rows.append({**m, **holdings(r, m, eth_usd), "kind": m.get("kind") or "degen", "addr": r["addr"],
                      "first_seen": r["first_seen"], "last_seen": r["last_seen"], "label": lab.get("label"),
                      "notes": lab.get("notes"), "starred": bool(lab.get("starred")), "ref": lab.get("ref"),
                      "slf": {**best, "pair": names.get(best["pool"])} if best else None})
@@ -94,6 +100,7 @@ def status(con):
         "kinds": kinds, "multiday_hours": float(cfg["MULTIDAY_HOURS"]), "active_days": float(cfg["ACTIVE_DAYS"]),
         "rank_version": get_meta(con, "rank_version"), "rank_current": M.RANK_VERSION,
         "rated": get_meta(con, "rated") or 0, "queue": get_meta(con, "price_queue") or 0,
+        "history_queue": get_meta(con, "history_queue") or 0, "launch": config.CHAIN_LAUNCH_TS,
         "positions": n("SELECT COUNT(*) FROM positions"),
         "pools": n("SELECT COUNT(*) FROM pools"),
         "synced_at": get_meta(con, "synced_at"), "scored_at": get_meta(con, "scored_at"),
@@ -147,8 +154,11 @@ def wallet_detail(con, addr):
     names = pool_names(con, {r["pool"] for r in slf})
     for r in slf:
         r["pair"] = names.get(r["pool"])
-    return {"addr": addr, "positions": pos, "wallet": dict(w) if w else None, "smart_lp": slf,
-            "metrics": json.loads(w["data"]) if w and w["data"] else None,
+    metrics = json.loads(w["data"]) if w and w["data"] else None
+    eth_usd = get_meta(con, "eth_usd") or 0
+    for m in (metrics or {}).values():
+        m.update(holdings(w, m, eth_usd))
+    return {"addr": addr, "positions": pos, "wallet": dict(w) if w else None, "smart_lp": slf, "metrics": metrics,
             "label": dict(lab) if lab else None, "lpagent_link": lpagent.link(addr),
             "explorer": f"{config.EXPLORER}/address/{addr}"}
 

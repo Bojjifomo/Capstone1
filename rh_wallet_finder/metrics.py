@@ -12,6 +12,7 @@ are counted per trade. PnL, fees and the equity curve stay per position.
 """
 import math
 import statistics
+import time
 
 DAY = 86400
 FULL_RANGE_PCT = 1e6  # anything wider reads as "full range"
@@ -19,7 +20,7 @@ FLAT = 0.0005  # a trade within ±0.05% of its deposit did nothing (a ladder the
 PF_CAP = 99.0
 MULTIDAY_S = 2 * 3600  # median hold from here up = Multiday player, below = Degen player
 KINDS = ("multiday", "degen")
-RANK_VERSION = 3  # bump when the stored metrics change shape; the app re-ranks on start
+RANK_VERSION = 4  # bump when the stored metrics change shape; the app re-ranks on start
 KIND_NAME = {"multiday": "Multiday", "degen": "Degen"}
 BOT_HOLD_S = 300
 BOT_PER_DAY = 100
@@ -116,6 +117,11 @@ def wallet_metrics(positions, now, window_days, data_from, real=False, multiday_
 
     roi = net / capital * 100 * (30 * DAY / max(active, DAY))  # under a day of data: no wild extrapolation
 
+    # per position, as RH Discovery counts it: an untouched range is flat, left out
+    pos_wins = sum(1 for p in closed if pnl(p) > FLAT * p["dep"])
+    pos_decided = pos_wins + sum(1 for p in closed if pnl(p) < -FLAT * p["dep"])
+    win_pos = pos_wins / pos_decided * 100 if pos_decided else None
+
     # per trade: a ladder that never got touched is flat, neither a win nor a loss
     res = [(sum(pnl(p) for p in t["legs"]), t["dep"]) for t in t_closed]
     wins = [x for x, dep in res if x > FLAT * dep]
@@ -155,7 +161,8 @@ def wallet_metrics(positions, now, window_days, data_from, real=False, multiday_
     legs = [len(t["legs"]) for t in tr]
 
     m = {
-        "net": net, "float": flt, "total": net + flt, "roi": roi, "win": win, "pf": pf, "daily": daily,
+        "net": net, "float": flt, "total": net + flt, "roi": roi, "win": win, "win_pos": win_pos, "pf": pf,
+        "daily": daily,
         "flat": (len(t_closed) - decided) / len(t_closed) * 100 if t_closed else 0.0,
         "dd": -max_dd / capital * 100, "recover": recover, "recover_open": unrecovered,
         "size": size, "eth": eth_share, "mcap": _median([t["mcap"] for t in tr]),
@@ -176,6 +183,29 @@ def wallet_metrics(positions, now, window_days, data_from, real=False, multiday_
              momentum=net7 / net if net > 0 else None, roi_win=net / capital * 100, usdg=100 - eth_share)
     m["style"], m["style_conf"] = style(tr)
     return m
+
+
+def months_between(t0, t1):
+    """Calendar months from t0's month to t1's, both counted (Aug 14 -> Oct 22 = 3)."""
+    a, b = time.gmtime(t0), time.gmtime(t1)
+    return max(1, (b.tm_year - a.tm_year) * 12 + b.tm_mon - a.tm_mon + 1)
+
+
+def history(h, now, data_from=None, launch=None):
+    """All-time figures from every priced closed position, as RH Discovery shows them.
+
+    h: {pnl, pnl_3m, dep, first_ts, gap} summed over the wallet's priced closed
+    positions (gap = closed positions still unpriced). The history is cut off when
+    the wallet was already active when our data starts (and that is after the
+    chain's launch): then the figures run from data_from, and `hist_from` says so.
+    -> {pnl_all, pnl_3m, roi_all, avg_month, months, hist_from, hist_gap}"""
+    first = h.get("first_ts") or now
+    cut = bool(data_from and first <= data_from + DAY and (launch is None or data_from > launch + DAY))
+    months = months_between(data_from if cut else first, now)
+    pnl = h.get("pnl") or 0.0
+    return {"pnl_all": pnl, "pnl_3m": h.get("pnl_3m") or 0.0,
+            "roi_all": pnl / h["dep"] * 100 if h.get("dep") else None, "avg_month": pnl / months,
+            "months": months, "hist_from": int(data_from) if cut else None, "hist_gap": int(h.get("gap") or 0)}
 
 
 # ---- score -----------------------------------------------------------------

@@ -32,10 +32,11 @@ MAX_ROWS = 2000  # per view
 VIEWS = ("raw", "real", "d1raw", "d1real")
 
 # what the page shows and filters on; nothing personal
-FIELDS = ("addr", "kind", "kind_fit", "score", "verdict", "worth", "net", "roi_win", "net_7d", "momentum", "net_1d",
-          "float", "total", "roi", "win", "pf", "daily", "fees", "dd", "recover", "recover_open", "usdg", "size",
-          "duration", "trades", "closed_trades", "closed", "flat", "style", "style_conf", "sim_pct", "range", "mcap",
-          "open", "concur", "copy", "copiers", "exposure", "open_now", "first_seen", "last_seen", "span_days")
+FIELDS = ("addr", "kind", "kind_fit", "score", "verdict", "worth", "net", "roi_nw", "roi_win", "net_7d", "momentum",
+          "net_1d", "avg_month", "pnl_3m", "pnl_all", "roi_all", "hist_from", "float", "total", "roi", "win", "win_pos",
+          "pf", "daily", "fees", "dd", "recover", "recover_open", "usdg", "size", "duration", "trades", "closed_trades",
+          "closed", "flat", "style", "style_conf", "sim_pct", "range", "mcap", "open", "concur", "copy", "copiers",
+          "exposure", "open_now", "first_seen", "last_seen", "span_days")
 
 
 class PublishError(Exception):

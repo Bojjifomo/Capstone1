@@ -22,6 +22,9 @@ POSITION_MANAGER = "0x58daec3116aae6d93017baaea7749052e8a04fa7"
 STATE_VIEW = "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
 MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11"
 
+# Public mainnet launch (1 Jul 2026): "ALL" history can't start earlier.
+CHAIN_LAUNCH_TS = 1782864000
+
 ZERO = "0x" + "0" * 40  # native ETH as a V4 currency
 WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
 USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"

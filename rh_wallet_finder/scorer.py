@@ -20,9 +20,14 @@ import metrics as M
 from db import get_meta, set_meta
 from indexer import multicall
 
-PER_WALLET = 500  # newest positions per wallet that get priced: a month of a busy LP
+# Every position in the window gets priced, newest first and breadth first: each
+# wallet's newest 20, then 200, then 1000, then the rest. (A cap of 500 left the
+# busiest ladder LPs, 1,000-6,000 positions a month, measured over their last
+# few days only.)
+PER_WALLET = 20_000
+DEPTHS = (20, 200, 1000, PER_WALLET)
+EVENTS_PER_CALL = 40  # position events of one block read in one eth_call
 LAUNCH_SHARE = 0.02  # depositing >= 2% of a token's supply = launching it, not LPing it
-FIRST_PASS = 20   # ...but every wallet gets this many before any gets more
 BOT_DEPTH = 20    # bots (hold < 5 min or > 100 trades a day) get only this many, after everyone else
 SIDE_DUST = 0.01  # under 1% of the deposit on one side = single-sided
 # A pool drained of one token can sit at an absurd price (1e50 $/token): fees or
@@ -92,75 +97,98 @@ class Scorer:
 
     # ---- pricing events --------------------------------------------------
     def value_events(self, token_ids):
+        """Price every unpriced event of these positions. Events in one block share
+        one archive eth_call (a 7-range ladder opened or closed together = 1 call,
+        not 7): the pool prices once, then each position's fee checkpoint, which a
+        position opened in that very block doesn't have yet."""
         ids = list(token_ids)
         groups = {}
+        opened = {}
         for i in range(0, len(ids), 500):
             part = ids[i:i + 500]
             q = ",".join("?" * len(part))
             for r in self.con.execute(
-                    f"SELECT block, log_index, token_id, pool, tl, tu, delta FROM events "
-                    f"WHERE token_id IN ({q}) AND v_state=0 ORDER BY block, log_index", part):
+                    f"SELECT e.block, e.log_index, e.token_id, e.pool, e.tl, e.tu, e.delta, p.open_block "
+                    f"FROM events e LEFT JOIN positions p ON p.token_id = e.token_id "
+                    f"WHERE e.token_id IN ({q}) AND e.v_state=0 ORDER BY e.block, e.log_index", part):
                 groups.setdefault((r["token_id"], r["block"]), []).append(dict(r))
+                opened[r["token_id"]] = r["open_block"]
         if not groups:
             return 0
-        keys = list(groups)
-        calls = []
-        for tid, blk in keys:
-            e = groups[(tid, blk)][0]
-            sub = [(config.STATE_VIEW, C.cd_slot0(e["pool"])),
-                   (config.STATE_VIEW, C.cd_position_info(e["pool"], config.POSITION_MANAGER,
-                                                          e["tl"], e["tu"], tid)),
-                   (config.STATE_VIEW, C.cd_fee_growth_inside(e["pool"], e["tl"], e["tu"]))]
-            sub += [(config.STATE_VIEW, C.cd_slot0(p)) for p in config.ETH_USD_POOLS[:2]]
-            calls.append(("eth_call", [{"to": config.MULTICALL3, "data": C.encode_aggregate3(sub)},
-                                       hex(blk - 1)]))
-        results = self.rpc.batch(calls)
+        by_block = {}
+        for key in groups:
+            by_block.setdefault(key[1], []).append(key)
+        calls, plan = [], []  # plan: per call, (keys, pools, {key: (posinfo index, feegrowth index) or None})
+        eth_pools = config.ETH_USD_POOLS[:2]
+        for blk, keys in by_block.items():
+            for j in range(0, len(keys), EVENTS_PER_CALL):
+                part = keys[j:j + EVENTS_PER_CALL]
+                pools = list(dict.fromkeys(groups[k][0]["pool"] for k in part))
+                sub = [(config.STATE_VIEW, C.cd_slot0(p)) for p in eth_pools + pools]
+                where = {}
+                for k in part:
+                    e = groups[k][0]
+                    if opened.get(k[0]) == blk:
+                        where[k] = None  # minted in this block: nothing earned yet
+                        continue
+                    where[k] = (len(sub), len(sub) + 1)
+                    sub += [(config.STATE_VIEW, C.cd_position_info(e["pool"], config.POSITION_MANAGER,
+                                                                   e["tl"], e["tu"], k[0])),
+                            (config.STATE_VIEW, C.cd_fee_growth_inside(e["pool"], e["tl"], e["tu"]))]
+                calls.append(("eth_call", [{"to": config.MULTICALL3, "data": C.encode_aggregate3(sub)},
+                                           hex(blk - 1)]))
+                plan.append((part, pools, where))
+        results = self.rpc.batch(calls, size=10)  # replies carry many reads each: keep a batch's reply small
         updates = []
         failed = 0
         first_err = None
-        for key, ret in zip(keys, results):
-            evs = groups[key]
-            pinfo = self.pool_info(evs[0]["pool"])
+        blank = lambda e: (2, None, None, None, None, None, None, None, e["block"], e["log_index"])  # noqa: E731
+        for (part, pools, where), ret in zip(plan, results):
             if isinstance(ret, Exception) or not ret:
-                failed += 1
+                failed += len(part)
                 first_err = first_err or ret
                 continue
             try:
-                s0, pos, fg, *eth_slots = C.decode_aggregate3(ret)
+                res = C.decode_aggregate3(ret)
             except (ValueError, IndexError):
-                failed += 1
+                failed += len(part)
                 continue
-            slot = C.decode_slot0(s0) if s0 else None
-            if not pinfo or not slot or not slot["sqrtp"]:
-                updates += [(2, None, None, None, None, None, None, None, e["block"], e["log_index"]) for e in evs]
-                continue
-            prices = usd_prices(slot["sqrtp"], pinfo["d0"], pinfo["d1"], pinfo["q"], pinfo["kind"],
-                                eth_usd(eth_slots), pinfo["supply"])
-            if not prices:
-                updates += [(2, None, None, None, None, None, None, None, e["block"], e["log_index"]) for e in evs]
-                continue
-            u0, u1 = prices
-            f0 = f1 = 0.0
-            if pos and fg:
-                pi = C.decode_position_info(pos)
-                g0, g1 = C.decode_fee_growth(fg)
-                f0 = C.fees_owed(pi["liq"], g0, pi["fg0"]) / 10 ** pinfo["d0"]
-                f1 = C.fees_owed(pi["liq"], g1, pi["fg1"]) / 10 ** pinfo["d1"]
-            for j, e in enumerate(evs):
-                a0, a1 = C.amounts_for_liquidity(int(e["delta"]), slot["sqrtp"], e["tl"], e["tu"])
-                updates.append((1, a0 / 10 ** pinfo["d0"], a1 / 10 ** pinfo["d1"],
-                                f0 if j == 0 else 0.0, f1 if j == 0 else 0.0, u0, u1, slot["lp_fee"],
-                                e["block"], e["log_index"]))
+            eth = eth_usd(res[:len(eth_pools)])
+            slots = dict(zip(pools, res[len(eth_pools):len(eth_pools) + len(pools)]))
+            for key in part:
+                evs = groups[key]
+                pinfo = self.pool_info(evs[0]["pool"])
+                s0 = slots.get(evs[0]["pool"])
+                slot = C.decode_slot0(s0) if s0 else None
+                prices = usd_prices(slot["sqrtp"], pinfo["d0"], pinfo["d1"], pinfo["q"], pinfo["kind"], eth,
+                                    pinfo["supply"]) if pinfo and slot and slot["sqrtp"] else None
+                if not prices:
+                    updates += [blank(e) for e in evs]
+                    continue
+                u0, u1 = prices
+                f0 = f1 = 0.0
+                at = where[key]
+                pos, fg = (res[at[0]], res[at[1]]) if at else (None, None)
+                if pos and fg:
+                    pi = C.decode_position_info(pos)
+                    g0, g1 = C.decode_fee_growth(fg)
+                    f0 = C.fees_owed(pi["liq"], g0, pi["fg0"]) / 10 ** pinfo["d0"]
+                    f1 = C.fees_owed(pi["liq"], g1, pi["fg1"]) / 10 ** pinfo["d1"]
+                for j, e in enumerate(evs):
+                    a0, a1 = C.amounts_for_liquidity(int(e["delta"]), slot["sqrtp"], e["tl"], e["tu"])
+                    updates.append((1, a0 / 10 ** pinfo["d0"], a1 / 10 ** pinfo["d1"],
+                                    f0 if j == 0 else 0.0, f1 if j == 0 else 0.0, u0, u1, slot["lp_fee"],
+                                    e["block"], e["log_index"]))
         self.con.executemany("UPDATE events SET v_state=?, a0=?, a1=?, f0=?, f1=?, u0=?, u1=?, lp_fee=? "
                              "WHERE block=? AND log_index=?", updates)
-        if failed == len(keys):
+        if failed == len(groups):
             hint = ""
             if any(w in str(first_err).lower() for w in ("trie", "state", "archive", "pruned", "historical")):
                 hint = " Your RPC doesn't seem to serve old block state (archive), which scoring needs."
             self.log(f"  all {failed} price reads failed: {first_err}.{hint}")
         elif failed:
             self.log(f"  {failed} price reads failed (will retry next run)")
-        return len(keys)
+        return len(calls)
 
     def value_open(self, token_ids, block="latest"):
         """Value (+ unclaimed fees) of open positions at `block` -> {token_id: (usd, token_side_usd)}.
@@ -347,9 +375,10 @@ class Scorer:
                 SELECT token_id, close_ts IS NOT NULL, valued FROM positions WHERE owner=? AND minted=1
                   AND (close_ts IS NULL OR close_ts >= ?) ORDER BY open_ts DESC LIMIT ?""",
                                     (w, w0, BOT_DEPTH if w in bots else PER_WALLET)).fetchall()
-        # breadth first: the newest FIRST_PASS of every person, then deeper, then bots
+        # breadth first: every person's newest 20, then 200, ... then bots
         todo, seen = [], set()
-        for group, depth in ((people, FIRST_PASS), (people, PER_WALLET), (cands[len(people):], BOT_DEPTH)):
+        rounds = [(people, d) for d in DEPTHS] + [(cands[len(people):], BOT_DEPTH)]
+        for group, depth in rounds:
             for w in group:
                 for tid, _, valued in newest[w][:depth]:
                     if len(todo) >= budget:
@@ -358,7 +387,14 @@ class Scorer:
                         seen.add(tid)
                         todo.append(tid)
         pending = sum(1 for w in cands for _, _, valued in newest[w] if valued == 0)
-        self.log(f"  {len(cands):,} candidate wallets ({len(bots):,} bots last), pricing {len(todo):,} positions")
+        # budget left once the window is priced: people's older positions, newest
+        # first, for the all-time figures (as far back as BACKFILL_DAYS loaded)
+        older = []
+        if len(todo) < budget and people:
+            older = self.history_todo(people, w0, budget - len(todo))
+            todo += older
+        self.log(f"  {len(cands):,} candidate wallets ({len(bots):,} bots last), pricing {len(todo):,} positions"
+                 + (f" ({len(older):,} of them older history)" if older else ""))
 
         t0 = time.time()
         for i in range(0, len(todo), 400):
@@ -385,9 +421,27 @@ class Scorer:
         if eth:
             set_meta(con, "eth_usd", eth)
         n = self.rank(now, days, cands)
-        set_meta(con, "price_queue", max(0, pending - len(todo)))  # still to price after this run
+        set_meta(con, "price_queue", max(0, pending - (len(todo) - len(older))))  # still to price after this run
+        set_meta(con, "history_queue", self.history_left(people, w0))
         con.commit()
         return {"candidates": len(cands), "priced": len(todo), "scored": n}
+
+    def _owner_chunks(self, wallets, sql, args=()):
+        for i in range(0, len(wallets), 400):
+            part = wallets[i:i + 400]
+            yield from self.con.execute(sql.format(q=",".join("?" * len(part))), (*part, *args))
+
+    def history_todo(self, people, w0, limit):
+        """Unpriced positions of these wallets that closed before the window, newest first."""
+        rows = list(self._owner_chunks(people, """SELECT token_id, close_ts FROM positions WHERE owner IN ({q})
+                                                  AND minted=1 AND valued=0 AND close_ts < ?
+                                                  ORDER BY close_ts DESC LIMIT ?""", (w0, limit)))
+        rows.sort(key=lambda r: -r[1])
+        return [r[0] for r in rows[:limit]]
+
+    def history_left(self, people, w0):
+        return sum(r[0] for r in self._owner_chunks(people, """SELECT COUNT(*) FROM positions WHERE owner IN ({q})
+                                                              AND minted=1 AND valued=0 AND close_ts < ?""", (w0,)))
 
     def candidates(self, now, w0):
         """Wallets to price and rank: MIN_CLOSED closed positions in the window and
@@ -478,6 +532,29 @@ class Scorer:
             if supply and px[1 - q]:
                 p["mcap"] = px[1 - q] * supply
 
+    def history_sums(self, wallets, now):
+        """{wallet: {'raw'|'real': {pnl, pnl_3m, dep, first_ts, gap}}} over every
+        priced closed position, for the all-time columns."""
+        t3m = now - 90 * 86400
+        out = {w: {"raw": {}, "real": {}} for w in wallets}
+        for i in range(0, len(wallets), 400):
+            part = wallets[i:i + 400]
+            q = ",".join("?" * len(part))
+            for w, pnl, real, dep, p3, r3 in self.con.execute(f"""
+                    SELECT owner, SUM(pnl_usd), SUM(pnl_usd - IFNULL(cost_usd, 0)), SUM(dep_usd),
+                           SUM(CASE WHEN close_ts >= ? THEN pnl_usd ELSE 0 END),
+                           SUM(CASE WHEN close_ts >= ? THEN pnl_usd - IFNULL(cost_usd, 0) ELSE 0 END)
+                    FROM positions WHERE valued=1 AND launch=0 AND close_ts IS NOT NULL AND owner IN ({q})
+                    GROUP BY owner""", (t3m, t3m, *part)):
+                out[w]["raw"].update(pnl=pnl, pnl_3m=p3, dep=dep)
+                out[w]["real"].update(pnl=real, pnl_3m=r3, dep=dep)
+            for w, first, gap in self.con.execute(f"""
+                    SELECT owner, MIN(open_ts), SUM(valued=0 AND close_ts IS NOT NULL) FROM positions
+                    WHERE minted=1 AND owner IN ({q}) GROUP BY owner""", part):
+                for v in out[w].values():
+                    v.update(first_ts=first, gap=gap)
+        return out
+
     def rank(self, now, days, wallets, balances=True):
         """Metrics + score for every wallet with enough priced, closed positions."""
         con = self.con
@@ -514,6 +591,7 @@ class Scorer:
         refs = {r[0]: r[1] for r in con.execute("SELECT addr, ref FROM labels WHERE ref IS NOT NULL")}
 
         variants = {"raw": (days, False), "real": (days, True), "d1raw": (1, False), "d1real": (1, True)}
+        hist = self.history_sums(list(per_wallet), now)
         out = {w: {} for w in per_wallet}
         for name, (wd, real) in variants.items():
             ms = {}
@@ -523,6 +601,10 @@ class Scorer:
                     start = max(data_from, min((p["open_ts"] for p in ps if p["open_ts"] >= w0), default=data_from))
                 m = M.wallet_metrics(ps, now, wd, start, real, self.multiday_s)
                 if m and m["closed"] >= (min_closed if wd == days else 1):
+                    # priced only from `start` on: PnL {days}D covers that much of the window
+                    m["priced_from"] = int(start) if w in partial and start > w0 + 3600 else None
+                    m.update(M.history(hist.get(w, {}).get("real" if real else "raw", {}), now, data_from,
+                                       config.CHAIN_LAUNCH_TS))
                     ms[w] = m
             if name == "raw":  # the class comes from the full window; a reference wallet's is set by you
                 kinds = {w: refs.get(w) or m["kind"] for w, m in ms.items()}

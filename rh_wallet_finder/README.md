@@ -72,12 +72,13 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 | Tab **Last 24h** | Dua kelas campur, cuma posisi yang ditutup 24 jam terakhir (ada kolom Class) |
 | Tab **Twin finder** | Pilih / paste wallet → wallet lain yang gaya LP-nya paling mirip |
 | Tab **Watchlist** | Wallet yang di-★ / di-import (bisa paste sheet "LP Agent Wallets - Robinhood Chain" langsung); label, notes, ★, Reference bisa diedit langsung di tabel |
+| Tab **vs RH Discovery** | Paste baris dari tabel RH Discovery → tiap wallet dicocokin ke wallet kita, angkanya dijejerin (✓ / ✗). Lihat [Cek vs RH Discovery](#cek-vs-rh-discovery) |
 | Tab **Settings** | RPC, API key LP Agent, window performa (30 hari), batas wallet idle (14 hari), batas multiday, slippage, interval sync, tombol **Sync now**, log worker |
 | Toggle **Real PnL** | Tiap posisi dipotong biaya jual balik token yang dia balikin (fee pool + slippage), terus ranking diulang |
 | Strip status | `X ranked · Y rated of Z found · N positions in queue · ranked … ago`: wallet yang ke-ranking, yang udah punya posisi kehargai, yang ketemu, dan posisi yang masih antre dihargai |
 | **Filter bar** (selalu kelihatan) | Search, Min closed, Active within, Min/Max avg size, Min net worth, Min ROI 30D, 7D/30D, Min USDG %, Min win, Max open loss, Max drawdown, Min tier, Followable, Style + centang `30D profit only`, `7D profit only`, `USDG pairs only`, `Watchlist only`, `Smart LP top 10`, `Show bots`. Di bawahnya: "Showing X of Y · Z hidden by filters", tombol **Clear filters** |
 | Preset | Per papan sendiri-sendiri: `Proven earners` (≥ 30 trade closed, aktif 7 hari, avg size ≥ $300, net worth ≥ $1k, profit 30D, USDG doang), `Hot this week`, `Followable winners`, `Low drawdown`, `Size $1k+`, `Ladders`, `Smart LP top 10`, `Watchlist only`; filter sendiri bisa di-save jadi preset |
-| Kolom performa | `Net worth`, `PnL 30D`, `ROI 30D`, `PnL 7D`, `7D/30D` (porsi PnL 30 hari yang dibikin 7 hari terakhir: ±0,23 = rata, tinggi = lagi panas, ~0 = udah sepi), `PnL 24h`, `Open PnL`, `Total 30D`, `ROI/mo`, `Win`, `Profit factor`, `Green days`, `Fees 30D`, `Max DD`, `USDG %` |
+| Kolom performa | `Net worth`, `PnL 30D`, `ROI 30D`, `PnL 7D`, `7D/30D` (porsi PnL 30 hari yang dibikin 7 hari terakhir: ±0,23 = rata, tinggi = lagi panas, ~0 = udah sepi), `PnL 24h`, `Avg / month`, `PnL 3M`, `PnL ALL`, `ROI ALL`, `Open PnL`, `Total 30D`, `Win`, `Trade win`, `Profit factor`, `Capital ROI 30D`, `ROI/mo`, `Green days`, `Fees 30D`, `Max DD`, `USDG %`. Definisinya sama kayak RH Discovery (lihat di bawah) |
 | Klik judul kolom | Sort; arahin mouse ke judul buat penjelasan kolomnya |
 | Centang satu baris | **Wallet dossier**: kelas + seberapa cocok, grafik realized PnL, label/notes/★/Reference, ranking Smart LP Finder, **LP Agent check**, semua posisi (ladder ditandain) |
 | Kolom `LP Agent` / `Explorer` | Buka wallet di LP Agent / Blockscout |
@@ -116,6 +117,51 @@ closed): ±300 multiday, ±1.000 degen, ±800 bot.
   tarik / tutup) lebih dari 14 hari (`ACTIVE_DAYS`, ubah di Settings) nggak
   di-ranking dan nggak ditampilin sama sekali. Mau lebih ketat: Filters →
   Active within, atau preset `Active 24h` / `Active 3 days`.
+
+## Cek vs RH Discovery
+
+RH Discovery dianggap patokan, jadi kolom yang namanya sama sekarang dihitung
+dengan cara yang sama:
+
+| Kolom | Artinya (di kita = di RH Discovery) |
+| --- | --- |
+| `PnL 30D` / `PnL 7D` / `PnL 3M` / `PnL ALL` | Realized PnL posisi yang ditutup di rentang itu: semua yang ditarik + fee − semua yang disetor (USD saat kejadian) |
+| `Net worth` | ETH + USDG di wallet + nilai posisi yang masih open |
+| `ROI 30D` | PnL 30D ÷ net worth sekarang (wallet yang udah narik profitnya keluar kebaca tinggi, misal +4140%) |
+| `ROI ALL` | PnL ALL ÷ total yang pernah disetor ke posisi-posisi itu |
+| `Avg / month` | PnL ALL ÷ jumlah bulan kalender sejak LP pertama (14 Agu → Okt = 3) |
+| `Win` | Posisi yang untung ÷ posisi yang untung atau rugi (range yang nggak kesentuh harga = flat, nggak dihitung) |
+| `Open PnL` | Nilai posisi open + fee yang belum diklaim − setorannya |
+
+Ukuran kita yang lama tetap ada dengan nama lain: `Trade win` (ladder dihitung
+satu trade, ini yang dipakai skor), `Capital ROI 30D` (PnL ÷ modal yang
+beneran kepake), `ROI/mo`.
+
+**Cara ngecek**: buka RH Discovery, blok baris-baris tabelnya (header boleh
+ikut), ⌘C, terus paste di tab **vs RH Discovery**. Tiap wallet (`0x74a9…181b`)
+dicocokin ke alamat lengkap di database kita, terus tiap angka dijejerin:
+✓ = masih dalam toleransi (PnL ±10%, Win ±3 poin, Net worth ±15%), ✗ = lebih
+jauh. Wallet yang nggak ke-ranking dikasih alasannya (belum ada di data kita,
+idle > 14 hari, kurang posisi closed, masih antre dihargai). Dari terminal:
+`python3 finder.py compare baris.txt` (atau `-` terus paste).
+
+Hasil cek pertama (screenshot RH Discovery 22 Okt vs data kita):
+
+- `0x5784…4ffd` (contoh degen): PnL 30D $3.957 vs $3.858, PnL ALL $8.853 vs
+  $8.521, ROI ALL 1,68% vs 1,6%, Win per posisi 89,3% vs 87,8% → cocok (beda
+  3 hari datanya). Net worth juga definisinya sama: 22 dari 22 wallet yang
+  nggak punya posisi open, ETH + USDG-nya = net worth RH Discovery (±6%).
+- **Bug yang ketemu**: dulu cuma 500 posisi terbaru per wallet yang dihargai.
+  7 dari 52 wallet top RH Discovery buka 800–6.000 posisi sebulan (ladder),
+  jadi PnL 30D mereka di kita cuma kehitung beberapa hari terakhir. Sekarang
+  semua posisi di window dihargai (urut: 20 terbaru tiap wallet, 200, 1000,
+  sisanya), dan event yang di blok yang sama dibaca dalam **satu** `eth_call`
+  (ladder 7 range = 1 call, bukan 7), jadi RPC-nya malah lebih hemat.
+- `PnL ALL` / `Avg / month` RH Discovery mulai dari launch chain (1 Jul 2026).
+  Punya kita cuma sejauh `History to load` di Settings (default 30 hari): set
+  ke jumlah hari sejak 1 Juli (tooltip-nya ngasih angkanya) kalau mau sama.
+  Posisi lama dihargai setelah posisi di window beres (strip status:
+  "older ones for PnL ALL").
 
 ## Etalase web di Vercel (bisa dibuka orang lain)
 
@@ -208,6 +254,7 @@ python3 finder.py check 0x…       # satu wallet + LP Agent
 python3 finder.py import wallets.txt
 python3 finder.py import-smart-lp # saved wallets + ranking dari RH Smart LP Finder
 python3 finder.py publish         # upload board ke etalase web (Vercel), atau --out file.json
+python3 finder.py compare baris.txt  # angka kita vs baris yang dicopy dari RH Discovery (- = paste)
 ```
 
 Database-nya `rh_wallet_finder/data/wallets.db` (SQLite). Bisa dibuka pakai
@@ -222,26 +269,29 @@ DB Browser for SQLite / pandas kalau mau olah sendiri. Tabel: `wallets`,
    = wallet. Ukuran range `eth_getLogs` nyesuaiin sendiri sama limit RPC lu.
 2. **Scoring** (`scorer.py`): tiap event LP dihargai pakai state chain 1 blok
    sebelumnya (archive `eth_call` lewat Multicall3): harga pool, likuiditas, dan
-   fee growth posisi itu dari StateView. Jumlah token = dari liquidity delta;
+   fee growth posisi itu dari StateView. Semua event di blok yang sama dibaca
+   dalam satu `eth_call`. Jumlah token = dari liquidity delta;
    fee = yang posisi itu dapet sejak checkpoint terakhir. Harga ETH dari pool
    ETH/USDG. Jadi PnL = semua yang ditarik + fee + nilai sekarang (kalau masih
    open) − semua yang disetor, dalam USD.
 3. **Ranking** (`metrics.py`): posisi yang dibuka di satu transaksi (pool +
-   blok sama, misal ladder 5 range) = **satu trade**. Win rate, size, hold,
+   blok sama, misal ladder 5 range) = **satu trade**. Trade win, size, hold,
    jumlah trade dan pace dihitung per trade; trade yang hasilnya ±0,05% dari
    setorannya (ladder yang nggak kesentuh harga) = flat, nggak dihitung menang
-   atau kalah. PnL, fee dan grafik tetap jumlah semua posisi. Tiap wallet masuk
+   atau kalah. PnL, fee, grafik dan `Win` (cara RH Discovery) tetap per posisi. Tiap wallet masuk
    satu kelas (Multiday / Degen), terus skor 0–100 = gabungan persentil di dalam
    kelasnya. Wallet rugi maksimal 45, trade sedikit ditarik ke 50. ROI dihitung
    dari hari wallet itu aktif (wallet umur 3 hari nggak dianggep nganggur 27 hari).
 
 Biar RPC nggak jebol, tiap run cuma menghargai `SCORE_POSITIONS_PER_RUN`
-posisi (default 4000), maksimal 500 posisi terbaru per wallet (cukup buat
-sebulan wallet yang aktif). Urutannya: wallet di Watchlist / reference, wallet
-dari Smart LP Finder, wallet orang, terus **bot paling belakang** (dikenalin
-dari jam buka-tutupnya aja, sebelum dihargai, dan cuma 20 posisi terbarunya).
-Wallet yang posisi lamanya belum kehargai diukur dari posisi tertua yang udah
-(ada keterangannya di dossier).
+posisi (default 4000). Semua posisi di window dihargai, bertahap: 20 terbaru
+tiap wallet dulu, terus 200, 1000, sisanya. Urutan wallet: Watchlist /
+reference, wallet dari Smart LP Finder, wallet orang, terus **bot paling
+belakang** (dikenalin dari jam buka-tutupnya aja, sebelum dihargai, dan cuma 20
+posisi terbarunya). Kalau window udah beres dan masih ada sisa budget, posisi
+yang lebih lama dihargai buat `PnL ALL`. Wallet yang posisi lamanya belum
+kehargai diukur dari posisi tertua yang udah (ada keterangannya di dossier dan
+di tab vs RH Discovery).
 
 ## Batasan
 

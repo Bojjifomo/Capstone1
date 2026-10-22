@@ -435,6 +435,32 @@ class MetricsTest(unittest.TestCase):
         self.assertAlmostEqual(m["span_days"], 3)
         self.assertAlmostEqual(m["roi"], 30, delta=0.5)
 
+    def test_win_per_position_and_history(self):
+        d = 86400
+        # one ladder: 3 ranges opened together, one won, one lost, one never touched
+        ps = [_pos(self.now - 2 * d, self.now - d, 10, pool="p", open_block=7),
+              _pos(self.now - 2 * d, self.now - d, -4, pool="p", open_block=7),
+              _pos(self.now - 2 * d, self.now - d, 0.01, pool="p", open_block=7),
+              _pos(self.now - 3 * d, self.now - 2 * d, 5, pool="p", open_block=5)]
+        m = M.wallet_metrics(ps, self.now, 30, self.now - 10 * d)
+        self.assertEqual(m["win"], 100)  # per trade: both trades made money
+        self.assertAlmostEqual(m["win_pos"], 200 / 3)  # per position: 2 of 3 decided, the untouched one is flat
+        # months counted the way RH Discovery does: 14 Aug -> 22 Oct is Aug, Sep, Oct
+        aug14, oct22 = 1786665600, 1792627200
+        self.assertEqual(M.months_between(aug14, oct22), 3)
+        h = M.history({"pnl": 900.0, "pnl_3m": 600.0, "dep": 30000.0, "first_ts": aug14, "gap": 2}, oct22,
+                      data_from=aug14 - 30 * d, launch=config.CHAIN_LAUNCH_TS)
+        self.assertEqual((h["months"], h["avg_month"], h["roi_all"], h["hist_from"], h["hist_gap"]),
+                         (3, 300.0, 3.0, None, 2))
+        # already active when our data starts (after the launch): cut off there, and said so
+        h = M.history({"pnl": 900.0, "dep": 30000.0, "first_ts": aug14}, oct22, data_from=aug14,
+                      launch=config.CHAIN_LAUNCH_TS)
+        self.assertEqual((h["hist_from"], h["months"]), (aug14, 3))
+        # ...but history loaded back to the launch is the whole history
+        h = M.history({"pnl": 900.0, "dep": 30000.0, "first_ts": config.CHAIN_LAUNCH_TS + 3600}, oct22,
+                      data_from=config.CHAIN_LAUNCH_TS, launch=config.CHAIN_LAUNCH_TS)
+        self.assertEqual((h["hist_from"], h["months"]), (None, 4))
+
     def test_similarity(self):
         ms = [{"duration": 600, "range": 50, "single": 100, "eth": 0, "mcap": 1e5, "size": 100, "per_day": 50,
                "concur": 3, "win": 60},
@@ -492,7 +518,101 @@ class IndexerTest(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT n_closed FROM wallets WHERE addr=?", (b,)).fetchone()[0], 1)
 
 
+def _agg_calls(data):
+    """Multicall3.aggregate3 calldata -> [(target, calldata)] (the test reads what the scorer asks)."""
+    d = data[2 + 8:]
+    at = lambda off: int(d[off * 2:off * 2 + 64], 16)  # noqa: E731
+    n, out = at(at(0)), []
+    base = at(0) + 32
+    for i in range(n):
+        el = base + at(base + 32 * i)
+        boff = el + at(el + 64)
+        out.append(("0x" + d[el * 2 + 24:el * 2 + 64], "0x" + d[(boff + 32) * 2:(boff + 32 + at(boff)) * 2]))
+    return out
+
+
+def _agg_reply(results):
+    """[return hex or None] -> aggregate3's encoded reply."""
+    tups = []
+    for r in results:
+        b = (r or "0x")[2:]
+        tups.append(C.word(1 if r else 0) + C.word(0x40) + C.word(len(b) // 2) + b + "0" * (-len(b) % 64))
+    heads, off = [], 32 * len(tups)
+    for t in tups:
+        heads.append(C.word(off))
+        off += len(t) // 2
+    return "0x" + C.word(0x20) + C.word(len(tups)) + "".join(heads) + "".join(tups)
+
+
+class FakeStateView:
+    """Answers the scorer's archive reads: every pool at one price, every
+    position earning 1 USDG of fees since its checkpoint."""
+
+    def __init__(self, liq, sqrtp):
+        self.liq, self.sqrtp, self.calls = liq, sqrtp, []
+
+    def batch(self, calls, size=40):
+        out = []
+        for method, (tx, block) in calls:
+            subs = _agg_calls(tx["data"])
+            self.calls.append((int(block, 16), subs))
+            res = []
+            for target, cd in subs:
+                sel = cd[2:10]
+                if sel == C.SEL_GET_SLOT0:
+                    pool = "0x" + cd[10:74]
+                    res.append(None if pool in config.ETH_USD_POOLS else
+                               "0x" + C.word(self.sqrtp) + C.word(0) + C.word(0) + C.word(3000))
+                elif sel == C.SEL_POSITION_INFO:
+                    res.append("0x" + C.word(self.liq) + C.word(0) + C.word(0))
+                elif sel == C.SEL_FEE_GROWTH_INSIDE:
+                    res.append("0x" + C.word(0) + C.word(10 ** 6 * C.Q128 // self.liq + 1))
+            out.append(_agg_reply(res))
+        return out
+
+
 class ScorerTest(unittest.TestCase):
+    def test_events_of_one_block_share_one_call(self):
+        pool, tok = "0x" + "77" * 32, "0x" + "99" * 20
+        liq = 10 ** 12
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            con.execute("INSERT INTO pools(id, c0, c1, fee, spacing, hooks) VALUES(?,?,?,3000,60,?)",
+                        (pool, tok, config.USDG, ZERO))
+            con.executemany("INSERT INTO tokens(addr, symbol, decimals, supply) VALUES(?,?,?,?)",
+                            [(tok, "TOK", 6, 1e9), (config.USDG, "USDG", 6, 1e9)])
+            # a 2-range ladder opened in block 100 and closed in 200; a single range 150 -> 300
+            for tid, opened, closed in ((1, 100, 200), (2, 100, 200), (3, 150, 300)):
+                con.execute("""INSERT INTO positions(token_id, owner, pool, tl, tu, open_block, open_ts, close_block,
+                               close_ts, minted) VALUES(?,?,?,-600,600,?,?,?,?,1)""",
+                            (tid, "0x" + "a" * 40, pool, opened, opened, closed, closed))
+                for blk, sign in ((opened, 1), (closed, -1)):
+                    con.execute("INSERT INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta) "
+                                "VALUES(?,?,?,?,?,?,-600,600,?)", (blk, tid, "0x", blk, tid, pool, str(sign * liq)))
+            con.commit()
+            rpc = FakeStateView(liq, C.Q96)  # price 1: 1 TOK = 1 USDG
+            sc = S.Scorer(con, rpc, dict(config.DEFAULTS), log=lambda *a: None)
+            self.assertEqual(sc.value_events([1, 2, 3]), 4)  # 4 blocks, 4 calls (not one per position and block)
+            blocks = {b: subs for b, subs in rpc.calls}
+            self.assertEqual(sorted(blocks), [99, 149, 199, 299])  # each read one block before the events
+            self.assertEqual(len(blocks[99]), 3)  # opened there: 2 ETH prices + the pool, no fee reads
+            self.assertEqual(len(blocks[199]), 3 + 2 * 2)  # closed there: + checkpoint and fee growth per range
+            rows = con.execute("SELECT token_id, block, v_state, f1, u0, u1 FROM events ORDER BY token_id, block")
+            got = [tuple(r) for r in rows]
+            self.assertTrue(all(r[2] == 1 for r in got))
+            fees = {(r[0], r[1]): round(r[3], 6) for r in got}
+            self.assertEqual(fees, {(1, 100): 0, (1, 200): 1.0, (2, 100): 0, (2, 200): 1.0, (3, 150): 0, (3, 300): 1.0})
+            self.assertAlmostEqual(got[0][4], 1.0)
+            self.assertAlmostEqual(got[0][5], 1.0)
+            # priced positions roll up, and the ranking carries the all-time figures
+            sc.aggregate([1, 2, 3], {})
+            con.execute("INSERT INTO wallets(addr, first_seen, last_seen) VALUES(?,?,?)", ("0x" + "a" * 40, 100, 300))
+            now = 300 + 86400
+            hist = sc.history_sums(["0x" + "a" * 40], now)["0x" + "a" * 40]["raw"]
+            self.assertAlmostEqual(hist["pnl"], 3.0, places=4)  # 1 USDG of fees each
+            self.assertEqual((hist["first_ts"], hist["gap"]), (100, 0))
+            con.close()
+
     def test_idle_wallets_left_out_and_absurd_returns_dropped(self):
         import time as _t
         now = _t.time()
@@ -519,6 +639,59 @@ class ScorerTest(unittest.TestCase):
             sc.drop_spiked_prices()
             self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=1").fetchone()[0], 2)
             self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=2").fetchone()[0], 1)
+            con.close()
+
+
+class CompareTest(unittest.TestCase):
+    HEAD = ("RANK ▾\tSCORE\tWALLET\tNET WORTH\tPNL 30D\tROI 30D\tNON-USDG*\tUSDG%*\tAVG / MONTH\tPNL 7D\t7D / 30D\t"
+            "PNL 3M\tPNL 1Y\tPNL ALL\tOPEN PNL\tROI ALL\tWIN")
+    ROW = ("46\t79.0\t0x5784…4ffd\t$2866\t+$3858\t+134.6%\t0.0%\t100.0%\t+$2840\t+$184\t0.05\t+$8521\t+$8521\t"
+           "+$8521\t-$27.57\t+1.6%\t87.8%")
+
+    def test_parse_pasted_rows(self):
+        import compare
+        want = {"wallet": "0x5784…4ffd", "rank": 46, "score": 79.0, "worth": 2866, "net": 3858, "roi_nw": 134.6,
+                "non_usdg": 0, "usdg": 100, "avg_month": 2840, "net_7d": 184, "momentum": 0.05, "pnl_3m": 8521,
+                "pnl_1y": 8521, "pnl_all": 8521, "float": -27.57, "roi_all": 1.6, "win_pos": 87.8, "open_none": False}
+        self.assertEqual(compare.parse(self.HEAD + "\n" + self.ROW), [want])
+        self.assertEqual(compare.parse(self.ROW), [want])  # no header: RH Discovery's column order
+        spaced = "2 84.6 0x74a9...181b $2015 +$83.4k +4140.1% – 0.1% +$115.3k +$2013 0.02 +$345.8k +$345.8k " \
+                 "+$345.8k none open +45.6% 67.6%"
+        r = compare.parse("Showing 251 of 3000\n" + spaced)[0]
+        self.assertEqual((r["wallet"], r["net"], r["non_usdg"], r["float"], r["open_none"], r["win_pos"]),
+                         ("0x74a9…181b", 83400, None, None, True, 67.6))
+        self.assertEqual([compare.value(v) for v in ("$440.0k", "-$1460", "$1.2M", "–", "+12.0%")],
+                         [440000, -1460, 1200000, None, 12.0])
+
+    def test_side_by_side(self):
+        import compare
+        import queries as Q
+        now = 1_800_000_000
+        ranked, idle = "0x5784" + "0" * 32 + "4ffd", "0x74a9" + "1" * 32 + "181b"
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            con.execute("INSERT INTO wallets(addr, last_seen, eth_bal, usd_bal, data, score, scored_at) "
+                        "VALUES(?,?,0,2800,?,80,?)", (ranked, now - 3600, json.dumps({"raw": {
+                            "net": 3900.0, "net_7d": 100.0, "win_pos": 89.3, "pnl_all": 8853.0, "avg_month": 2951.0,
+                            "roi_all": 1.68, "float": -20.0, "open": 1, "open_now": 60.0, "score": 80.0,
+                            "kind": "degen", "hist_from": now - 69 * 86400}}), now))
+            con.execute("INSERT INTO wallets(addr, last_seen) VALUES(?,?)", (idle, now - 30 * 86400))
+            con.execute("INSERT INTO meta(k, v) VALUES('scored_at', ?)", (json.dumps(now),))
+            con.commit()
+            Q._cache.clear()
+            rows = compare.parse(self.ROW + "\n" + self.ROW.replace("0x5784…4ffd", "0x74a9…181b") + "\n"
+                                 + self.ROW.replace("0x5784…4ffd", "0xdead…beef"))
+            res = compare.compare(con, rows, now=now, cfg=dict(config.DEFAULTS))
+            a, b, c = res["rows"]
+            self.assertEqual((a["status"], b["status"], c["status"]), ("ranked", "not ranked", "not in our data"))
+            self.assertIn("idle", b["reason"])
+            same = {x["key"]: x["same"] for x in a["checks"]}
+            self.assertEqual((same["net"], same["win_pos"], same["pnl_all"], same["worth"], same["float"]),
+                             (True, True, True, True, True))
+            self.assertFalse(same["net_7d"])  # 184 vs 100: further apart than 20%
+            self.assertTrue(any("PnL ALL starts" in n for n in a["notes"]))
+            self.assertEqual(res["summary"]["per_metric"]["net"], {"label": "PnL 30D", "compared": 1, "same": 1})
+            self.assertIn("0x5784…4ffd", compare.table(res))
             con.close()
 
 
@@ -815,7 +988,8 @@ class AppTest(unittest.TestCase):
                                          default_timeout=60).run()
                 self.assertFalse(at.exception, at.exception)
                 self.assertEqual([t.label for t in at.tabs],
-                                 ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "Settings"])
+                                 ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "vs RH Discovery",
+                                  "Settings"])
                 self.assertTrue(any("WALLET FINDER" in m.value for m in at.markdown))
             finally:
                 config.DB_PATH = orig
