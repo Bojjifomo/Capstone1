@@ -1,0 +1,21 @@
+# Theme for rh_lp_analyzer/streamlit_app.py
+[theme]
+base = "dark"
+primaryColor = "#2dd4aa"
+backgroundColor = "#080c12"
+secondaryBackgroundColor = "#0e141d"
+textColor = "#e9eef5"
+borderColor = "#1d2735"
+showWidgetBorder = true
+baseRadius = "0.4rem"
+buttonRadius = "0.4rem"
+linkColor = "#2dd4aa"
+dataframeBorderColor = "#1d2735"
+dataframeHeaderBackgroundColor = "#121a26"
+dataframeHeaderTextColor = "#b3bdcb"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
