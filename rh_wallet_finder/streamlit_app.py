@@ -685,6 +685,8 @@ def board(view, key, kind=None, top=None):
              f"<b>{stt['queue']:,}</b> positions in queue", f"ranked <b>{ago(stt['scored_at'], stt['now'])}</b>"]
     if stt.get("history_queue"):
         pills.insert(3, f"<b>{stt['history_queue']:,}</b> older ones for PnL ALL")
+    pills.append(f"<b>{stt.get('rpc_today', 0):,}</b>" + (f" / {stt['rpc_cap']:,}" if stt.get("rpc_cap") else "")
+                 + " RPC calls today")
     st.markdown('<div class="pills">' + "".join(f"<span>{x}</span>" for x in pills) + "</div>", unsafe_allow_html=True)
     count_slot = filter_controls(key, saved_names, days)
     if df.empty:
@@ -1074,6 +1076,10 @@ def rhd_check():
 
 
 # ------------------------------------------------------------- settings ---
+CALL_SPLITS = ["share", "rpc1", "rpc2"]
+CALL_SPLIT_NAME = {"share": "both, shared", "rpc1": "RPC 1 (RPC 2 as backup)", "rpc2": "RPC 2 (RPC 1 as backup)"}
+
+
 def settings():
     stt = st.session_state.get("status") or {}
     cfg = config.load_env()
@@ -1119,6 +1125,16 @@ def settings():
             "PUBLISH_MINUTES": a.text_input("Web showcase: upload every (minutes)", cfg["PUBLISH_MINUTES"],
                                             help="Each upload is one write to your Vercel Blob store; fewer "
                                                  "uploads keep you well inside the free plan."),
+            "RPC_CALLS_PER_DAY": b.text_input("RPC calls per day (0 = no limit)", cfg["RPC_CALLS_PER_DAY"],
+                                              help="All of the worker's RPC calls, counted per UTC day. Once "
+                                                   "reached, pricing waits for the next day; sync and the board "
+                                                   "carry on. What matters most is priced first. Alchemy's free "
+                                                   "plan is about 30M compute units a month: ~35,000 calls a day."),
+            "CALL_SPLIT": c.selectbox("With two RPCs, price reads go to", CALL_SPLITS,
+                                      index=CALL_SPLITS.index(cfg["CALL_SPLIT"]) if cfg["CALL_SPLIT"] in CALL_SPLITS
+                                      else 0, format_func=CALL_SPLIT_NAME.get,
+                                      help="Put the price reads on the RPC with the bigger quota; the other one "
+                                           "steps in only while it rests or is out of quota."),
         }
         if st.form_submit_button("Save", type="primary"):
             upd = {k: v.strip() for k, v in vals.items() if v.strip() and v.strip() != cfg[k]}
@@ -1141,7 +1157,7 @@ def settings():
                     return float(v) < 0
                 except ValueError:
                     return True
-            nan = [k for k in vals if k in upd and not_number(upd[k])]
+            nan = [k for k in vals if k in upd and k != "CALL_SPLIT" and not_number(upd[k])]
             if bad:
                 st.error("An RPC needs a link starting with https:// (or, for RPC 2, just an Alchemy API key)")
             elif bad_blob:

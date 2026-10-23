@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import chain as C  # noqa: E402
 import config  # noqa: E402
 import db  # noqa: E402
+from db import get_meta  # noqa: E402
 import indexer  # noqa: E402
 import metrics as M  # noqa: E402
 import rpc as R  # noqa: E402
@@ -275,6 +276,17 @@ class RpcTest(unittest.TestCase):
         one, same = R.make_rpcs({**cfg, "CALL_RPC_URL": ""})
         self.assertIs(one, same)
         self.assertIsInstance(one, R.RPC)
+        # price reads on one RPC, the other only while it rests (eth_getLogs still goes to RPC 1 first)
+        self.assertEqual(R.make_rpcs({**cfg, "CALL_SPLIT": "rpc2"})[0].prefer, 1)
+        self.assertIsNone(R.make_rpcs(cfg)[0].prefer)
+        with mock.patch("urllib.request.urlopen", urlopen):
+            p = pool()
+            p.prefer = 1
+            self.assertEqual([p.call("eth_call", [x])[:4] for x in "rst"], ["back"] * 3)
+            plan["backup"] = [(429, "Too Many Requests")]
+            self.assertTrue(p.call("eth_call", ["u"]).startswith("main"))  # resting: the other steps in
+            self.assertTrue(p.batch([("eth_call", ["v"])])[0].startswith("main"))
+            plan["backup"] = []
 
     def test_pool_get_logs_carries_on_elsewhere(self):
         ms = [R.RPC("https://main.example"), R.RPC("https://backup.example")]
@@ -549,13 +561,17 @@ class FakeStateView:
     position earning 1 USDG of fees since its checkpoint."""
 
     def __init__(self, liq, sqrtp):
-        self.liq, self.sqrtp, self.calls = liq, sqrtp, []
+        self.liq, self.sqrtp, self.asked, self.calls = liq, sqrtp, [], 0
+
+    def call(self, method, params):
+        return self.batch([(method, params)])[0]
 
     def batch(self, calls, size=40):
         out = []
         for method, (tx, block) in calls:
+            self.calls += 1
             subs = _agg_calls(tx["data"])
-            self.calls.append((int(block, 16), subs))
+            self.asked.append((int(block, 16) if block.startswith("0x") else block, subs))
             res = []
             for target, cd in subs:
                 sel = cd[2:10]
@@ -567,6 +583,8 @@ class FakeStateView:
                     res.append("0x" + C.word(self.liq) + C.word(0) + C.word(0))
                 elif sel == C.SEL_FEE_GROWTH_INSIDE:
                     res.append("0x" + C.word(0) + C.word(10 ** 6 * C.Q128 // self.liq + 1))
+                else:  # balances
+                    res.append("0x" + C.word(0))
             out.append(_agg_reply(res))
         return out
 
@@ -593,7 +611,7 @@ class ScorerTest(unittest.TestCase):
             rpc = FakeStateView(liq, C.Q96)  # price 1: 1 TOK = 1 USDG
             sc = S.Scorer(con, rpc, dict(config.DEFAULTS), log=lambda *a: None)
             self.assertEqual(sc.value_events([1, 2, 3]), 4)  # 4 blocks, 4 calls (not one per position and block)
-            blocks = {b: subs for b, subs in rpc.calls}
+            blocks = {b: subs for b, subs in rpc.asked}
             self.assertEqual(sorted(blocks), [99, 149, 199, 299])  # each read one block before the events
             self.assertEqual(len(blocks[99]), 3)  # opened there: 2 ETH prices + the pool, no fee reads
             self.assertEqual(len(blocks[199]), 3 + 2 * 2)  # closed there: + checkpoint and fee growth per range
@@ -611,6 +629,79 @@ class ScorerTest(unittest.TestCase):
             hist = sc.history_sums(["0x" + "a" * 40], now)["0x" + "a" * 40]["raw"]
             self.assertAlmostEqual(hist["pnl"], 3.0, places=4)  # 1 USDG of fees each
             self.assertEqual((hist["first_ts"], hist["gap"]), (100, 0))
+            con.close()
+
+    def test_sample_counts_trades(self):
+        row = lambda tid, blk, closed=1: (tid, closed, 0, "p", blk)  # noqa: E731
+        ladder = [row(i, 7) for i in range(40)]  # 40 ranges opened in one go = one trade
+        rows = ladder + [row(100, 8), row(101, 9), row(102, 10), row(103, 11, closed=0)]
+        self.assertEqual([r[0] for r in S.sample(rows)], list(range(40)) + [100, 101])  # 3 trades
+        singles = [row(i, i) for i in range(30)]
+        self.assertEqual(len(S.sample(singles)), S.SAMPLE)
+        self.assertEqual(len(S.sample([row(i, 7) for i in range(400)])), S.SAMPLE_MAX)  # one huge ladder: capped
+        self.assertEqual(S.sample([row(1, 1, closed=0)]), [])  # nothing closed yet: nothing to judge by
+
+    def test_pricing_goes_where_the_board_needs_it(self):
+        import time as _t
+        import worker as W
+        pool, tok = "0x" + "77" * 32, "0x" + "99" * 20
+        liq = 10 ** 12
+        now = _t.time()
+        good, bad, mine = "0x" + "a" * 40, "0x" + "b" * 40, "0x" + "c" * 40
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            con.execute("DELETE FROM labels")
+            con.execute("INSERT INTO labels(addr, label, starred, source, added) VALUES(?, 'mine', 1, 'test', 0)",
+                        (mine,))
+            con.execute("INSERT INTO pools(id, c0, c1, fee, spacing, hooks) VALUES(?,?,?,3000,60,?)",
+                        (pool, tok, config.USDG, ZERO))
+            con.executemany("INSERT INTO tokens(addr, symbol, decimals, supply) VALUES(?,?,?,?)",
+                            [(tok, "TOK", 6, 1e9), (config.USDG, "USDG", 6, 1e9)])
+            tid = 0
+            for owner, sample_pnl in ((good, 5.0), (bad, -5.0), (mine, -5.0)):
+                con.execute("INSERT INTO wallets(addr, first_seen, last_seen) VALUES(?,?,?)", (owner, now - 9e5, now))
+                # 3 older positions already priced (the sample), then 30 newer ones still to price
+                for k in range(33):
+                    tid += 1
+                    t = now - 20 * 86400 + k * 3600
+                    priced = k < 3
+                    con.execute("""INSERT INTO positions(token_id, owner, pool, tl, tu, open_block, open_ts, close_block,
+                                   close_ts, minted, valued, dep_usd, wd_usd, fee_usd, now_usd, pnl_usd, cost_usd)
+                                   VALUES(?,?,?,-600,600,?,?,?,?,1,?,?,?,?,0,?,0)""",
+                                (tid, owner, pool, 1000 + tid * 10, t, 1005 + tid * 10, t + 1800, int(priced),
+                                 100.0 if priced else None, 100 + sample_pnl if priced else None,
+                                 0.0 if priced else None, sample_pnl if priced else None))
+                    for blk, sign in ((1000 + tid * 10, 1), (1005 + tid * 10, -1)):
+                        con.execute("INSERT INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta, v_state) "
+                                    "VALUES(?,?,?,?,?,?,-600,600,?,?)",
+                                    (blk, 0, "0x", blk, tid, pool, str(sign * liq), 1 if priced else 0))
+            con.commit()
+            rpc = FakeStateView(liq, C.Q96)
+            sc = S.Scorer(con, rpc, dict(config.DEFAULTS), log=lambda *a: None)
+            # the labelled wallet and the one whose sample made money come first, in full
+            self.assertEqual(sc.promising([good, bad, mine], now - 30 * 86400), [mine, good])
+            # a budget of 0 prices nothing at all
+            out = sc.run(budget=0)
+            self.assertEqual((out["priced"], out["calls"], out["budget_hit"]), (0, 0, True))
+            out = sc.run()
+            priced = dict(con.execute("SELECT owner, SUM(valued=1) FROM positions GROUP BY owner").fetchall())
+            # the losing wallet: its newest 20 only (its board figures are partial); the others: all 33
+            self.assertEqual((priced[good], priced[mine], priced[bad]), (33, 33, 23))
+            self.assertEqual(get_meta(con, "price_queue"), 0)
+            self.assertGreater(out["calls"], 0)
+            # values that only drift are refreshed on their own clock, not every pass
+            self.assertIsNotNone(get_meta(con, "open_values_at"))
+            self.assertIsNotNone(get_meta(con, "slow_refresh_at"))
+            # its newest 20 made money after all (1 USDG of fees each here): now it's worth pricing in full
+            self.assertEqual(sc.promising([good, bad, mine], now - 30 * 86400), [mine, good, bad])  # best sample first
+            self.assertEqual(sc.run()["priced"], 10)
+            n = rpc.calls
+            out = sc.run()
+            self.assertEqual((out["priced"], rpc.calls - n), (0, 0))  # nothing new, nothing due: no RPC at all
+            # the worker counts calls per UTC day
+            W.count_calls(con, 120)
+            W.count_calls(con, 30)
+            self.assertEqual(W.calls_today(con), 150)
             con.close()
 
     def test_idle_wallets_left_out_and_absurd_returns_dropped(self):

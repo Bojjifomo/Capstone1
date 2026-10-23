@@ -283,15 +283,36 @@ DB Browser for SQLite / pandas kalau mau olah sendiri. Tabel: `wallets`,
    kelasnya. Wallet rugi maksimal 45, trade sedikit ditarik ke 50. ROI dihitung
    dari hari wallet itu aktif (wallet umur 3 hari nggak dianggep nganggur 27 hari).
 
-Biar RPC nggak jebol, tiap run cuma menghargai `SCORE_POSITIONS_PER_RUN`
-posisi (default 4000). Semua posisi di window dihargai, bertahap: 20 terbaru
-tiap wallet dulu, terus 200, 1000, sisanya. Urutan wallet: Watchlist /
-reference, wallet dari Smart LP Finder, wallet orang, terus **bot paling
-belakang** (dikenalin dari jam buka-tutupnya aja, sebelum dihargai, dan cuma 20
-posisi terbarunya). Kalau window udah beres dan masih ada sisa budget, posisi
-yang lebih lama dihargai buat `PnL ALL`. Wallet yang posisi lamanya belum
-kehargai diukur dari posisi tertua yang udah (ada keterangannya di dossier dan
-di tab vs RH Discovery).
+### Hemat RPC
+
+Yang paling makan kuota itu *archive* `eth_call` buat ngehargain posisi (satu
+call per blok, semua event di blok itu sekalian). Biar irit tapi angka di board
+tetap akurat dan update:
+
+1. **Sampel dulu, lengkap belakangan.** Tiap wallet dihargai dulu
+   trade-trade yang paling baru ditutup: minimal 20 posisi dari 3+ trade (satu
+   ladder = satu trade, maks 150 posisi). Cuma wallet yang **menjanjikan**
+   yang dihargai sampai satu window penuh (200 → 1000 → semua): wallet di
+   Watchlist / reference, atau yang sampelnya ruginya < 1% dengan rata-rata ≥
+   $50 per trade (ladder yang nggak kesentuh harga hasilnya 0, jadi tetap
+   lolos). Diuji ke data asli: nggak ada wallet yang untung yang ketahan di
+   sampel, tapi hampir separuh wallet berhenti di sampel. Wallet yang nanti
+   mulai cuan otomatis naik kelas (trade barunya selalu dihargai).
+2. **Yang cuma geser nilainya nggak dibaca tiap putaran.** Nilai posisi open
+   dibaca ulang tiap 30 menit (cuma wallet yang ada di board), saldo wallet dan
+   harga token tiap 1 jam. Putaran yang nggak ada posisi baru = 0 call.
+3. **History lama** (buat `PnL ALL`) cuma buat wallet yang skornya Decent ke atas.
+4. **Batas harian** (Settings → *RPC calls per day*, 0 = bebas): kalau
+   kena, harga berhenti dulu sampai 00:00 UTC; sync & board tetap jalan, dan
+   yang paling penting selalu dihargai duluan. Patokan: Alchemy gratis ±30 juta
+   CU/bulan ≈ 35.000 call/hari.
+5. **Pilih RPC yang kuotanya gede** (Settings → *With two RPCs, price reads go
+   to*): `RPC 1 (RPC 2 as backup)` = SolidRPC yang kerja, Alchemy cuma
+   gantiin pas SolidRPC istirahat / habis kuota. `eth_getLogs` tetap ke RPC 1.
+
+Log worker nulis pemakaiannya tiap putaran (`RPC calls this pass: prices … ·
+open values … · balances …`), dan strip status di atas board nunjukin `RPC
+calls today`.
 
 ## Batasan
 

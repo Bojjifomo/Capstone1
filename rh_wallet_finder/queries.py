@@ -17,7 +17,8 @@ from db import get_meta, set_meta
 ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 VIEWS = ("raw", "real", "d1raw", "d1real")
 SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "VERCEL_PUBLISH_URL", "VERCEL_BLOB_TOKEN", "BACKFILL_DAYS", "METRIC_DAYS", "ACTIVE_DAYS",
-                "SELL_SLIPPAGE_PCT", "MIN_CLOSED", "MULTIDAY_HOURS", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES", "PUBLISH_MINUTES")
+                "SELL_SLIPPAGE_PCT", "MIN_CLOSED", "MULTIDAY_HOURS", "SCORE_POSITIONS_PER_RUN", "RPC_WORKERS", "SYNC_MINUTES", "PUBLISH_MINUTES",
+                "RPC_CALLS_PER_DAY", "CALL_SPLIT")
 SECRET_KEYS = ("RPC_URL", "CALL_RPC_URL", "LPAGENT_API_KEY", "VERCEL_PUBLISH_URL", "VERCEL_BLOB_TOKEN")
 _cache = {}
 _cache_lock = threading.Lock()
@@ -86,6 +87,11 @@ def wallet_rows(con, view, kind=None):
     return rows, feats
 
 
+def _calls_today(con):
+    u = get_meta(con, "rpc_usage") or {}
+    return u.get("calls", 0) if u.get("day") == time.strftime("%Y-%m-%d", time.gmtime()) else 0
+
+
 def status(con):
     cfg = config.load_env()
     n = lambda q: con.execute(q).fetchone()[0]  # noqa: E731
@@ -101,6 +107,7 @@ def status(con):
         "rank_version": get_meta(con, "rank_version"), "rank_current": M.RANK_VERSION,
         "rated": get_meta(con, "rated") or 0, "queue": get_meta(con, "price_queue") or 0,
         "history_queue": get_meta(con, "history_queue") or 0, "launch": config.CHAIN_LAUNCH_TS,
+        "rpc_today": _calls_today(con), "rpc_cap": int(float(cfg.get("RPC_CALLS_PER_DAY") or 0)),
         "positions": n("SELECT COUNT(*) FROM positions"),
         "pools": n("SELECT COUNT(*) FROM pools"),
         "synced_at": get_meta(con, "synced_at"), "scored_at": get_meta(con, "scored_at"),

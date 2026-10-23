@@ -10,9 +10,20 @@ import indexer
 import publish
 import smartlp
 from rpc import QUOTA_RETRY_S, RPCError, make_rpcs
+from db import get_meta, set_meta
 from scorer import Scorer
 
 SEGMENTS_PER_CYCLE = 3  # score in between, so a long backfill shows results early
+
+
+def calls_today(con):
+    """RPC calls the worker made today (UTC)."""
+    u = get_meta(con, "rpc_usage") or {}
+    return u.get("calls", 0) if u.get("day") == time.strftime("%Y-%m-%d", time.gmtime()) else 0
+
+
+def count_calls(con, n):
+    set_meta(con, "rpc_usage", {"day": time.strftime("%Y-%m-%d", time.gmtime()), "calls": calls_today(con) + n})
 
 
 class Worker:
@@ -100,14 +111,22 @@ class Worker:
                     wait = 1
                 self.state = "scoring"
                 self.log("Score: pricing positions and ranking wallets…")
-                out = Scorer(con, call_rpc, cfg, self.log).run(stop=lambda: self._stop)
+                cap = int(float(cfg.get("RPC_CALLS_PER_DAY") or 0))
+                used = calls_today(con) + rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
+                budget = max(0, cap - used) if cap > 0 else None
+                out = Scorer(con, call_rpc, cfg, self.log).run(stop=lambda: self._stop, budget=budget)
                 calls = rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
+                count_calls(con, calls)
+                con.commit()
                 self.log(f"Scored {out['scored']:,} wallets ({out['priced']:,} positions priced, "
-                         f"{calls:,} RPC calls)")
+                         f"{calls:,} RPC calls, {calls_today(con):,} today)")
                 self.publish(con, cfg)
                 self.error = None
                 spent = getattr(call_rpc, "exhausted", None)  # a pool member sitting out a spent quota
                 self.notice = None
+                if cap > 0 and calls_today(con) >= cap:
+                    self.notice = (f"Today's RPC budget ({cap:,} calls) is used up: pricing waits until 00:00 UTC. "
+                                   "New LP activity still syncs and the board shows everything priced so far.")
                 if spent and time.time() - spent[0] < QUOTA_RETRY_S:
                     self.notice = f"{spent[1]}. The other RPC carries on alone; this one is tried again every hour."
                     self.log(self.notice)
