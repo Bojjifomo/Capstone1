@@ -64,6 +64,9 @@ def cmd_top(args, cfg):
     rows, _ = queries.wallet_rows(con, view, args.kind)
     if not rows:
         sys.exit("No scored wallets yet. Run sync and score first.")
+    if args.json:
+        print(json.dumps(rows[:args.n], default=str))
+        return
     hdr = f"{'#':>3} {'score':>5}  {'wallet':<42} {'class':<8} {'verdict':<7} {'net$':>9} {'roi%':>7} {'win%':>5} " \
           f"{'dd%':>6} {'trades':>6} {'hold':>6} {'copy':>4}  style"
     print(hdr)
@@ -84,6 +87,10 @@ def cmd_check(args, cfg):
     addr = args.wallet.lower()
     d = queries.wallet_detail(con, addr)
     m = (d["metrics"] or {}).get("real" if args.real else "raw")
+    if args.json:
+        print(json.dumps({**{k: d[k] for k in ("addr", "explorer", "lpagent_link", "label", "smart_lp")},
+                          "metrics": m, "positions": d["positions"][:args.positions]}, default=str))
+        return
     print(f"Wallet {addr}")
     print(f"  LP Agent: {lpagent.link(addr)}")
     print(f"  Explorer: {d['explorer']}")
@@ -109,6 +116,65 @@ def cmd_check(args, cfg):
         print(f"    open {o['pair']}: value {o['value']}, pnl {o['pnl']}")
     for e in res.get("errors") or []:
         print("  ! " + e)
+
+
+def cmd_status(args, cfg):
+    import queries
+    print(json.dumps(queries.status(db.connect()), default=str))
+
+
+def cmd_twin(args, cfg):
+    import queries
+    res = queries.similar(db.connect(), args.wallet, "real" if args.real else "raw")
+    if "rows" in res:
+        res["rows"] = res["rows"][:args.n]
+    print(json.dumps(res, default=str))
+
+
+def cmd_smart_lp(args, cfg):
+    import queries
+    import smartlp
+    con = db.connect()
+    scored = {r[0]: r[1] for r in con.execute("SELECT addr, score FROM wallets WHERE score IS NOT NULL")}
+    pools = [dict(r) for r in con.execute("""SELECT pool, COUNT(*) AS ranked, MAX(total) AS found,
+                                             MAX(computed_at) AS computed_at FROM slf_ranks
+                                             GROUP BY pool ORDER BY computed_at DESC""")]
+    names = queries.pool_names(con, {p["pool"] for p in pools})
+    for p in pools:
+        p["pair"] = names.get(p["pool"])
+    best = sorted(smartlp.best_ranks(con).values(), key=lambda b: (b["rank"], -(b["pnl_usd"] or 0)))
+    for b in best:
+        b["pair"], b["our_score"] = names.get(b["pool"]), scored.get(b["addr"])
+    print(json.dumps({"dir": str(config.smart_lp_finder_dir() or ""), "db": str(smartlp.db_path() or ""),
+                      "server": smartlp.server_url(), "pools": pools,
+                      "saved": con.execute("SELECT COUNT(*) FROM labels WHERE source='smart-lp-finder'").fetchone()[0],
+                      "best": best[:args.n]}, default=str))
+
+
+def cmd_web_check(args, cfg):
+    import urllib.request
+    import publish
+    con = db.connect()
+    out = {"published": publish.last(con)}
+    link = cfg.get("VERCEL_PUBLISH_URL")
+    if not link:
+        out["live"] = {"error": "no publish link in Settings (Web showcase)"}
+    else:
+        from urllib.parse import urlsplit
+        u = urlsplit(config.split_publish_link(link)[0])
+        site = f"{u.scheme}://{u.netloc}"
+        out["site"] = site
+        try:
+            with urllib.request.urlopen(urllib.request.Request(
+                    site + "/api/snapshot", headers={"user-agent": "rh-wallet-finder/1.0"}), timeout=30) as r:
+                snap = json.load(r)
+            gen = snap.get("generated") or 0
+            out["live"] = {"generated": gen, "age_min": round((time.time() - gen) / 60, 1),
+                           "wallets": len((snap.get("views") or {}).get("raw") or []), "v": snap.get("v"),
+                           "status": snap.get("status")}
+        except Exception as e:  # noqa: BLE001 - any failure is the answer here
+            out["live"] = {"error": f"{type(e).__name__}: {e}"}
+    print(json.dumps(out, default=str))
 
 
 def cmd_import(args, cfg):
@@ -277,9 +343,20 @@ def main():
     s.add_argument("-n", type=int, default=30)
     s.add_argument("--real", action="store_true")
     s.add_argument("--1d", dest="d1", action="store_true")
+    s.add_argument("--json", action="store_true", help="the rows as JSON")
     s = sub.add_parser("check")
     s.add_argument("wallet")
     s.add_argument("--real", action="store_true")
+    s.add_argument("--json", action="store_true", help="metrics + latest positions as JSON (no LP Agent call)")
+    s.add_argument("--positions", type=int, default=50, help="with --json: how many positions to include")
+    sub.add_parser("status", help="sync / scoring / RPC state as JSON")
+    s = sub.add_parser("twin", help="wallets whose LP style is closest to this one, as JSON")
+    s.add_argument("wallet")
+    s.add_argument("-n", type=int, default=20)
+    s.add_argument("--real", action="store_true")
+    s = sub.add_parser("smart-lp", help="RH Smart LP Finder pools + best placings next to our score, as JSON")
+    s.add_argument("-n", type=int, default=30)
+    sub.add_parser("web-check", help="the snapshot the web showcase serves now vs the last publish, as JSON")
     s = sub.add_parser("import")
     s.add_argument("file")
     s = sub.add_parser("import-smart-lp", help="saved wallets + pool rankings from RH Smart LP Finder")
@@ -296,6 +373,7 @@ def main():
     if args.cmd is None:
         args = ap.parse_args(["app"])
     {"app": cmd_app, "worker": cmd_worker, "sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
+     "status": cmd_status, "twin": cmd_twin, "smart-lp": cmd_smart_lp, "web-check": cmd_web_check,
      "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp, "publish": cmd_publish,
      "compare": cmd_compare}[args.cmd](args, cfg)
     if args.cmd in ("sync", "score"):

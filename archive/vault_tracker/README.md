@@ -1,5 +1,9 @@
 # Vault Tracker — live posisi + alert copy-trade (Hedgin / Meteora DLMM)
 
+> **Diarsipkan.** Udah nggak dipakai, tapi masih jalan. Semua perintah di bawah dijalanin dari
+> folder `archive/` (`cd Capstone1/archive`), jadi `.env` dan `.vault_tracker/`-nya juga di sana.
+> Kalau dulu udah punya `Capstone1/.env` sama `Capstone1/.vault_tracker/`, pindahin ke `archive/`.
+
 Tool ini memantau sebuah vault Hedgin (atau wallet Solana mana pun) yang LP atau
 pasang limit order di **Meteora DLMM**, menampilkan isi vault seperti panel **Allocation** di Hedgin, dan
 mengirim **alert setiap kali leader buka / tutup / ubah posisi**. Jadi kamu bisa
@@ -71,7 +75,7 @@ manager, akses dari HP, dan masalah umum.
 ## Install
 
 ```bash
-cd Capstone1
+cd Capstone1/archive
 pip install -r vault_tracker/requirements.txt
 cp vault_tracker/.env.example .env      # lalu isi .env
 ```
@@ -344,5 +348,5 @@ Untuk Discord, isi `DISCORD_WEBHOOK_URL`. Semua alert juga dicatat di
 ## Test
 
 ```bash
-python -m unittest discover -s vault_tracker/tests -t .
+cd archive && python -m unittest discover -s vault_tracker/tests -t .
 ```
