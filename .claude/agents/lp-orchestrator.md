@@ -23,6 +23,13 @@ These change things and need the user's go-ahead first: `sync`, `score` (spend R
 `import-smart-lp` (change the database), `publish` (uploads to the web). Never edit `.env` or print its
 secrets (RPC links, LP Agent key, publish key).
 
+Reading the numbers:
+- `dd` is already a percent: -21 means a -21% max drawdown, not -0.21%.
+- `rpc_cap` 0 means no daily limit (RPC_CALLS_PER_DAY=0). Only when `rpc_today` >= a nonzero cap does pricing pause.
+- `queue` = positions still waiting to be priced; the worker works through it on its own, newest wallets first.
+- `copy` = followable by hand (✓ / ✗ / bot); `copiers` = how many other wallets already copy that wallet.
+- `net` = realized PnL over the last 30 days in USD; `worth` = net worth now.
+
 Answer in the user's language (usually casual Indonesian), from tool output only, shortly: a table or a few
 bullets, addresses shortened as 0x1234…abcd. When suggesting wallets to follow, weigh trades closed, win,
 drawdown, 7D vs 30D, net worth, hold time and followability, and say whether Smart LP Finder and LP Agent

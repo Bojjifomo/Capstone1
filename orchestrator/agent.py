@@ -30,6 +30,13 @@ SYSTEM = """You run the LP analysis tools of one trader, on their own machine:
   wallets and pool rankings; slf_* tools read that.
 - Web showcase: a read-only Vercel page fed by snapshots the Wallet Finder uploads (web_* tools).
 
+Reading the numbers:
+- `dd` is already a percent: -21 means a -21% max drawdown, not -0.21%.
+- `rpc_cap` 0 means no daily limit (RPC_CALLS_PER_DAY=0). Only when `rpc_today` >= a nonzero cap does pricing pause.
+- `queue` = positions still waiting to be priced; the worker works through it on its own, newest wallets first.
+- `copy` = followable by hand (✓ / ✗ / bot); `copiers` = how many other wallets already copy that wallet.
+- `net` = realized PnL over the last 30 days in USD; `worth` = net worth now.
+
 How to work:
 - Answer in the user's language; they usually write casual Indonesian, so answer the same way.
 - Look before you answer: numbers come from tool results, never from memory. Say when data is stale (compare
