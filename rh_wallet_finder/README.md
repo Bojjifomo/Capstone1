@@ -255,6 +255,11 @@ python3 finder.py import wallets.txt
 python3 finder.py import-smart-lp # saved wallets + ranking dari RH Smart LP Finder
 python3 finder.py publish         # upload board ke etalase web (Vercel), atau --out file.json
 python3 finder.py compare baris.txt  # angka kita vs baris yang dicopy dari RH Discovery (- = paste)
+python3 finder.py status          # state sync / ranking / RPC, JSON
+python3 finder.py top --json      # top wallet sebagai JSON (check 0x… --json juga bisa)
+python3 finder.py twin 0x…        # wallet yang gaya LP-nya paling mirip, JSON
+python3 finder.py smart-lp        # pool Smart LP Finder + peringkat terbaik vs skor kita, JSON
+python3 finder.py web-check       # snapshot yang tayang di web vs publish terakhir, JSON
 ```
 
 Database-nya `rh_wallet_finder/data/wallets.db` (SQLite). Bisa dibuka pakai
