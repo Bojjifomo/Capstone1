@@ -351,8 +351,9 @@ class RPCPool:
     wait, for up to WAIT_S."""
     WAIT_S = 600
 
-    def __init__(self, rpcs):
+    def __init__(self, rpcs, prefer=None):
         self.members = list(rpcs)
+        self.prefer = prefer  # index of the member that takes calls while it can (None: round robin)
         for m in self.members:
             m.patient = False
         self.host = " + ".join(m.host for m in self.members)
@@ -387,7 +388,11 @@ class RPCPool:
                 return None
             ready = [m for m in live if m.cool_until <= now]
             if ready:
-                return ready[0] if first else ready[next(self._turn) % len(ready)]
+                if first:
+                    return ready[0]
+                if self.prefer is not None and self.members[self.prefer] in ready:
+                    return self.members[self.prefer]
+                return ready[next(self._turn) % len(ready)]
             if now >= deadline:
                 return None
             time.sleep(max(0.05, min(deadline, min(m.cool_until for m in live)) - now))
@@ -498,5 +503,6 @@ def make_rpcs(cfg):
     if len(urls) <= 1:
         one = RPC(urls[0] if urls else "", workers=workers)
         return one, one
-    pool = RPCPool([RPC(u, workers=workers) for u in urls])
+    prefer = {"rpc1": 0, "rpc2": 1}.get((cfg.get("CALL_SPLIT") or "share").lower())
+    pool = RPCPool([RPC(u, workers=workers) for u in urls], prefer=prefer)
     return pool, pool

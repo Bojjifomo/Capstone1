@@ -82,6 +82,12 @@ DEFAULTS = {
     "SELL_SLIPPAGE_PCT": "1.0",
     # Scoring budget per run, in positions valued.
     "SCORE_POSITIONS_PER_RUN": "4000",
+    # RPC calls the worker may make per day (UTC), all kinds; 0 = no limit. Once
+    # reached, pricing waits for the next day (most important positions first).
+    "RPC_CALLS_PER_DAY": "0",
+    # With two RPCs: who does the price reads. share = both, round robin;
+    # rpc1 / rpc2 = that one, the other only while it rests or is out of quota.
+    "CALL_SPLIT": "share",
     "MIN_CLOSED": "3",
     # Player class: median hold (hours) from which a wallet is a Multiday
     # player; below it, a Degen player.

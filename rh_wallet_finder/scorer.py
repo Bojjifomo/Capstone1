@@ -20,12 +20,28 @@ import metrics as M
 from db import get_meta, set_meta
 from indexer import multicall
 
-# Every position in the window gets priced, newest first and breadth first: each
-# wallet's newest 20, then 200, then 1000, then the rest. (A cap of 500 left the
-# busiest ladder LPs, 1,000-6,000 positions a month, measured over their last
-# few days only.)
+# Pricing order, so the RPC goes where the board needs it:
+#   1. every wallet's newest closed trades, SAMPLE positions over 3+ trades (a
+#      whole ladder counts as one trade; at most SAMPLE_MAX positions): enough
+#      to see whether the wallet is worth more,
+#   2. the whole window of promising wallets (labelled ones, or a sample that
+#      lost under 1% at a real size), best first, 200 / 1000 / all deep,
+#   3. bots' newest BOT_DEPTH,
+#   4. older history, only for wallets the board rates Decent or better.
+# (A flat cap of 500 per wallet left the busiest ladder LPs, 1,000-6,000
+# positions a month, measured over their last few days only.)
 PER_WALLET = 20_000
-DEPTHS = (20, 200, 1000, PER_WALLET)
+SAMPLE = 20
+SAMPLE_MAX = 150
+DEPTHS = (200, 1000, PER_WALLET)
+PROMISE_MIN_TRADES = 3     # priced closed trades a sample needs before it can say "promising"
+PROMISE_MIN_SIZE = 50      # USD: average deposit per trade of a wallet worth pricing in full
+PROMISE_MAX_LOSS = 0.01    # ...and its sample lost less than this share of what went in (untouched
+                           # ladder ranges end flat, so "made money" alone would be a coin flip)
+HISTORY_MIN_SCORE = 50     # Decent and up get their older history priced
+# Reads that only refresh what is already there run this often, not every pass
+OPEN_EVERY_S = 30 * 60     # open positions' value (ranked wallets only)
+SLOW_EVERY_S = 60 * 60     # wallet balances and token prices
 EVENTS_PER_CALL = 40  # position events of one block read in one eth_call
 LAUNCH_SHARE = 0.02  # depositing >= 2% of a token's supply = launching it, not LPing it
 BOT_DEPTH = 20    # bots (hold < 5 min or > 100 trades a day) get only this many, after everyone else
@@ -36,6 +52,22 @@ MAX_TOKEN_USD = 1e7
 MAX_MCAP_USD = 1e10
 # ...and a position paying back over 1000x its deposit (and $10k+ more) is one too
 MAX_RETURN = 1000
+
+
+def sample(rows):
+    """The positions of a wallet's newest closed trades (rows: closed first, latest
+    close first): SAMPLE+ positions over 3+ trades, at most SAMPLE_MAX positions."""
+    out, trades = [], set()
+    for r in rows:
+        if not r[1] or len(out) >= SAMPLE_MAX:
+            break
+        key = (r[3], r[4])
+        if key not in trades:
+            if len(out) >= SAMPLE and len(trades) >= PROMISE_MIN_TRADES:
+                break
+            trades.add(key)
+        out.append(r)
+    return out
 
 
 def quote_side(c0, c1):
@@ -356,75 +388,135 @@ class Scorer:
         self.con.executemany("UPDATE wallets SET eth_bal=?, usd_bal=?, bal_ts=? WHERE addr=?", rows)
 
     # ---- the run ---------------------------------------------------------
-    def run(self, stop=lambda: False):
+    def run(self, stop=lambda: False, budget=None):
+        """One pass: price what matters most first, refresh values, rank.
+        budget: RPC calls this pass may spend (None = no limit)."""
         con, cfg = self.con, self.cfg
         now = time.time()
         days = float(cfg["METRIC_DAYS"])
         w0 = now - days * 86400
-        min_closed = int(cfg["MIN_CLOSED"])
-        budget = int(cfg["SCORE_POSITIONS_PER_RUN"])
+        per_run = int(cfg["SCORE_POSITIONS_PER_RUN"])
+        c0 = self.rpc.calls
+        spent = {}
+        left = lambda: None if budget is None else budget - (self.rpc.calls - c0)  # noqa: E731
 
         self.drop_spiked_prices()
         people, bots = self.candidates(now, w0)
         cands = people + bots
-        bots = set(bots)
-        # newest positions per wallet, unpriced ones flagged: [(token_id, closed, valued)]
+        bot_list, bots = bots, set(bots)
+        # each wallet's positions in the window, closed ones first (latest close first),
+        # then open ones: [(token_id, closed, valued, pool, open_block)]
         newest = {}
         for w in cands:
             newest[w] = con.execute("""
-                SELECT token_id, close_ts IS NOT NULL, valued FROM positions WHERE owner=? AND minted=1
-                  AND (close_ts IS NULL OR close_ts >= ?) ORDER BY open_ts DESC LIMIT ?""",
+                SELECT token_id, close_ts IS NOT NULL, valued, pool, open_block FROM positions
+                WHERE owner=? AND minted=1 AND (close_ts IS NULL OR close_ts >= ?)
+                ORDER BY close_ts IS NULL, COALESCE(close_ts, open_ts) DESC, open_block DESC LIMIT ?""",
                                     (w, w0, BOT_DEPTH if w in bots else PER_WALLET)).fetchall()
-        # breadth first: every person's newest 20, then 200, ... then bots
+        deep = self.promising(people, w0)
+        rounds = [[sample(newest[w]) for w in people]] + [[newest[w][:d] for w in deep] for d in DEPTHS] \
+            + [[newest[w][:BOT_DEPTH] for w in bot_list]]
         todo, seen = [], set()
-        rounds = [(people, d) for d in DEPTHS] + [(cands[len(people):], BOT_DEPTH)]
-        for group, depth in rounds:
-            for w in group:
-                for tid, _, valued in newest[w][:depth]:
-                    if len(todo) >= budget:
+        for lists in rounds:
+            for rows in lists:
+                for tid, _, valued, *_ in rows:
+                    if len(todo) >= per_run:
                         break
                     if valued == 0 and tid not in seen:
                         seen.add(tid)
                         todo.append(tid)
-        pending = sum(1 for w in cands for _, _, valued in newest[w] if valued == 0)
-        # budget left once the window is priced: people's older positions, newest
-        # first, for the all-time figures (as far back as BACKFILL_DAYS loaded)
+        wanted = {r[0] for lists in rounds for rows in lists for r in rows if r[2] == 0}
+        # room left once the window is priced: older positions of the wallets that rate well
         older = []
-        if len(todo) < budget and people:
-            older = self.history_todo(people, w0, budget - len(todo))
+        good = self.rated_well(people)
+        if len(todo) < per_run and good:
+            older = self.history_todo(good, w0, per_run - len(todo))
             todo += older
-        self.log(f"  {len(cands):,} candidate wallets ({len(bots):,} bots last), pricing {len(todo):,} positions"
-                 + (f" ({len(older):,} of them older history)" if older else ""))
+        self.log(f"  {len(cands):,} candidate wallets ({len(deep):,} priced in full, {len(bots):,} bots last), "
+                 f"pricing {len(todo):,} positions" + (f" ({len(older):,} of them older history)" if older else "")
+                 + (f", within {budget:,} RPC calls" if budget is not None else ""))
 
-        t0 = time.time()
+        t0, done = time.time(), set()
+        c = self.rpc.calls
         for i in range(0, len(todo), 400):
-            if stop():
+            if stop() or (left() is not None and left() <= 0):
                 break
             part = todo[i:i + 400]
             n = self.value_events(part)
+            done.update(part)
             con.commit()
             if time.time() - t0 > 5:
                 self.log(f"    priced {min(i + 400, len(todo)):,}/{len(todo):,} positions ({n} reads)")
                 t0 = time.time()
+        spent["prices"] = self.rpc.calls - c
 
-        # open positions get re-valued every run (their value moves)
-        open_ids = [tid for rows in newest.values() for tid, closed, valued in rows
-                    if not closed and (valued == 1 or tid in seen)]
+        # open positions: the ones just priced always (they need a value to count);
+        # every OPEN_EVERY_S, all open positions of wallets on the board (values move)
+        fresh = [r[0] for rows in newest.values() for r in rows if not r[1] and r[0] in done]
+        refresh = []
+        if self._due("open_values_at", OPEN_EVERY_S, now) and (left() is None or left() > 0):
+            refresh = [r[0] for r in self._owner_chunks(self.on_board(), """SELECT token_id FROM positions
+                       WHERE owner IN ({q}) AND minted=1 AND valued=1 AND close_ts IS NULL""")]
+            set_meta(con, "open_values_at", int(now))
+        c = self.rpc.calls
         head = get_meta(con, "fwd_block")
-        open_vals = self.value_open(open_ids, head if head else "latest")
-        self.aggregate(set(todo) | set(open_ids), open_vals)
+        open_vals = self.value_open(list(dict.fromkeys(fresh + refresh)), head if head else "latest")
+        spent["open values"] = self.rpc.calls - c
+        self.aggregate(done | set(fresh) | set(refresh), open_vals)
         con.commit()
 
-        pool_ids = [r[0] for r in con.execute(
-            "SELECT DISTINCT pool FROM positions WHERE valued=1 AND (close_ts IS NULL OR close_ts >= ?)", (w0,))]
-        eth = self.refresh_tokens(pool_ids)
-        if eth:
-            set_meta(con, "eth_usd", eth)
-        n = self.rank(now, days, cands)
-        set_meta(con, "price_queue", max(0, pending - (len(todo) - len(older))))  # still to price after this run
-        set_meta(con, "history_queue", self.history_left(people, w0))
+        slow = self._due("slow_refresh_at", SLOW_EVERY_S, now) and (left() is None or left() > 0)
+        if slow:
+            c = self.rpc.calls
+            pool_ids = [r[0] for r in con.execute(
+                "SELECT DISTINCT pool FROM positions WHERE valued=1 AND (close_ts IS NULL OR close_ts >= ?)", (w0,))]
+            eth = self.refresh_tokens(pool_ids)
+            if eth:
+                set_meta(con, "eth_usd", eth)
+            spent["token prices"] = self.rpc.calls - c
+        c = self.rpc.calls
+        n = self.rank(now, days, cands, balances=slow)
+        if slow:
+            spent["balances"] = self.rpc.calls - c
+            set_meta(con, "slow_refresh_at", int(now))
+        set_meta(con, "price_queue", len(wanted - done))  # still to price after this run
+        set_meta(con, "history_queue", self.history_left(self.rated_well(people), w0))
         con.commit()
-        return {"candidates": len(cands), "priced": len(todo), "scored": n}
+        total = self.rpc.calls - c0
+        if total:
+            self.log("  RPC calls this pass: " + " · ".join(f"{k} {v:,}" for k, v in spent.items() if v)
+                     + f" (total {total:,})")
+        return {"candidates": len(cands), "priced": len(done), "scored": n, "calls": total,
+                "budget_hit": budget is not None and total >= budget}
+
+    def _due(self, key, every, now):
+        return now - (get_meta(self.con, key) or 0) >= every
+
+    def promising(self, people, w0):
+        """People worth pricing in full, best first: labelled ones, then those whose
+        priced closes in the window (the sample, or more) lost under PROMISE_MAX_LOSS
+        of what went in, over PROMISE_MIN_TRADES+ trades of PROMISE_MIN_SIZE+ each."""
+        labelled = {r[0] for r in self.con.execute("SELECT addr FROM labels")}
+        got = {r[0]: r[1:] for r in self._owner_chunks(people, """
+            SELECT owner, COUNT(DISTINCT pool || ':' || open_block), SUM(pnl_usd), SUM(dep_usd) FROM positions
+            WHERE owner IN ({q}) AND valued=1 AND launch=0 AND close_ts >= ? GROUP BY owner""", (w0,))}
+
+        def ok(w):
+            trades, pnl, dep = got[w]
+            return trades >= PROMISE_MIN_TRADES and (dep or 0) / trades >= PROMISE_MIN_SIZE \
+                and (pnl or 0) > -PROMISE_MAX_LOSS * (dep or 0)
+        good = [w for w in people if w not in labelled and w in got and ok(w)]
+        good.sort(key=lambda w: -(got[w][1] or 0))
+        return [w for w in people if w in labelled] + good
+
+    def on_board(self):
+        return [r[0] for r in self.con.execute("SELECT addr FROM wallets WHERE score IS NOT NULL")]
+
+    def rated_well(self, people):
+        """People whose older history is worth pricing: labelled, or Decent and up."""
+        ok = {r[0] for r in self.con.execute("SELECT addr FROM labels")} | {r[0] for r in self.con.execute(
+            "SELECT addr FROM wallets WHERE score >= ?", (HISTORY_MIN_SCORE,))}
+        return [w for w in people if w in ok]
 
     def _owner_chunks(self, wallets, sql, args=()):
         for i in range(0, len(wallets), 400):
