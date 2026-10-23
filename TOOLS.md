@@ -20,15 +20,14 @@ Robinhood Chain RPC ──► Wallet Finder (Mac) ──publish──► Vercel 
    (data/lp-finder.sqlite)
 ```
 
-## Yang nggak kepake (masih ada di repo)
+## Arsip (udah nggak dipakai)
 
-| Tool | Folder | Isinya |
-| --- | --- | --- |
-| Vault Tracker | `vault_tracker/` | Pantau vault Hedgin / Meteora DLMM di Solana, alert Telegram, bot copytrade. |
-| Hospital Patient Management | `app.py`, `hospital_db.sql` | Tugas Capstone Module 1 (Python + MySQL). |
+| Tool | Folder | Isinya | Jalanin |
+| --- | --- | --- | --- |
+| Vault Tracker | `archive/vault_tracker/` | Pantau vault Hedgin / Meteora DLMM di Solana, alert Telegram, bot copytrade. | `cd archive && python -m vault_tracker …` |
+| Hospital Patient Management | `archive/hospital/` | Tugas Capstone Module 1 (Python + MySQL). | `cd archive/hospital && python app.py` |
 
-Dua-duanya nggak disentuh orchestrator. Kalau mau dirapihin, bisa dipindah ke folder
-`archive/` (bilang aja).
+Kodenya nggak diubah, cuma dipindah; orchestrator nggak nyentuh dua-duanya.
 
 ## Orchestrator: satu agent buat semuanya
 
@@ -103,7 +102,7 @@ Urut dari yang paling ngaruh:
 2. **Alert wallet Watchlist ke Telegram.** Worker udah baca semua event LP tiap 5 menit;
    tinggal kirim pesan pas wallet yang di-★ buka / tutup / geser range (pool, range, size,
    link). Ini yang paling kepake buat copy manual. Butuh: bot Telegram (`TELEGRAM_BOT_TOKEN`
-   + `TELEGRAM_CHAT_ID`, caranya sama kayak di `vault_tracker/README.md`).
+   + `TELEGRAM_CHAT_ID`, caranya sama kayak di `archive/vault_tracker/README.md`).
 3. **Brief otomatis tiap pagi.** `python3 -m orchestrator brief` dijadwalin pakai launchd di
    Mac, hasilnya ke Telegram (nyambung ke no. 2). Butuh: Mac nyala di jam itu + `ANTHROPIC_API_KEY`.
 4. **Backtest "kalau gue copy wallet X".** Dari tabel `positions` udah bisa dihitung: modal
