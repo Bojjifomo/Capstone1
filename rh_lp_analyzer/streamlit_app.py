@@ -1089,13 +1089,14 @@ def sizing(a):
     target = st.number_input("Custom deployment target (USD)", min_value=0.0, step=100.0, key="mine_target",
                              help="How much you want working in positions at a time; empty = your whole balance.")
     st.markdown(esc(f"<span style='color:#8392a6;font-size:13px'>Target median deployed **{money(a['capital'])}** · "
-                    f"peak **{money(a['peak'])}** · largest position **{money(a['largest'])}** · currently open "
+                    f"peak **{money(a['peak'])}** · largest trade **{money(a['largest'])}** · currently open "
                     f"**{money(a['open_now'])}**</span>"), unsafe_allow_html=True)
     sz = A.sizing(a, target or mine)
     if sz:
         cards([("Sizing ratio", f"{sz['ratio']:.3f}×", "your capital ÷ its median deployed", "neu", None),
-               ("Per trade", money(sz["per_trade"]), "its median trade, scaled", "neu", None),
-               ("Max per position", money(sz["max_position"]), "its largest position, scaled", "neu", None),
+               ("Per trade (total)", money(sz["per_trade"]), "its median trade, all ladder ranges together",
+                "neu", None),
+               ("Max per trade (total)", money(sz["max_trade"]), "its largest trade, all ranges together", "neu", None),
                ("Peak at once", money(sz["peak"]), "its peak deployed, scaled", "neu", None)], 4)
     else:
         st.caption("Enter your wallet balance above to get a sizing ratio and max USD per position.")
@@ -1275,14 +1276,16 @@ def allocation(results):
                     "average daily correlation · lower = better spread", "neg" if (sm.get("corr") or 0) > 0.5 else "neu",
                     None)], 5)
             df = pd.DataFrame([{"Wallet": short(x["addr"]), "Quality": x["verdict"], "Share": x["share"],
-                                "USD": x["usd"], "Per trade": x["per_trade"], "Max per position": x["max_position"],
+                                "USD": x["usd"], "Ratio": x["ratio"], "Per trade (total)": x["per_trade"],
+                                "Max per trade (total)": x["max_trade"],
                                 "ROI/30d": x["roi_30d"], "Max DD": x["dd"],
                                 "Note": "trades get tiny: copy only its bigger trades" if x["small"] else ""}
                                for x in r["rows"]])
             c1, c2 = st.columns([3, 2])
             with c1:
-                st.dataframe(df.style.format({"Share": lambda v: pct(v, 1), "USD": money, "Per trade": money,
-                                              "Max per position": money, "ROI/30d": lambda v: pct(v, 1),
+                st.dataframe(df.style.format({"Share": lambda v: pct(v, 1), "USD": money, "Ratio": "{:.3f}×",
+                                              "Per trade (total)": money, "Max per trade (total)": money,
+                                              "ROI/30d": lambda v: pct(v, 1),
                                               "Max DD": lambda v: pct(v, 1)}, na_rep="–")
                              .map(lambda v: f"color: {TIER_COLOR[v]}; font-weight: 700" if v in TIER_COLOR else "",
                                   subset=["Quality"]), hide_index=True, **stretch(st.dataframe))
@@ -1330,8 +1333,9 @@ def allocation(results):
                             f'{short(y)} share {j:.0f}% of their pools: copying both doubles the same bets.</div></div>'
                             for x, y, j in ov), unsafe_allow_html=True)
     st.caption("Replay = each wallet's daily realized PnL over the period, scaled by your share ÷ its median deployed "
-               "capital, added up. Per trade / max per position = its median trade and largest position on the same "
-               "scale. Built from past results only: not financial advice, the next month can look nothing like the "
-               "last.")
+               "capital, added up. Sizes are whole trades, as a copy-trade setup counts them: a ladder's ranges "
+               "opened together are one trade. Size each copy as its total × Ratio (Ratio = your share ÷ its median "
+               "deployed capital); Per trade = its median trade that way, Max per trade = its largest. Built from past "
+               "results only: not financial advice, the next month can look nothing like the ""last.")
 
 main()

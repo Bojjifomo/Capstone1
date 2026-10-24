@@ -80,6 +80,15 @@ class AnalyzeTest(unittest.TestCase):
         self.assertTrue(all(r["pnl"] > f["all"]["pnl"] for r in f["best"]))
         self.assertEqual(f["best"][0]["name"], "ETH/USDG only")
 
+    def test_sizes_are_whole_trades(self):
+        ladder = [pos(i, 5 * DAY, 3600, 100, 1) for i in range(3)]
+        for p in ladder:
+            p["open_block"], p["pool"] = 77, "px"  # one transaction: one trade of three ranges
+        a = A.analyze(ladder + [pos(9, 4 * DAY, 3600, 250, 1)], NOW, NOW - 30 * DAY)
+        self.assertEqual(a["largest"], 300)
+        s = A.sizing(a, a["capital"])
+        self.assertAlmostEqual(s["max_trade"], 300)
+
     def test_sizing(self):
         a = A.analyze(self.ps, NOW, NOW - 30 * DAY)
         s = A.sizing(a, a["capital"] / 10)

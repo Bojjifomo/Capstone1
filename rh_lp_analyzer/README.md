@@ -68,7 +68,8 @@ pakai hasil harian wallet-wallet itu selama periode: PnL portofolio, ≈/30 hari
 portofolio + berapa hari baliknya**, paling lama di bawah high, hari terburuk/terbaik, rata-rata
 nutup hari merah, % hari hijau, dan **korelasi antar wallet** (yang sering rugi barengan
 ditandain). Ada tabel tiga profil berdampingan, donut pembagian, kurva PnL portofolio + under
-water, dan per wallet: $ + size per trade & maks per posisi. Cuma dari data masa lalu, bukan
+water, dan per wallet: $, **Ratio**, size per trade & maks per trade (total semua range
+ladder dihitung satu, sama kayak setup copytrade: size copy = total trade dia × Ratio). Cuma dari data masa lalu, bukan
 saran finansial.
 
 ## Dari mana datanya (hemat RPC)

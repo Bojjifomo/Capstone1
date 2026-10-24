@@ -460,7 +460,7 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
         "capital": capital, "peak": peak, "roi": roi,
         "roi_30d": roi * 30 * DAY / max(active, DAY) if roi is not None else None,
         "open_now": sum(p["now"] or 0.0 for p in open_), "fees": sum(p["fee"] or 0.0 for p in scope),
-        "size": M._median([t["dep"] for t in tr], 0.0), "largest": max((p["dep"] for p in scope), default=0.0),
+        "size": M._median([t["dep"] for t in tr], 0.0), "largest": max((t["dep"] for t in tr), default=0.0),  # a whole trade: a ladder's ranges together
         "dd": dd_pct, "dd_usd": -dd, "green_sum": sum(green), "red_sum": sum(red),
         "worst_day": min(red) if red else None, "avg_green": avg_green,
         "avg_red": statistics.fmean(red) if red else None, "green_days": len(green), "red_days": len(red),
@@ -488,12 +488,14 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
 
 
 def sizing(a, mine):
-    """Scale its trades to your capital (USD): {ratio, per_trade, max_position, peak}."""
+    """Scale its trades to your capital (USD). Sizes are whole trades: a ladder's
+    ranges opened together count as one, as a copy-trade setup sizes them.
+    -> {ratio, per_trade, max_trade, peak}"""
     base = a["capital"] or a["peak"]
     if not base or not mine:
         return None
     r = mine / base
-    return {"ratio": r, "per_trade": a["size"] * r, "max_position": a["largest"] * r, "peak": a["peak"] * r}
+    return {"ratio": r, "per_trade": a["size"] * r, "max_trade": a["largest"] * r, "peak": a["peak"] * r}
 
 
 def period(name, now):
@@ -584,7 +586,7 @@ def _shares(weights, cap, floor):
 def allocate(analyses, capital, profile, deploy_pct=DEPLOY_PCT, include_reject=False):
     """Split deploy_pct % of capital (USD) over every followed wallet {addr: analysis}
     (REJECT ones only when include_reject), leaning the profile's way.
-    -> {rows: [{addr, share, usd, per_trade, max_position, roi_30d, dd, verdict, small}], deployed, reserve,
+    -> {rows: [{addr, share, usd, ratio, per_trade, max_trade, roi_30d, dd, verdict, small}], deployed, reserve,
         exp_30d, dd_usd, skipped: [addr], dropped: [addr], text, sim}"""
     p = PROFILES[profile]
     weights = {k: _weight(profile, a) for k, a in analyses.items()
@@ -605,9 +607,10 @@ def allocate(analyses, capital, profile, deploy_pct=DEPLOY_PCT, include_reject=F
     for k, sh in sorted(shares.items(), key=lambda kv: -kv[1]):
         a = analyses[k]
         amt = sh * deploy
-        sz = sizing(a, amt) or {"per_trade": 0.0, "max_position": 0.0}
+        sz = sizing(a, amt) or {"ratio": 0.0, "per_trade": 0.0, "max_trade": 0.0}
         rows.append({"addr": k, "share": amt / capital * 100 if capital else 0.0, "usd": amt,
-                     "per_trade": sz["per_trade"], "max_position": sz["max_position"], "roi_30d": a["roi_30d"],
+                     "ratio": sz["ratio"], "per_trade": sz["per_trade"], "max_trade": sz["max_trade"],
+                     "roi_30d": a["roi_30d"],
                      "dd": a["dd"], "verdict": a["verdict"], "small": sz["per_trade"] < SMALL_TRADE})
     deployed = sum(r["usd"] for r in rows)
     sim = simulate(analyses, rows)
