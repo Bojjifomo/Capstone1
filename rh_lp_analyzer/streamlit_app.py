@@ -391,8 +391,10 @@ def load(addrs, per):
         st.session_state["last_load"] = (f"Read in {time.time() - t0:.0f}s with {calls:,} RPC requests · via "
                                          + (", ".join(res.get("sources") or ["cache"]))
                                          + ("" if not notes else " · " + "; ".join(notes)))
-        st.session_state["load_gaps"] = {"gaps": res.get("gaps") or [], "diag": res.get("diag") or {},
-                                         "unchecked": res.get("unchecked") or 0}
+        by = st.session_state.setdefault("gaps_by", {})  # per wallet, so compare mode keeps every wallet's
+        for x in addrs:
+            by[x] = {"gaps": [g for g in res.get("gaps") or [] if g["addr"] == x], "diag": res.get("diag") or {},
+                     "unchecked": res.get("unchecked") or 0}
     except F.NoSource as e:
         bar.empty()
         st.error("Couldn't find this wallet's positions: every source failed for this period.")
@@ -429,8 +431,9 @@ def diagnose(diag):
 
 def gap_note(addrs):
     """Warn when part of the period couldn't be read (the report covers the rest)."""
-    g = st.session_state.get("load_gaps") or {}
-    gaps = [x for x in g.get("gaps", []) if x["addr"] in addrs]
+    by = st.session_state.get("gaps_by") or {}
+    g = next((by[x] for x in addrs if x in by), {})
+    gaps = [x for a in addrs for x in (by.get(a) or {}).get("gaps", [])]
     if gaps:
         def when(t):
             return time.strftime("%d %b %H:%M", time.gmtime(t)) + " UTC" if t else "?"
@@ -1033,6 +1036,10 @@ def compare(addrs, per):
     with st.expander(f"✓ Compared {len(addrs)} wallets · {per} · each analysed on its own, best first"):
         if st.session_state.get("last_load"):
             st.caption(st.session_state["last_load"])
+    for x in addrs:
+        if ((st.session_state.get("gaps_by") or {}).get(x) or {}).get("gaps"):
+            st.markdown(f"**{short(x)}**", unsafe_allow_html=True)
+            gap_note([x])
     recs = []
     for x in order:
         a = results[x]

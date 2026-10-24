@@ -34,9 +34,44 @@ def modify(block, tid, delta, tx, idx=0):
             "data": "0x" + C.word(-600) + C.word(600) + C.word(delta) + C.word(tid)}
 
 
+def decode_calls(data):
+    """Multicall3.aggregate3 calldata -> [(target, calldata)] (the inverse of chain.encode_aggregate3)."""
+    d = data[10:]
+
+    def at(off):
+        return int(d[off * 2:off * 2 + 64], 16)
+    arr = at(0)
+    n = at(arr)
+    base = arr + 32
+    out = []
+    for i in range(n):
+        el = base + at(base + 32 * i)
+        target = "0x" + d[el * 2 + 24:el * 2 + 64]
+        boff = el + at(el + 64)
+        blen = at(boff)
+        out.append((target, "0x" + d[(boff + 32) * 2:(boff + 32 + blen) * 2]))
+    return out
+
+
+def encode_results(results):
+    """[hex or None] -> aggregate3's return data."""
+    heads, tails, off = [], [], 32 * len(results)
+    for r in results:
+        b = (r or "0x")[2:]
+        el = C.word(1 if r else 0) + C.word(0x40) + C.word(len(b) // 2) + b + "0" * (-len(b) % 64)
+        heads.append(C.word(off))
+        tails.append(el)
+        off += len(el) // 2
+    return "0x" + C.word(0x20) + C.word(len(results)) + "".join(heads) + "".join(tails)
+
+
 class FakeRPC:
+    """A chain made of these logs: eth_getLogs, receipts, and the PositionManager
+    reads the position-id walk does (nextTokenId, ownerOf, getPositionLiquidity)."""
+
     def __init__(self):
         self.logs = [transfer(1000, 7, config.ZERO, W, "0xa"), modify(1000, 7, 10 ** 18, "0xa"),
+                     transfer(1500, 8, config.ZERO, OTHER, "0xc"),
                      modify(1500, 8, 10 ** 18, "0xc"),  # someone else's position in the same pool
                      modify(1800, 7, -(10 ** 17), "0xd"),  # a partial withdrawal in between
                      modify(2000, 7, -(9 * 10 ** 17), "0xb"), transfer(2000, 7, W, config.ZERO, "0xb"),
@@ -44,7 +79,39 @@ class FakeRPC:
                      transfer(3500, 10, config.ZERO, OTHER, "0xf")]
         self.log_calls = 0
         self.receipts = 0
-        self.liquidity = {9: 10 ** 18}  # open positions' liquidity now
+        self.eth_calls = 0
+        self.fail_calls = None  # an error every eth_call answers with (e.g. a spent quota)
+
+    @property
+    def liquidity(self):  # open positions' liquidity now
+        return {t: self.liq(t, HEAD) for t in (7, 8, 9, 10)}
+
+    def transfers(self, tid, block):
+        return [C.decode_nft_transfer(lg) for lg in self.logs if lg["address"] == config.POSITION_MANAGER
+                and int(lg["topics"][3], 16) == tid and int(lg["blockNumber"], 16) <= block]
+
+    def owner(self, tid, block):
+        t = self.transfers(tid, block)
+        return t[-1]["to"] if t and t[-1]["to"] != config.ZERO else None
+
+    def liq(self, tid, block):
+        return sum(C.decode_modify(lg)["delta"] for lg in self.logs if lg["address"] == config.POOL_MANAGER
+                   and C.decode_modify(lg)["salt"] == tid and int(lg["blockNumber"], 16) <= block)
+
+    def read(self, to, data, block):
+        sel, arg = data[2:10], int(data[10:] or "0", 16)
+        if to == config.MULTICALL3:
+            return encode_results([self.read(t, d, block) for t, d in decode_calls(data)])
+        if sel == "75794a3c":  # nextTokenId
+            minted = [int(lg["topics"][3], 16) for lg in self.logs if lg["address"] == config.POSITION_MANAGER
+                      and lg["topics"][1] == "0x" + C.addr_word(config.ZERO) and int(lg["blockNumber"], 16) <= block]
+            return "0x" + C.word(max(minted, default=6) + 1)
+        if sel == "6352211e":  # ownerOf
+            o = self.owner(arg, block)
+            return "0x" + C.addr_word(o) if o else None
+        if sel == "1efeed33":  # getPositionLiquidity
+            return "0x" + C.word(self.liq(arg, block))
+        raise AssertionError(sel)
 
     def call(self, method, params):
         if method == "eth_blockNumber":
@@ -59,19 +126,33 @@ class FakeRPC:
             elif m == "eth_getTransactionReceipt":
                 self.receipts += 1
                 out.append({"logs": [lg for lg in self.logs if lg["transactionHash"] == p[0]]})
+            elif m == "eth_call":
+                self.eth_calls += 1
+                if self.fail_calls:
+                    out.append(self.fail_calls)
+                    continue
+                r = self.read(p[0]["to"], p[0]["data"], int(p[1], 16))
+                out.append(r if r is not None else R.RPCError("eth_call: execution reverted: NOT_MINTED"))
+            elif m == "eth_getLogs":
+                f = p[0]
+                assert int(f["toBlock"], 16) - int(f["fromBlock"], 16) < 10  # what a free tier allows
+                out.append(self.match(f, int(f["fromBlock"], 16), int(f["toBlock"], 16)))
             else:
                 raise AssertionError(m)
         return out
 
-    def get_logs(self, flt, lo, hi, chunk, progress=None, ceiling=None, max_calls=None):
-        self.log_calls += 1
+    def match(self, flt, lo, hi):
         out = []
         for lg in self.logs:
             if lg["address"] != flt["address"] or not lo <= int(lg["blockNumber"], 16) <= hi:
                 continue
             if all(t is None or (i < len(lg["topics"]) and lg["topics"][i] == t) for i, t in enumerate(flt["topics"])):
                 out.append(lg)
-        return out, chunk
+        return out
+
+    def get_logs(self, flt, lo, hi, chunk, progress=None, ceiling=None, max_calls=None):
+        self.log_calls += 1
+        return self.match(flt, lo, hi), chunk
 
 
 class NoPricer:
@@ -114,7 +195,7 @@ class LoaderTest(unittest.TestCase):
         self.saved = (F.Pricer, F.Loader.refresh_pools_tokens, F.multicall, explorer.nft_transfers,
                       explorer.lp_transactions)
         F.Pricer, F.Loader.refresh_pools_tokens = NoPricer, lambda self: None
-        F.multicall = lambda rpc, calls, block: [hex(self.rpc.liquidity.get(int(cd[-64:], 16), 0)) for _, cd in calls]
+        F.multicall = lambda rpc, calls, block: [hex(self.rpc.liq(int(cd[-64:], 16), HEAD)) for _, cd in calls]
         # only the sources a test sets up: no finder database, no Alchemy
         self.cfg = {**config.load_env(), "LOOKBACK_DAYS": "0", "WALLET_FINDER_DB": "0", "RPC_URL": "",
                     "CALL_RPC_URL": ""}
@@ -206,21 +287,44 @@ class LoaderTest(unittest.TestCase):
         explorer.nft_transfers = explorer.lp_transactions = down
 
         def tiny(flt, lo, hi, chunk, progress=None, ceiling=None, max_calls=None):
-            raise R.LogsInterrupted(R.TooCostly("rpc allows only 10 blocks per eth_getLogs"), [], lo, chunk)
+            if hi - lo >= 10:
+                raise R.LogsInterrupted(R.TooCostly("rpc allows only 10 blocks per eth_getLogs"), [], lo, chunk)
+            return self.rpc.match(flt, lo, hi), chunk
         self.rpc.get_logs = tiny
 
-    def test_unreadable_stretch_is_left_out_not_fatal(self):
+    def test_walk_finds_what_the_finder_missed_with_eth_call_only(self):
         self.finder_db(fwd=2500)  # the finder's sync stopped before #9 was opened
         self.no_cheap_logs()
+        res = self.load()
+        self.check_positions()
+        self.assertEqual(res["gaps"], [])
+        self.assertIn("position-id walk (eth_call)", res["sources"])
+        self.assertIn("HTTP 403", res["diag"]["Blockscout explorer"])
+
+    def test_walk_alone_with_a_tiny_log_range(self):
+        self.no_cheap_logs()  # no finder, no explorer, eth_getLogs only 10 blocks at a time
+        res = self.load()
+        self.check_positions()  # #7's partial withdrawal found as a step in its liquidity
+        self.assertEqual(res["gaps"], [])
+        self.assertIn("liquidity step search (eth_call)", res["sources"])
+        n = self.rpc.eth_calls
+        self.load()  # again: who-got-which-id and the scanned stretch are cached
+        self.assertLess(self.rpc.eth_calls - n, 10)
+
+    def test_unreadable_stretch_is_left_out_not_fatal(self):
+        self.finder_db(fwd=2500)
+        self.no_cheap_logs()
+        self.rpc.fail_calls = R.QuotaError("rpc: plan limit reached (Daily response quota exceeded)")
         res = self.load()
         pos = {r["token_id"] for r in self.con.execute("SELECT token_id FROM positions")}
         self.assertEqual(pos, {7})  # what the finder had is still analysed
         self.assertEqual([(g["lo"], g["hi"]) for g in res["gaps"]], [(2501, HEAD)])
         self.assertIn("10 blocks", res["gaps"][0]["why"])
-        self.assertIn("HTTP 403", res["diag"]["Blockscout explorer"])
+        self.assertIn("quota", res["diag"]["Position-id walk (eth_call)"])
 
     def test_no_source_at_all_says_why(self):
         self.no_cheap_logs()
+        self.rpc.fail_calls = R.QuotaError("rpc: plan limit reached (Daily response quota exceeded)")
         with self.assertRaises(F.NoSource) as cm:
             self.load()
         self.assertIn("RPC eth_getLogs", cm.exception.diag)

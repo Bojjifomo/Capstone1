@@ -70,12 +70,21 @@ Urutan sumber, dari yang gratis:
    databasenya di tempat lain, isi `WALLET_FINDER_DB` di `.env`.
 2. **Explorer Blockscout** (API daftar transfer NFT + transaksi wallet), kalau bisa diakses.
 3. **Alchemy Transfers API**, kalau RPC 2 lu Alchemy dan network-nya didukung.
-4. Terakhir baru **`eth_getLogs`** lewat RPC. Kalau sebuah RPC cuma ngizinin range blok
+4. **Position-id walk (cuma `eth_call`)**: nomor NFT posisi selalu naik, jadi
+   `nextTokenId()` di beberapa blok + `ownerOf()` massal (300 per request) nunjukin
+   posisi mana punya wallet ini; blok mint/close dicari pakai binary search, terus log
+   1 blok aja. Jalan juga di Alchemy free tier. Hasil "siapa dapet NFT nomor berapa"
+   disimpen, jadi wallet berikutnya (mis. di Compare) nggak bayar lagi. Posisi yang
+   dibuka & ditutup dalam ±2,5 menit nggak kelihatan lewat cara ini.
+5. Terakhir baru **`eth_getLogs`** lewat RPC. Kalau sebuah RPC cuma ngizinin range blok
    kecil banget (Alchemy free tier: 10 blok), dia berhenti dan ngasih tau, bukannya
    ngabisin kuota.
 
-Event LP diambil dari receipt transaksi; scan log pool cuma buat posisi yang angka
-liquidity-nya nggak balance. Harga tiap event dibaca sekali dari state chain (archive
+Event LP diambil dari receipt transaksi; posisi yang angka liquidity-nya nggak balance
+dicari lewat scan log pool, atau (kalau RPC-nya nggak bisa) lewat bisection
+`getPositionLiquidity()` (klaim fee doang tanpa ubah liquidity nggak kelihatan lewat
+cara ini). Bagian periode yang tetap nggak kebaca dilewatin dan disebut di halaman
+(juga per wallet di Compare). Harga tiap event dibaca sekali dari state chain (archive
 `eth_call`), terus disimpen di `data/cache.db`. Di bawah "Analysis complete" ada berapa
 detik, berapa request RPC, dan sumber yang dipakai.
 

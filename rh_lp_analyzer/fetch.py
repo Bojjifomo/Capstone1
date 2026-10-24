@@ -27,6 +27,7 @@ import config
 import explorer
 import finder_db
 import pricing
+import walk
 from keccak import selector
 from pricing import Pricer, multicall
 from rpc import RPCError
@@ -234,7 +235,8 @@ class Loader:
                     self.used.add("RH Wallet Finder database")
                     if not missing(self.con, key, lo, hi):
                         return
-        if self._from_explorer(addr, lo, hi, since_ts) or self._from_alchemy(addr, lo, hi):
+        if self._from_explorer(addr, lo, hi, since_ts) or self._from_alchemy(addr, lo, hi) \
+                or self._from_walk(addr, lo, hi):
             return
         self.used.add("RPC logs")
         try:
@@ -275,6 +277,74 @@ class Loader:
             return False
         self._store(addr, trs, txs, lo, hi, "explorer")
         return True
+
+    def _from_walk(self, addr, lo, hi):
+        """Position ids → owners with eth_call only (walk.py), for what is still unread."""
+        w = walk.TokenWalk(self.con, self.call_rpc, self.progress, missing, mark)
+        try:
+            for a, b in missing(self.con, f"nft:{addr}", lo, hi):
+                # ids it held going into this stretch, whose fate in it we don't know
+                held = [r[0] for r in self.con.execute("""
+                    SELECT t.token_id FROM transfers t WHERE t.to_addr=? AND t.block < ? AND NOT EXISTS (
+                      SELECT 1 FROM transfers u WHERE u.token_id=t.token_id AND u.block > t.block AND u.block < ?)""",
+                                                       (addr, a, a))]
+                logs = w.wallet(addr, a, b, held)
+                ts = self._ts_of(logs)
+                rows = []
+                for lg in logs:
+                    if len(lg["topics"]) == 4:
+                        d = C.decode_nft_transfer(lg)
+                        rows.append((d["block"], d["log_index"], d["tx"], ts.get(d["block"]), d["token_id"], d["from"],
+                                     d["to"]))
+                self.con.executemany("INSERT OR IGNORE INTO transfers VALUES(?,?,?,?,?,?,?)", rows)
+                mark(self.con, f"nft:{addr}", a, b)
+                self.con.commit()
+        except RPCError as e:
+            self.diag["Position-id walk (eth_call)"] = str(getattr(e, "cause", None) or e)[:200]
+            self.con.commit()
+            return False
+        self.used.add("position-id walk (eth_call)")
+        return True
+
+    def bisect_events(self, token_ids, head):
+        """LP events the receipts missed, found as steps in getPositionLiquidity()
+        between the events we have (eth_call only), then read from that one block.
+        Fee claims that don't move liquidity can't be seen this way."""
+        if not token_ids:
+            return
+        w = walk.TokenWalk(self.con, self.call_rpc, self.progress, missing, mark)
+        q = ",".join("?" * len(token_ids))
+        blocks, pools = {}, {}
+        for tid, b, pool in self.con.execute(f"SELECT token_id, block, pool FROM events WHERE token_id IN ({q}) "
+                                             "ORDER BY block", token_ids):
+            blocks.setdefault(tid, []).append(b)
+            pools[tid] = pool
+        burns = dict(self.con.execute(f"SELECT token_id, block FROM transfers WHERE to_addr=? AND token_id IN ({q})",
+                                      (config.ZERO, *token_ids)).fetchall())
+        spans = []
+        for tid, bs in blocks.items():
+            edges = sorted(set(bs)) + [burns[tid] if tid in burns else head + 1]
+            spans += [(tid, x, y - 1) for x, y in zip(edges, edges[1:]) if y - 1 > x]
+        self.progress(f"Looking for adds / removes in {len(blocks):,} positions…")
+        try:
+            steps = w.liquidity_steps(spans)
+            pm = "0x" + C.addr_word(config.POSITION_MANAGER)
+            logs = w.one_block_logs([(b, [C.MODIFY_LIQUIDITY, pools[t], pm]) for t, b in steps],
+                                    {"address": config.POOL_MANAGER})
+        except RPCError as e:
+            self.diag["Liquidity step search (eth_call)"] = str(getattr(e, "cause", None) or e)[:200]
+            self.unchecked += len(token_ids)
+            return
+        want = set(token_ids)
+        found = [C.decode_modify(lg) for lg in logs]
+        found = [d for d in found if d["salt"] in want and d["sender"] == config.POSITION_MANAGER]
+        ts = self.block_ts({d["block"] for d in found})
+        self.con.executemany(
+            "INSERT OR IGNORE INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(d["block"], d["log_index"], d["tx"], ts.get(d["block"]), d["salt"], d["pool"], d["tl"], d["tu"],
+              str(d["delta"])) for d in found])
+        self.con.commit()
+        self.used.add("liquidity step search (eth_call)")
 
     def _from_alchemy(self, addr, lo, hi):
         u = alchemy.url(self.cfg)
@@ -411,9 +481,10 @@ class Loader:
                 try:
                     logs = self._logs({"address": config.POOL_MANAGER, "topics": [C.MODIFY_LIQUIDITY, pool, pm]}, a, b,
                                       "pool", POOL_CEILING)
-                except RPCError as e:  # the RPC can't read these: the positions keep the events we have
+                except RPCError as e:  # the RPC can't read ranges: find the changes with eth_call instead
                     self.diag["RPC pool log scan"] = str(getattr(e, "cause", None) or e)
-                    self.unchecked += len(ids)
+                    left = [t for g_ in list(pools.values())[n - 1:] for t in g_["ids"]]  # this pool on
+                    self.bisect_events(left, head)
                     return list(life)
                 logs = [lg for lg in logs if int(C.words(lg["data"])[3], 16) in ids]
                 ts = self._ts_of(logs)
