@@ -55,11 +55,15 @@ DEFAULTS = {
     "MULTIDAY_HOURS": "2",
     # Positions opened up to this many days before the period still count when
     # they close (or are still open) inside it.
-    "LOOKBACK_DAYS": "30",
+    "LOOKBACK_DAYS": "14",
+    # Read the wallet's positions from the Blockscout explorer API first (saves
+    # the RPC most of the work); 0 = always use eth_getLogs.
+    "EXPLORER_API": "1",
     "RPC_WORKERS": "6",
     "LOG_CHUNK": "20000",
 }
-SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "SELL_SLIPPAGE_PCT", "MULTIDAY_HOURS", "LOOKBACK_DAYS", "RPC_WORKERS")
+SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "SELL_SLIPPAGE_PCT", "MULTIDAY_HOURS", "LOOKBACK_DAYS", "EXPLORER_API",
+                "RPC_WORKERS")
 SECRET_KEYS = ("RPC_URL", "CALL_RPC_URL", "APP_PASSWORD")
 
 

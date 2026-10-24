@@ -1,10 +1,15 @@
-"""Loads one wallet's Uniswap V4 LP positions straight from the chain, on demand.
+"""Loads one wallet's Uniswap V4 LP positions on demand, as cheaply as it can.
 
-  1. PositionManager NFT Transfers to / from the wallet (eth_getLogs filtered on
-     the wallet's address, so it is cheap): mint = opened, burn = closed.
-  2. The mint transaction's receipt: which pool and range each position is.
-  3. PoolManager ModifyLiquidity logs of those pools, only over each position's
-     lifetime: every add / remove / fee claim of the wallet's positions.
+  1. The wallet's PositionManager NFT transfers (mint = opened, burn = closed)
+     and the transactions it sent to the PositionManager, from the Blockscout
+     explorer API: a few requests, no RPC quota. When the explorer can't be
+     reached: eth_getLogs filtered on the wallet's address.
+  2. The receipts of those transactions: every ModifyLiquidity of its positions
+     (open, add, remove, fee claim), so pool and range too.
+  3. A check per position: its liquidity changes must add up (0 once closed, its
+     liquidity now while open). Only a position that doesn't (an action we
+     didn't see, e.g. from another sender) gets its pool's LP logs scanned
+     over its lifetime.
   4. Every event priced from chain state one block before it (pricing.py), and
      open positions valued at the head.
 
@@ -18,13 +23,17 @@ import time
 
 import chain as C
 import config
+import explorer
 import pricing
+from keccak import selector
 from pricing import Pricer, multicall
 
 CONFIRMATIONS = 30
 DAY = 86400
 NFT_CEILING = 20_000_000  # blocks per eth_getLogs when filtered on one wallet (few results)
 POOL_CEILING = 2_000_000  # ...when it is a whole pool's LP activity
+SEL_POSITION_LIQUIDITY = selector("getPositionLiquidity(uint256)")
+EXPLORER_RETRY_S = 1800  # explorer unreachable: use the RPC for this long before trying it again
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
@@ -60,6 +69,8 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE INDEX IF NOT EXISTS pos_owner ON positions(owner);
 CREATE TABLE IF NOT EXISTS saved (addr TEXT PRIMARY KEY, label TEXT, added INTEGER);
+CREATE TABLE IF NOT EXISTS lp_txs (addr TEXT, tx TEXT, block INTEGER, PRIMARY KEY (addr, tx));
+CREATE TABLE IF NOT EXISTS receipts (tx TEXT PRIMARY KEY);  -- receipts already read
 """
 
 _write_lock = threading.Lock()  # one loader writes at a time (Streamlit runs sessions in threads)
@@ -171,7 +182,35 @@ class Loader:
             out.update(self.block_ts(rest))
         return out
 
-    # 1. the wallet's position NFTs
+    # 1. the wallet's position NFTs and LP transactions
+    def discover(self, addr, lo, hi, since_ts):
+        """From the explorer when it answers (then the whole range counts as read),
+        else from eth_getLogs."""
+        if not missing(self.con, f"nft:{addr}", lo, hi):
+            return
+        use = str(self.cfg.get("EXPLORER_API", "1")).lower() not in ("0", "false", "no", "off")
+        if use and time.time() >= (get_meta(self.con, "explorer_off_until") or 0):
+            self.progress(f"Finding {C.short(addr)}'s positions on the explorer…")
+            try:
+                trs = explorer.nft_transfers(addr, since_ts)
+                txs = explorer.lp_transactions(addr, since_ts)
+            except explorer.ExplorerError as e:
+                set_meta(self.con, "explorer_off_until", time.time() + EXPLORER_RETRY_S)
+                set_meta(self.con, "explorer_error", str(e))
+                self.con.commit()
+            else:
+                self.con.executemany("INSERT OR IGNORE INTO transfers VALUES(?,?,?,?,?,?,?)",
+                                     [(t["block"], t["log_index"], t["tx"], t["ts"], t["token_id"], t["from"],
+                                       t["to"]) for t in trs])
+                self.con.executemany("INSERT OR IGNORE INTO lp_txs VALUES(?,?,?)",
+                                     [(addr, t["tx"], t["block"]) for t in txs])
+                self.con.executemany("INSERT OR IGNORE INTO blocks(n, ts) VALUES(?,?)",
+                                     [(t["block"], t["ts"]) for t in trs + txs])
+                mark(self.con, f"nft:{addr}", lo, hi)
+                self.con.commit()
+                return
+        self.scan_nfts(addr, lo, hi)
+
     def scan_nfts(self, addr, lo, hi):
         key = f"nft:{addr}"
         w = "0x" + C.addr_word(addr)
@@ -193,32 +232,65 @@ class Loader:
             mark(self.con, key, a, b)
             self.con.commit()
 
-    # 2. pool and range of each new position, from its mint transaction
-    def find_pools(self, token_ids):
-        todo = self.con.execute(f"""
-            SELECT t.token_id, t.tx FROM transfers t LEFT JOIN nfts n ON n.token_id = t.token_id
-            WHERE n.token_id IS NULL AND t.from_addr = ? AND t.token_id IN ({','.join('?' * len(token_ids))})""",
-                                (config.ZERO, *token_ids)).fetchall()
-        if not todo:
-            return
-        self.progress(f"Reading {len(todo):,} new positions' pools…")
-        by_tx = {}
-        for tid, tx in todo:
-            by_tx.setdefault(tx, set()).add(tid)
-        txs = list(by_tx)
-        res = self.call_rpc.batch([("eth_getTransactionReceipt", [tx]) for tx in txs], size=20)
-        rows = []
-        for tx, rc in zip(txs, res):
-            if not isinstance(rc, dict):
-                continue
-            for lg in rc.get("logs") or []:
-                if lg["address"].lower() != config.POOL_MANAGER or lg["topics"][0] != C.MODIFY_LIQUIDITY:
-                    continue
-                d = C.decode_modify(lg)
-                if d["sender"] == config.POSITION_MANAGER and d["salt"] in by_tx[tx]:
-                    rows.append((d["salt"], d["pool"], d["tl"], d["tu"]))
-        self.con.executemany("INSERT OR IGNORE INTO nfts VALUES(?,?,?,?)", rows)
-        self.con.commit()
+    # 2. LP events from the receipts of the transactions we know of
+    def read_receipts(self, txs):
+        """Every PositionManager ModifyLiquidity in these transactions' receipts
+        (read once each) -> events, and each position's pool and range."""
+        txs = list(dict.fromkeys(txs))
+        have = set()
+        for i in range(0, len(txs), 500):
+            part = txs[i:i + 500]
+            have.update(r[0] for r in self.con.execute(
+                f"SELECT tx FROM receipts WHERE tx IN ({','.join('?' * len(part))})", part))
+        todo = [t for t in txs if t not in have]
+        for i in range(0, len(todo), 200):
+            part = todo[i:i + 200]
+            self.progress(f"Reading LP transactions… {i:,}/{len(todo):,}", i / max(1, len(todo)))
+            res = self.call_rpc.batch([("eth_getTransactionReceipt", [tx]) for tx in part], size=20)
+            found, done = [], []
+            for tx, rc in zip(part, res):
+                if not isinstance(rc, dict):
+                    continue  # read again next time
+                done.append((tx,))
+                for lg in rc.get("logs") or []:
+                    if lg["address"].lower() != config.POOL_MANAGER or not lg["topics"] \
+                            or lg["topics"][0] != C.MODIFY_LIQUIDITY:
+                        continue
+                    d = C.decode_modify(lg)
+                    if d["sender"] == config.POSITION_MANAGER:
+                        found.append(d)
+            ts = self.block_ts({d["block"] for d in found})
+            self.con.executemany(
+                "INSERT OR IGNORE INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                [(d["block"], d["log_index"], d["tx"], ts.get(d["block"]), d["salt"], d["pool"], d["tl"], d["tu"],
+                  str(d["delta"])) for d in found])
+            self.con.executemany("INSERT OR IGNORE INTO nfts VALUES(?,?,?,?)",
+                                 [(d["salt"], d["pool"], d["tl"], d["tu"]) for d in found])
+            self.con.executemany("INSERT OR IGNORE INTO receipts(tx) VALUES(?)", done)
+            self.con.commit()
+
+    def unbalanced(self, token_ids, head):
+        """Positions whose liquidity changes we have don't add up: closed ones to 0,
+        open ones to their liquidity now (a read at the head). Their pools get scanned."""
+        q = ",".join("?" * len(token_ids))
+        sums = {tid: 0 for tid in token_ids}
+        seen = set()
+        for tid, delta in self.con.execute(f"SELECT token_id, delta FROM events WHERE token_id IN ({q})", token_ids):
+            sums[tid] += int(delta)
+            seen.add(tid)
+        burned = {r[0] for r in self.con.execute(
+            f"SELECT token_id FROM transfers WHERE to_addr=? AND token_id IN ({q})", (config.ZERO, *token_ids))}
+        bad = [t for t in token_ids if t not in seen or (t in burned and sums[t] != 0)]
+        live = [t for t in token_ids if t in seen and t not in burned]
+        if live:
+            try:
+                res = multicall(self.call_rpc, [(config.POSITION_MANAGER, "0x" + SEL_POSITION_LIQUIDITY + C.word(t))
+                                                for t in live], hex(head))
+            except Exception:  # noqa: BLE001 - can't check: scan them to be sure
+                res = [None] * len(live)
+            bad += [t for t, r in zip(live, res) if r is None or int(r, 16) != sums[t]]
+        return bad
 
     # 3. every LP event of those positions
     def scan_events(self, token_ids, head):
@@ -375,21 +447,30 @@ class Loader:
         """Read and price everything the analysis of these wallets from since_ts on needs."""
         with _write_lock:
             head = int(self.rpc.call("eth_blockNumber", []), 16) - CONFIRMATIONS
-            lookback = float(self.cfg.get("LOOKBACK_DAYS") or 30) * DAY
+            lookback = float(self.cfg.get("LOOKBACK_DAYS") or 14) * DAY
             start_ts = max(config.CHAIN_LAUNCH_TS, since_ts - lookback)
             self.progress("Finding the start block…")
             lo = self.block_at(start_ts, head)
             for a in addrs:
-                self.scan_nfts(a, lo, head)
+                self.discover(a, lo, head, start_ts)
+            qa = ",".join("?" * len(addrs))
             ids = [r[0] for r in self.con.execute(
-                f"SELECT DISTINCT token_id FROM transfers WHERE from_addr IN ({','.join('?' * len(addrs))}) "
-                f"OR to_addr IN ({','.join('?' * len(addrs))})", (*addrs, *addrs))]
+                f"SELECT DISTINCT token_id FROM transfers WHERE from_addr IN ({qa}) OR to_addr IN ({qa})",
+                (*addrs, *addrs))]
             if not ids:
                 set_meta(self.con, "head", head)
                 self.con.commit()
-                return {"positions": 0, "priced": 0, "head": head, "from_ts": start_ts}
-            self.find_pools(ids)
-            ids = self.scan_events(ids, head)
+                return {"positions": 0, "priced": 0, "head": head, "from_ts": start_ts, "scanned": 0}
+            qi = ",".join("?" * len(ids))
+            txs = [r[0] for r in self.con.execute(f"SELECT tx FROM transfers WHERE token_id IN ({qi})", ids)]
+            txs += [r[0] for r in self.con.execute(f"SELECT tx FROM lp_txs WHERE addr IN ({qa}) AND block >= ?",
+                                                   (*addrs, lo))]
+            self.read_receipts(txs)
+            minted = [r[0] for r in self.con.execute(
+                f"SELECT DISTINCT token_id FROM transfers WHERE from_addr=? AND token_id IN ({qi})", (config.ZERO, *ids))]
+            bad = self.unbalanced(minted, head) if minted else []
+            if bad:
+                self.scan_events(bad, head)
             self.rebuild_positions(ids)
             self.refresh_pools_tokens()
             n = self.price(ids, head)
@@ -397,7 +478,7 @@ class Loader:
                 set_meta(self.con, f"loaded:{a}", {"at": int(time.time()), "from_ts": start_ts, "head": head})
             set_meta(self.con, "head", head)
             self.con.commit()
-            return {"positions": len(ids), "priced": n, "head": head, "from_ts": start_ts}
+            return {"positions": len(ids), "priced": n, "head": head, "from_ts": start_ts, "scanned": len(bad)}
 
 
 # ---- read side -----------------------------------------------------------

@@ -304,8 +304,16 @@ def load(addrs, per):
     def progress(text, frac=None):
         bar.progress(min(1.0, frac) if frac is not None else 0.0, text=text)
     c = conn()
+    t0 = time.time()
     try:
-        F.Loader(c, rpc, call_rpc, cfg, progress).load(addrs, start)
+        res = F.Loader(c, rpc, call_rpc, cfg, progress).load(addrs, start)
+        off = F.get_meta(c, "explorer_off_until") or 0
+        calls = rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
+        st.session_state["last_load"] = (
+            f"read in {time.time() - t0:.0f}s · {calls:,} RPC requests · "
+            + ("positions via the explorer" if off < t0 else
+               f"explorer unreachable ({F.get_meta(c, 'explorer_error')}), so via RPC logs")
+            + (f" · {res['scanned']} position(s) needed a pool scan" if res.get("scanned") else ""))
     except Exception as e:  # noqa: BLE001 - show it, keep the page
         bar.empty()
         msg = str(e)
@@ -398,10 +406,15 @@ def settings():
                                placeholder="https://rpc.solidrpc.io/ak_…/evm/4663")
             r2 = c2.text_input("RPC 2 (optional, an Alchemy API key works)", type="password",
                                placeholder="Alchemy key or RPC link")
-            look = st.number_input("Lookback days: positions opened this long before the period still count",
+            c1, c2 = st.columns(2)
+            look = c1.number_input("Lookback days: positions opened this long before the period still count "
+                                   "(more = slower first read without the explorer)",
                                    min_value=0, max_value=120, value=int(float(cfg["LOOKBACK_DAYS"])))
+            use_ex = c2.checkbox("Find positions with the Blockscout explorer first (fast, saves RPC quota; falls "
+                                 "back to RPC logs when it can't be reached)",
+                                 value=str(cfg["EXPLORER_API"]).lower() not in ("0", "false", "no", "off"))
             if st.form_submit_button("Save & test"):
-                upd = {"LOOKBACK_DAYS": str(look)}
+                upd = {"LOOKBACK_DAYS": str(look), "EXPLORER_API": "1" if use_ex else "0"}
                 if r1.strip():
                     upd["RPC_URL"] = config.rpc_link(r1)
                 if r2.strip():
@@ -544,6 +557,8 @@ def report(addrs, per):
     c1, c2 = st.columns([6, 1], vertical_alignment="center")
     c1.markdown(f'<div class="done">✓ Analysis complete · {a["positions"] if a else 0:,} positions'
                 + (" · " + " · ".join(notes) if notes else "") + "</div>", unsafe_allow_html=True)
+    if st.session_state.get("last_load"):
+        c1.caption(st.session_state["last_load"])
     if c2.button("↻ Refresh", help="Read new blocks from the chain and re-value open positions"):
         st.session_state["loaded_runs"].discard((tuple(addrs), per))
         st.rerun()
