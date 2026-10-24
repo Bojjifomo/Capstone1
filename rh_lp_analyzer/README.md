@@ -46,19 +46,30 @@ APP_PASSWORD = "password buat halaman ini"
   distribusi range / durasi / mcap, tabel pool, Per-Position Detail (+ CSV), share link, ★ simpan wallet.
 - **Better wallets**: kalau database RH Wallet Finder ada, wallet sekelas yang skornya lebih tinggi.
 
-**Compare wallets**: paste sampai 20 wallet → tiap wallet dianalisa sendiri,
-dijejerin (paling bagus di atas) + kurva PnL barengan. Di bawahnya **Split your
-capital**: modal lu (default $2,500) dibagi per profil:
+**Compare wallets**: paste sampai 20 wallet → tiap wallet dianalisa sendiri.
+- **Leaderboard** (paling bagus di atas): tier, ROI/30d, win, PF, max drawdown, berapa hari
+  balik dari drawdown itu, berapa lama paling lama di bawah high, seberapa jauh di bawah high
+  sekarang, hari terburuk & rata-rata berapa hari nutup hari merah, losing streak, konsistensi,
+  porsi fee di profit, PnL 7 hari, OOR, konsentrasi profit, size, hold, pace.
+- **Risk Cards** per wallet (ringkasan ala Apex) + kurva PnL kumulatif & grafik *under water*.
 
-| Profil | Wallet yang masuk | Cash | Maks per wallet |
-| --- | --- | --- | --- |
-| **Safety** | Cuma ELITE / SOLID; bobot ke return yang mulus (Multiday dapet lebih) | 30% | 25% |
-| **Balanced** | ELITE / SOLID / MIXED yang bukan bot; bobot ROI × profit factor, diredam drawdown | 15% | 35% |
-| **Aggressive** | 3 wallet ROI tertinggi yang nggak REJECT; condong ke yang terbaik | 5% | 50% |
+**Split your capital**: modal lu (default $2,500) + **berapa persen yang dipakai** (slider,
+default 95% → 5% buffer cash). **Semua wallet yang lu follow dapet jatah** (REJECT cuma kalau
+dicentang), dengan batas min & maks per wallet; jatah < $50 dioper ke yang lain. Tiga cara bagi:
 
-Tiap wallet dikasih $ + size per trade & maks per posisi, perkiraan 30 hari kalau
-performa keulang, drawdown yang harus siap ditahan, dan peringatan kalau dua wallet
-main di pool yang sama. Cuma dari data masa lalu, bukan saran finansial.
+| Profil | Cara bagi | Min / maks per wallet |
+| --- | --- | --- |
+| **Safety** | Risk parity: makin stabil PnL hariannya makin besar jatahnya; tier bagus & multiday dapet lebih, drawdown dalam & profit dari hari hoki dapet kurang | 4% / 25% |
+| **Balanced** | ROI × profit factor, diredam seberapa liar harian-nya | 3% / 35% |
+| **Aggressive** | Ngejar ROI, yang terbaik dapet jauh lebih banyak | 2% / 50% |
+
+(Kalau wallet-nya sedikit, batas maks naik biar semua tetap masuk.) Tiap profil di-**replay**
+pakai hasil harian wallet-wallet itu selama periode: PnL portofolio, ≈/30 hari, **max drawdown
+portofolio + berapa hari baliknya**, paling lama di bawah high, hari terburuk/terbaik, rata-rata
+nutup hari merah, % hari hijau, dan **korelasi antar wallet** (yang sering rugi barengan
+ditandain). Ada tabel tiga profil berdampingan, donut pembagian, kurva PnL portofolio + under
+water, dan per wallet: $ + size per trade & maks per posisi. Cuma dari data masa lalu, bukan
+saran finansial.
 
 ## Dari mana datanya (hemat RPC)
 

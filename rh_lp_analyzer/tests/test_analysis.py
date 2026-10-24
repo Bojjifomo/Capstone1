@@ -126,36 +126,92 @@ class AllocateTest(unittest.TestCase):
         return {k: A.analyze(v, NOW, NOW - 30 * DAY) for k, v in
                 (("steady", steady), ("wild", wild), ("loser", loser))}
 
-    def test_profiles(self):
+    def test_deploys_the_chosen_share_over_every_followed_wallet(self):
         res = self.wallets()
-        for name, p in A.PROFILES.items():
-            r = A.allocate(res, 2500, name)
-            self.assertAlmostEqual(r["deployed"] + r["reserve"], 2500)
-            self.assertLessEqual(r["deployed"], 2500 * (1 - p["reserve"]) + 1e-6)
-            self.assertNotIn("loser", [x["addr"] for x in r["rows"]])
-            for x in r["rows"]:
-                self.assertLessEqual(x["usd"], 2500 * (1 - p["reserve"]) * p["cap"] + 1e-6)
-                self.assertGreaterEqual(x["usd"], A.MIN_TICKET)
-        safe = {x["addr"]: x["usd"] for x in A.allocate(res, 2500, "Safety")["rows"]}
-        aggr = {x["addr"]: x["usd"] for x in A.allocate(res, 2500, "Aggressive")["rows"]}
-        self.assertIn("steady", safe)
         self.assertEqual(res["wild"]["verdict"], "MIXED")
-        self.assertNotIn("wild", safe)  # Safety takes ELITE / SOLID only
-        self.assertGreaterEqual(aggr.get("wild", 0), aggr.get("steady", 0))  # Aggressive chases ROI...
-        self.assertGreater(A._weight("Aggressive", res["wild"]), 2 * A._weight("Aggressive", res["steady"]))
-        self.assertEqual(sum(1 for _ in aggr), 2)  # ...each capped at half of what goes in
+        self.assertEqual(res["loser"]["verdict"], "REJECT")
+        for name in A.PROFILES:
+            r = A.allocate(res, 2500, name, deploy_pct=92)
+            self.assertAlmostEqual(r["deployed"], 2300)
+            self.assertAlmostEqual(r["reserve"], 200)
+            self.assertEqual({x["addr"] for x in r["rows"]}, {"steady", "wild"})  # REJECT left out by default
+            self.assertEqual(r["skipped"], ["loser"])
+            with_rej = A.allocate(res, 10000, name, deploy_pct=92, include_reject=True)
+            self.assertEqual(len(with_rej["rows"]), 3)
+            self.assertAlmostEqual(with_rej["deployed"], 9200)
+        # at $2,500 Aggressive's 2% floor for the REJECT wallet is $46: under the $50 ticket, dropped
+        self.assertEqual(A.allocate(res, 2500, "Aggressive", include_reject=True)["dropped"], ["loser"])
 
-    def test_cap_leaves_cash_when_one_wallet(self):
+    def test_profiles_lean_differently(self):
         res = self.wallets()
-        r = A.allocate({"steady": res["steady"]}, 2500, "Balanced")
-        self.assertAlmostEqual(r["deployed"], 2500 * 0.85 * 0.35)
+        safe = {x["addr"]: x["usd"] for x in A.allocate(res, 10000, "Safety")["rows"]}
+        aggr = {x["addr"]: x["usd"] for x in A.allocate(res, 10000, "Aggressive")["rows"]}
+        self.assertGreater(safe["steady"], safe["wild"])  # steadier daily PnL
+        self.assertGreater(aggr["wild"] / aggr["steady"], safe["wild"] / safe["steady"])  # chases ROI
+
+    def test_cap_and_floor(self):
+        many = {f"w{i}": A.analyze([pos(1000 * i + j, (25 - j) * DAY, 8 * 3600, 1000, 30 + i * 20 if j % 5 else -10)
+                                    for j in range(20)], NOW, NOW - 30 * DAY) for i in range(8)}
+        r = A.allocate(many, 100000, "Aggressive")
+        shares = [x["usd"] / r["deployed"] for x in r["rows"]]
+        self.assertLessEqual(max(shares), A.PROFILES["Aggressive"]["cap"] + 1e-9)
+        self.assertGreaterEqual(min(shares), A.PROFILES["Aggressive"]["floor"] - 1e-9)
+        self.assertAlmostEqual(r["deployed"], 95000)
 
     def test_tiny_capital_drops_small_tickets(self):
+        r = A.allocate(self.wallets(), 60, "Balanced")
+        self.assertEqual(len(r["rows"]), 1)  # $57 can't be split into two $50+ tickets
         self.assertEqual(A.allocate(self.wallets(), 40, "Balanced")["rows"], [])
+
+    def test_simulation(self):
+        res = self.wallets()
+        r = A.allocate(res, 2500, "Balanced")
+        sim = r["sim"]
+        self.assertTrue(sim["daily"])
+        # each wallet's daily PnL scaled to your share of it, added up
+        want = sum(x["usd"] / res[x["addr"]]["capital"] * res[x["addr"]]["net"] for x in r["rows"])
+        self.assertAlmostEqual(sim["total"], want, places=6)
+        self.assertLessEqual(sim["max_dd"], 0)
+        self.assertEqual(len(sim["pairs"]), 1)
 
     def test_overlaps(self):
         res = self.wallets()
         self.assertTrue(A.overlaps(res))  # all three play pools p0..p2
+
+
+class RiskTest(unittest.TestCase):
+    def curve(self, pnls):
+        cum, out = 0.0, []
+        for i, v in enumerate(pnls):
+            cum += v
+            out.append({"day": i * DAY, "pnl": v, "cum": cum})
+        return out
+
+    def test_drawdown_and_recovery(self):
+        d = A.drawdown_stats(self.curve([10, 10, -5, -10, 3, 20, 5]), 100)
+        self.assertAlmostEqual(d["max_dd"], -15.0)  # 20 -> 5
+        self.assertEqual((d["fall_days"], d["recover_days"], d["underwater_days"]), (2, 2, 4))
+        self.assertTrue(d["recovered"])
+        self.assertEqual(d["current_dd"], 0)
+
+    def test_still_under_water(self):
+        d = A.drawdown_stats(self.curve([10, -4, -4, 2]), 100)
+        self.assertFalse(d["recovered"])
+        self.assertIsNone(d["recover_days"])
+        self.assertAlmostEqual(d["current_dd"], -6.0)
+        self.assertEqual(d["days_since_peak"], 3)
+
+    def test_loss_recovery_and_streaks(self):
+        avg, longest, open_ = A.loss_recovery(self.curve([5, -3, 1, 4, -10, 2]))
+        self.assertEqual((avg, longest, open_), (2, 2, 1))  # -3 won back 2 days later; -10 not yet
+        self.assertEqual(A.streak([1, -1, -2, 3, -1, -1, -1]), 3)
+
+    def test_in_analyze(self):
+        ps = [pos(i, (20 - i) * DAY, 6 * 3600, 1000, 50 if i % 4 else -40) for i in range(16)]
+        r = A.analyze(ps, NOW, NOW - 30 * DAY)["risk"]
+        self.assertEqual(r["loss_streak"], 1)
+        self.assertEqual((r["best"], r["worst"]), (50, -40))
+        self.assertGreater(r["consistency"], 0)
 
 
 class PeriodTest(unittest.TestCase):

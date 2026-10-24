@@ -275,6 +275,93 @@ def recommend_filters(positions, pnl):
     return {"all": everything, "best": [r for r in rows if r["pnl"] > everything["pnl"] + 0.005][:6]}
 
 
+def drawdown_stats(daily, capital, end_day=None):
+    """Drawdowns of a realized PnL curve by day ([{day, pnl, cum}], days in
+    order). -> {max_dd (% of capital), max_dd_usd, fall_days (peak to bottom),
+    recover_days (bottom back to the peak, None = not yet), underwater_days
+    (longest stretch below a previous high, counting one still open),
+    current_dd, days_since_peak}"""
+    out = {"max_dd": 0.0, "max_dd_usd": 0.0, "fall_days": 0, "recover_days": 0, "underwater_days": 0,
+           "current_dd": 0.0, "days_since_peak": 0, "recovered": True}
+    if not daily:
+        return out
+    cap = capital or 1.0
+    peak, peak_day = 0.0, daily[0]["day"] - DAY  # flat before the first close
+    worst = None  # (dd, peak_day, bottom_day)
+    longest, start = 0, None
+    for d in daily:
+        if d["cum"] >= peak - 1e-9:
+            if start is not None:
+                longest = max(longest, round((d["day"] - start) / DAY))
+                if worst and worst[1] == start and worst[3] is None:
+                    worst[3] = d["day"]
+                start = None
+            peak, peak_day = d["cum"], d["day"]
+        else:
+            if start is None:
+                start = peak_day
+            dd = peak - d["cum"]
+            if worst is None or dd > worst[0]:
+                worst = [dd, peak_day, d["day"], None]
+    last = daily[-1]["day"] if end_day is None else max(daily[-1]["day"], end_day)
+    if start is not None:
+        longest = max(longest, round((last - start) / DAY))
+    if worst:
+        out.update(max_dd=-worst[0] / cap * 100, max_dd_usd=-worst[0], fall_days=round((worst[2] - worst[1]) / DAY),
+                   recover_days=None if worst[3] is None else round((worst[3] - worst[2]) / DAY),
+                   recovered=worst[3] is not None)
+    out.update(underwater_days=longest, current_dd=-(peak - daily[-1]["cum"]) / cap * 100,
+               days_since_peak=round((last - peak_day) / DAY) if daily[-1]["cum"] < peak - 1e-9 else 0)
+    return out
+
+
+def loss_recovery(daily):
+    """After each red day: how many days until the running total is back above
+    where it was before that day. -> (average days, longest, red days not won back yet)"""
+    waits, open_ = [], 0
+    for i, d in enumerate(daily):
+        if d["pnl"] >= 0:
+            continue
+        before = d["cum"] - d["pnl"]
+        back = next((x["day"] for x in daily[i + 1:] if x["cum"] >= before - 1e-9), None)
+        if back is None:
+            open_ += 1
+        else:
+            waits.append(round((back - d["day"]) / DAY))
+    return (statistics.fmean(waits) if waits else None), (max(waits) if waits else None), open_
+
+
+def streak(values):
+    """Longest run of values below zero."""
+    best = cur = 0
+    for v in values:
+        cur = cur + 1 if v < 0 else 0
+        best = max(best, cur)
+    return best
+
+
+def risk_stats(closed, vals, daily, capital, fees, net, now, end):
+    """The Apex-style risk read of one wallet (see drawdown_stats, loss_recovery)."""
+    r = drawdown_stats(daily, capital, int(end // DAY) * DAY)
+    avg_rec, max_rec, unrec = loss_recovery(daily)
+    day_pnl = [d["pnl"] for d in daily]
+    sd = statistics.pstdev(day_pnl) if len(day_pnl) > 1 else 0.0
+    last7 = sum(x for p, x in zip(closed, vals) if p["close_ts"] >= end - 7 * DAY)
+    weeks = max(1.0, len(daily) / 7)
+    r.update({
+        "recover_avg": avg_rec, "recover_max": max_rec, "red_open": unrec,
+        "loss_streak": streak(vals), "red_streak": streak(day_pnl),
+        "best": max(vals) if vals else None, "worst": min(vals) if vals else None,
+        "expectancy": statistics.fmean(vals) if vals else None,
+        "daily_vol": sd / capital * 100 if capital else None,  # % of capital, one day
+        "consistency": statistics.fmean(day_pnl) / sd if sd else None,  # mean ÷ spread of daily PnL
+        "green_share": sum(1 for x in day_pnl if x > 0) / len(day_pnl) * 100 if day_pnl else None,
+        "fee_share": fees / net * 100 if net > 0 else None,  # how much of the profit is fees
+        "last7": last7, "momentum": last7 / (net / weeks) if net > 0 else None,  # 1 = its usual week
+    })
+    return r
+
+
 def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S):
     """Everything the Analyze tab shows for positions closed in [start, end]
     (and, when the period runs to now, the ones still open), or None if there
@@ -394,6 +481,7 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
         "pools": sorted(pools.values(), key=lambda g: -g["pnl"]),
         "eth_share": sum(p["dep"] for p in scope if p.get("eth_pair")) / (sum(p["dep"] for p in scope) or 1) * 100,
     }
+    a["risk"] = risk_stats(closed, vals, daily, capital, a["fees"], net, now, end)
     a["flags"] = flags(a)
     a["verdict"], a["why"] = tier(a)
     return a
@@ -427,87 +515,155 @@ PERIODS = ("24 hours", "7 days", "14 days", "30 days", "This month", "Last month
 
 
 # ---- splitting your capital over a batch of wallets ------------------------
-# Each profile: which wallets it takes, how it weighs them, how much stays in
-# cash, and the most one wallet may get (share of what is deployed).
+# Every followed wallet gets a share of the money that goes in (DEPLOY_PCT of
+# your capital); the profile decides how the shares lean. cap: the most one
+# wallet may get (raised to 1/n when there are few wallets, so it all goes in);
+# floor: the least any wallet gets.
 PROFILES = {
-    "Safety": {"reserve": 0.30, "cap": 0.25, "top": None,
-               "text": "Only ELITE and SOLID wallets: profitable, shallow drawdowns, enough history, followable. "
-                       "Weighted toward smooth returns (multiday players first), 30% kept in cash."},
-    "Balanced": {"reserve": 0.15, "cap": 0.35, "top": None,
-                 "text": "ELITE, SOLID and MIXED wallets that aren't bots, weighted by ROI × profit factor and damped "
-                         "by drawdown. 15% kept in cash."},
-    "Aggressive": {"reserve": 0.05, "cap": 0.50, "top": 3,
-                   "text": "The 3 highest-ROI wallets that aren't rejected, weighted hard toward the best. Only 5% in "
-                           "cash: bigger upside, bigger drawdowns."},
+    "Safety": {"cap": 0.25, "floor": 0.04,
+               "text": "Risk parity: the steadier a wallet's daily PnL, the more it gets; better tiers and multiday "
+                       "players get more, deep drawdowns and lucky-day profit less."},
+    "Balanced": {"cap": 0.35, "floor": 0.03,
+                 "text": "ROI × profit factor, damped by how much the wallet swings day to day."},
+    "Aggressive": {"cap": 0.50, "floor": 0.02,
+                   "text": "Chases ROI: the best performers get far more, the rest a small floor. Biggest upside, "
+                           "biggest drawdowns."},
 }
+TIER_WEIGHT = {
+    "Safety": {"ELITE": 1.3, "SOLID": 1.0, "MIXED": 0.55, "WEAK": 0.3, "REJECT": 0.1},
+    "Balanced": {"ELITE": 1.2, "SOLID": 1.0, "MIXED": 0.7, "WEAK": 0.45, "REJECT": 0.15},
+    "Aggressive": {"ELITE": 1.0, "SOLID": 1.0, "MIXED": 0.9, "WEAK": 0.7, "REJECT": 0.25},
+}
+DEPLOY_PCT = 95.0
 MIN_TICKET = 50.0  # USD: less than this in a wallet isn't worth mirroring
 SMALL_TRADE = 20.0  # USD per trade below which copying gets impractical
 
 
 def _weight(profile, a):
+    m = TIER_WEIGHT[profile][a["verdict"]]
     r = max(0.0, a["roi_30d"] or 0.0)
-    dd = abs(a["dd"] or 0.0)
     pf = min(a["pf"] or 0.0, 5.0)
-    if a["net"] <= 0 or r <= 0:
-        return 0.0
+    vol = max(0.25, (a.get("risk") or {}).get("daily_vol") or abs(a["dd"] or 0.0) / 3 or 1.0)
     if profile == "Safety":
-        ok = a["verdict"] in ("ELITE", "SOLID")
         conc = a["concentration"] if a["concentration"] is not None else 50.0
-        return (math.sqrt(r) * min(pf, 3) / 3 / (1 + dd / 10) * (1 - min(conc, 100) / 200)
-                * {"multiday": 1.2, "hybrid": 1.0}.get(a["kind"], 0.8)) if ok else 0.0
+        dd = abs(a["dd"] or 0.0)
+        return (m * (min(pf, 3) / 3 + 0.2) / vol * (1 - min(conc, 100) / 250) / (1 + dd / 50)
+                * {"multiday": 1.2, "hybrid": 1.0}.get(a["kind"], 0.8))
     if profile == "Balanced":
-        ok = a["verdict"] in ("ELITE", "SOLID", "MIXED") and a["follow"] != "✗"
-        return r * min(pf, 4) / 4 / (1 + dd / 25) if ok else 0.0
-    return r ** 1.5 if a["verdict"] != "REJECT" else 0.0  # Aggressive: the best ones far ahead
+        return m * (r + 5) ** 0.7 * (min(pf, 4) / 4 + 0.2) / math.sqrt(vol)
+    return m * (r + 5) ** 1.5
 
 
-def _capped(weights, cap):
-    """Shares summing to <= 1 with none above cap (what can't be placed is left over)."""
+def _shares(weights, cap, floor):
+    """Shares summing to 1, each between floor and cap, otherwise in proportion to
+    the weights. With few wallets the cap rises (1.6 / n) so everything still goes
+    in without forcing an even split."""
     w = {k: v for k, v in weights.items() if v > 0}
-    out, left = {}, 1.0
-    while w:
-        tot = sum(w.values())
-        over = {k for k, v in w.items() if v / tot * left > cap}
-        if not over:
-            out.update({k: v / tot * left for k, v in w.items()})
-            break
-        for k in over:
-            out[k] = cap
-            del w[k]
-        left = 1.0 - sum(out.values())
-        if left <= 1e-9:
-            break
-    return out
+    if not w:
+        return {}
+    n = len(w)
+    cap = min(1.0, max(cap, 1.6 / n, 1 / n))
+    floor = min(floor, 1 / n)
+    fixed = {}
+    while True:
+        free = {k: v for k, v in w.items() if k not in fixed}
+        if not free:
+            return fixed
+        left = 1.0 - sum(fixed.values())
+        tot = sum(free.values())
+        props = {k: v / tot * left for k, v in free.items()}
+        over = {k for k, v in props.items() if v > cap + 1e-12}
+        under = {k for k, v in props.items() if v < floor - 1e-12}
+        if not over and not under:
+            fixed.update(props)
+            return fixed
+        for k in over or under:  # settle one side at a time, then share the rest again
+            fixed[k] = cap if over else floor
 
 
-def allocate(analyses, capital, profile):
-    """Split capital (USD) over wallets {addr: analysis} for one profile.
-    -> {rows: [{addr, share, usd, per_trade, max_position, roi_30d, dd, small}], reserve, deployed,
-        exp_30d, dd_usd, skipped: [addr], text}"""
+def allocate(analyses, capital, profile, deploy_pct=DEPLOY_PCT, include_reject=False):
+    """Split deploy_pct % of capital (USD) over every followed wallet {addr: analysis}
+    (REJECT ones only when include_reject), leaning the profile's way.
+    -> {rows: [{addr, share, usd, per_trade, max_position, roi_30d, dd, verdict, small}], deployed, reserve,
+        exp_30d, dd_usd, skipped: [addr], dropped: [addr], text, sim}"""
     p = PROFILES[profile]
-    weights = {k: _weight(profile, a) for k, a in analyses.items() if a}
-    if p["top"]:
-        keep = sorted((k for k, v in weights.items() if v > 0), key=lambda k: -weights[k])[:p["top"]]
-        weights = {k: weights[k] for k in keep}
-    deploy = capital * (1 - p["reserve"])
-    shares = _capped(weights, p["cap"])
-    # drop tickets too small to mirror, and share their money among the rest
-    while shares and min(shares.values()) * deploy < MIN_TICKET:
-        del weights[min(shares, key=shares.get)]
-        shares = _capped(weights, p["cap"])
+    weights = {k: _weight(profile, a) for k, a in analyses.items()
+               if a and (include_reject or a["verdict"] != "REJECT")}
+    deploy = capital * min(100.0, max(0.0, deploy_pct)) / 100
+    shares = _shares(weights, p["cap"], p["floor"])
+    dropped = []
+    # a ticket too small to mirror: its money goes to the others
+    while len(shares) > 1 and min(shares.values()) * deploy < MIN_TICKET:
+        k = min(shares, key=shares.get)
+        dropped.append(k)
+        del weights[k]
+        shares = _shares(weights, p["cap"], p["floor"])
+    if shares and min(shares.values()) * deploy < MIN_TICKET:
+        dropped += list(shares)
+        shares = {}
     rows = []
-    for k, s in sorted(shares.items(), key=lambda kv: -kv[1]):
+    for k, sh in sorted(shares.items(), key=lambda kv: -kv[1]):
         a = analyses[k]
-        amt = s * deploy
+        amt = sh * deploy
         sz = sizing(a, amt) or {"per_trade": 0.0, "max_position": 0.0}
-        rows.append({"addr": k, "share": amt / capital * 100, "usd": amt, "per_trade": sz["per_trade"],
-                     "max_position": sz["max_position"], "roi_30d": a["roi_30d"], "dd": a["dd"],
-                     "verdict": a["verdict"], "small": sz["per_trade"] < SMALL_TRADE})
+        rows.append({"addr": k, "share": amt / capital * 100 if capital else 0.0, "usd": amt,
+                     "per_trade": sz["per_trade"], "max_position": sz["max_position"], "roi_30d": a["roi_30d"],
+                     "dd": a["dd"], "verdict": a["verdict"], "small": sz["per_trade"] < SMALL_TRADE})
     deployed = sum(r["usd"] for r in rows)
+    sim = simulate(analyses, rows)
     return {"rows": rows, "deployed": deployed, "reserve": capital - deployed,
             "exp_30d": sum(r["usd"] * (r["roi_30d"] or 0) / 100 for r in rows),
             "dd_usd": sum(r["usd"] * (r["dd"] or 0) / 100 for r in rows),
-            "skipped": [k for k in analyses if k not in shares], "text": p["text"]}
+            "skipped": [k for k, a in analyses.items() if a and k not in weights and k not in dropped],
+            "dropped": dropped, "text": p["text"], "sim": sim}
+
+
+def _corr(x, y):
+    if len(x) < 3:
+        return None
+    mx, my = statistics.fmean(x), statistics.fmean(y)
+    sx = math.sqrt(sum((v - mx) ** 2 for v in x))
+    sy = math.sqrt(sum((v - my) ** 2 for v in y))
+    return sum((a - mx) * (b - my) for a, b in zip(x, y)) / (sx * sy) if sx and sy else None
+
+
+def simulate(analyses, rows):
+    """Your copy of the batch, replayed: each wallet's daily realized PnL scaled by
+    your share ÷ its median deployed capital, added up. -> {daily, total, roi, dd
+    stats (as drawdown_stats, % of what went in), worst_day, best_day, green_share,
+    corr (average pairwise correlation of the wallets' daily PnL), pairs}"""
+    deployed = sum(r["usd"] for r in rows)
+    series = {}
+    for r in rows:
+        a = analyses[r["addr"]]
+        k = r["usd"] / a["capital"] if a["capital"] else 0.0
+        series[r["addr"]] = {d["day"]: d["pnl"] * k for d in a["daily"]}
+    days = sorted({d for s in series.values() for d in s})
+    if not days:
+        return None
+    days = list(range(days[0], days[-1] + DAY, DAY))
+    daily, cum = [], 0.0
+    for d in days:
+        v = sum(s.get(d, 0.0) for s in series.values())
+        cum += v
+        daily.append({"day": d, "pnl": v, "cum": cum})
+    keys = list(series)
+    pairs = []
+    for i, x in enumerate(keys):
+        for y in keys[i + 1:]:
+            c = _corr([series[x].get(d, 0.0) for d in days], [series[y].get(d, 0.0) for d in days])
+            if c is not None:
+                pairs.append((x, y, c))
+    vals = [d["pnl"] for d in daily]
+    dd = drawdown_stats(daily, deployed)
+    avg_rec, max_rec, unrec = loss_recovery(daily)
+    return {"daily": daily, "total": cum, "roi": cum / deployed * 100 if deployed else None,
+            "roi_30d": cum / deployed * 100 * 30 / max(1, len(days)) if deployed else None,
+            **dd, "recover_avg": avg_rec, "recover_max": max_rec, "red_open": unrec,
+            "worst_day": min(vals), "best_day": max(vals),
+            "green_share": sum(1 for v in vals if v > 0) / len(vals) * 100,
+            "corr": statistics.fmean(c for _, _, c in pairs) if pairs else None, "pairs": pairs,
+            "series": {k: [{"day": d, "pnl": series[k].get(d, 0.0)} for d in days] for k in keys}}
 
 
 def overlaps(analyses, min_share=0.5):

@@ -184,6 +184,16 @@ def css():
 .warn {{ border-radius: 10px; padding: 12px 16px; background: rgba(245,179,1,.12); border: 1px solid rgba(245,179,1,.35);
        color: var(--ink); font-size: 14px; margin: 8px 0; }}
 [data-testid="stExpander"] details {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }}
+.rcard {{ border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(160deg, var(--panel2), var(--panel));
+       padding: 14px 16px; margin-bottom: 12px; }}
+.rhead {{ display:flex; justify-content: space-between; align-items:center; gap: 8px; }}
+.rhead b {{ font: 700 15px "JetBrains Mono", monospace; color: var(--ink); }}
+.rhead span {{ display:flex; gap: 5px; }}
+.rplay {{ font-size: 12.5px; color: var(--muted); margin: 3px 0 10px; }}
+.rgrid {{ display:grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-bottom: 8px; }}
+.rgrid small {{ display:block; font: 600 10px Inter, sans-serif; letter-spacing:.12em; text-transform: uppercase; color: var(--muted); }}
+.rgrid span {{ font: 700 14px "JetBrains Mono", monospace; color: var(--ink); }}
+.rgrid span.pos {{ color: var(--g); }} .rgrid span.neg {{ color: var(--r); }}
 @media (max-width: 760px) {{ .mcards {{ grid-template-columns: 1fr 1fr !important; }} }}
 </style>""", unsafe_allow_html=True)
 
@@ -843,15 +853,32 @@ def report(addrs, per):
         st.caption("Needs closes on at least two days.")
 
     rec = lambda v: "" if v is None or not a["avg_green"] else f"≈ {abs(v) / a['avg_green']:.2f} green days to recover"  # noqa: E731
-    section("Risk Management", "how big and how often the losses get", ic="shield")
-    cards([("Max PnL drawdown", pct(a["dd"], 1), "biggest drop from a high", tone(a["dd"]) or "neu", None),
-           ("Worst single-day loss", money(a["worst_day"]), rec(a["worst_day"]), tone(a["worst_day"]) or "neu", None),
+    section("Risk Management", "how big and how often the losses get, and how long they take to win back",
+            ic="shield")
+    rk = a["risk"]
+    cards([("Max PnL drawdown", pct(a["dd"], 1), dd_note(rk), tone(a["dd"]) or "neu", None),
+           ("Longest under water", days_txt(rk["underwater_days"]), "below a previous high, longest stretch",
+            "neg" if rk["underwater_days"] >= 7 else "neu", None),
+           ("Back after a red day", days_txt(rk["recover_avg"], 1), f"on average · longest {days_txt(rk['recover_max'])}"
+            + (f" · {rk['red_open']} not won back yet" if rk["red_open"] else ""), "neu", None),
+           ("Current drawdown", pct(rk["current_dd"], 1),
+            f"{days_txt(rk['days_since_peak'])} since its high" if rk["days_since_peak"] else "at its high",
+            "neg" if rk["current_dd"] < -0.05 else "pos", None),
+           ("Losing streak", f"{rk['loss_streak']} positions", f"longest run of red days: {rk['red_streak']}",
+            "neg" if rk["loss_streak"] >= 5 else "neu", None)], 5)
+    cards([("Worst single-day loss", money(a["worst_day"]), rec(a["worst_day"]), tone(a["worst_day"]) or "neu", None),
            ("Out-of-range rate", pct(a["oor_rate"], 1), f"{a['oor_n']} of {a['oor_of']} closed out-of-range at a loss",
             "neu", None),
            ("Worst OOR loss", money(a["oor_worst"]), rec(a["oor_worst"]), tone(a["oor_worst"]) or "neu", None),
-           ("Median OOR loss", money(a["oor_median"]), rec(a["oor_median"]), tone(a["oor_median"]) or "neu", None)], 5)
+           ("Median OOR loss", money(a["oor_median"]), rec(a["oor_median"]), tone(a["oor_median"]) or "neu", None)], 4)
+    underwater_chart({short(addrs[0]) if len(addrs) == 1 else "combined": a})
     meanings([("Max PnL drawdown", "The deepest fall of its realized PnL curve from a high, as % of its median "
-                                   "deployed capital."),
+                                   "deployed capital, how long that fall took and how long it took to get back."),
+              ("Longest under water", "The longest stretch its running PnL stayed below an earlier high: how long "
+                                      "you'd have waited for a new high copying it."),
+              ("Back after a red day", "After each losing day, how many days until its running PnL was back where "
+                                       "it was before that day."),
+              ("Current drawdown", "How far its running PnL sits below its high right now."),
               ("Worst single-day loss", "Its worst day of closes, and how many average green days it takes to win "
                                         "it back."),
               ("Out-of-range rate", "Closed positions whose last withdrawal came back all in one token (price ran "
@@ -864,7 +891,19 @@ def report(addrs, per):
            ("Avg daily loss", money(a["avg_red"]), f"across {a['red_days']} red days", "neg", None),
            ("Profit concentration", pct(a["concentration"], 1), "from top 2 days",
             "neg" if (a["concentration"] or 0) >= 60 else "pos" if a["concentration"] is not None else "neu", None)], 3)
+    rk = a["risk"]
+    cards([("Consistency", f"{rk['consistency']:.2f}" if rk["consistency"] is not None else "–",
+            "average day ÷ how much days swing · >0.3 steady", tone(rk["consistency"], 0.3) or "neu", None),
+           ("Daily swing", pct(rk["daily_vol"], 2), "typical day's move, % of capital", "neu", None),
+           ("Fees in profit", pct(rk["fee_share"]), "share of net PnL that came from LP fees", "neu", None),
+           ("Last 7 days", money(rk["last7"], True), (f"{rk['momentum']:.1f}× its usual week" if rk["momentum"]
+                                                      is not None else ""), tone(rk["last7"]) or "neu", None),
+           ("Best / worst position", f"{money(rk['best'], True)} / {money(rk['worst'])}",
+            f"expectancy {money(rk['expectancy'], True)} per position", "neu", None)], 5)
     meanings([("Avg daily profit / loss", "Average of its green days and of its red days (by close date)."),
+              ("Consistency", "Average daily PnL ÷ the spread of daily PnL. Higher = steadier; under 0 = losing."),
+              ("Fees in profit", "LP fees ÷ net PnL. Near or above 100% = the fees carry it and price moves cost it."),
+              ("Last 7 days", "Realized PnL of the last week, and how it compares with its average week here."),
               ("Profit concentration", "Share of all green-day profit made on its two best days. High = it depends "
                                        "on a few big runs.")])
 
@@ -961,6 +1000,43 @@ def report(addrs, per):
                 st.toast("Saved")
 
 
+def days_txt(v, d=0):
+    v = num(v)
+    if v is None:
+        return "–"
+    return f"{v:.{d}f} day" + ("" if round(v, d) == 1 else "s")
+
+
+def dd_note(rk):
+    if not rk["max_dd_usd"]:
+        return "no drawdown yet"
+    fall = f"fell over {days_txt(rk['fall_days'])}"
+    return f"{fall} · back in {days_txt(rk['recover_days'])}" if rk["recovered"] else f"{fall} · not back yet"
+
+
+def underwater_chart(named, height=200):
+    """Drawdown below the running high, % of capital, one line per wallet."""
+    rows = []
+    for name, a in named.items():
+        peak, cap = 0.0, a["capital"] or 1.0
+        for d in a["daily"]:
+            peak = max(peak, d["cum"])
+            rows.append({"wallet": name, "when": pd.to_datetime(d["day"], unit="s"), "dd": (d["cum"] - peak) / cap * 100})
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    st.markdown('<div class="chart-t">UNDER WATER — % BELOW ITS HIGH</div>', unsafe_allow_html=True)
+    enc = dict(x=alt.X("when:T", title=None, axis=alt.Axis(format="%b %-d")), y=alt.Y("dd:Q", title=None),
+               tooltip=["wallet", alt.Tooltip("when:T"), alt.Tooltip("dd:Q", format=".1f", title="% below high")])
+    if len(named) > 1:
+        ch = alt.Chart(df).mark_line(strokeWidth=1.8).encode(color=alt.Color("wallet:N", title=None), **enc)
+    else:
+        ch = alt.Chart(df).mark_area(color=RED, opacity=.35, line={"color": RED}).encode(**enc)
+    st.altair_chart(ch.properties(height=height).configure(background="transparent").configure_view(strokeWidth=0)
+                    .configure_axis(**AXIS).configure_legend(labelColor="#b6c2d0", orient="bottom"),
+                    **stretch(st.altair_chart))
+
+
 def next_tier(tier):
     names = [t for t, _, _ in A.TIERS]
     i = names.index(tier)
@@ -1040,27 +1116,59 @@ def compare(addrs, per):
         if ((st.session_state.get("gaps_by") or {}).get(x) or {}).get("gaps"):
             st.markdown(f"**{short(x)}**", unsafe_allow_html=True)
             gap_note([x])
+
+    section("Leaderboard", "best first: quality tier, then ROI", ic="bars")
     recs = []
     for x in order:
         a = results[x]
         if not a:
             recs.append({"Wallet": short(x), "Quality": "no data"})
             continue
+        rk = a["risk"]
         recs.append({"Wallet": short(x), "Quality": a["verdict"], "Type": KIND_LABEL[a["kind"]], "Gameplay": a["play"],
                      "Net PnL": a["net"], "Floating": a["float"], "ROI/30d": a["roi_30d"], "Win": a["win"],
                      "PF": min(a["pf"], 99) if a["pf"] is not None else None, "Max DD": a["dd"],
-                     "Worst day": a["worst_day"], "OOR loss": a["oor_rate"], "Top-2 days": a["concentration"],
-                     "Deployed": a["capital"], "Trade size": a["size"], "Hold": dur(a["hold"]),
-                     "Range": range_fmt(a["range"]), "Trades/day": a["per_day"], "Closed": a["closed"],
-                     "Follow": FOLLOW[a["follow"]]})
+                     "Back in": (f"{rk['recover_days']}d" if rk["recovered"] else "not yet") if rk["max_dd_usd"] else "–",
+                     "Under water": rk["underwater_days"], "Now below high": rk["current_dd"],
+                     "Worst day": a["worst_day"], "Red day back": rk["recover_avg"], "Loss streak": rk["loss_streak"],
+                     "Consistency": rk["consistency"], "Fees in profit": rk["fee_share"], "Last 7d": rk["last7"],
+                     "OOR loss": a["oor_rate"], "Top-2 days": a["concentration"], "Deployed": a["capital"],
+                     "Trade size": a["size"], "Hold": dur(a["hold"]), "Range": range_fmt(a["range"]),
+                     "Trades/day": a["per_day"], "Closed": a["closed"], "Follow": FOLLOW[a["follow"]]})
     df = pd.DataFrame(recs)
     sty = df.style.format({"Net PnL": lambda v: money(v, True), "Floating": lambda v: money(v, True),
                            "ROI/30d": lambda v: pct(v, 1), "Win": lambda v: pct(v), "PF": pf_fmt,
-                           "Max DD": lambda v: pct(v, 1), "Worst day": money, "OOR loss": lambda v: pct(v),
-                           "Top-2 days": lambda v: pct(v), "Deployed": money, "Trade size": money,
-                           "Trades/day": "{:.1f}"}, na_rep="–")
+                           "Max DD": lambda v: pct(v, 1), "Under water": lambda v: f"{v:.0f}d",
+                           "Now below high": lambda v: pct(v, 1), "Worst day": money,
+                           "Red day back": lambda v: "–" if v is None or v != v else f"{v:.1f}d",
+                           "Loss streak": "{:.0f}", "Consistency": lambda v: "–" if v is None or v != v else f"{v:.2f}",
+                           "Fees in profit": lambda v: pct(v), "Last 7d": lambda v: money(v, True),
+                           "OOR loss": lambda v: pct(v), "Top-2 days": lambda v: pct(v), "Deployed": money,
+                           "Trade size": money, "Trades/day": "{:.1f}"}, na_rep="–")
     sty = sty.map(lambda v: f"color: {TIER_COLOR[v]}; font-weight: 700" if v in TIER_COLOR else "", subset=["Quality"])
-    st.dataframe(sty, hide_index=True, **stretch(st.dataframe), height=auto_height(len(df), 560))
+    st.dataframe(sty, hide_index=True, **stretch(st.dataframe), height=auto_height(len(df), 560),
+                 column_config={"Wallet": st.column_config.TextColumn(pinned=True) if _pin_ok() else "Wallet"})
+    with st.expander("What these columns mean"):
+        st.markdown('<div class="guide">' + "".join(f"<p><b>{k}</b> — {v}</p>" for k, v in [
+            ("Max DD", "Deepest fall of its realized PnL from a high, % of its median deployed capital."),
+            ("Back in", "Days from the bottom of that drawdown back to the old high (not yet = still under)."),
+            ("Under water", "Longest stretch below an earlier high: the longest you'd have waited for a new high."),
+            ("Now below high", "How far it sits below its high today."),
+            ("Red day back", "Average days to win back a losing day."),
+            ("Loss streak", "Most losing positions in a row."),
+            ("Consistency", "Average day ÷ how much days swing. Above 0.3 is steady; under 0 is losing."),
+            ("Fees in profit", "LP fees ÷ net PnL: near 100%+ means fees carry it and price moves cost it."),
+            ("OOR loss", "Closed out of range at a loss, % of closes."),
+            ("Top-2 days", "Share of its profit made on its two best days.")]) + "</div>", unsafe_allow_html=True)
+
+    section("Risk Cards", "each wallet's drawdown, recovery and streaks at a glance", ic="shield")
+    good = [x for x in order if results[x]]
+    for i in range(0, len(good), 2):
+        cols = st.columns(2)
+        for c, x in zip(cols, good[i:i + 2]):
+            c.markdown(risk_card(x, results[x]), unsafe_allow_html=True)
+
+    named = {short(x): results[x] for x in order if results[x]}
     curves = [{"wallet": short(x), "when": pd.to_datetime(d["day"], unit="s"), "cum": d["cum"]}
               for x in order if results[x] for d in results[x]["daily"]]
     if curves:
@@ -1069,8 +1177,8 @@ def compare(addrs, per):
             x=alt.X("when:T", title=None), y=alt.Y("cum:Q", title=None), color=alt.Color("wallet:N", title=None),
             tooltip=["wallet", alt.Tooltip("when:T"), alt.Tooltip("cum:Q", format="$,.2f")])
             .properties(height=280).configure(background="transparent").configure_view(strokeWidth=0)
-            .configure_axis(**AXIS)
-            .configure_legend(labelColor="#b6c2d0", orient="bottom"), **stretch(st.altair_chart))
+            .configure_axis(**AXIS).configure_legend(labelColor="#b6c2d0", orient="bottom"), **stretch(st.altair_chart))
+        underwater_chart(named)
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     pick = c1.selectbox("Open one wallet's full analysis", [""] + order,
                         format_func=lambda x: "Pick a wallet…" if not x else short(x))
@@ -1078,52 +1186,152 @@ def compare(addrs, per):
     allocation({x: a for x, a in results.items() if a})
 
 
+def _pin_ok():
+    return _accepts(st.column_config.TextColumn, "pinned")
+
+
+def risk_card(x, a):
+    rk = a["risk"]
+    row = lambda k, v, t="": f'<div><small>{k}</small><span class="{t}">{v}</span></div>'  # noqa: E731
+    back = (f"back in {days_txt(rk['recover_days'])}" if rk["recovered"] else "not back yet") if rk["max_dd_usd"] \
+        else "no drawdown"
+    flags = "".join(f'<div class="flag">{icon(TONE_ICON[t][0], TONE_ICON[t][1], 13)}<div><b>{h}</b></div></div>'
+                    for t, h, _ in a["flags"][:3])
+    return (f'<div class="rcard"><div class="rhead"><b>{short(x)}</b><span>{pill(KIND_LABEL[a["kind"]], KIND_COLOR[a["kind"]])}'
+            f'{pill(a["verdict"], TIER_COLOR[a["verdict"]])}</span></div><div class="rplay">{a["play"]}</div>'
+            '<div class="rgrid">'
+            + row("Net PnL", money(a["net"], True), tone(a["net"]))
+            + row("ROI / 30d", pct(a["roi_30d"], 1), tone(a["roi_30d"]))
+            + row("Win · PF", f"{pct(a['win'])} · {pf_fmt(a['pf'])}")
+            + row("Max drawdown", pct(a["dd"], 1), tone(a["dd"]))
+            + row("Recovery", back, "pos" if rk["recovered"] else "neg")
+            + row("Longest under water", days_txt(rk["underwater_days"]))
+            + row("Worst day", money(a["worst_day"]), tone(a["worst_day"]))
+            + row("Red day won back", "avg " + days_txt(rk["recover_avg"], 1))
+            + row("Loss streak", f"{rk['loss_streak']} in a row")
+            + row("Now below high", pct(rk["current_dd"], 1), "neg" if rk["current_dd"] < -0.05 else "pos")
+            + row("Consistency", f"{rk['consistency']:.2f}" if rk["consistency"] is not None else "–")
+            + row("Last 7 days", money(rk["last7"], True), tone(rk["last7"]))
+            + f"</div>{flags}</div>")
+
+
 def allocation(results):
-    section("Split Your Capital", "how to spread your money over this batch: safety, balanced or aggressive",
+    section("Split Your Capital", "every wallet you follow gets a share; you choose how much of your port goes in",
             ic="split")
-    capital = st.number_input("Your capital (USD)", min_value=0.0, value=2500.0, step=100.0, key="alloc_capital")
+    c1, c2 = st.columns(2)
+    capital = c1.number_input("Your capital (USD)", min_value=0.0, value=2500.0, step=100.0, key="alloc_capital")
+    deploy = c2.slider("Put to work (% of capital)", 50, 100, int(A.DEPLOY_PCT), key="alloc_deploy",
+                       help="The rest stays in your wallet as a buffer (gas, top-ups, a bad day).")
+    with_rej = st.checkbox("Also give REJECT wallets a (small) share", key="alloc_rej",
+                           help="Off: wallets that lost money over the period get nothing.")
     if not results or capital <= 0:
         return
+    plans = {name: A.allocate(results, capital, name, deploy, with_rej) for name in A.PROFILES}
+
+    def sim(r, k):
+        return (r["sim"] or {}).get(k)
+    comp = pd.DataFrame([{
+        "Profile": name, "Wallets": len(r["rows"]), "Largest share": max((x["share"] for x in r["rows"]), default=None),
+        "Into wallets": r["deployed"], "Cash": r["reserve"], "Replay PnL": sim(r, "total"),
+        "Replay /30d": sim(r, "roi_30d"), "Max DD": sim(r, "max_dd"), "Back in": sim(r, "recover_days"),
+        "Under water": sim(r, "underwater_days"), "Worst day": sim(r, "worst_day"),
+        "Green days": sim(r, "green_share")} for name, r in plans.items()])
+    st.markdown("**The three ways to split it, side by side** — replayed on these wallets' own results over the period")
+    st.dataframe(comp.style.format({"Largest share": lambda v: pct(v, 1), "Into wallets": money, "Cash": money,
+                                    "Replay PnL": lambda v: money(v, True), "Replay /30d": lambda v: pct(v, 1),
+                                    "Max DD": lambda v: pct(v, 1),
+                                    "Back in": lambda v: "not yet" if v is None or v != v else f"{v:.0f}d",
+                                    "Under water": lambda v: "–" if v is None or v != v else f"{v:.0f}d",
+                                    "Worst day": money, "Green days": lambda v: pct(v)}, na_rep="–"),
+                 hide_index=True, **stretch(st.dataframe))
     tabs = st.tabs(list(A.PROFILES))
     for tab, name in zip(tabs, A.PROFILES):
         with tab:
-            r = A.allocate(results, capital, name)
-            p = A.PROFILES[name]
+            r = plans[name]
             st.caption(r["text"])
             if not r["rows"]:
-                st.info(f"No wallet in this batch passes the {name} bar: keep the money in cash, or try another "
-                        "profile / a bigger batch.")
+                st.info("No wallet in this batch can take a share (all REJECT, or the tickets would be under $50). "
+                        "Tick 'Also give REJECT wallets a share', add wallets, or raise the capital.")
                 continue
-            cards([("Into wallets", money(r["deployed"]), f"{len(r['rows'])} wallet(s)", "pos", None),
-                   ("Kept in cash", money(r["reserve"]), f"{r['reserve'] / capital * 100:.0f}% buffer", "neu", None),
-                   ("If the last 30d repeat", money(r["exp_30d"], True),
-                    f"≈{r['exp_30d'] / capital * 100:.1f}% of your capital / 30d", tone(r["exp_30d"]), None),
-                   ("Drawdown to stomach", money(r["dd_usd"]), "each wallet's max drawdown, on your share", "neg",
+            sm = r["sim"] or {}
+            back = ("back in " + days_txt(sm.get("recover_days"))) if sm.get("recovered") else "not back yet"
+            cards([("Into wallets", money(r["deployed"]), f"{deploy}% of {money(capital)} · {len(r['rows'])} wallets",
+                    "pos", None),
+                   ("Kept in cash", money(r["reserve"]), f"{100 - deploy}% buffer", "neu", None),
+                   ("Replayed PnL", money(sm.get("total"), True),
+                    f"{pct(sm.get('roi'), 1)} over the period · ≈{pct(sm.get('roi_30d'), 1)}/30d", tone(sm.get("total")),
+                    None),
+                   ("Portfolio max drawdown", pct(sm.get("max_dd"), 1),
+                    f"{money(sm.get('max_dd_usd'))} · {back}", "neg" if (sm.get("max_dd") or 0) < -0.05 else "pos",
                     None)], 4)
+            cards([("Longest under water", days_txt(sm.get("underwater_days")), "longest wait for a new high", "neu",
+                    None),
+                   ("Worst day", money(sm.get("worst_day")), f"best day {money(sm.get('best_day'), True)}",
+                    tone(sm.get("worst_day")) or "neu", None),
+                   ("Red day won back", days_txt(sm.get("recover_avg"), 1), f"on average · longest "
+                    f"{days_txt(sm.get('recover_max'))}", "neu", None),
+                   ("Green days", pct(sm.get("green_share")), "days the portfolio ended up", "neu", None),
+                   ("Wallets move together", "–" if sm.get("corr") is None else f"{sm['corr']:.2f}",
+                    "average daily correlation · lower = better spread", "neg" if (sm.get("corr") or 0) > 0.5 else "neu",
+                    None)], 5)
             df = pd.DataFrame([{"Wallet": short(x["addr"]), "Quality": x["verdict"], "Share": x["share"],
                                 "USD": x["usd"], "Per trade": x["per_trade"], "Max per position": x["max_position"],
                                 "ROI/30d": x["roi_30d"], "Max DD": x["dd"],
                                 "Note": "trades get tiny: copy only its bigger trades" if x["small"] else ""}
                                for x in r["rows"]])
-            st.dataframe(df.style.format({"Share": lambda v: pct(v, 1), "USD": money, "Per trade": money,
-                                          "Max per position": money, "ROI/30d": lambda v: pct(v, 1),
-                                          "Max DD": lambda v: pct(v, 1)}, na_rep="–")
-                         .map(lambda v: f"color: {TIER_COLOR[v]}; font-weight: 700" if v in TIER_COLOR else "",
-                              subset=["Quality"]), hide_index=True, **stretch(st.dataframe))
-            if r["reserve"] > capital * p["reserve"] + 1:
-                st.caption(f"More stays in cash than the {p['reserve'] * 100:.0f}% buffer: one wallet gets at most "
-                           f"{p['cap'] * 100:.0f}% of the money that goes in, and only {len(r['rows'])} wallet(s) "
-                           "qualify. Add more good wallets to the batch to put more to work.")
+            c1, c2 = st.columns([3, 2])
+            with c1:
+                st.dataframe(df.style.format({"Share": lambda v: pct(v, 1), "USD": money, "Per trade": money,
+                                              "Max per position": money, "ROI/30d": lambda v: pct(v, 1),
+                                              "Max DD": lambda v: pct(v, 1)}, na_rep="–")
+                             .map(lambda v: f"color: {TIER_COLOR[v]}; font-weight: 700" if v in TIER_COLOR else "",
+                                  subset=["Quality"]), hide_index=True, **stretch(st.dataframe))
+            with c2:
+                pie = pd.DataFrame([{"wallet": short(x["addr"]), "usd": x["usd"]} for x in r["rows"]]
+                                   + [{"wallet": "cash", "usd": r["reserve"]}])
+                st.altair_chart(alt.Chart(pie).mark_arc(innerRadius=55, stroke="#0b1016", strokeWidth=2).encode(
+                    theta="usd:Q", color=alt.Color("wallet:N", title=None, sort=list(pie["wallet"])),
+                    tooltip=["wallet", alt.Tooltip("usd:Q", format="$,.0f")]).properties(height=230)
+                    .configure(background="transparent").configure_view(strokeWidth=0)
+                    .configure_legend(labelColor="#b6c2d0"), **stretch(st.altair_chart))
+            if sm.get("daily"):
+                pdf = pd.DataFrame(sm["daily"])
+                pdf["when"] = pd.to_datetime(pdf["day"], unit="s")
+                peak = pdf["cum"].cummax().clip(lower=0)
+                pdf["dd"] = (pdf["cum"] - peak) / (r["deployed"] or 1) * 100
+                st.markdown('<div class="chart-t">YOUR PORTFOLIO, REPLAYED — RUNNING PNL</div>', unsafe_allow_html=True)
+                base = alt.Chart(pdf).encode(x=alt.X("when:T", title=None, axis=alt.Axis(format="%b %-d")))
+                st.altair_chart((base.mark_bar(opacity=.85, size=10).encode(
+                    y=alt.Y("pnl:Q", title=None), color=alt.condition("datum.pnl >= 0", alt.value("#0f9f68"),
+                                                                      alt.value("#a3263f")),
+                    tooltip=[alt.Tooltip("when:T"), alt.Tooltip("pnl:Q", format="$,.2f", title="that day")])
+                    + base.mark_line(color=GREEN, strokeWidth=2.4).encode(
+                        y="cum:Q", tooltip=[alt.Tooltip("when:T"), alt.Tooltip("cum:Q", format="$,.2f", title="total")]))
+                    .properties(height=240).configure(background="transparent").configure_view(strokeWidth=0)
+                    .configure_axis(**AXIS), **stretch(st.altair_chart))
+                st.altair_chart(base.mark_area(color=RED, opacity=.35, line={"color": RED}).encode(
+                    y=alt.Y("dd:Q", title=None), tooltip=[alt.Tooltip("when:T"),
+                                                         alt.Tooltip("dd:Q", format=".1f", title="% below high")])
+                    .properties(height=130).configure(background="transparent").configure_view(strokeWidth=0)
+                    .configure_axis(**AXIS), **stretch(st.altair_chart))
+            hot = [(x, y, c) for x, y, c in sm.get("pairs") or [] if c >= 0.6]
+            if hot:
+                st.markdown("".join(f'<div class="flag">{icon("alert", YELLOW, 15)}<div><b>Move together</b> — '
+                                    f"{short(x)} and {short(y)}: daily PnL correlation {c:.2f}. Their bad days tend "
+                                    f"to land together.</div></div>" for x, y, c in hot), unsafe_allow_html=True)
+            if r["dropped"]:
+                st.caption("No share for " + ", ".join(short(x) for x in r["dropped"])
+                           + f": their ticket would be under ${A.MIN_TICKET:.0f}.")
             if r["skipped"]:
-                st.caption("Left out: " + ", ".join(short(x) for x in r["skipped"]))
+                st.caption("Left out (REJECT): " + ", ".join(short(x) for x in r["skipped"]))
     ov = A.overlaps(results)
     if ov:
         st.markdown("".join(f'<div class="flag">{icon("alert", YELLOW, 15)}<div><b>Same pools</b> — {short(x)} and '
                             f'{short(y)} share {j:.0f}% of their pools: copying both doubles the same bets.</div></div>'
                             for x, y, j in ov), unsafe_allow_html=True)
-    st.caption("Per trade / max per position = each wallet's median trade and largest position, scaled by your share "
-               "÷ its median deployed capital. Built from past results only: not financial advice, a wallet's next "
-               "month can look nothing like its last.")
-
+    st.caption("Replay = each wallet's daily realized PnL over the period, scaled by your share ÷ its median deployed "
+               "capital, added up. Per trade / max per position = its median trade and largest position on the same "
+               "scale. Built from past results only: not financial advice, the next month can look nothing like the "
+               "last.")
 
 main()
