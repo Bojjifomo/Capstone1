@@ -21,9 +21,11 @@ import sqlite3
 import threading
 import time
 
+import alchemy
 import chain as C
 import config
 import explorer
+import finder_db
 import pricing
 from keccak import selector
 from pricing import Pricer, multicall
@@ -33,6 +35,7 @@ DAY = 86400
 NFT_CEILING = 20_000_000  # blocks per eth_getLogs when filtered on one wallet (few results)
 POOL_CEILING = 2_000_000  # ...when it is a whole pool's LP activity
 SEL_POSITION_LIQUIDITY = selector("getPositionLiquidity(uint256)")
+MAX_LOG_CALLS = 3000  # an RPC that would need more eth_getLogs than this for a range is skipped
 EXPLORER_RETRY_S = 1800  # explorer unreachable: use the RPC for this long before trying it again
 
 SCHEMA = """
@@ -135,6 +138,7 @@ def merge(spans):
 class Loader:
     def __init__(self, con, rpc, call_rpc, cfg, progress=lambda text, frac=None: None):
         self.con, self.rpc, self.call_rpc, self.cfg, self.progress = con, rpc, call_rpc, cfg, progress
+        self.used = set()  # where this load read the wallet from
 
     def block_ts(self, blocks):
         """{block: timestamp}, read once and kept."""
@@ -170,7 +174,7 @@ class Loader:
 
     def _logs(self, flt, lo, hi, kind, ceiling):
         chunk = get_meta(self.con, f"chunk_{kind}") or int(self.cfg["LOG_CHUNK"])
-        logs, chunk = self.rpc.get_logs(flt, lo, hi, chunk, ceiling=ceiling)
+        logs, chunk = self.rpc.get_logs(flt, lo, hi, chunk, ceiling=ceiling, max_calls=MAX_LOG_CALLS)
         set_meta(self.con, f"chunk_{kind}", chunk)
         return logs
 
@@ -184,32 +188,82 @@ class Loader:
 
     # 1. the wallet's position NFTs and LP transactions
     def discover(self, addr, lo, hi, since_ts):
-        """From the explorer when it answers (then the whole range counts as read),
-        else from eth_getLogs."""
-        if not missing(self.con, f"nft:{addr}", lo, hi):
+        """The wallet's position NFT transfers (and LP transactions) over [lo, hi],
+        cheapest source first: RH Wallet Finder's database, the explorer, Alchemy's
+        Transfers API, and only then eth_getLogs."""
+        key = f"nft:{addr}"
+        if not missing(self.con, key, lo, hi):
             return
-        use = str(self.cfg.get("EXPLORER_API", "1")).lower() not in ("0", "false", "no", "off")
-        if use and time.time() >= (get_meta(self.con, "explorer_off_until") or 0):
-            self.progress(f"Finding {C.short(addr)}'s positions on the explorer…")
+        fp = finder_db.path(self.cfg)
+        if fp:
             try:
-                trs = explorer.nft_transfers(addr, since_ts)
-                txs = explorer.lp_transactions(addr, since_ts)
-            except explorer.ExplorerError as e:
-                set_meta(self.con, "explorer_off_until", time.time() + EXPLORER_RETRY_S)
-                set_meta(self.con, "explorer_error", str(e))
-                self.con.commit()
+                fcon = finder_db.connect(fp)
+                try:
+                    got = finder_db.copy_wallet(fcon, self.con, addr, lo, hi)
+                finally:
+                    fcon.close()
+            except Exception as e:  # noqa: BLE001 - a busy or older finder database: use the other sources
+                set_meta(self.con, "finder_error", str(e))
             else:
-                self.con.executemany("INSERT OR IGNORE INTO transfers VALUES(?,?,?,?,?,?,?)",
-                                     [(t["block"], t["log_index"], t["tx"], t["ts"], t["token_id"], t["from"],
-                                       t["to"]) for t in trs])
-                self.con.executemany("INSERT OR IGNORE INTO lp_txs VALUES(?,?,?)",
-                                     [(addr, t["tx"], t["block"]) for t in txs])
-                self.con.executemany("INSERT OR IGNORE INTO blocks(n, ts) VALUES(?,?)",
-                                     [(t["block"], t["ts"]) for t in trs + txs])
-                mark(self.con, f"nft:{addr}", lo, hi)
-                self.con.commit()
-                return
+                if got:
+                    a, b, spans = got
+                    mark(self.con, key, a, b)
+                    for t, (x, y) in spans.items():
+                        if y >= x:
+                            mark(self.con, f"tok:{t}", x, y)
+                    self.con.commit()
+                    self.used.add("RH Wallet Finder database")
+                    if not missing(self.con, key, lo, hi):
+                        return
+        if self._from_explorer(addr, lo, hi, since_ts) or self._from_alchemy(addr, lo, hi):
+            return
+        self.used.add("RPC logs")
         self.scan_nfts(addr, lo, hi)
+
+    def _store(self, addr, trs, txs, lo, hi, source):
+        self.con.executemany("INSERT OR IGNORE INTO transfers VALUES(?,?,?,?,?,?,?)",
+                             [(t["block"], t["log_index"], t["tx"], t["ts"], t["token_id"], t["from"], t["to"])
+                              for t in trs])
+        self.con.executemany("INSERT OR IGNORE INTO lp_txs VALUES(?,?,?)", [(addr, t["tx"], t["block"]) for t in txs])
+        self.con.executemany("INSERT OR IGNORE INTO blocks(n, ts) VALUES(?,?)",
+                             [(t["block"], t["ts"]) for t in trs + txs if t["ts"]])
+        mark(self.con, f"nft:{addr}", lo, hi)
+        self.con.commit()
+        self.used.add(source)
+
+    def _from_explorer(self, addr, lo, hi, since_ts):
+        if str(self.cfg.get("EXPLORER_API", "1")).lower() in ("0", "false", "no", "off") \
+                or time.time() < (get_meta(self.con, "explorer_off_until") or 0):
+            return False
+        self.progress(f"Finding {C.short(addr)}'s positions on the explorer…")
+        try:
+            trs = explorer.nft_transfers(addr, since_ts)
+            txs = explorer.lp_transactions(addr, since_ts)
+        except explorer.ExplorerError as e:
+            set_meta(self.con, "explorer_off_until", time.time() + EXPLORER_RETRY_S)
+            set_meta(self.con, "explorer_error", str(e))
+            self.con.commit()
+            return False
+        self._store(addr, trs, txs, lo, hi, "explorer")
+        return True
+
+    def _from_alchemy(self, addr, lo, hi):
+        u = alchemy.url(self.cfg)
+        if not u or time.time() < (get_meta(self.con, "alchemy_off_until") or 0):
+            return False
+        self.progress(f"Finding {C.short(addr)}'s positions with Alchemy's Transfers API…")
+        try:
+            for a, b in missing(self.con, f"nft:{addr}", lo, hi):
+                trs, txs = alchemy.wallet(u, addr, a, b)
+                for t in trs + txs:
+                    t["ts"] = t["ts"] or None
+                self._store(addr, trs, txs, a, b, "Alchemy Transfers API")
+        except Exception as e:  # noqa: BLE001 - not offered on this network / plan
+            set_meta(self.con, "alchemy_off_until", time.time() + 86400)
+            set_meta(self.con, "alchemy_error", str(e)[:200])
+            self.con.commit()
+            return False
+        return True
 
     def scan_nfts(self, addr, lo, hi):
         key = f"nft:{addr}"
@@ -236,7 +290,7 @@ class Loader:
     def read_receipts(self, txs):
         """Every PositionManager ModifyLiquidity in these transactions' receipts
         (read once each) -> events, and each position's pool and range."""
-        txs = list(dict.fromkeys(txs))
+        txs = list(dict.fromkeys(t for t in txs if t))
         have = set()
         for i in range(0, len(txs), 500):
             part = txs[i:i + 500]
@@ -314,6 +368,8 @@ class Loader:
                 pools[pool]["ids"].add(tid)
                 pools[pool]["spans"] += gaps
         pm = "0x" + C.addr_word(config.POSITION_MANAGER)
+        if pools:
+            self.used.add("pool log scan")
         for n, (pool, g) in enumerate(pools.items(), 1):
             ids = {t for t, (p, _, _) in life.items() if p == pool}
             for a, b in merge(g["spans"]):
@@ -478,7 +534,8 @@ class Loader:
                 set_meta(self.con, f"loaded:{a}", {"at": int(time.time()), "from_ts": start_ts, "head": head})
             set_meta(self.con, "head", head)
             self.con.commit()
-            return {"positions": len(ids), "priced": n, "head": head, "from_ts": start_ts, "scanned": len(bad)}
+            return {"positions": len(ids), "priced": n, "head": head, "from_ts": start_ts, "scanned": len(bad),
+                    "sources": sorted(self.used)}
 
 
 # ---- read side -----------------------------------------------------------

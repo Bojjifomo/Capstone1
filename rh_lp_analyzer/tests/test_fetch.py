@@ -62,7 +62,7 @@ class FakeRPC:
                 raise AssertionError(m)
         return out
 
-    def get_logs(self, flt, lo, hi, chunk, progress=None, ceiling=None):
+    def get_logs(self, flt, lo, hi, chunk, progress=None, ceiling=None, max_calls=None):
         self.log_calls += 1
         out = []
         for lg in self.logs:
@@ -114,7 +114,9 @@ class LoaderTest(unittest.TestCase):
                       explorer.lp_transactions)
         F.Pricer, F.Loader.refresh_pools_tokens = NoPricer, lambda self: None
         F.multicall = lambda rpc, calls, block: [hex(self.rpc.liquidity.get(int(cd[-64:], 16), 0)) for _, cd in calls]
-        self.cfg = {**config.load_env(), "LOOKBACK_DAYS": "0"}
+        # only the sources a test sets up: no finder database, no Alchemy
+        self.cfg = {**config.load_env(), "LOOKBACK_DAYS": "0", "WALLET_FINDER_DB": "0", "RPC_URL": "",
+                    "CALL_RPC_URL": ""}
 
     def tearDown(self):
         (F.Pricer, F.Loader.refresh_pools_tokens, F.multicall, explorer.nft_transfers,
@@ -156,6 +158,39 @@ class LoaderTest(unittest.TestCase):
         n = self.rpc.log_calls
         self.load()  # again at the same head: everything is cached, nothing read
         self.assertEqual(self.rpc.log_calls, n)
+
+    def test_wallet_finder_database_needs_no_rpc_reads(self):
+        fpath = Path(self.d.name) / "wallets.db"
+        f = __import__("sqlite3").connect(fpath)
+        f.executescript("""
+            CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);
+            CREATE TABLE transfers (block INTEGER, log_index INTEGER, ts INTEGER, token_id INTEGER, from_addr TEXT,
+                                    to_addr TEXT, PRIMARY KEY (block, log_index));
+            CREATE TABLE events (block INTEGER, log_index INTEGER, tx TEXT, ts INTEGER, token_id INTEGER, pool TEXT,
+              tl INTEGER, tu INTEGER, delta TEXT, v_state INTEGER DEFAULT 0, a0 REAL, a1 REAL, f0 REAL, f1 REAL,
+              u0 REAL, u1 REAL, lp_fee INTEGER, PRIMARY KEY (block, log_index));
+            CREATE TABLE pools (id TEXT PRIMARY KEY, c0 TEXT, c1 TEXT, fee INTEGER, spacing INTEGER, hooks TEXT);
+            CREATE TABLE tokens (addr TEXT PRIMARY KEY, symbol TEXT, decimals INTEGER, supply REAL, price_usd REAL,
+                                 mcap REAL, updated INTEGER);""")
+        f.executemany("INSERT INTO meta VALUES(?,?)", [("back_block", "1"), ("fwd_block", str(HEAD))])
+        for lg in self.rpc.logs:
+            b = int(lg["blockNumber"], 16)
+            if lg["address"] == config.POSITION_MANAGER:
+                d = C.decode_nft_transfer(lg)
+                f.execute("INSERT INTO transfers VALUES(?,?,?,?,?,?)", (b, d["log_index"], T0 + b, d["token_id"],
+                                                                         d["from"], d["to"]))
+            else:
+                d = C.decode_modify(lg)
+                f.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,1,1,1,0,0,1,1,3000)",
+                          (b, d["log_index"], d["tx"], T0 + b, d["salt"], d["pool"], d["tl"], d["tu"], str(d["delta"])))
+        f.commit()
+        f.close()
+        self.cfg["WALLET_FINDER_DB"] = str(fpath)
+        res = self.load()
+        self.check_positions()
+        self.assertEqual((self.rpc.log_calls, self.rpc.receipts, res["scanned"]), (0, 0, 0))
+        self.assertEqual(res["sources"], ["RH Wallet Finder database"])
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE v_state=1").fetchone()[0], 4)  # priced already
 
     def test_block_at(self):
         self.assertEqual(F.Loader(self.con, self.rpc, self.rpc, {}).block_at(T0 + 2345, HEAD), 2345)

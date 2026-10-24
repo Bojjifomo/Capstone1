@@ -17,34 +17,57 @@ import lpmath as M
 
 DAY = M.DAY
 
-# verdict lines: COPY needs every one of these, REJECT is a losing wallet
-COPY_MIN_CLOSED = 10
-COPY_MIN_PF = 1.5
-COPY_MIN_WIN = 50.0
-COPY_MAX_DD = -30.0  # % of capital
-COPY_MAX_TOP2 = 60.0  # % of the profit from its two best days
-VERDICT_TEXT = {
-    "COPY": "Profitable, steady and followable by hand. A copy candidate.",
-    "WATCH": "Making money, but something below is off. Watch it before you copy.",
-    "REJECT": "Net loss (or loses more than it wins) over the period. Not worth copying.",
-}
-KIND_TEXT = {
-    "multiday": "Holds its trades for hours to days. Slower, wider plays that leave time to follow by hand.",
-    "degen": "In and out within hours. Fast trades: you need to be quick (or automated) to copy it.",
-}
+# ---- classifications --------------------------------------------------------
+# Quality tiers, best first: (name, short tag, what it means)
+TIERS = [
+    ("ELITE", "Strong & profitable", "Consistent, shallow drawdowns and clearly profitable. Main-capital tier."),
+    ("SOLID", "Copyable", "Good balance of profit and risk. Fine for a moderate allocation."),
+    ("MIXED", "Caution", "Profitable, but with real drawdowns or uneven days. Size down."),
+    ("WEAK", "Avoid", "A thin edge for the risk it takes. Avoid, or test with a small amount."),
+    ("REJECT", "Not copyable", "Net loss, or its losing days outweigh its winning days. Not worth copying."),
+]
+TIER_TEXT = {t: x for t, _, x in TIERS}
+# what a wallet needs for ELITE / SOLID (MIXED: profit factor 1.2+, WEAK: any profit)
+ELITE = {"pf": 2.0, "dd": -20.0, "top2": 50.0, "closed": 15, "win": 55.0}
+SOLID = {"pf": 1.5, "dd": -30.0, "top2": 65.0, "closed": 10, "win": 0.0}
+MIXED_PF = 1.2
+COPY_MIN_CLOSED = SOLID["closed"]
 
-RANGE_BUCKETS = [(5, "< 5%"), (10, "5–10%"), (20, "10–20%"), (50, "20–50%"), (100, "50–100%"),
-                 (300, "100–300%"), (math.inf, "> 300%")]
-HOLD_BUCKETS = [(3600, "< 1h"), (6 * 3600, "1–6h"), (DAY, "6–24h"), (3 * DAY, "1–3d"), (math.inf, "≥ 3d")]
-MCAP_BUCKETS = [(1e5, "< $100K"), (2.5e5, "$100K–250K"), (5e5, "$250K–500K"), (1e6, "$500K–1M"),
-                (3e6, "$1M–3M"), (1e7, "$3M–10M"), (math.inf, "> $10M")]
-SIDE_LABEL = {"bid": "ETH/USDG only", "both": "Two-sided", "ask": "Token only"}
+KINDS = [
+    ("multiday", "Larger caps, wider ranges, longer holds. Lower risk, steadier medium profit — main-capital style."),
+    ("hybrid", "A mix: some patient big-cap LPs, some small-cap snipes."),
+    ("degen", "Smaller caps, tight ranges, fast exits. High risk, high upside."),
+]
+KIND_TEXT = dict(KINDS)
 
-# recommended filter: what a copier can see before following a trade
-FILTER_MCAPS = [(0, "any mcap"), (1e5, "mcap ≥ $100K"), (5e5, "mcap ≥ $500K"), (1e6, "mcap ≥ $1M"),
-                (1e7, "mcap ≥ $10M")]
-FILTER_SIDES = [(None, "any side"), ("bid", "ETH/USDG only"), ("both", "two-sided"), ("ask", "token only")]
-FILTER_QUOTES = [(None, "any quote"), (1, "ETH pools"), (0, "USDG pools")]
+ARCHETYPES = [
+    ("Spike Hunter", "Snipes volatility on small tokens: tight range, in and out within the hour. High risk, "
+                     "high variance."),
+    ("Liquid Scalper", "Fast in and out of liquid ($1M+) tokens with a tight range, catching short moves."),
+    ("Micro Degen", "Sits in small tokens for a few hours. Big upside, big risk."),
+    ("Intraday Swinger", "Rides intraday moves for a few hours on liquid pools with a moderate range."),
+    ("Conviction Holder", "Holds a narrow band for days: a bet on calm prices. Precise, but hurts when price runs."),
+    ("Patient Big-Cap LP", "Holds bigger tokens for days with wider ranges. Lower risk, steady fee farming."),
+    ("Range Farmer", "Wide ranges held for days: staying in range and collecting fees beats precision."),
+    ("Adaptive", "No single style dominates: it mixes token size, hold time and range."),
+]
+ARCHETYPE_TEXT = dict(ARCHETYPES)
+
+# the distributions, in the order they're drawn
+RANGE_BUCKETS = [(10, "Ultra Tight"), (20, "Super Tight"), (50, "Tight"), (65, "Mid"), (80, "Wide"),
+                 (90, "Super Wide"), (math.inf, "Ultra Wide")]
+RANGE_LEGEND = "Ultra Tight <10% · Super Tight 10–20% · Tight 20–49% · Mid 50–65% · Wide 65–80% · " \
+               "Super Wide 80–90% · Ultra Wide >90%"
+HOLD_BUCKETS = [(3600, "0 – 1h"), (6 * 3600, "1 – 6h"), (DAY, "6 – 24h"), (3 * DAY, "1d – 3d"), (math.inf, "≥ 3d")]
+MCAP_BUCKETS = [(1e5, "< $100K"), (2.5e5, "$100K – $250K"), (5e5, "$250K – $500K"), (1e6, "$500K – $1M"),
+                (3e6, "$1M – $3M"), (5e6, "$3M – $5M"), (1e7, "$5M – $10M"), (math.inf, "> $10M")]
+SIDE_LABEL = {"bid": "ETH/USDG Only", "both": "Dual Sided", "ask": "Token Only"}
+
+# recommended filter grid: what a copier can check before following a trade
+FILTER_EDGES = [0, 1e5, 2.5e5, 5e5, 1e6, 3e6, 1e7, math.inf]
+FILTER_SIDES = [(("bid", "both", "ask"), "any side"), (("bid",), "ETH/USDG only"), (("both",), "dual sided"),
+                (("ask",), "token only"), (("bid", "both"), "no token-only")]
+FILTER_QUOTES = [(None, "any pool"), (1, "ETH pools"), (0, "USDG pools")]
 FILTER_MIN_TRADES = 5
 
 
@@ -91,110 +114,163 @@ def deployed(positions, start, end):
     return peak, spans[-1][0]
 
 
-def gameplay(hold, rng, mcap):
-    """(name, what it means) from the median trade's hold, range and token size."""
-    if hold is None:
-        return "Fresh", "No closed trade yet: too early to say how it plays."
-    big = mcap is not None and mcap >= 1e6
-    if hold < 3600:
-        if rng is not None and rng < 20:
-            return (("Liquid scalper", "Fast in and out of liquid (≥ $1M) tokens with tight ranges, riding short moves.")
-                    if big else ("Micro-cap sniper", "Fast in and out of small tokens with tight ranges. High risk, "
-                                                     "needs quick hands to follow."))
-        return "Fast rotator", "Short holds on wide ranges: farms the fees of a burst of volume, then leaves."
-    if hold < DAY:
-        if rng is not None and rng < 50:
-            return "Intraday range LP", "Tight-to-mid ranges held for hours: picks a level and farms around it."
-        return "Intraday wide LP", "Wide ranges held for hours: steady fee farming, less babysitting."
-    if rng is not None and rng >= 100:
-        return "Wide position holder", "Wide ranges held for days: low maintenance, rides the trend for fees."
-    return "Swing range LP", "Mid ranges held for days: a view on where price stays, rebalanced now and then."
+def money_label(v):
+    a = abs(v)
+    return f"${a / 1e6:g}M" if a >= 1e6 else f"${a / 1e3:g}K" if a >= 1e3 else f"${a:g}"
+
+
+def archetype(trades, now):
+    """(name, share %) of the dominant cap × duration × range pattern, or Adaptive."""
+    counts = {}
+    for t in trades:
+        hold = (t["close_ts"] or now) - t["open_ts"]
+        big = (t["mcap"] or 0) >= 1e6
+        rng = M.range_pct(t)
+        if hold < 3600:
+            k = "Liquid Scalper" if big else "Spike Hunter"
+        elif hold < DAY:
+            k = "Intraday Swinger" if big else "Micro Degen"
+        elif rng < 20:
+            k = "Conviction Holder"
+        else:
+            k = "Patient Big-Cap LP" if big else "Range Farmer"
+        counts[k] = counts.get(k, 0) + 1
+    if not counts:
+        return "Adaptive", 0
+    k, n = max(counts.items(), key=lambda kv: kv[1])
+    share = n / len(trades) * 100
+    return (k, round(share)) if share >= 45 else ("Adaptive", round(share))
+
+
+def trader_type(trades, now, dd, multiday_s=M.MULTIDAY_S):
+    """('multiday' | 'hybrid' | 'degen', share % of its trades that fit): a trade
+    leans multiday with 2 of: a $1M+ token, held past the line, a 20%+ range."""
+    if not trades:
+        return "degen", 0
+    patient = sum(1 for t in trades if ((t["mcap"] or 0) >= 1e6) + ((t["close_ts"] or now) - t["open_ts"] >= multiday_s)
+                  + (M.range_pct(t) >= 20) >= 2) / len(trades)
+    lean = patient - (0.1 if dd is not None and dd <= -40 else 0)  # deep drawdowns read degen
+    kind = "multiday" if lean >= 0.65 else "degen" if lean <= 0.35 else "hybrid"
+    return kind, round((patient if kind != "degen" else 1 - patient) * 100)
 
 
 def flags(a):
     """Plain-word reads of the profit and loss structure: [(tone, title, text)]
-    with tone 'good' | 'bad' | 'info'."""
+    with tone 'good' | 'info' | 'bad'."""
     out = []
     top2 = a["concentration"]
     if top2 is not None and a["green_days"] >= 3:
-        if top2 >= COPY_MAX_TOP2:
-            out.append(("bad", "High profit concentration",
-                        f"{top2:.0f}% of the profit came from its 2 best days: it depends on a few lucky runs."))
+        if top2 >= 60:
+            out.append(("bad", "High Profit Concentration", f"{top2:.0f}% of the profit came from its 2 best days. "
+                                                            "Performance leans on momentum."))
         elif top2 <= 35:
-            out.append(("good", "Steady profit", f"Its 2 best days are only {top2:.0f}% of the profit: it earns "
-                                                 "across many days."))
+            out.append(("good", "Steady Profit", "Profit is spread over many days, not a couple of lucky ones."))
     if a["worst_day"] is not None and a["avg_green"]:
         r = -a["worst_day"] / a["avg_green"]
         if r <= 1:
-            out.append(("good", "Controlled loss", "Its worst day loses less than a typical green day makes."))
-        elif r >= 3:
-            out.append(("bad", "Heavy loss days", f"Its worst day wiped out ≈{r:.1f} typical green days."))
-    if a["loss"] > 0:
-        r = a["profit"] / a["loss"]
-        if r >= 3:
-            out.append(("good", "Efficient profit structure", f"It makes {r:.1f}× what it loses."))
-        elif r < 1:
-            out.append(("bad", "Losing structure", "Its losing positions cost more than the winners make."))
-    elif a["profit"] > 0:
-        out.append(("good", "No losing position", "Every decided position in the period made money."))
+            out.append(("good", "Controlled Loss", "Its worst day is smaller than a typical green day."))
+        elif r <= 2:
+            out.append(("info", "Moderate Tail Risk", f"Its worst day costs ≈{r:.1f} green days."))
+        else:
+            out.append(("bad", "High Tail Risk" if r > 4 else "Elevated Tail Risk",
+                        f"1 bad day can erase ≈{r:.1f} days of profit."))
+    if a["red_sum"] < 0:
+        e = a["green_sum"] / -a["red_sum"]
+        if e >= 2:
+            out.append(("good", "Efficient Profit Structure", f"Green days made {e:.1f}× what red days lost."))
+        elif e >= 1:
+            out.append(("info", "Moderate Efficiency", "Green days only slightly outweigh red days."))
+        else:
+            out.append(("bad", "Inefficient", "Red days lost more than green days made."))
+    elif a["green_sum"] > 0:
+        out.append(("good", "No Red Days", "Every day with a close ended in profit."))
     if a["oor_rate"] is not None and a["oor_rate"] >= 30:
-        out.append(("bad", "Often caught out of range", f"{a['oor_rate']:.0f}% of its closes were out of range at a "
+        out.append(("bad", "Often Caught Out Of Range", f"{a['oor_rate']:.0f}% of its closes ended out of range at a "
                                                          "loss: price ran through its ranges."))
     if a["follow"] == "✗":
-        out.append(("bad", "Bot pace", "Holds under 5 min or trades 100+ times a day: not followable by hand."))
-    elif a["follow"] == "✓":
-        out.append(("good", "Followable", "Holds long and trades slowly enough to copy by hand."))
-    if a["dd"] is not None and a["dd"] <= COPY_MAX_DD:
-        out.append(("bad", "Deep drawdown", f"Its PnL fell {-a['dd']:.0f}% of its capital from a high at one point."))
+        out.append(("bad", "Bot Pace", "Holds under 5 min or trades 100+ times a day: not followable by hand."))
     return out
 
 
-def verdict(a):
-    """('COPY' | 'WATCH' | 'REJECT', reasons it isn't COPY)."""
-    if a["net"] <= 0 or (a["pf"] is not None and a["pf"] < 1):
+def tier(a):
+    """(tier, what keeps it from the next tier up)."""
+    if a["net"] <= 0 or (a["pf"] is not None and a["pf"] < 1) or a["red_sum"] + a["green_sum"] <= 0:
         return "REJECT", []
-    why = []
-    if a["closed"] < COPY_MIN_CLOSED:
-        why.append(f"only {a['closed']} closed positions (needs {COPY_MIN_CLOSED})")
-    if a["pf"] is not None and a["pf"] < COPY_MIN_PF:
-        why.append(f"profit factor {a['pf']:.2f} (needs {COPY_MIN_PF})")
-    if a["win"] is not None and a["win"] < COPY_MIN_WIN:
-        why.append(f"win rate {a['win']:.0f}% (needs {COPY_MIN_WIN:.0f}%)")
-    if a["dd"] is not None and a["dd"] <= COPY_MAX_DD:
-        why.append(f"drawdown {a['dd']:.0f}% (limit {COPY_MAX_DD:.0f}%)")
-    if a["concentration"] is not None and a["green_days"] >= 3 and a["concentration"] >= COPY_MAX_TOP2:
-        why.append(f"{a['concentration']:.0f}% of profit from 2 days (limit {COPY_MAX_TOP2:.0f}%)")
-    if a["follow"] == "✗":
-        why.append("bot pace")
-    return ("WATCH" if why else "COPY"), why
+
+    def misses(bar):
+        why = []
+        if a["pf"] is not None and a["pf"] < bar["pf"]:
+            why.append(f"profit factor {a['pf']:.2f} (needs {bar['pf']:g})")
+        if a["dd"] is not None and a["dd"] < bar["dd"]:
+            why.append(f"drawdown {a['dd']:.0f}% (limit {bar['dd']:.0f}%)")
+        if a["concentration"] is not None and a["green_days"] >= 3 and a["concentration"] > bar["top2"]:
+            why.append(f"{a['concentration']:.0f}% of profit from 2 days (limit {bar['top2']:.0f}%)")
+        if a["closed"] < bar["closed"]:
+            why.append(f"{a['closed']} closed positions (needs {bar['closed']})")
+        if a["win"] is not None and a["win"] < bar["win"]:
+            why.append(f"win rate {a['win']:.0f}% (needs {bar['win']:.0f}%)")
+        if a["follow"] == "✗":
+            why.append("bot pace")
+        return why
+    if not misses(ELITE):
+        return "ELITE", []
+    if not misses(SOLID):
+        return "SOLID", misses(ELITE)
+    return ("MIXED" if a["pf"] is None or a["pf"] >= MIXED_PF else "WEAK"), misses(SOLID)
+
+
+def filter_positions(positions, mcap_min=None, mcap_max=None, sides=None):
+    """Positions whose token market cap at entry is in [mcap_min, mcap_max] and
+    whose deposit side is one of sides (None = no limit)."""
+    out = []
+    for p in positions:
+        m = p.get("mcap")
+        if (mcap_min and (m is None or m < mcap_min)) or (mcap_max and (m is None or m > mcap_max)):
+            continue
+        if sides is not None and p.get("side") and p["side"] not in sides:
+            continue
+        out.append(p)
+    return out
 
 
 def recommend_filters(positions, pnl):
-    """Grid of entry filters a copier can apply (token mcap, side, ETH vs USDG
-    pool): which combination would have kept the most PnL. Counted per trade.
+    """Grid search over entry market cap range × deposit side × ETH vs USDG pool:
+    which filter would have kept the most PnL. Counted per trade.
     -> {'all': row, 'best': [rows that beat taking everything, best first]},
-    row = {name, trades, pnl, win}"""
+    row = {name, trades, pnl, win, roi, mcap_min, mcap_max, sides, quote}"""
     tr = [t for t in M.trades(positions) if t["close_ts"]]
 
-    def row(name, ts):
+    def row(name, ts, **f):
         res = [(sum(pnl(p) for p in t["legs"]), t["dep"]) for t in ts]
         w = sum(1 for x, d in res if x > M.FLAT * d)
         decided = w + sum(1 for x, d in res if x < -M.FLAT * d)
+        dep = sum(d for _, d in res)
         return {"name": name, "trades": len(ts), "pnl": sum(x for x, _ in res),
-                "win": w / decided * 100 if decided else None}
+                "win": w / decided * 100 if decided else None, "roi": sum(x for x, _ in res) / dep * 100 if dep else None,
+                **f}
 
+    caps = [(0, math.inf)] + [(lo, hi) for i, lo in enumerate(FILTER_EDGES[:-1]) for hi in FILTER_EDGES[i + 1:]
+                              if (lo, hi) != (0, math.inf)]  # simplest first: it wins ties
     rows, seen = [], set()
-    for lo, mname in FILTER_MCAPS:
-        for side, sname in FILTER_SIDES:
+    for lo, hi in caps:
+        for sides, sname in FILTER_SIDES:
             for quote, qname in FILTER_QUOTES:
-                ts = [t for t in tr if (not lo or (t["mcap"] or 0) >= lo) and (side is None or t["side"] == side)
-                      and (quote is None or t["legs"][0].get("eth_pair") == quote)]
+                ts = [t for t in tr if lo <= (t["mcap"] if t["mcap"] is not None else -1) < hi
+                      and (t["side"] in sides or t["side"] is None)
+                      and (quote is None or t["legs"][0].get("eth_pair") == quote)] \
+                    if lo or hi != math.inf else \
+                    [t for t in tr if (t["side"] in sides or t["side"] is None)
+                     and (quote is None or t["legs"][0].get("eth_pair") == quote)]
                 key = frozenset(id(t) for t in ts)
-                if len(ts) >= FILTER_MIN_TRADES and (lo or side or quote is not None) and key not in seen:
-                    seen.add(key)  # the same trades as a simpler filter: keep the simpler one
-                    rows.append(row(" · ".join(n for n, on in ((mname, lo), (sname, side), (qname, quote is not None))
-                                               if on), ts))
-    everything = row("everything", tr)
+                if len(ts) < FILTER_MIN_TRADES or key in seen:
+                    continue
+                seen.add(key)  # the same trades as a simpler filter: keep the simpler one
+                cap = "any mcap" if not lo and hi == math.inf else f"mcap {money_label(lo)}+" if hi == math.inf \
+                    else f"mcap under {money_label(hi)}" if not lo else f"mcap {money_label(lo)}–{money_label(hi)}"
+                rows.append(row(" · ".join(x for x in (cap, sname, qname) if not x.startswith("any")) or "everything",
+                                ts, mcap_min=lo or None, mcap_max=None if hi == math.inf else hi,
+                                sides=list(sides), quote=quote))
+    everything = row("everything", tr, mcap_min=None, mcap_max=None, sides=["bid", "both", "ask"], quote=None)
     rows.sort(key=lambda r: -r["pnl"])
     return {"all": everything, "best": [r for r in rows if r["pnl"] > everything["pnl"] + 0.005][:6]}
 
@@ -258,7 +334,6 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
     res = [(sum(pnl(p) for p in t["legs"]), t["dep"]) for t in t_closed]
     t_wins = sum(1 for x, d in res if x > M.FLAT * d)
     t_dec = t_wins + sum(1 for x, d in res if x < -M.FLAT * d)
-    kind, kind_fit = M.player_kind(holds, [now - t["open_ts"] for t in tr if not t["close_ts"]], multiday_s)
     hold = M._median(holds)
     rng = M._median([M.range_pct(t) for t in tr])
     mcap = M._median([t["mcap"] for t in tr])
@@ -266,7 +341,9 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
     follow = "✗" if (hold is not None and hold < M.BOT_HOLD_S) or per_day > M.BOT_PER_DAY else \
         "✓" if hold is not None and hold >= 1800 and per_day <= 30 else "?"
     sides = [p.get("side") for p in scope if p.get("side")]
-    play = gameplay(hold, rng, mcap)
+    play, play_share = archetype(tr, now)
+    dd_pct = -dd / capital * 100 if capital else None
+    kind, kind_fit = trader_type(tr, now, dd_pct, multiday_s)
 
     pools = {}
     still_open = {id(p) for p in open_}
@@ -297,7 +374,7 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
         "roi_30d": roi * 30 * DAY / max(active, DAY) if roi is not None else None,
         "open_now": sum(p["now"] or 0.0 for p in open_), "fees": sum(p["fee"] or 0.0 for p in scope),
         "size": M._median([t["dep"] for t in tr], 0.0), "largest": max((p["dep"] for p in scope), default=0.0),
-        "dd": -dd / capital * 100 if capital else None, "dd_usd": -dd,
+        "dd": dd_pct, "dd_usd": -dd, "green_sum": sum(green), "red_sum": sum(red),
         "worst_day": min(red) if red else None, "avg_green": avg_green,
         "avg_red": statistics.fmean(red) if red else None, "green_days": len(green), "red_days": len(red),
         "concentration": top2 / sum(green) * 100 if green else None,
@@ -306,10 +383,11 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
         "oor_worst": min(oor_loss) if oor_loss else None,
         "oor_median": statistics.median(oor_loss) if oor_loss else None,
         "kind": kind, "kind_fit": kind_fit, "hold": hold, "range": rng, "mcap": mcap, "per_day": per_day,
-        "follow": follow, "play": play[0], "play_text": play[1],
+        "follow": follow, "play": play, "play_text": ARCHETYPE_TEXT[play], "play_share": play_share,
         "style": M.style(tr)[0],
-        "sides": [(SIDE_LABEL[s], sides.count(s) / len(sides) * 100) for s in ("bid", "both", "ask")] if sides else [],
-        "range_dist": distribution([M.range_pct(t) for t in tr], RANGE_BUCKETS),
+        "sides": [(SIDE_LABEL[s], sides.count(s) / len(sides) * 100) for s in ("ask", "both", "bid")] if sides else [],
+        "token_only": sides.count("ask") / len(sides) * 100 if sides else None, "token_only_n": sides.count("ask"),
+        "range_dist": [(n, v) for n, v in distribution([M.range_pct(t) for t in tr], RANGE_BUCKETS) if v > 0],
         "hold_dist": distribution(holds, HOLD_BUCKETS),
         "mcap_dist": distribution([t["mcap"] for t in tr], MCAP_BUCKETS),
         "mcap_known": sum(1 for t in tr if t["mcap"] is not None), "daily": daily,
@@ -317,7 +395,7 @@ def analyze(positions, now, start, end=None, real=False, multiday_s=M.MULTIDAY_S
         "eth_share": sum(p["dep"] for p in scope if p.get("eth_pair")) / (sum(p["dep"] for p in scope) or 1) * 100,
     }
     a["flags"] = flags(a)
-    a["verdict"], a["why"] = verdict(a)
+    a["verdict"], a["why"] = tier(a)
     return a
 
 
@@ -353,14 +431,14 @@ PERIODS = ("24 hours", "7 days", "14 days", "30 days", "This month", "Last month
 # cash, and the most one wallet may get (share of what is deployed).
 PROFILES = {
     "Safety": {"reserve": 0.30, "cap": 0.25, "top": None,
-               "text": "Only steady, proven wallets (COPY/WATCH with profit factor ≥ 1.3, drawdown under 25%, "
-                       "10+ closed positions, followable). Weighted toward smooth returns, 30% kept in cash."},
+               "text": "Only ELITE and SOLID wallets: profitable, shallow drawdowns, enough history, followable. "
+                       "Weighted toward smooth returns (multiday players first), 30% kept in cash."},
     "Balanced": {"reserve": 0.15, "cap": 0.35, "top": None,
-                 "text": "Every non-rejected, followable wallet, weighted by ROI × profit factor and damped by "
-                         "drawdown. 15% kept in cash."},
+                 "text": "ELITE, SOLID and MIXED wallets that aren't bots, weighted by ROI × profit factor and damped "
+                         "by drawdown. 15% kept in cash."},
     "Aggressive": {"reserve": 0.05, "cap": 0.50, "top": 3,
-                   "text": "The 3 highest-ROI profitable wallets, weighted hard toward the best. Only 5% in cash: "
-                           "bigger upside, bigger drawdowns."},
+                   "text": "The 3 highest-ROI wallets that aren't rejected, weighted hard toward the best. Only 5% in "
+                           "cash: bigger upside, bigger drawdowns."},
 }
 MIN_TICKET = 50.0  # USD: less than this in a wallet isn't worth mirroring
 SMALL_TRADE = 20.0  # USD per trade below which copying gets impractical
@@ -373,15 +451,14 @@ def _weight(profile, a):
     if a["net"] <= 0 or r <= 0:
         return 0.0
     if profile == "Safety":
-        ok = (a["verdict"] in ("COPY", "WATCH") and pf >= 1.3 and dd < 25 and a["follow"] != "✗"
-              and a["closed"] >= COPY_MIN_CLOSED)
+        ok = a["verdict"] in ("ELITE", "SOLID")
         conc = a["concentration"] if a["concentration"] is not None else 50.0
         return (math.sqrt(r) * min(pf, 3) / 3 / (1 + dd / 10) * (1 - min(conc, 100) / 200)
-                * (1.2 if a["kind"] == "multiday" else 0.8)) if ok else 0.0
+                * {"multiday": 1.2, "hybrid": 1.0}.get(a["kind"], 0.8)) if ok else 0.0
     if profile == "Balanced":
-        ok = a["verdict"] != "REJECT" and a["follow"] != "✗"
+        ok = a["verdict"] in ("ELITE", "SOLID", "MIXED") and a["follow"] != "✗"
         return r * min(pf, 4) / 4 / (1 + dd / 25) if ok else 0.0
-    return r ** 1.5  # Aggressive: any profitable wallet, the best ones far ahead
+    return r ** 1.5 if a["verdict"] != "REJECT" else 0.0  # Aggressive: the best ones far ahead
 
 
 def _capped(weights, cap):

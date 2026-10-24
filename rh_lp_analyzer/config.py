@@ -59,6 +59,9 @@ DEFAULTS = {
     # Read the wallet's positions from the Blockscout explorer API first (saves
     # the RPC most of the work); 0 = always use eth_getLogs.
     "EXPLORER_API": "1",
+    # RH Wallet Finder's database, read-only, as the first source: empty = the
+    # one next to this folder (rh_wallet_finder/data/wallets.db), 0 = don't.
+    "WALLET_FINDER_DB": "",
     "RPC_WORKERS": "6",
     "LOG_CHUNK": "20000",
 }

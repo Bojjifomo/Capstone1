@@ -7,7 +7,6 @@ tl, tu, mcap. Positions opened together (same pool, same block) are one trade.
 """
 import math
 import statistics
-import time
 
 DAY = 86400
 FULL_RANGE_PCT = 1e6  # anything wider reads as "full range"

@@ -1,6 +1,6 @@
 # RH LP Analyzer
 
-App **Streamlit terpisah** (nggak nyentuh RH Wallet Finder) buat bedah wallet LP
+App **Streamlit terpisah** (nggak ngubah RH Wallet Finder; databasenya cuma dibaca kalau ada) buat bedah wallet LP
 **Uniswap V4 di Robinhood Chain** buat copytrade, ala Apex Liquidity. Datanya
 dibaca langsung dari chain per wallet pakai RPC lu, nggak butuh database / sync
 yang jalan terus.
@@ -28,47 +28,59 @@ CALL_RPC_URL = "alchemy key"
 APP_PASSWORD = "password buat halaman ini"
 ```
 
-## Isinya
+## Isinya (layout ala Apex Liquidity)
 
 **Single wallet**: paste 1 wallet (atau beberapa, digabung), pilih period →
-- Verdict `COPY` / `WATCH` / `REJECT` (+ alasannya), kelas Multiday / Degen, gameplay.
-- Net PnL, Capital ROI (+ ≈/30 hari), win rate, profit factor, modal ke-deploy
-  (median & peak), posisi open + floating PnL, fee, grafik PnL harian + kumulatif.
-- Risk: max drawdown, hari terburuk, out-of-range yang rugi, bisa diikutin manual atau pace bot.
-- Profit quality, recommended filter (mcap × sisi deposit × pool ETH/USDG),
-  position sizing ke modal lu, distribusi range / hold / mcap, tabel pool,
-  detail per posisi (+ CSV), ★ simpan wallet, link bisa di-share.
+- **Quality**: `ELITE` (kuat & profit) / `SOLID` (layak copy) / `MIXED` (hati-hati,
+  kecilin size) / `WEAK` (hindari) / `REJECT` (rugi), plus alasan kenapa belum naik tier.
+- **Trader type**: `MULTIDAY` / `HYBRID` / `DEGEN` (dari mcap token, lama hold, lebar range).
+- **Gameplay archetype**: Spike Hunter, Liquid Scalper, Micro Degen, Intraday Swinger,
+  Conviction Holder, Patient Big-Cap LP, Range Farmer, Adaptive.
+- Flag: profit concentration, tail risk, efficiency, out-of-range, pace bot.
+- Kartu Performance & Returns, Daily & Cumulative PnL, Risk Management, Profit Quality
+  (masing-masing ada "What these mean").
+- **Filters**: min/max market cap pas masuk + Position Sided (ETH/USDG Only, Dual Sided,
+  Token Only), berlaku ke seluruh laporan.
+- **Find the best filter**: grid search rentang mcap × sided × pool ETH/USDG, bisa langsung di-apply.
+- Position Sizing (balance / target deploy lu, atau baca wallet lu), Position Composition,
+  distribusi range / durasi / mcap, tabel pool, Per-Position Detail (+ CSV), share link, ★ simpan wallet.
+- **Better wallets**: kalau database RH Wallet Finder ada, wallet sekelas yang skornya lebih tinggi.
 
-**Batch & compare**: paste sampai 20 wallet → tiap wallet dianalisa sendiri,
-dijejerin di satu tabel (paling bagus di atas) + kurva PnL barengan. Di bawahnya
-**Split your capital**: masukin modal (default $2,500), dapet pembagian per wallet:
+**Compare wallets**: paste sampai 20 wallet → tiap wallet dianalisa sendiri,
+dijejerin (paling bagus di atas) + kurva PnL barengan. Di bawahnya **Split your
+capital**: modal lu (default $2,500) dibagi per profil:
 
 | Profil | Wallet yang masuk | Cash | Maks per wallet |
 | --- | --- | --- | --- |
-| **Safety** | COPY/WATCH, profit factor ≥ 1.3, drawdown < 25%, ≥ 10 posisi closed, bisa diikutin; bobot ke return yang mulus (Multiday dapet lebih) | 30% | 25% |
-| **Balanced** | Semua yang nggak REJECT & bukan pace bot; bobot ROI × profit factor, diredam drawdown | 15% | 35% |
-| **Aggressive** | 3 wallet ROI tertinggi yang profit; bobot condong ke yang terbaik | 5% | 50% |
+| **Safety** | Cuma ELITE / SOLID; bobot ke return yang mulus (Multiday dapet lebih) | 30% | 25% |
+| **Balanced** | ELITE / SOLID / MIXED yang bukan bot; bobot ROI × profit factor, diredam drawdown | 15% | 35% |
+| **Aggressive** | 3 wallet ROI tertinggi yang nggak REJECT; condong ke yang terbaik | 5% | 50% |
 
-Tiap wallet dikasih: berapa $, size per trade & maks per posisi (trade dia
-diskalain ke jatah lu), perkiraan 30 hari kalau performa 30 hari terakhir
-keulang, dan drawdown yang harus siap lu tahan. Jatah < $50 dibuang (nggak worth
-di-mirror); wallet yang LP di pool yang sama ditandain (copy dua-duanya = taruhan
-dobel). Ini cuma dari data masa lalu, bukan saran finansial.
+Tiap wallet dikasih $ + size per trade & maks per posisi, perkiraan 30 hari kalau
+performa keulang, drawdown yang harus siap ditahan, dan peringatan kalau dua wallet
+main di pool yang sama. Cuma dari data masa lalu, bukan saran finansial.
 
-## Cara kerjanya
+## Dari mana datanya (hemat RPC)
 
-1. `eth_getLogs` Transfer NFT PositionManager **yang difilter ke alamat wallet**
-   (murah): mint = buka posisi, burn = tutup. Mulai dari awal period − 30 hari
-   (*Lookback days* di Settings), biar posisi yang dibuka sebelum period tetap kehitung.
-2. Receipt tx mint: pool + range tiap posisi.
-3. `ModifyLiquidity` pool-pool itu cuma selama umur posisinya: semua add / remove / claim fee.
-4. Tiap event dihargai dari state chain 1 blok sebelumnya (Multicall3 + StateView,
-   harga ETH dari pool ETH/USDG); posisi open dinilai di blok terbaru.
+Urutan sumber, dari yang gratis:
 
-Semua disimpen di `data/cache.db`, jadi analisa wallet yang sama lagi cuma baca
-blok baru. Butuh RPC yang support **archive** `eth_call` dan `eth_getLogs`.
-Analisa pertama wallet yang aktif banget (ribuan posisi) bisa makan beberapa menit
-dan banyak request RPC.
+1. **Database RH Wallet Finder** (`../rh_wallet_finder/data/wallets.db`, dibuka
+   **read-only**, nggak diubah sama sekali): dia udah nge-index semua posisi V4 dan
+   banyak event-nya udah dihargai → **nol request RPC** buat nyari posisi. Kalau
+   databasenya di tempat lain, isi `WALLET_FINDER_DB` di `.env`.
+2. **Explorer Blockscout** (API daftar transfer NFT + transaksi wallet), kalau bisa diakses.
+3. **Alchemy Transfers API**, kalau RPC 2 lu Alchemy dan network-nya didukung.
+4. Terakhir baru **`eth_getLogs`** lewat RPC. Kalau sebuah RPC cuma ngizinin range blok
+   kecil banget (Alchemy free tier: 10 blok), dia berhenti dan ngasih tau, bukannya
+   ngabisin kuota.
+
+Event LP diambil dari receipt transaksi; scan log pool cuma buat posisi yang angka
+liquidity-nya nggak balance. Harga tiap event dibaca sekali dari state chain (archive
+`eth_call`), terus disimpen di `data/cache.db`. Di bawah "Analysis complete" ada berapa
+detik, berapa request RPC, dan sumber yang dipakai.
+
+Catatan kuota: RH Wallet Finder yang sync terus pakai SolidRPC yang sama. Kalau kuota
+harian habis, pause dulu sync-nya atau tambahin RPC kedua.
 
 ## Batasan
 

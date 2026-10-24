@@ -47,7 +47,8 @@ class AnalyzeTest(unittest.TestCase):
         self.assertEqual(a["oor_rate"], 25)
         self.assertEqual(a["kind"], "multiday")
         self.assertEqual(a["follow"], "✓")
-        self.assertEqual(a["verdict"], "COPY")
+        self.assertEqual(a["verdict"], "ELITE")
+        self.assertEqual(a["play"], "Intraday Swinger")  # $1M+ tokens held for hours
 
     def test_real_pnl_charges_cost(self):
         raw = A.analyze(self.ps, NOW, NOW - 30 * DAY)
@@ -60,7 +61,7 @@ class AnalyzeTest(unittest.TestCase):
 
     def test_few_trades_only_watch(self):
         a = A.analyze(self.ps[:5], NOW, NOW - 30 * DAY)
-        self.assertEqual(a["verdict"], "WATCH")
+        self.assertEqual(a["verdict"], "MIXED")
         self.assertTrue(any("closed positions" in w for w in a["why"]))
 
     def test_past_period_has_no_open_positions(self):
@@ -86,10 +87,41 @@ class AnalyzeTest(unittest.TestCase):
         self.assertAlmostEqual(s["per_trade"], a["size"] / 10)
 
 
+class ClassifyTest(unittest.TestCase):
+    def test_archetypes(self):
+        def t(hold, mcap, width):
+            p = pos(1, 10 * DAY, hold, 100, 1, mcap=mcap)
+            p["tu"] = width
+            return A.M.trades([p])
+        self.assertEqual(A.archetype(t(1800, 5e4, 600), NOW)[0], "Spike Hunter")
+        self.assertEqual(A.archetype(t(1800, 5e6, 600), NOW)[0], "Liquid Scalper")
+        self.assertEqual(A.archetype(t(5 * 3600, 5e4, 600), NOW)[0], "Micro Degen")
+        self.assertEqual(A.archetype(t(3 * DAY, 5e4, 600), NOW)[0], "Conviction Holder")  # ~6% wide
+        self.assertEqual(A.archetype(t(3 * DAY, 5e6, 9000), NOW)[0], "Patient Big-Cap LP")
+        self.assertEqual(A.archetype(t(3 * DAY, 5e4, 9000), NOW)[0], "Range Farmer")
+        mixed = A.M.trades([pos(i, 10 * DAY, h, 100, 1, mcap=m) for i, (h, m) in
+                            enumerate([(1800, 5e4), (5 * 3600, 5e6), (3 * DAY, 5e4)])])
+        self.assertEqual(A.archetype(mixed, NOW)[0], "Adaptive")
+
+    def test_trader_types(self):
+        slow = A.M.trades([pos(i, 10 * DAY, 8 * 3600, 100, 1, mcap=5e6) for i in range(4)])
+        fast = A.M.trades([pos(i, 10 * DAY, 600, 100, 1, mcap=5e4) for i in range(4)])
+        self.assertEqual(A.trader_type(slow, NOW, -5)[0], "multiday")
+        self.assertEqual(A.trader_type(fast, NOW, -5)[0], "degen")
+        self.assertEqual(A.trader_type(slow[:2] + fast[:2], NOW, -5)[0], "hybrid")
+
+    def test_filter_positions(self):
+        ps = [pos(1, DAY, 600, 100, 1, mcap=5e4, side="bid"), pos(2, DAY, 600, 100, 1, mcap=5e6, side="ask"),
+              pos(3, DAY, 600, 100, 1, mcap=None, side="both")]
+        self.assertEqual([p["token_id"] for p in A.filter_positions(ps, mcap_min=1e6)], [2])
+        self.assertEqual([p["token_id"] for p in A.filter_positions(ps, sides=("bid", "both"))], [1, 3])
+        self.assertEqual(len(A.filter_positions(ps)), 3)
+
+
 class AllocateTest(unittest.TestCase):
     def wallets(self):
         steady = [pos(i, (25 - i) * DAY, 8 * 3600, 1000, 30 if i % 5 else -10) for i in range(20)]
-        wild = [pos(100 + i, (25 - i) * DAY, 8 * 3600, 1000, 300 if i % 3 else -250) for i in range(20)]
+        wild = [pos(100 + i, (25 - i) * DAY, 8 * 3600, 1000, 300 if i % 3 else -450) for i in range(20)]
         loser = [pos(200 + i, (25 - i) * DAY, 8 * 3600, 1000, -20) for i in range(20)]
         return {k: A.analyze(v, NOW, NOW - 30 * DAY) for k, v in
                 (("steady", steady), ("wild", wild), ("loser", loser))}
@@ -107,7 +139,8 @@ class AllocateTest(unittest.TestCase):
         safe = {x["addr"]: x["usd"] for x in A.allocate(res, 2500, "Safety")["rows"]}
         aggr = {x["addr"]: x["usd"] for x in A.allocate(res, 2500, "Aggressive")["rows"]}
         self.assertIn("steady", safe)
-        self.assertNotIn("wild", safe)  # its drawdown is too deep for Safety
+        self.assertEqual(res["wild"]["verdict"], "MIXED")
+        self.assertNotIn("wild", safe)  # Safety takes ELITE / SOLID only
         self.assertGreaterEqual(aggr.get("wild", 0), aggr.get("steady", 0))  # Aggressive chases ROI...
         self.assertGreater(A._weight("Aggressive", res["wild"]), 2 * A._weight("Aggressive", res["steady"]))
         self.assertEqual(sum(1 for _ in aggr), 2)  # ...each capped at half of what goes in

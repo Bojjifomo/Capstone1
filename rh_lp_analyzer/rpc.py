@@ -48,6 +48,11 @@ class RangeError(RPCError):
         self.hint = hint  # a block count the provider says will work
 
 
+class TooCostly(TransportError):
+    """Reading this through this RPC would take too many requests (its log range
+    limit is tiny): another RPC may do it cheaply."""
+
+
 class LogsInterrupted(RPCError):
     """get_logs stopped part-way: the logs it had, and where to carry on."""
 
@@ -237,16 +242,23 @@ class RPC:
             return e
 
     # ---- logs ------------------------------------------------------------
-    def get_logs(self, flt, start, end, chunk, progress=None, ceiling=200_000):
+    def get_logs(self, flt, start, end, chunk, progress=None, ceiling=200_000, max_calls=None):
         """All logs for flt between start and end (inclusive), oldest first.
 
         chunk is a starting guess; it shrinks when the provider refuses and
-        grows back while answers stay small. Returns (logs, chunk).
+        grows back while answers stay small. Returns (logs, chunk). With
+        max_calls, a provider whose range limit would need more requests than
+        that for what is left (Alchemy's free tier: 10 blocks) stops it early
+        with a TooCostly error instead of spending the quota.
         """
         out = []
         b = start
         state = {"chunk": max(1, chunk), "ceiling": ceiling}
         while b <= end:
+            if max_calls and (end - b + 1) / state["ceiling"] > max_calls:
+                raise LogsInterrupted(TooCostly(
+                    f"{self.host} allows only {state['ceiling']:,} blocks per eth_getLogs: the "
+                    f"{end - b + 1:,} blocks left would take over {max_calls:,} requests"), out, b, state["chunk"])
             # fetch up to `workers` chunks at once
             spans = []
             s = b
@@ -325,12 +337,14 @@ def _result(out, method, host="RPC"):
     err = out.get("error")
     if err:
         msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-        if method == "eth_getLogs" and any(w in msg.lower() for w in _RANGE_WORDS):
-            raise RangeError(msg, _range_hint(msg))
         # some providers answer a spent allowance as an error inside a normal reply
-        # (SolidRPC: "Daily response quota exceeded"), not as HTTP 429
+        # (SolidRPC: "Daily response quota exceeded"), not as HTTP 429. Checked
+        # before the range words: "exceeded" there would read as "range too big"
+        # and shrink the range down to one block, a request per step.
         if _quota(msg) and any(w in msg.lower() for w in ("exceed", "reached", "limit", "used up", "exhausted")):
             raise QuotaError(f"{host}: plan limit reached ({msg.strip()[:200]})")
+        if method == "eth_getLogs" and any(w in msg.lower() for w in _RANGE_WORDS):
+            raise RangeError(msg, _range_hint(msg))
         raise RPCError(f"{method}: {msg}")
     return out.get("result")
 
@@ -460,7 +474,7 @@ class RPCPool:
         gave_up = self._gave_up(None)
         return [gave_up if r is None else r for r in results]
 
-    def get_logs(self, flt, start, end, chunk, progress=None, ceiling=200_000):
+    def get_logs(self, flt, start, end, chunk, progress=None, ceiling=200_000, max_calls=None):
         """RPC.get_logs on the first member that can; a stretch at a time on the
         others, so the first takes over again once it has rested."""
         out, b, skip, last = [], start, [], None
@@ -477,7 +491,7 @@ class RPCPool:
                 if progress:
                     progress(b0 - start + done, end - start + 1, n0 + n)
             try:
-                got, m.log_chunk = m.get_logs(flt, b, stop, m.log_chunk or chunk, prog, ceiling)
+                got, m.log_chunk = m.get_logs(flt, b, stop, m.log_chunk or chunk, prog, ceiling, max_calls)
                 out += got
                 b = stop + 1
                 deadline = time.time() + self.WAIT_S
