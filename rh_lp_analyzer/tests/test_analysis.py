@@ -167,6 +167,23 @@ class AllocateTest(unittest.TestCase):
         self.assertGreaterEqual(min(shares), A.PROFILES["Aggressive"]["floor"] - 1e-9)
         self.assertAlmostEqual(r["deployed"], 95000)
 
+    def test_copy_settings(self):
+        # usual trades of $100, now and then one of $3,000
+        ps = [pos(i, (25 - i) * DAY, 3600, 3000 if i % 10 == 0 else 100, 5) for i in range(20)]
+        a = A.analyze(ps, NOW, NOW - 30 * DAY)
+        r = A.allocate({"w": a}, 1000, "Balanced")["rows"][0]
+        # copy % from its peak: at its busiest your copies add up to exactly its share
+        self.assertAlmostEqual(r["copy_pct"], r["usd"] / a["peak"] * 100)
+        self.assertAlmostEqual(r["peak_use"], r["usd"])
+        self.assertAlmostEqual(r["max_trade"], a["largest"] * r["ratio"])
+        self.assertLessEqual(r["max_trade"], r["usd"])
+        self.assertFalse(r["capped"])
+        # from its usual capital: more at work, and its biggest trade would be over the share: capped
+        u = A.allocate({"w": a}, 1000, "Balanced", basis="usual")["rows"][0]
+        self.assertGreater(u["copy_pct"], r["copy_pct"])
+        self.assertTrue(u["capped"])
+        self.assertAlmostEqual(u["max_trade"], u["usd"])
+
     def test_tiny_capital_drops_small_tickets(self):
         r = A.allocate(self.wallets(), 60, "Balanced")
         self.assertEqual(len(r["rows"]), 1)  # $57 can't be split into two $50+ tickets
@@ -177,8 +194,8 @@ class AllocateTest(unittest.TestCase):
         r = A.allocate(res, 2500, "Balanced")
         sim = r["sim"]
         self.assertTrue(sim["daily"])
-        # each wallet's daily PnL scaled to your share of it, added up
-        want = sum(x["usd"] / res[x["addr"]]["capital"] * res[x["addr"]]["net"] for x in r["rows"])
+        # each wallet's daily PnL times your copy ratio for it, added up
+        want = sum(x["ratio"] * res[x["addr"]]["net"] for x in r["rows"])
         self.assertAlmostEqual(sim["total"], want, places=6)
         self.assertLessEqual(sim["max_dd"], 0)
         self.assertEqual(len(sim["pairs"]), 1)

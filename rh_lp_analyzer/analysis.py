@@ -583,11 +583,18 @@ def _shares(weights, cap, floor):
             fixed[k] = cap if over else floor
 
 
-def allocate(analyses, capital, profile, deploy_pct=DEPLOY_PCT, include_reject=False):
+def allocate(analyses, capital, profile, deploy_pct=DEPLOY_PCT, include_reject=False, basis="peak"):
     """Split deploy_pct % of capital (USD) over every followed wallet {addr: analysis}
-    (REJECT ones only when include_reject), leaning the profile's way.
-    -> {rows: [{addr, share, usd, ratio, per_trade, max_trade, roi_30d, dd, verdict, small}], deployed, reserve,
-        exp_30d, dd_usd, skipped: [addr], dropped: [addr], text, sim}"""
+    (REJECT ones only when include_reject), leaning the profile's way, and turn
+    each share into the two settings a copy-trade setup takes: copy % (of the
+    wallet's position size) and a max cap per position.
+
+    basis 'peak': copy % = share ÷ the most it ever had in at once, so your copies
+    of it never add up to more than its share even at its busiest (a setup with
+    no per-wallet total cap needs this); 'usual': ÷ its median deployed capital,
+    more of the money at work but over the share when it goes big.
+    -> {rows: [{addr, share, usd, ratio, copy_pct, per_trade, max_trade, usual, peak_use, capped, fits, roi_30d,
+        dd, verdict, small}], deployed, reserve, exp_30d, dd_usd, skipped, dropped, text, sim, basis}"""
     p = PROFILES[profile]
     weights = {k: _weight(profile, a) for k, a in analyses.items()
                if a and (include_reject or a["verdict"] != "REJECT")}
@@ -607,18 +614,23 @@ def allocate(analyses, capital, profile, deploy_pct=DEPLOY_PCT, include_reject=F
     for k, sh in sorted(shares.items(), key=lambda kv: -kv[1]):
         a = analyses[k]
         amt = sh * deploy
-        sz = sizing(a, amt) or {"ratio": 0.0, "per_trade": 0.0, "max_trade": 0.0}
+        base = (a["peak"] if basis == "peak" else a["capital"]) or a["capital"] or a["peak"]
+        ratio = amt / base if base else 0.0
+        per, top = a["size"] * ratio, a["largest"] * ratio
         rows.append({"addr": k, "share": amt / capital * 100 if capital else 0.0, "usd": amt,
-                     "ratio": sz["ratio"], "per_trade": sz["per_trade"], "max_trade": sz["max_trade"],
-                     "roi_30d": a["roi_30d"],
-                     "dd": a["dd"], "verdict": a["verdict"], "small": sz["per_trade"] < SMALL_TRADE})
+                     "ratio": ratio, "copy_pct": ratio * 100, "per_trade": min(per, amt), "max_trade": min(top, amt),
+                     "capped": top > amt + 0.005, "usual": a["capital"] * ratio, "peak_use": a["peak"] * ratio,
+                     "fits": amt / per if per else None, "roi_30d": a["roi_30d"], "dd": a["dd"],
+                     "verdict": a["verdict"], "small": per < SMALL_TRADE})
     deployed = sum(r["usd"] for r in rows)
     sim = simulate(analyses, rows)
     return {"rows": rows, "deployed": deployed, "reserve": capital - deployed,
-            "exp_30d": sum(r["usd"] * (r["roi_30d"] or 0) / 100 for r in rows),
-            "dd_usd": sum(r["usd"] * (r["dd"] or 0) / 100 for r in rows),
+            # its ROI and drawdown are % of its usual capital: apply them to your usual exposure
+            "exp_30d": sum(r["usual"] * (r["roi_30d"] or 0) / 100 for r in rows),
+            "dd_usd": sum(r["usual"] * (r["dd"] or 0) / 100 for r in rows),
+            "usual": sum(r["usual"] for r in rows),
             "skipped": [k for k, a in analyses.items() if a and k not in weights and k not in dropped],
-            "dropped": dropped, "text": p["text"], "sim": sim}
+            "dropped": dropped, "text": p["text"], "sim": sim, "basis": basis}
 
 
 def _corr(x, y):
@@ -631,15 +643,15 @@ def _corr(x, y):
 
 
 def simulate(analyses, rows):
-    """Your copy of the batch, replayed: each wallet's daily realized PnL scaled by
-    your share ÷ its median deployed capital, added up. -> {daily, total, roi, dd
+    """Your copy of the batch, replayed: each wallet's daily realized PnL times
+    your copy ratio for it, added up. -> {daily, total, roi, dd
     stats (as drawdown_stats, % of what went in), worst_day, best_day, green_share,
     corr (average pairwise correlation of the wallets' daily PnL), pairs}"""
     deployed = sum(r["usd"] for r in rows)
     series = {}
     for r in rows:
         a = analyses[r["addr"]]
-        k = r["usd"] / a["capital"] if a["capital"] else 0.0
+        k = r["ratio"]
         series[r["addr"]] = {d["day"]: d["pnl"] * k for d in a["daily"]}
     days = sorted({d for s in series.values() for d in s})
     if not days:

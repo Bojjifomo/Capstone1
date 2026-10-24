@@ -1223,22 +1223,30 @@ def allocation(results):
     capital = c1.number_input("Your capital (USD)", min_value=0.0, value=2500.0, step=100.0, key="alloc_capital")
     deploy = c2.slider("Put to work (% of capital)", 50, 100, int(A.DEPLOY_PCT), key="alloc_deploy",
                        help="The rest stays in your wallet as a buffer (gas, top-ups, a bad day).")
-    with_rej = st.checkbox("Also give REJECT wallets a (small) share", key="alloc_rej",
+    c1, c2 = st.columns(2)
+    basis = c1.radio("Max cap & copy size based on its…", ["peak", "usual"], horizontal=True, key="alloc_basis",
+                     format_func={"peak": "busiest moment (safe)", "usual": "usual capital"}.get,
+                     help="Your copy-trade setup has a % and a max cap per position, no total cap per wallet. "
+                          "Busiest moment: the % is set so your copies of a wallet never add up to more than its "
+                          "share, even when it has the most open. Usual capital: more of your money at work most of "
+                          "the time, but more than its share when it goes big.")
+    with_rej = c2.checkbox("Also give REJECT wallets a (small) share", key="alloc_rej",
                            help="Off: wallets that lost money over the period get nothing.")
     if not results or capital <= 0:
         return
-    plans = {name: A.allocate(results, capital, name, deploy, with_rej) for name in A.PROFILES}
+    plans = {name: A.allocate(results, capital, name, deploy, with_rej, basis) for name in A.PROFILES}
 
     def sim(r, k):
         return (r["sim"] or {}).get(k)
     comp = pd.DataFrame([{
         "Profile": name, "Wallets": len(r["rows"]), "Largest share": max((x["share"] for x in r["rows"]), default=None),
-        "Into wallets": r["deployed"], "Cash": r["reserve"], "Replay PnL": sim(r, "total"),
+        "Shared out": r["deployed"], "Usually at work": r["usual"], "Cash": r["reserve"], "Replay PnL": sim(r, "total"),
         "Replay /30d": sim(r, "roi_30d"), "Max DD": sim(r, "max_dd"), "Back in": sim(r, "recover_days"),
         "Under water": sim(r, "underwater_days"), "Worst day": sim(r, "worst_day"),
         "Green days": sim(r, "green_share")} for name, r in plans.items()])
     st.markdown("**The three ways to split it, side by side** — replayed on these wallets' own results over the period")
-    st.dataframe(comp.style.format({"Largest share": lambda v: pct(v, 1), "Into wallets": money, "Cash": money,
+    st.dataframe(comp.style.format({"Largest share": lambda v: pct(v, 1), "Shared out": money,
+                                    "Usually at work": money, "Cash": money,
                                     "Replay PnL": lambda v: money(v, True), "Replay /30d": lambda v: pct(v, 1),
                                     "Max DD": lambda v: pct(v, 1),
                                     "Back in": lambda v: "not yet" if v is None or v != v else f"{v:.0f}d",
@@ -1256,15 +1264,17 @@ def allocation(results):
                 continue
             sm = r["sim"] or {}
             back = ("back in " + days_txt(sm.get("recover_days"))) if sm.get("recovered") else "not back yet"
-            cards([("Into wallets", money(r["deployed"]), f"{deploy}% of {money(capital)} · {len(r['rows'])} wallets",
+            cards([("Shared out", money(r["deployed"]), f"{deploy}% of {money(capital)} · {len(r['rows'])} wallets",
                     "pos", None),
+                   ("Usually at work", money(r["usual"]), f"{r['usual'] / capital * 100:.0f}% of your capital on a "
+                    "usual day" + (" (more when they go big)" if basis == "usual" else ""), "neu", None),
                    ("Kept in cash", money(r["reserve"]), f"{100 - deploy}% buffer", "neu", None),
                    ("Replayed PnL", money(sm.get("total"), True),
                     f"{pct(sm.get('roi'), 1)} over the period · ≈{pct(sm.get('roi_30d'), 1)}/30d", tone(sm.get("total")),
                     None),
                    ("Portfolio max drawdown", pct(sm.get("max_dd"), 1),
                     f"{money(sm.get('max_dd_usd'))} · {back}", "neg" if (sm.get("max_dd") or 0) < -0.05 else "pos",
-                    None)], 4)
+                    None)], 5)
             cards([("Longest under water", days_txt(sm.get("underwater_days")), "longest wait for a new high", "neu",
                     None),
                    ("Worst day", money(sm.get("worst_day")), f"best day {money(sm.get('best_day'), True)}",
@@ -1275,21 +1285,41 @@ def allocation(results):
                    ("Wallets move together", "–" if sm.get("corr") is None else f"{sm['corr']:.2f}",
                     "average daily correlation · lower = better spread", "neg" if (sm.get("corr") or 0) > 0.5 else "neu",
                     None)], 5)
-            df = pd.DataFrame([{"Wallet": short(x["addr"]), "Quality": x["verdict"], "Share": x["share"],
-                                "USD": x["usd"], "Ratio": x["ratio"], "Per trade (total)": x["per_trade"],
-                                "Max per trade (total)": x["max_trade"],
+            df = pd.DataFrame([{"Wallet": short(x["addr"]), "Quality": x["verdict"], "① Share (% port)": x["share"],
+                                "② Max cap per position": x["max_trade"], "Share in $": x["usd"],
+                                "Copy % of its size": x["copy_pct"],
+                                "Usual copy": x["per_trade"], "Usually in": x["usual"], "At its busiest": x["peak_use"],
                                 "ROI/30d": x["roi_30d"], "Max DD": x["dd"],
-                                "Note": "trades get tiny: copy only its bigger trades" if x["small"] else ""}
+                                "Note": "; ".join(n for n, on in (
+                                    ("its biggest trade is over this wallet's share: cap set to the share",
+                                     x["capped"]),
+                                    ("copies get tiny: they may fall under your setup's minimum", x["small"])) if on)}
                                for x in r["rows"]])
-            c1, c2 = st.columns([3, 2])
+            st.markdown("<span style='color:#8392a6;font-size:13px'>For each wallet, set <b>① Share</b> (its % of your "
+                        "port) and <b>② Max cap per position</b> (the most one copied position may be, all ladder ranges "
+                        "together) in your copy-trade setup. The rest is for reading: <b>Copy % of its size</b> = how "
+                        "big your copies are next to its positions · <b>Usual copy</b> = a typical copy · <b>Usually in"
+                        "</b> / <b>At its busiest</b> = what your copies of it add up to on a usual day / when it has the "
+                        "most open.</span>", unsafe_allow_html=True)
+            st.dataframe(df.style.format({"① Share (% port)": lambda v: pct(v, 1), "Copy % of its size": "{:.1f}%",
+                                          "② Max cap per position": money, "Share in $": money, "Usual copy": money,
+                                          "Usually in": money,
+                                          "At its busiest": money, "ROI/30d": lambda v: pct(v, 1),
+                                          "Max DD": lambda v: pct(v, 1)}, na_rep="–")
+                         .map(lambda v: f"color: {TIER_COLOR[v]}; font-weight: 700" if v in TIER_COLOR else "",
+                              subset=["Quality"]), hide_index=True, **stretch(st.dataframe),
+                         column_config={"① Share (% port)": st.column_config.Column(
+                                            help="Set this in your copy-trade setup: the % of your port for this wallet."),
+                                        "② Max cap per position": st.column_config.Column(
+                                            help="Set this in your copy-trade setup: its biggest position (all ladder "
+                                                 "ranges together) scaled to your share; one copy should never be "
+                                                 "bigger."),
+                                        "Copy % of its size": st.column_config.Column(
+                                            help="Your copies next to its positions: your share ÷ " + (
+                                                "the most it ever had open at once." if basis == "peak" else
+                                                "its usual capital."))})
+            c1, _ = st.columns([2, 3])
             with c1:
-                st.dataframe(df.style.format({"Share": lambda v: pct(v, 1), "USD": money, "Ratio": "{:.3f}×",
-                                              "Per trade (total)": money, "Max per trade (total)": money,
-                                              "ROI/30d": lambda v: pct(v, 1),
-                                              "Max DD": lambda v: pct(v, 1)}, na_rep="–")
-                             .map(lambda v: f"color: {TIER_COLOR[v]}; font-weight: 700" if v in TIER_COLOR else "",
-                                  subset=["Quality"]), hide_index=True, **stretch(st.dataframe))
-            with c2:
                 pie = pd.DataFrame([{"wallet": short(x["addr"]), "usd": x["usd"]} for x in r["rows"]]
                                    + [{"wallet": "cash", "usd": r["reserve"]}])
                 st.altair_chart(alt.Chart(pie).mark_arc(innerRadius=55, stroke="#0b1016", strokeWidth=2).encode(
@@ -1332,10 +1362,8 @@ def allocation(results):
         st.markdown("".join(f'<div class="flag">{icon("alert", YELLOW, 15)}<div><b>Same pools</b> — {short(x)} and '
                             f'{short(y)} share {j:.0f}% of their pools: copying both doubles the same bets.</div></div>'
                             for x, y, j in ov), unsafe_allow_html=True)
-    st.caption("Replay = each wallet's daily realized PnL over the period, scaled by your share ÷ its median deployed "
-               "capital, added up. Sizes are whole trades, as a copy-trade setup counts them: a ladder's ranges "
-               "opened together are one trade. Size each copy as its total × Ratio (Ratio = your share ÷ its median "
-               "deployed capital); Per trade = its median trade that way, Max per trade = its largest. Built from past "
-               "results only: not financial advice, the next month can look nothing like the ""last.")
+    st.caption("Replay = each wallet's daily realized PnL over the period × your Copy % for it, added up. Sizes are "
+               "whole trades, as your copy-trade setup counts them: a ladder's ranges opened together are one "
+               "position. Built from past results only: not financial advice, the next month can look nothing like the ""last.")
 
 main()
