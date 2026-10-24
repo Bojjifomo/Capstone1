@@ -391,6 +391,13 @@ def load(addrs, per):
         st.session_state["last_load"] = (f"Read in {time.time() - t0:.0f}s with {calls:,} RPC requests · via "
                                          + (", ".join(res.get("sources") or ["cache"]))
                                          + ("" if not notes else " · " + "; ".join(notes)))
+        st.session_state["load_gaps"] = {"gaps": res.get("gaps") or [], "diag": res.get("diag") or {},
+                                         "unchecked": res.get("unchecked") or 0}
+    except F.NoSource as e:
+        bar.empty()
+        st.error("Couldn't find this wallet's positions: every source failed for this period.")
+        st.markdown(diagnose(e.diag), unsafe_allow_html=True)
+        return False
     except Exception as e:  # noqa: BLE001 - show it, keep the page
         bar.empty()
         msg = str(e)
@@ -406,6 +413,36 @@ def load(addrs, per):
         c.close()
     bar.empty()
     return True
+
+
+HELP = ("**How to get it reading:** (1) run RH Wallet Finder next to this app (Capstone1/rh_wallet_finder) and let "
+        "its sync catch up: then nothing here needs eth_getLogs; (2) wait for SolidRPC's daily quota to reset, or put "
+        "an RPC with a bigger eth_getLogs range in Settings — Alchemy's free tier only reads 10 blocks per request; "
+        "(3) open the Blockscout explorer in your browser once: if it loads, the app can usually use it too.")
+
+
+def diagnose(diag):
+    """What each source said, as a list, plus how to fix it."""
+    rows = "".join(f"<p><b>{k}</b> — {v}</p>" for k, v in diag.items())
+    return f'<div class="guide">{rows}</div>\n\n' + HELP
+
+
+def gap_note(addrs):
+    """Warn when part of the period couldn't be read (the report covers the rest)."""
+    g = st.session_state.get("load_gaps") or {}
+    gaps = [x for x in g.get("gaps", []) if x["addr"] in addrs]
+    if gaps:
+        def when(t):
+            return time.strftime("%d %b %H:%M", time.gmtime(t)) + " UTC" if t else "?"
+        spans = "; ".join(f"{when(x.get('from_ts'))} → {when(x.get('to_ts'))}" for x in gaps)
+        st.markdown(f'<div class="warn">⚠ Part of the period could not be read, so positions opened or closed in it '
+                    f"are missing from this report: <b>{spans}</b>.<br><span style='color:#8392a6'>"
+                    f"{esc(gaps[0]['why'])}</span></div>", unsafe_allow_html=True)
+        with st.expander("Why, and how to fix it"):
+            st.markdown(diagnose(g.get("diag", {})), unsafe_allow_html=True)
+    elif g.get("unchecked"):
+        st.caption(f"{g['unchecked']} position(s) may miss an add / remove the RPC couldn't look up "
+                   f"({g['diag'].get('RPC pool log scan', '')}). Refresh later to complete them.")
 
 
 def filters_now():
@@ -714,6 +751,7 @@ def report(addrs, per):
         if st.button("↻ Refresh — read new blocks and re-value open positions"):
             st.session_state["loaded_runs"].discard((tuple(addrs), per))
             st.rerun()
+    gap_note(addrs)
     filters_panel()
     better = better_wallets(a["kind"] if a else "hybrid", addrs) if a else None
     if better is not None:

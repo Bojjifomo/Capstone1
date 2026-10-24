@@ -29,6 +29,7 @@ import finder_db
 import pricing
 from keccak import selector
 from pricing import Pricer, multicall
+from rpc import RPCError
 
 CONFIRMATIONS = 30
 DAY = 86400
@@ -134,11 +135,22 @@ def merge(spans):
     return out
 
 
+class NoSource(Exception):
+    """None of the sources could read the wallet's positions."""
+
+    def __init__(self, diag, gaps):
+        super().__init__("no source could read this wallet's positions")
+        self.diag, self.gaps = diag, gaps
+
+
 # ---- the loader ----------------------------------------------------------
 class Loader:
     def __init__(self, con, rpc, call_rpc, cfg, progress=lambda text, frac=None: None):
         self.con, self.rpc, self.call_rpc, self.cfg, self.progress = con, rpc, call_rpc, cfg, progress
         self.used = set()  # where this load read the wallet from
+        self.gaps = []  # block ranges no source could read: [{addr, lo, hi, why}]
+        self.unchecked = 0  # positions whose missing LP events couldn't be looked up
+        self.diag = {}  # what each source said, for the page
 
     def block_ts(self, blocks):
         """{block: timestamp}, read once and kept."""
@@ -195,6 +207,9 @@ class Loader:
         if not missing(self.con, key, lo, hi):
             return
         fp = finder_db.path(self.cfg)
+        if not fp:
+            self.diag["RH Wallet Finder database"] = "not found next to this folder" \
+                if str(self.cfg.get("WALLET_FINDER_DB", "")).lower() not in ("0", "off", "no", "false") else "switched off"
         if fp:
             try:
                 fcon = finder_db.connect(fp)
@@ -204,7 +219,11 @@ class Loader:
                     fcon.close()
             except Exception as e:  # noqa: BLE001 - a busy or older finder database: use the other sources
                 set_meta(self.con, "finder_error", str(e))
+                self.diag["RH Wallet Finder database"] = f"couldn't be read ({e})"
             else:
+                self.diag["RH Wallet Finder database"] = (
+                    f"used: its sync covers blocks {got[0]:,}–{got[1]:,}" if got else
+                    "found, but its sync doesn't cover this period")
                 if got:
                     a, b, spans = got
                     mark(self.con, key, a, b)
@@ -218,7 +237,13 @@ class Loader:
         if self._from_explorer(addr, lo, hi, since_ts) or self._from_alchemy(addr, lo, hi):
             return
         self.used.add("RPC logs")
-        self.scan_nfts(addr, lo, hi)
+        try:
+            self.scan_nfts(addr, lo, hi)
+        except RPCError as e:  # leave what nobody could read out, and say so, instead of failing the whole report
+            why = str(getattr(e, "cause", None) or e)
+            self.diag["RPC eth_getLogs"] = why
+            for a, b in missing(self.con, f"nft:{addr}", lo, hi):
+                self.gaps.append({"addr": addr, "lo": a, "hi": b, "why": why})
 
     def _store(self, addr, trs, txs, lo, hi, source):
         self.con.executemany("INSERT OR IGNORE INTO transfers VALUES(?,?,?,?,?,?,?)",
@@ -232,8 +257,11 @@ class Loader:
         self.used.add(source)
 
     def _from_explorer(self, addr, lo, hi, since_ts):
-        if str(self.cfg.get("EXPLORER_API", "1")).lower() in ("0", "false", "no", "off") \
-                or time.time() < (get_meta(self.con, "explorer_off_until") or 0):
+        if str(self.cfg.get("EXPLORER_API", "1")).lower() in ("0", "false", "no", "off"):
+            self.diag["Blockscout explorer"] = "switched off"
+            return False
+        if time.time() < (get_meta(self.con, "explorer_off_until") or 0):
+            self.diag["Blockscout explorer"] = f"{get_meta(self.con, 'explorer_error')} (retried in a while)"
             return False
         self.progress(f"Finding {C.short(addr)}'s positions on the explorer…")
         try:
@@ -243,13 +271,18 @@ class Loader:
             set_meta(self.con, "explorer_off_until", time.time() + EXPLORER_RETRY_S)
             set_meta(self.con, "explorer_error", str(e))
             self.con.commit()
+            self.diag["Blockscout explorer"] = str(e)
             return False
         self._store(addr, trs, txs, lo, hi, "explorer")
         return True
 
     def _from_alchemy(self, addr, lo, hi):
         u = alchemy.url(self.cfg)
-        if not u or time.time() < (get_meta(self.con, "alchemy_off_until") or 0):
+        if not u:
+            self.diag["Alchemy Transfers API"] = "no Alchemy RPC set"
+            return False
+        if time.time() < (get_meta(self.con, "alchemy_off_until") or 0):
+            self.diag["Alchemy Transfers API"] = f"{get_meta(self.con, 'alchemy_error')} (retried tomorrow)"
             return False
         self.progress(f"Finding {C.short(addr)}'s positions with Alchemy's Transfers API…")
         try:
@@ -262,6 +295,7 @@ class Loader:
             set_meta(self.con, "alchemy_off_until", time.time() + 86400)
             set_meta(self.con, "alchemy_error", str(e)[:200])
             self.con.commit()
+            self.diag["Alchemy Transfers API"] = str(e)[:200]
             return False
         return True
 
@@ -374,8 +408,13 @@ class Loader:
             ids = {t for t, (p, _, _) in life.items() if p == pool}
             for a, b in merge(g["spans"]):
                 self.progress(f"Reading LP events, pool {n}/{len(pools)} (blocks {a:,}–{b:,})…", n / len(pools))
-                logs = self._logs({"address": config.POOL_MANAGER, "topics": [C.MODIFY_LIQUIDITY, pool, pm]}, a, b,
-                                  "pool", POOL_CEILING)
+                try:
+                    logs = self._logs({"address": config.POOL_MANAGER, "topics": [C.MODIFY_LIQUIDITY, pool, pm]}, a, b,
+                                      "pool", POOL_CEILING)
+                except RPCError as e:  # the RPC can't read these: the positions keep the events we have
+                    self.diag["RPC pool log scan"] = str(getattr(e, "cause", None) or e)
+                    self.unchecked += len(ids)
+                    return list(life)
                 logs = [lg for lg in logs if int(C.words(lg["data"])[3], 16) in ids]
                 ts = self._ts_of(logs)
                 mine = [C.decode_modify(lg) for lg in logs]
@@ -513,10 +552,19 @@ class Loader:
             ids = [r[0] for r in self.con.execute(
                 f"SELECT DISTINCT token_id FROM transfers WHERE from_addr IN ({qa}) OR to_addr IN ({qa})",
                 (*addrs, *addrs))]
+            for g in self.gaps:
+                try:
+                    ts = self.block_ts([g["lo"], g["hi"]])
+                    g["from_ts"], g["to_ts"] = ts.get(g["lo"]), ts.get(g["hi"])
+                except RPCError:
+                    g["from_ts"] = g["to_ts"] = None
             if not ids:
                 set_meta(self.con, "head", head)
                 self.con.commit()
-                return {"positions": 0, "priced": 0, "head": head, "from_ts": start_ts, "scanned": 0}
+                if self.gaps:
+                    raise NoSource(self.diag, self.gaps)
+                return {"positions": 0, "priced": 0, "head": head, "from_ts": start_ts, "scanned": 0,
+                        "sources": sorted(self.used), "gaps": [], "diag": self.diag, "unchecked": 0}
             qi = ",".join("?" * len(ids))
             txs = [r[0] for r in self.con.execute(f"SELECT tx FROM transfers WHERE token_id IN ({qi})", ids)]
             txs += [r[0] for r in self.con.execute(f"SELECT tx FROM lp_txs WHERE addr IN ({qa}) AND block >= ?",
@@ -535,7 +583,7 @@ class Loader:
             set_meta(self.con, "head", head)
             self.con.commit()
             return {"positions": len(ids), "priced": n, "head": head, "from_ts": start_ts, "scanned": len(bad),
-                    "sources": sorted(self.used)}
+                    "sources": sorted(self.used), "gaps": self.gaps, "diag": self.diag, "unchecked": self.unchecked}
 
 
 # ---- read side -----------------------------------------------------------

@@ -10,6 +10,7 @@ import chain as C  # noqa: E402
 import config  # noqa: E402
 import explorer  # noqa: E402
 import fetch as F  # noqa: E402
+import rpc as R  # noqa: E402
 
 W = "0x" + "a" * 40
 OTHER = "0x" + "b" * 40
@@ -159,7 +160,8 @@ class LoaderTest(unittest.TestCase):
         self.load()  # again at the same head: everything is cached, nothing read
         self.assertEqual(self.rpc.log_calls, n)
 
-    def test_wallet_finder_database_needs_no_rpc_reads(self):
+    def finder_db(self, fwd=HEAD):
+        """A finder database with everything in rpc.logs, synced up to block fwd."""
         fpath = Path(self.d.name) / "wallets.db"
         f = __import__("sqlite3").connect(fpath)
         f.executescript("""
@@ -172,9 +174,11 @@ class LoaderTest(unittest.TestCase):
             CREATE TABLE pools (id TEXT PRIMARY KEY, c0 TEXT, c1 TEXT, fee INTEGER, spacing INTEGER, hooks TEXT);
             CREATE TABLE tokens (addr TEXT PRIMARY KEY, symbol TEXT, decimals INTEGER, supply REAL, price_usd REAL,
                                  mcap REAL, updated INTEGER);""")
-        f.executemany("INSERT INTO meta VALUES(?,?)", [("back_block", "1"), ("fwd_block", str(HEAD))])
+        f.executemany("INSERT INTO meta VALUES(?,?)", [("back_block", "1"), ("fwd_block", str(fwd))])
         for lg in self.rpc.logs:
             b = int(lg["blockNumber"], 16)
+            if b > fwd:
+                continue
             if lg["address"] == config.POSITION_MANAGER:
                 d = C.decode_nft_transfer(lg)
                 f.execute("INSERT INTO transfers VALUES(?,?,?,?,?,?)", (b, d["log_index"], T0 + b, d["token_id"],
@@ -186,11 +190,41 @@ class LoaderTest(unittest.TestCase):
         f.commit()
         f.close()
         self.cfg["WALLET_FINDER_DB"] = str(fpath)
+
+    def test_wallet_finder_database_needs_no_rpc_reads(self):
+        self.finder_db()
         res = self.load()
         self.check_positions()
         self.assertEqual((self.rpc.log_calls, self.rpc.receipts, res["scanned"]), (0, 0, 0))
         self.assertEqual(res["sources"], ["RH Wallet Finder database"])
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM events WHERE v_state=1").fetchone()[0], 4)  # priced already
+
+    def no_cheap_logs(self):
+        """The explorer is down and the only RPC reads 10 blocks per eth_getLogs."""
+        def down(*a):
+            raise explorer.ExplorerError("explorer answered HTTP 403")
+        explorer.nft_transfers = explorer.lp_transactions = down
+
+        def tiny(flt, lo, hi, chunk, progress=None, ceiling=None, max_calls=None):
+            raise R.LogsInterrupted(R.TooCostly("rpc allows only 10 blocks per eth_getLogs"), [], lo, chunk)
+        self.rpc.get_logs = tiny
+
+    def test_unreadable_stretch_is_left_out_not_fatal(self):
+        self.finder_db(fwd=2500)  # the finder's sync stopped before #9 was opened
+        self.no_cheap_logs()
+        res = self.load()
+        pos = {r["token_id"] for r in self.con.execute("SELECT token_id FROM positions")}
+        self.assertEqual(pos, {7})  # what the finder had is still analysed
+        self.assertEqual([(g["lo"], g["hi"]) for g in res["gaps"]], [(2501, HEAD)])
+        self.assertIn("10 blocks", res["gaps"][0]["why"])
+        self.assertIn("HTTP 403", res["diag"]["Blockscout explorer"])
+
+    def test_no_source_at_all_says_why(self):
+        self.no_cheap_logs()
+        with self.assertRaises(F.NoSource) as cm:
+            self.load()
+        self.assertIn("RPC eth_getLogs", cm.exception.diag)
+        self.assertEqual(cm.exception.diag["RH Wallet Finder database"], "switched off")
 
     def test_block_at(self):
         self.assertEqual(F.Loader(self.con, self.rpc, self.rpc, {}).block_at(T0 + 2345, HEAD), 2345)
