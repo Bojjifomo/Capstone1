@@ -198,6 +198,19 @@ Setup sekali:
    kalau masih ada di Settings, publish link yang didahulukan.)
 5. Buka `https://<nama-project>.vercel.app`, share link-nya.
 
+**Export data mentah** (angka polos, bukan `$83.4K`; 53 kolom per wallet:
+PnL 30D/7D/24h/3M/ALL, ROI, win, net worth, size, hold, style, link LP Agent /
+Explorer, dst.):
+
+- Tombol **Export CSV** / **JSON** di filter bar: baris yang lagi tampil,
+  sesuai filter + urutan lu.
+- Seluruh board tanpa filter, langsung dari link:
+  `https://<nama-project>.vercel.app/api/export?board=degen` (`board` =
+  `multiday`, `degen`, `day`, `all`; tambah `&real=1` buat Real PnL,
+  `&format=json` buat JSON). Di Google Sheets:
+  `=IMPORTDATA("https://<nama-project>.vercel.app/api/export?board=degen")`,
+  ke-update sendiri ngikutin snapshot.
+
 Upload otomatis maksimal sekali tiap `PUBLISH_MINUTES` (default 30 menit, ubah
 di Settings) selama app jalan: tiap upload itu satu operasi tulis ke Blob, jadi nggak boros
 kuota paket gratis Vercel. Dari Terminal: `python3 finder.py publish` (upload

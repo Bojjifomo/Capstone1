@@ -33,7 +33,7 @@ from db import get_meta, set_meta
 BLOB_API = "https://vercel.com/api/blob/"
 PATHNAME = "rhwf/snapshot.json.gz"
 VERSION = 1
-MAX_ROWS = 2000  # per view
+MAX_ROWS = 6000  # per view (the site sends the snapshot gzipped: ~1 MB per 3,000 wallets)
 VIEWS = ("raw", "real", "d1raw", "d1real")
 
 # what the page shows and filters on; nothing personal
@@ -57,9 +57,10 @@ class WrongAccess(PublishError):
 
 
 def _num(v):
-    """Floats to 4 significant digits: the file stays small, the page shows less anyway."""
+    """Floats to 6 significant digits: exact to the dollar up to $999,999 for the raw
+    data export, and the file stays small."""
     if isinstance(v, float):
-        return None if v != v or v in (float("inf"), float("-inf")) else float(f"{v:.4g}")
+        return None if v != v or v in (float("inf"), float("-inf")) else float(f"{v:.6g}")
     return v
 
 
