@@ -166,8 +166,13 @@ def cmd_web_check(args, cfg):
         out["site"] = site
         try:
             with urllib.request.urlopen(urllib.request.Request(
-                    site + "/api/snapshot", headers={"user-agent": "rh-wallet-finder/1.0"}), timeout=30) as r:
-                snap = json.load(r)
+                    site + "/api/snapshot", headers={"user-agent": "rh-wallet-finder/1.0",
+                                                     "accept-encoding": "gzip"}), timeout=30) as r:
+                body = r.read()
+                if r.headers.get("content-encoding") == "gzip":
+                    import gzip
+                    body = gzip.decompress(body)
+                snap = json.loads(body)
             gen = snap.get("generated") or 0
             out["live"] = {"generated": gen, "age_min": round((time.time() - gen) / 60, 1),
                            "wallets": len((snap.get("views") or {}).get("raw") or []), "v": snap.get("v"),

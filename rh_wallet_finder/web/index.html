@@ -10,6 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<script src="export.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -44,6 +45,8 @@
       <div class="factions">
         <label class="fld preset"><span>Preset</span><select id="preset"></select></label>
         <button type="button" class="btn" id="clear">Clear filters</button>
+        <button type="button" class="btn" id="exp_csv" title="The rows shown (your filters and sort) as a CSV file: plain numbers, one column per figure">Export CSV</button>
+        <button type="button" class="btn" id="exp_json" title="The rows shown as a JSON file">JSON</button>
       </div>
     </div>
   </form>
@@ -54,6 +57,7 @@
   </div>
   <button type="button" class="btn more" id="more" hidden>Show more</button>
   <p class="hint">Click a row for the wallet's details. Hover a column title for what it means.</p>
+  <p class="hint rawdata" id="rawdata"></p>
 
   <details class="guide" id="guide"><summary>Field guide: what every column means</summary><div id="guidebody"></div></details>
 

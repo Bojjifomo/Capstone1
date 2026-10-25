@@ -841,7 +841,7 @@ class PublishTest(unittest.TestCase):
             snap = publish.snapshot(con)
             text = json.dumps(snap)
             self.assertEqual(snap["views"]["raw"][0]["addr"], a)
-            self.assertEqual(snap["views"]["raw"][0]["net"], 12.35)  # 4 significant digits
+            self.assertEqual(snap["views"]["raw"][0]["net"], 12.3457)  # 6 significant digits
             for private in ("My secret label", "private note", "starred", "Degen example", "Multiday example"):
                 self.assertNotIn(private, text)
             con.close()
@@ -1017,6 +1017,65 @@ class PublishTest(unittest.TestCase):
         self.assertEqual((out["status"], out["puts"]), (400, []))
         self.assertEqual(run({"BLOB_STORE_ID": "store_AbC9"}, "Bearer x", snap)["status"], 503)  # no PUBLISH_KEY
         self.assertEqual(run({"PUBLISH_KEY": "k" * 32}, "Bearer " + "k" * 32, snap)["status"], 503)  # no store
+
+    def test_raw_data_export(self):
+        import gzip
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("no node")
+        web = Path(__file__).resolve().parents[1] / "web"
+        row = lambda a, kind, net, **kw: {"addr": a, "kind": kind, "score": 80.0, "verdict": "Elite", "net": net,  # noqa: E731
+                                          "copy": "✓", "duration": 5400, "first_seen": 1790000000, **kw}
+        snap = {"v": 1, "generated": 1792900000, "status": {"metric_days": 30},
+                "views": {"raw": [row("0xa", "degen", 3858.12, style='Ladder ×5, "bid"'),
+                                  row("0xb", "multiday", 270.5, ref=1, sim_ref=1, sim_pct=88, exposure=0.6),
+                                  row("0xc", "degen", -12.0, win_pos=87.8, hist_from=1786686219)],
+                          "real": [], "d1raw": [row("0xa", "degen", 184.0)], "d1real": []}}
+        gz = gzip.compress(json.dumps(snap).encode())
+
+        def get(query):
+            js = f"""
+              process.env.BLOB_STORE_ID = "store_AbC9";
+              const buf = Buffer.from({json.dumps(gz.hex())}, "hex");
+              globalThis.fetch = async () => ({{ ok: true, status: 200,
+                arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
+              const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                             end(b) {{ console.log(JSON.stringify({{ status: this.statusCode, headers: this.headers,
+                                                                      body: String(b) }})); }} }};
+              require({json.dumps(str(web / "api" / "export.js"))})(
+                {{ url: {json.dumps("/api/export?" + query)}, headers: {{ "x-vercel-oidc-token": "o" }} }}, res);
+            """
+            return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+
+        import csv
+        import io
+        out = get("board=degen")
+        self.assertEqual(out["status"], 200)
+        self.assertTrue(out["headers"]["content-type"].startswith("text/csv"))
+        self.assertIn('filename="rh-wallet-finder-degen-2026-10-25.csv"', out["headers"]["content-disposition"])
+        recs = list(csv.DictReader(io.StringIO(out["body"])))
+        self.assertEqual([(r["rank"], r["address"], r["pnl_30d_usd"]) for r in recs],
+                         [("1", "0xa", "3858.12"), ("2", "0xc", "-12")])  # its class only, plain numbers
+        self.assertEqual(recs[0]["style"], 'Ladder ×5, "bid"')  # commas and quotes survive
+        self.assertEqual((recs[0]["hold_hours"], recs[0]["followable"], recs[0]["first_seen_utc"]),
+                         ("1.5", "yes", "2026-09-21T14:13:20Z"))
+        self.assertEqual((recs[1]["win_pct"], recs[1]["pnl_all_since_utc"], recs[1]["roi_30d_pct"]),
+                         ("87.8", "2026-08-14T05:43:39Z", ""))  # a missing figure is an empty cell
+        out = get("board=all&format=json")
+        body = json.loads(out["body"])
+        self.assertEqual((body["board"], body["window_days"], len(body["rows"])), ("all", 30, 3))
+        b = body["rows"][1]
+        self.assertEqual((b["address"], b["reference_wallet"], b["like_reference_pct"], b["crowding_pct"]),
+                         ("0xb", 1, 88, 60))
+        day = list(csv.DictReader(io.StringIO(get("board=day")["body"])))
+        self.assertEqual((day[0]["pnl_1d_usd"], "pnl_30d_usd" in day[0]), ("184", False))  # the 24 h board: 1-day columns
+        self.assertEqual(get("board=whales")["status"], 400)
+        # the page's own Export uses the same columns
+        js = f"""const X = require({json.dumps(str(web / "export.js"))});
+                 console.log(JSON.stringify(X.headers(30).slice(0, 8)));"""
+        heads = json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+        self.assertEqual(heads, ["rank", "address", "class", "score", "tier", "net_worth_usd", "pnl_30d_usd", "roi_30d_pct"])
 
     def test_site_function_reads_the_blob(self):
         import gzip
