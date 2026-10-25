@@ -370,9 +370,9 @@ def cached(max_age_min=CACHE_MINUTES):
 
 
 def best(cfg, min_mcap=DEFAULTS["min_mcap"], min_tvl=DEFAULTS["min_tvl"], sort=DEFAULTS["sort"], n=25,
-         min_vol_1h=0, quote=None, fresh=False, pages=DEFAULTS["pages"], progress=None):
-    """The ranked board. Reuses a scan younger than CACHE_MINUTES unless fresh."""
-    res = (None if fresh else cached()) or scan(cfg, pages, progress)
+         min_vol_1h=0, quote=None, fresh=False, pages=DEFAULTS["pages"], progress=None, res=None):
+    """The ranked board. Reuses a scan younger than CACHE_MINUTES unless fresh (or one passed as res)."""
+    res = res or (None if fresh else cached()) or scan(cfg, pages, progress)
     key = SORTS.get(sort, "blend")
     pools = res["pools"]
     shown = [p for p in pools if keep(p, min_mcap, min_tvl, min_vol_1h, quote)]

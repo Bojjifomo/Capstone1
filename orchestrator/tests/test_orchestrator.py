@@ -68,6 +68,11 @@ class CliTest(SeededDB):
         with mock.patch.dict(os.environ, {"VERCEL_PUBLISH_URL": ""}):
             self.assertIn("error", json.loads(T.web_check({}))["live"])
 
+    def test_pool_results_is_json_and_checks_its_numbers(self):
+        self.assertEqual(json.loads(T.rh_pool_results({"days": 7, "sort": "net_apr"})), [])
+        with self.assertRaises(T.ToolError):
+            T.rh_pool_results({"days": 0})
+
     def test_bad_wallet_never_reaches_the_cli(self):
         with mock.patch.object(T, "_rh") as rh:
             with self.assertRaises(T.ToolError):

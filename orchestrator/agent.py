@@ -32,6 +32,15 @@ SYSTEM = """You run the LP analysis tools of one trader, on their own machine:
 - Pool finder (rh_pools): which pools on Robinhood Chain pay LPs the most fee per $ of liquidity, over the last
   hour and 24 hours, with a market cap and TVL floor. Fee tiers are read on chain, so 0% wash pools drop out.
 
+Reading the numbers:
+- `dd` is already a percent: -21 means a -21% max drawdown, not -0.21%.
+- `rpc_cap` 0 means no daily limit (RPC_CALLS_PER_DAY=0). Only when `rpc_today` >= a nonzero cap does pricing pause.
+- `queue` = positions still waiting to be priced; the worker works through it on its own, newest wallets first.
+- `copy` = followable by hand (✓ / ✗ / bot); `copiers` = how many other wallets already copy that wallet.
+- rh_pool_results: `fee_apr` = fees ÷ capital-days × 365; `net_apr` = the same with PnL, so a high fee_apr with a low or
+  negative net_apr means impermanent loss ate the fees. `top_share` near 100 = one wallet's result, not the pool's.
+- `net` = realized PnL over the last 30 days in USD; `worth` = net worth now.
+
 How to work:
 - Answer in the user's language; they usually write casual Indonesian, so answer the same way.
 - Look before you answer: numbers come from tool results, never from memory. Say when data is stale (compare
@@ -52,7 +61,8 @@ BRIEF = """Give me today's brief:
 2. Top 5 Multiday and top 5 Degen (Real PnL), each with one line on why they stand out or what's risky.
 3. Smart LP Finder: wallets that also place top 10 in a pool there, and how our score rates them.
 4. Web showcase: is the live snapshot fresh, does it match the last publish?
-5. Top 5 pools by fee per $ of liquidity (blend of 1h and 24h, default filters), one line each.
+5. Top 5 pools by fee per $ of liquidity (blend of 1h and 24h, default filters), one line each, and for those
+   pools what LPs actually kept over 7 days (rh_pool_results: net APR vs fee APR) where we have the data.
 6. Anything I should act on."""
 
 

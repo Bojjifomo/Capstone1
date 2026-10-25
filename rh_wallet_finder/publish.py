@@ -34,6 +34,10 @@ BLOB_API = "https://vercel.com/api/blob/"
 PATHNAME = "rhwf/snapshot.json.gz"
 VERSION = 1
 MAX_ROWS = 6000  # per view (the site sends the snapshot gzipped: ~1 MB per 3,000 wallets)
+MAX_POOLS = 50
+POOL_SCAN_MINUTES = 60  # the worker redoes an older pool scan before publishing (GeckoTerminal + a few RPC reads)
+POOL_FIELDS = ("pool", "pair", "dex", "fee_pct", "fee_src", "tvl", "vol_1h", "vol_24h", "mcap", "per1k_1h",
+               "per1k_24h", "apr_1h", "apr_24h", "blend", "pace", "traders_24h", "flags", "gt")
 VIEWS = ("raw", "real", "d1raw", "d1real")
 
 # what the page shows and filters on; nothing personal
@@ -82,7 +86,43 @@ def snapshot(con):
     status = {k: _num(stt.get(k)) for k in keep}
     status["min_closed"] = int(stt["settings"]["MIN_CLOSED"])
     views = {v: [_row(r) for r in Q.wallet_rows(con, v)[0][:MAX_ROWS]] for v in VIEWS}
-    return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views}
+    return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views,
+            "pools": _fee_pools(), "pool_results": _pool_results(con)}
+
+
+def refresh_pools(cfg, log=print):
+    """Redo the pool scan when the last one is POOL_SCAN_MINUTES old (the worker calls this before
+    publishing), so the page and the widget show fresh pools without the Pools tab being opened."""
+    import pools
+    if pools.cached(POOL_SCAN_MINUTES) is not None:
+        return
+    try:
+        pools.scan(cfg)
+    except Exception as e:  # noqa: BLE001 - the boards still go out, with the older scan
+        log(f"Pool scan for the web showcase failed: {e}")
+
+
+def _fee_pools():
+    """The pools paying the most fee per $ of liquidity (pools.py, the Pools tab), default filters,
+    from the last scan if it's under a day old."""
+    import pools
+    res = pools.cached(24 * 60)
+    if not res:
+        return {"at": None, "rows": []}
+    board = pools.best(None, n=MAX_POOLS, res=res)
+    return {"at": int(board["at"]), "rows": [{k: _num(r.get(k)) for k in POOL_FIELDS if r.get(k) is not None}
+                                             for r in board["rows"]]}
+
+
+def _pool_results(con):
+    """What LPs actually kept in each pool over 7 days (lp_pools.py)."""
+    import lp_pools
+    out = []
+    for p in lp_pools.best_pools(con, days=7, limit=MAX_POOLS):
+        row = {k: _num(v) for k, v in p.items() if k != "top_wallets" and v is not None}
+        row["top_wallets"] = [{k: _num(v) for k, v in w.items() if v is not None} for w in p["top_wallets"]]
+        out.append(row)
+    return out
 
 
 EXPIRED = ("Blob tokens copied from the Vercel dashboard expire now. Publish through your site instead: paste its "

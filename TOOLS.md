@@ -55,6 +55,7 @@ datanya aja yang perlu udah ke-sync.
 | `rh_top` | read | Top wallet per kelas (JSON), bisa Real PnL / 24 jam |
 | `rh_wallet` | read | Satu wallet: metrik, label, ranking Smart LP, posisi terbaru |
 | `rh_lpagent` | read | Wallet yang sama dicek ke API LP Agent |
+| `rh_pool_results` | read | Hasil LP yang beneran kejadian per pool 7 hari: fee APR, net APR (setelah IL), siapa yang cuan |
 | `rh_twin` | read | Wallet yang gaya LP-nya paling mirip |
 | `rh_compare` | read | Angka kita vs baris yang di-copy dari RH Discovery |
 | `rh_sql` | read | SELECT read-only ke database, buat pertanyaan yang nggak ke-cover tools lain |
@@ -91,6 +92,15 @@ python3 finder.py pools --json        # pool dengan fee terbaik per $ likuiditas
 ```
 
 Tes: `python3 -m unittest discover -s orchestrator/tests -t .` (offline, nggak manggil API).
+
+## Di iPhone
+
+- **Widget home screen** (app Scriptable): pool fee terbaik + top wallet, dari `/api/widget`
+  di web showcase, jadi tetap kebuka walau Mac tidur.
+- **Ngobrol sama agent**: `caffeinate -i claude remote-control` di folder `Capstone1` di Mac,
+  terus buka sesinya dari app Claude di iPhone (bagian Code).
+
+Langkahnya: [`rh_wallet_finder/ios/README.md`](rh_wallet_finder/ios/README.md).
 
 ## Tools yang dibutuhin biar lebih improve
 
