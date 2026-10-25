@@ -304,6 +304,8 @@ def _money(v):
 
 def cmd_pools(args, cfg):
     import pools
+    if args.rpc:
+        cfg["POOLS_RPC_URL"] = config.rpc_link(args.rpc)
     prog = None if args.json else (lambda i, n: print(f"\rGeckoTerminal {i + 1}/{n}…", end="", file=sys.stderr,
                                                         flush=True))
     try:
@@ -321,6 +323,7 @@ def cmd_pools(args, cfg):
     print(f"{res['scanned']} pools scanned {(time.time() - res['at']) / 60:.0f} min ago · {res['passed_filters']} with "
           f"mcap ≥ {_money(f['min_mcap'])} and TVL ≥ {_money(f['min_tvl'])} · {res['zero_fee']} of them pay 0 · "
           f"sorted by {f['sort']}")
+    print(f"data: {res.get('source')} · fees via {res.get('rpc')}")
     hdr = (f"{'#':>2}  {'pair':<22} {'dex':<15} {'fee%':>6} {'src':<5} {'TVL':>7} {'mcap':>7} {'vol 1h':>7} "
            f"{'vol 24h':>7} {'$/1k 1h':>7} {'$/1k 24h':>8} {'APR 1h':>7} {'APR 24h':>7} {'pace':>5} {'chg24h':>7}  flags")
     print(hdr)
@@ -431,6 +434,7 @@ def main():
     s.add_argument("-n", type=int, default=25)
     s.add_argument("--pages", type=int, default=10, help="GeckoTerminal pages of 20 pools (max 10)")
     s.add_argument("--fresh", action="store_true", help="scan again even if the last scan is under 5 min old")
+    s.add_argument("--rpc", help="RPC for the fee reads this once (default POOLS_RPC_URL in .env, else the public one)")
     s.add_argument("--json", action="store_true")
     args = ap.parse_args()
     cfg = config.load_env()

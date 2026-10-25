@@ -97,6 +97,13 @@ DEFAULTS = {
     # Minutes between sync + scoring runs once history is loaded.
     "SYNC_MINUTES": "5",
     "PORT": "8501",
+    # Pool finder (pools.py), kept apart from the Wallet Finder's RPCs so a scan
+    # never eats their quota or trips their limits. Empty RPC = the chain's
+    # public endpoint. A CoinGecko API key (demo or pro) lifts GeckoTerminal's
+    # free rate limit.
+    "POOLS_RPC_URL": "",
+    "POOLS_CG_API_KEY": "",
+    "POOLS_CG_PLAN": "demo",
 }
 
 
@@ -154,7 +161,7 @@ def load_env():
                 vals[ours] = v
         if vals["RPC_URL"]:
             vals["RPC_SOURCE"] = f"{d.name}/.env" if d else "RH_RPC_* environment"
-    for k in ("RPC_URL", "CALL_RPC_URL"):
+    for k in ("RPC_URL", "CALL_RPC_URL", "POOLS_RPC_URL"):
         vals[k] = rpc_link(vals[k])
     vals["VERCEL_BLOB_TOKEN"] = blob_token(vals["VERCEL_BLOB_TOKEN"])
     vals["VERCEL_PUBLISH_URL"] = publish_link(vals["VERCEL_PUBLISH_URL"])

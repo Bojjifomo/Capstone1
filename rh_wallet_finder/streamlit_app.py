@@ -959,6 +959,7 @@ def pools_tab():
                "GeckoTerminal (every DEX on Robinhood Chain); fee tier read on chain, so 0% wash pools drop out. "
                "**\\$/1k** = fee earned per \\$1,000 of liquidity in that window; **pace** = last hour's volume vs its "
                "24h hourly average; **blend** = APR 1h and 24h together. TVL counts every LP, in range or not.")
+    pools_api()
     c = st.columns([1.2, 1.2, 1.2, 1, 1.2, 0.9])
     min_mcap = c[0].number_input("Min mcap $", 0, value=PL.DEFAULTS["min_mcap"], step=100_000, key="pl_mcap")
     min_tvl = c[1].number_input("Min TVL $", 0, value=PL.DEFAULTS["min_tvl"], step=1_000, key="pl_tvl")
@@ -987,6 +988,8 @@ def pools_tab():
     st.session_state["pl_scanned"] = True
     st.markdown(f"{res['scanned']} pools scanned {ago(res['at'], time.time())} · **{res['passed_filters']}** pass "
                 f"the filters · {res['zero_fee']} of those pay 0% · {len(res['fee_unknown'])} with an unknown fee")
+    if res.get("source"):
+        st.caption(f"Data: {res['source']} · fees read through {res['rpc']}")
     for e in res["errors"]:
         st.warning(e)
     if not res["rows"]:
@@ -1024,6 +1027,36 @@ def pools_tab():
     })
     if res["fee_unknown"]:
         st.caption("Fee unknown, not ranked: " + ", ".join(res["fee_unknown"][:15]))
+
+
+def pools_api():
+    """The pool finder's own RPC + CoinGecko key, apart from the Wallet Finder's."""
+    import pools as PL
+    cfg = config.load_env()
+    now_rpc = config.mask(cfg["POOLS_RPC_URL"]) or f"public ({PL.PUBLIC_RPC})"
+    with st.expander(f"Pool finder API (separate from the Wallet Finder's RPCs) · RPC: {now_rpc} · "
+                     f"data: {PL.api(cfg)['name']}"):
+        st.caption("Only the Pools tab uses these, so a scan never spends the Wallet Finder's RPC quota. "
+                   "The RPC needs eth_getLogs over ~1,000+ blocks (Alchemy free allows only 10): leave it empty "
+                   "for Robinhood's public RPC. A CoinGecko API key (demo or pro) scans faster than the free API.")
+        a, b, c = st.columns([3, 3, 1])
+        rpc = a.text_input("Pool finder RPC (empty = public)", type="password", key="pl_rpc_in",
+                           placeholder="https://… (leave empty to keep the current one)")
+        key = b.text_input(f"CoinGecko API key · {'set' if cfg['POOLS_CG_API_KEY'] else 'not set'}",
+                           type="password", key="pl_cg_in", placeholder="CG-…")
+        plan = c.selectbox("Plan", ["demo", "pro"], index=1 if cfg["POOLS_CG_PLAN"] == "pro" else 0, key="pl_plan")
+        s1, s2, _ = st.columns([1, 1.6, 4])
+        if s1.button("Save", key="pl_save"):
+            upd = {"POOLS_CG_PLAN": plan}
+            if rpc.strip():
+                upd["POOLS_RPC_URL"] = rpc.strip()
+            if key.strip():
+                upd["POOLS_CG_API_KEY"] = key.strip()
+            config.save_env(upd)
+            st.success("Saved to .env. Click Scan now.")
+        if s2.button("Back to public RPC / free API", key="pl_reset"):
+            config.save_env({"POOLS_RPC_URL": "", "POOLS_CG_API_KEY": ""})
+            st.success("Cleared. Click Scan now.")
 
 
 # ------------------------------------------------------------ watchlist ---

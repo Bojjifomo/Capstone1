@@ -1,8 +1,9 @@
 """Pool finder: where an LP earns the most fee per dollar right now.
 
 Pools and their volume / TVL / market cap come from GeckoTerminal (free, no key,
-covers every DEX on Robinhood Chain). The fee tier comes from the chain itself,
-because the pool name lies often enough to matter:
+covers every DEX on Robinhood Chain; a CoinGecko API key in POOLS_CG_API_KEY
+goes through CoinGecko's own copy of it with a higher rate limit). The fee tier
+comes from the chain itself, because the pool name lies often enough to matter:
 
 - Uniswap V4: StateView.getSlot0 (the fee the pool charges now). Pools with a
   dynamic-fee hook show 0 there, so their fee is the median `fee` of their
@@ -24,6 +25,9 @@ Per pool, from the fee and volume over the pool's TVL:
 TVL is every LP in the pool, in range or not, so a tight range that stays in
 range earns more than these numbers, and a range that falls out earns nothing.
 
+The pool finder has its own settings (POOLS_RPC_URL, POOLS_CG_API_KEY), never
+the Wallet Finder's RPCs: a scan can't spend their quota or trip their limits.
+
 Standard library only.
 """
 import calendar
@@ -39,10 +43,12 @@ import config
 from keccak import topic
 
 GT_API = "https://api.geckoterminal.com/api/v2"
+CG_ONCHAIN = {"demo": ("https://api.coingecko.com/api/v3/onchain", "x-cg-demo-api-key", 2.1),
+              "pro": ("https://pro-api.coingecko.com/api/v3/onchain", "x-cg-pro-api-key", 0.25)}
 GT_NETWORK = "robinhood"
 GT_POOL_LINK = "https://www.geckoterminal.com/robinhood/pools/{addr}"
 DEXSCREENER_LINK = "https://dexscreener.com/robinhood/{addr}"
-# Used for the fee reads when .env has no RPC: the chain's own public endpoint.
+# Used for the fee reads when POOLS_RPC_URL is empty: the chain's own public endpoint.
 PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 
 # Tokens that are "the money side" of a pair: the other token is the one whose
@@ -68,13 +74,27 @@ class PoolsError(Exception):
 
 
 # ---- GeckoTerminal ---------------------------------------------------------
-def _gt(path, params=None, retries=5):
+FREE = {"name": "GeckoTerminal (free)", "base": GT_API, "headers": {}, "gap": 2.2}
+
+
+def api(cfg):
+    """Where pool data comes from: {name, base, headers, gap (s between calls)}.
+    GeckoTerminal's free API, or CoinGecko's on-chain API with the user's key."""
+    key = (cfg.get("POOLS_CG_API_KEY") or "").strip()
+    if not key:
+        return FREE
+    plan = "pro" if (cfg.get("POOLS_CG_PLAN") or "").lower() == "pro" else "demo"
+    base, header, gap = CG_ONCHAIN[plan]
+    return {"name": f"CoinGecko {plan} key", "base": base, "headers": {header: key}, "gap": gap}
+
+
+def _gt(path, params=None, retries=5, src=FREE):
     """GET one GeckoTerminal endpoint. The free API allows a few calls a
     minute, so a 429 waits and tries again instead of failing the scan."""
     q = "&".join(f"{k}={v}" for k, v in (params or {}).items())
-    url = f"{GT_API}{path}" + (f"?{q}" if q else "")
+    url = f"{src['base']}{path}" + (f"?{q}" if q else "")
     req = urllib.request.Request(url, headers={"accept": "application/json",
-                                               "user-agent": "rh-wallet-finder/1.0"})
+                                               "user-agent": "rh-wallet-finder/1.0", **src["headers"]})
     wait = 15
     for attempt in range(retries):
         try:
@@ -86,16 +106,18 @@ def _gt(path, params=None, retries=5):
                 wait = min(wait * 2, 60)
                 continue
             body = e.read()[:300].decode("utf-8", "replace")
-            raise PoolsError(f"GeckoTerminal HTTP {e.code}: {body}") from e
+            hint = " Check POOLS_CG_API_KEY and its plan (demo / pro)." if src["headers"] and e.code in (
+                400, 401, 403) else ""
+            raise PoolsError(f"{src['name']} HTTP {e.code}: {body}{hint}") from e
         except (urllib.error.URLError, TimeoutError) as e:
             if attempt < retries - 1:
                 time.sleep(3)
                 continue
-            raise PoolsError(f"Can't reach GeckoTerminal: {e}") from e
+            raise PoolsError(f"Can't reach {src['name']}: {e}") from e
     raise PoolsError("GeckoTerminal kept rate limiting")
 
 
-def fetch_raw(pages=10, progress=None):
+def fetch_raw(pages=10, progress=None, src=FREE):
     """Top pools by 24h volume (GeckoTerminal serves at most 10 pages of 20)
     plus the pools trending in the last hour, so a pool that only woke up
     recently is in too. -> (pool dicts, token dicts by id)"""
@@ -105,7 +127,7 @@ def fetch_raw(pages=10, progress=None):
     for i, (path, params) in enumerate(jobs):
         if progress:
             progress(i, len(jobs))
-        d = _gt(f"/networks/{GT_NETWORK}{path}", {**params, "include": "base_token,quote_token,dex"})
+        d = _gt(f"/networks/{GT_NETWORK}{path}", {**params, "include": "base_token,quote_token,dex"}, src=src)
         for t in d.get("included") or []:
             if t.get("type") == "token":
                 tokens[t["id"]] = t["attributes"]
@@ -113,20 +135,20 @@ def fetch_raw(pages=10, progress=None):
             pools.setdefault(p["attributes"]["address"].lower(), p)
         if not d.get("data") and path == "/pools":
             break
-        time.sleep(2.2)  # stay under the free rate limit
+        time.sleep(src["gap"])  # stay under the rate limit
     return list(pools.values()), tokens
 
 
-def fetch_token_mcaps(addrs):
+def fetch_token_mcaps(addrs, src=FREE):
     """{addr: (market cap or FDV, "mcap" | "fdv")} for tokens that are the quote
     side of their pool (the pool itself only carries the base token's)."""
     out, addrs = {}, sorted(set(addrs))
     for i in range(0, len(addrs), 30):
-        d = _gt(f"/networks/{GT_NETWORK}/tokens/multi/{','.join(addrs[i:i + 30])}")
+        d = _gt(f"/networks/{GT_NETWORK}/tokens/multi/{','.join(addrs[i:i + 30])}", src=src)
         for t in d.get("data") or []:
             a = t["attributes"]
             out[a["address"].lower()] = _cap(a.get("market_cap_usd"), a.get("fdv_usd"))
-        time.sleep(2.2)
+        time.sleep(src["gap"])
     return out
 
 
@@ -215,8 +237,10 @@ def _reads_fee_onchain(p):
     return _is_v4(p) or p["dex"].startswith(("uniswap-v3", "sushiswap"))
 
 
-def onchain_fees(pools, rpc, swap_window_s=3600):
-    """{pool: (fee pips or None, source)}. 1 pip = 0.0001%, so 3000 = 0.3%."""
+def onchain_fees(pools, rpc, swap_window_s=3600, errors=None):
+    """{pool: (fee pips or None, source)}. 1 pip = 0.0001%, so 3000 = 0.3%.
+    If only the Swap log read fails, the fixed fees still come back and the
+    reason goes to errors."""
     picks = [p for p in pools if _reads_fee_onchain(p)]
     calls = []
     for p in picks:
@@ -248,8 +272,20 @@ def onchain_fees(pools, rpc, swap_window_s=3600):
             else:
                 out[p["pool"]] = (s0["lp_fee"], "chain")
     if dynamic:
-        out.update(swap_fees(dynamic, rpc, swap_window_s))
+        try:
+            out.update(swap_fees(dynamic, rpc, swap_window_s))
+        except Exception as e:  # noqa: BLE001
+            out.update({pid: (None, "dynamic, logs failed") for pid in dynamic})
+            if errors is not None:
+                errors.append(f"{len(dynamic)} dynamic-fee pools left unranked: this RPC wouldn't serve the last "
+                              f"hour of Swap logs ({_short_err(e)}). Set POOLS_RPC_URL to one that allows "
+                              f"eth_getLogs over ~1,000+ blocks, or leave it empty for the public RPC.")
     return out
+
+
+def _short_err(e):
+    msg = str(e)
+    return msg if len(msg) <= 160 else msg[:157] + "…"
 
 
 def swap_fees(pool_ids, rpc, window_s=3600):
@@ -321,38 +357,46 @@ def keep(p, min_mcap, min_tvl, min_vol_1h=0, quote=None):
 
 
 # ---- the scan --------------------------------------------------------------
+def rpc_url(cfg):
+    """The pool finder's own RPC; never the Wallet Finder's RPC_URL / CALL_RPC_URL."""
+    return (cfg.get("POOLS_RPC_URL") or "").strip() or PUBLIC_RPC
+
+
 def _rpc(cfg):
     from rpc import RPC
-    return RPC(cfg.get("CALL_RPC_URL") or cfg.get("RPC_URL") or PUBLIC_RPC, workers=2)
+    return RPC(rpc_url(cfg), workers=2)
 
 
 def scan(cfg, pages=10, progress=None, rpc=None):
     """Every pool GeckoTerminal lists for the chain, with on-chain fees and
     yields, unfiltered. Saved to data/pools.json."""
-    raw, tokens = fetch_raw(pages, progress)
+    src = api(cfg)
+    raw, tokens = fetch_raw(pages, progress, src)
     pools = [parse_pool(p, tokens) for p in raw]
     need = {p["asset"] for p in pools if p["asset_side"] == "quote"}
     if need:
-        caps = fetch_token_mcaps(need)
+        caps = fetch_token_mcaps(need, src)
         for p in pools:
             if p["asset_side"] == "quote":
                 p["mcap"], p["mcap_src"] = caps.get(p["asset"], (None, None))
     errors = []
     try:
-        fees = onchain_fees(pools, rpc or _rpc(cfg))
+        fees = onchain_fees(pools, rpc or _rpc(cfg), errors=errors)
     except Exception as e:  # noqa: BLE001  no chain: names only
         fees = {}
-        errors.append(f"on-chain fee read failed, using the tier in the pool name: {e}")
+        errors.append(f"on-chain fee read failed, using the tier in the pool name: {_short_err(e)}. "
+                      f"Check POOLS_RPC_URL (empty = public RPC).")
     for p in pools:
-        pips, src = fees.get(p["pool"], (None, None))
+        pips, how = fees.get(p["pool"], (None, None))
         if pips is not None:
-            p["fee_pct"], p["fee_src"] = pips / 10_000, src
+            p["fee_pct"], p["fee_src"] = pips / 10_000, how
         elif p["name_fee_pct"] is not None:
             p["fee_pct"], p["fee_src"] = p["name_fee_pct"], "name"
         else:
-            p["fee_pct"], p["fee_src"] = None, src or "unknown"
+            p["fee_pct"], p["fee_src"] = None, how or "unknown"
         compute(p)
-    res = {"at": time.time(), "pools": pools, "errors": errors}
+    res = {"at": time.time(), "pools": pools, "errors": errors, "source": src["name"],
+           "rpc": config.mask(rpc_url(cfg))}
     try:
         config.DATA_DIR.mkdir(parents=True, exist_ok=True)
         CACHE.write_text(json.dumps(res))
@@ -366,7 +410,8 @@ def cached(max_age_min=CACHE_MINUTES):
         res = json.loads(CACHE.read_text())
     except (OSError, ValueError):
         return None
-    return res if time.time() - res.get("at", 0) <= max_age_min * 60 else None
+    # a scan that hit errors isn't reused: the next one may get through
+    return res if time.time() - res.get("at", 0) <= max_age_min * 60 and not res.get("errors") else None
 
 
 def best(cfg, min_mcap=DEFAULTS["min_mcap"], min_tvl=DEFAULTS["min_tvl"], sort=DEFAULTS["sort"], n=25,
@@ -384,4 +429,5 @@ def best(cfg, min_mcap=DEFAULTS["min_mcap"], min_tvl=DEFAULTS["min_tvl"], sort=D
             "filters": {"min_mcap": min_mcap, "min_tvl": min_tvl, "min_vol_1h": min_vol_1h, "quote": quote,
                         "sort": sort},
             "zero_fee": len(zero), "fee_unknown": [p["name"] for p in unknown],
-            "errors": res.get("errors") or [], "rows": ranked[:n]}
+            "errors": res.get("errors") or [], "source": res.get("source"), "rpc": res.get("rpc"),
+            "rows": ranked[:n]}

@@ -155,6 +155,59 @@ class OnchainFeeTest(unittest.TestCase):
         self.assertEqual(rpc.log_calls, 1)
 
 
+class SeparateApiTest(unittest.TestCase):
+    def test_own_rpc_never_the_wallet_finders(self):
+        cfg = {"RPC_URL": "https://wallet-finder-logs", "CALL_RPC_URL": "https://alchemy-free"}
+        self.assertEqual(P.rpc_url(cfg), P.PUBLIC_RPC)
+        self.assertEqual(P.rpc_url({**cfg, "POOLS_RPC_URL": "https://mine"}), "https://mine")
+
+    def test_coingecko_key(self):
+        self.assertIs(P.api({}), P.FREE)
+        demo = P.api({"POOLS_CG_API_KEY": "CG-abc"})
+        self.assertEqual((demo["base"], demo["headers"]), (P.CG_ONCHAIN["demo"][0], {"x-cg-demo-api-key": "CG-abc"}))
+        pro = P.api({"POOLS_CG_API_KEY": "CG-abc", "POOLS_CG_PLAN": "pro"})
+        self.assertEqual(pro["headers"], {"x-cg-pro-api-key": "CG-abc"})
+
+    def test_logs_limit_keeps_the_fixed_fees(self):
+        """An RPC that caps eth_getLogs (Alchemy free: 10 blocks) loses only the dynamic-fee pools."""
+        class Capped(FakeRPC):
+            def call(self, method, params):
+                if method == "eth_getLogs":
+                    raise RuntimeError("Under the Free tier plan, you can make eth_getLogs requests with up to a "
+                                       "10 block range.")
+                return super().call(method, params)
+        agg = agg_result([(True, slot0(1 << 96, 3000)), (True, pool_key(3000)),
+                          (True, slot0(1 << 96, 0)), (True, pool_key(P.DYNAMIC_FEE_FLAG))])
+        errors = []
+        fees = P.onchain_fees([{"pool": V4_STATIC, "dex": "uniswap-v4"}, {"pool": V4_DYNAMIC, "dex": "uniswap-v4"}],
+                              Capped(agg, []), errors=errors)
+        self.assertEqual(fees[V4_STATIC], (3000, "chain"))
+        self.assertEqual(fees[V4_DYNAMIC], (None, "dynamic, logs failed"))
+        self.assertIn("POOLS_RPC_URL", errors[0])
+
+    def test_scan_end_to_end_offline(self):
+        raw = [gt_pool(V4_STATIC, "MEME / WETH", TOKEN, config.WETH),
+               gt_pool(V3, "MEME / USDG 1%", TOKEN, config.USDG, dex="aero-slipstream-robinhood")]
+        agg = agg_result([(True, slot0(1 << 96, 3000)), (True, pool_key(3000))])
+        cfg = {"RPC_URL": "https://wallet-finder", "CALL_RPC_URL": "https://alchemy-free"}
+        with mock.patch.object(P, "fetch_raw", return_value=(raw, TOKENS)), \
+                mock.patch.object(P, "CACHE") as cache:
+            res = P.scan(cfg, rpc=FakeRPC(agg, []))
+        cache.write_text.assert_called_once()
+        by = {p["pool"]: p for p in res["pools"]}
+        self.assertEqual((by[V4_STATIC]["fee_pct"], by[V4_STATIC]["fee_src"]), (0.3, "chain"))
+        self.assertEqual((by[V3]["fee_pct"], by[V3]["fee_src"]), (1.0, "name"))
+        self.assertEqual((res["source"], res["errors"]), ("GeckoTerminal (free)", []))
+        self.assertIn("rpc.mainnet.chain.robinhood.com", res["rpc"])
+
+    def test_scan_with_errors_is_not_reused(self):
+        with mock.patch.object(P, "CACHE") as cache:
+            cache.read_text.return_value = '{"at": %d, "pools": [], "errors": ["x"]}' % time.time()
+            self.assertIsNone(P.cached())
+            cache.read_text.return_value = '{"at": %d, "pools": [], "errors": []}' % time.time()
+            self.assertIsNotNone(P.cached())
+
+
 class BestTest(unittest.TestCase):
     def test_ranking_filters_and_unknowns(self):
         rows = []

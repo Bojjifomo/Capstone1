@@ -269,8 +269,16 @@ Datanya:
   median `fee` dari event Swap 1 jam terakhir; Uniswap / Sushi V3 → `fee()` pool-nya;
   DEX lain → tier di namanya. Ini penting: banyak pool V4 yang "volume"-nya jutaan
   ternyata fee-nya **0%** (atau 0,0001%), LP nggak dapet apa-apa di situ; pool kayak
-  gitu otomatis kebuang. Pakai RPC dari `.env` kalau ada, kalau nggak RPC publik
-  `rpc.mainnet.chain.robinhood.com` (cuma 1 multicall + beberapa `eth_getLogs`).
+  gitu otomatis kebuang.
+- **API-nya sendiri, terpisah dari Wallet Finder.** Pool finder nggak pernah pakai
+  RPC 1 / RPC 2 Wallet Finder, jadi nggak makan kuotanya. Defaultnya RPC publik
+  `rpc.mainnet.chain.robinhood.com` (1 multicall + beberapa `eth_getLogs`). Mau pakai
+  punya sendiri: tab **Pools** → **Pool finder API** → isi RPC → Save (atau
+  `POOLS_RPC_URL=` di `.env`, atau `finder.py pools --rpc https://…` sekali jalan).
+  RPC-nya harus bisa `eth_getLogs` ±1.000+ blok; **Alchemy free nggak bisa** (max 10
+  blok). Kalau cuma bagian log yang gagal, fee pool biasa tetap kebaca, cuma pool
+  dynamic-fee yang jadi "unknown". API key CoinGecko (demo / pro) di field yang sama
+  (`POOLS_CG_API_KEY`, `POOLS_CG_PLAN`) bikin scan lebih cepet dari API gratis.
 - **Market cap**: punya token yang bukan ETH / USDG (FDV kalau mcap-nya kosong).
   Pair ETH/USDG nggak punya token, jadi selalu lolos filter mcap.
 
