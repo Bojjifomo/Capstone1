@@ -34,6 +34,7 @@ BLOB_API = "https://vercel.com/api/blob/"
 PATHNAME = "rhwf/snapshot.json.gz"
 VERSION = 1
 MAX_ROWS = 2000  # per view
+MAX_POOLS = 50
 VIEWS = ("raw", "real", "d1raw", "d1real")
 
 # what the page shows and filters on; nothing personal
@@ -81,7 +82,18 @@ def snapshot(con):
     status = {k: _num(stt.get(k)) for k in keep}
     status["min_closed"] = int(stt["settings"]["MIN_CLOSED"])
     views = {v: [_row(r) for r in Q.wallet_rows(con, v)[0][:MAX_ROWS]] for v in VIEWS}
-    return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views}
+    return {"v": VERSION, "generated": int(time.time()), "status": status, "views": views, "pools": _pools(con)}
+
+
+def _pools(con):
+    """Best fee pools of the last 7 days (pools.py), for the page and the phone widget."""
+    import pools
+    out = []
+    for p in pools.best_pools(con, days=7, limit=MAX_POOLS):
+        row = {k: _num(v) for k, v in p.items() if k != "top_wallets" and v is not None}
+        row["top_wallets"] = [{k: _num(v) for k, v in w.items() if v is not None} for w in p["top_wallets"]]
+        out.append(row)
+    return out
 
 
 EXPIRED = ("Blob tokens copied from the Vercel dashboard expire now. Publish through your site instead: paste its "

@@ -131,6 +131,26 @@ def cmd_twin(args, cfg):
     print(json.dumps(res, default=str))
 
 
+def cmd_pools(args, cfg):
+    import pools
+    rows = pools.best_pools(db.connect(), days=args.days, min_positions=args.min_positions,
+                            min_wallets=args.min_wallets, sort=args.sort, limit=args.n)
+    if args.json:
+        print(json.dumps(rows, default=str))
+        return
+    if not rows:
+        sys.exit("No pool has enough priced, closed positions in that window yet.")
+    hdr = f"{'#':>3} {'pair':<16} {'fee':>5} {'fee APR':>8} {'net APR':>8} {'$/1k/d':>7} {'fees$':>8} " \
+          f"{'pos':>5} {'wal':>4} {'win%':>5} {'hold':>6} {'range%':>7} {'top%':>5}"
+    print(hdr)
+    print("-" * len(hdr))
+    for i, r in enumerate(rows, 1):
+        f = lambda v, spec: format(v, spec) if v is not None else "–"  # noqa: E731
+        print(f"{i:>3} {(r['pair'] or r['pool'][:10]):<16} {f(r['fee_tier'], '>4.2f')}% {r['fee_apr']:>7.0f}% "
+              f"{r['net_apr']:>7.0f}% {r['fee_per_1k']:>7.2f} {r['fees']:>8.0f} {r['positions']:>5} {r['wallets']:>4} "
+              f"{f(r['win'], '>5.0f')} {r['hold_h']:>5.1f}h {r['range_pct']:>7.1f} {f(r['top_share'], '>5.0f')}")
+
+
 def cmd_smart_lp(args, cfg):
     import queries
     import smartlp
@@ -354,6 +374,13 @@ def main():
     s.add_argument("wallet")
     s.add_argument("-n", type=int, default=20)
     s.add_argument("--real", action="store_true")
+    s = sub.add_parser("pools", help="pools that paid LPs the most fee per dollar-day (from priced positions)")
+    s.add_argument("--days", type=float, default=7, help="positions closed in the last N days (default 7)")
+    s.add_argument("--sort", default="fee_apr", choices=["fee_apr", "net_apr", "fees", "pnl", "wallets"])
+    s.add_argument("--min-positions", type=int, default=10)
+    s.add_argument("--min-wallets", type=int, default=3)
+    s.add_argument("-n", type=int, default=20)
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("smart-lp", help="RH Smart LP Finder pools + best placings next to our score, as JSON")
     s.add_argument("-n", type=int, default=30)
     sub.add_parser("web-check", help="the snapshot the web showcase serves now vs the last publish, as JSON")
@@ -373,7 +400,7 @@ def main():
     if args.cmd is None:
         args = ap.parse_args(["app"])
     {"app": cmd_app, "worker": cmd_worker, "sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
-     "status": cmd_status, "twin": cmd_twin, "smart-lp": cmd_smart_lp, "web-check": cmd_web_check,
+     "status": cmd_status, "twin": cmd_twin, "smart-lp": cmd_smart_lp, "pools": cmd_pools, "web-check": cmd_web_check,
      "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp, "publish": cmd_publish,
      "compare": cmd_compare}[args.cmd](args, cfg)
     if args.cmd in ("sync", "score"):

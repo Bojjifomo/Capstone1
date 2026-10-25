@@ -35,6 +35,8 @@ Reading the numbers:
 - `rpc_cap` 0 means no daily limit (RPC_CALLS_PER_DAY=0). Only when `rpc_today` >= a nonzero cap does pricing pause.
 - `queue` = positions still waiting to be priced; the worker works through it on its own, newest wallets first.
 - `copy` = followable by hand (✓ / ✗ / bot); `copiers` = how many other wallets already copy that wallet.
+- pools: `fee_apr` = fees ÷ capital-days × 365; `net_apr` = the same with PnL, so a high fee_apr with a low or
+  negative net_apr means impermanent loss ate the fees. `top_share` near 100 = one wallet's result, not the pool's.
 - `net` = realized PnL over the last 30 days in USD; `worth` = net worth now.
 
 How to work:
@@ -52,9 +54,10 @@ How to work:
 BRIEF = """Give me today's brief:
 1. Wallet Finder health (sync / rank age, price queue, RPC calls today vs cap).
 2. Top 5 Multiday and top 5 Degen (Real PnL), each with one line on why they stand out or what's risky.
-3. Smart LP Finder: wallets that also place top 10 in a pool there, and how our score rates them.
-4. Web showcase: is the live snapshot fresh, does it match the last publish?
-5. Anything I should act on."""
+3. Best 5 fee pools of the last 7 days: fee APR vs net APR, how many wallets, who earns there.
+4. Smart LP Finder: wallets that also place top 10 in a pool there, and how our score rates them.
+5. Web showcase: is the live snapshot fresh, does it match the last publish?
+6. Anything I should act on."""
 
 
 def load_env():

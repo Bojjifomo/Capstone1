@@ -204,6 +204,29 @@ kuota paket gratis Vercel. Dari Terminal: `python3 finder.py publish` (upload
 sekarang) atau `python3 finder.py publish --out board.json` (simpen file-nya
 aja). Selama Mac mati, halaman tetap kebuka dengan snapshot terakhir.
 
+## Pool fee terbaik
+
+`python3 finder.py pools` (atau tanya agent-nya) ngurutin pool dari fee yang beneran
+didapet LP di situ, dihitung dari posisi yang udah dihargai dan ditutup 7 hari terakhir
+(`--days`), tanpa call RPC tambahan:
+
+| Kolom | Artinya |
+| --- | --- |
+| `fee APR` | Total fee ÷ (setoran × lama ditahan), disetahunin. Modal gede yang ditahan lama dihitung lebih berat |
+| `net APR` | Sama, tapi pakai PnL (fee + naik-turun harga / IL). Fee APR tinggi + net merah = fee-nya kemakan IL |
+| `$/1k/d` | Fee per $1.000 per hari |
+| `pos` / `wal` | Posisi / wallet yang dihitung. Minimal 10 posisi dari 3 wallet (`--min-positions`, `--min-wallets`) |
+| `win%` | Posisi yang untung (yang hasilnya ±0,05% = flat, nggak dihitung) |
+| `hold` / `range%` | Median lama ditahan / lebar range |
+| `top%` | Porsi fee yang diambil satu wallet. Mendekati 100 = itu hasil satu orang, bukan pool-nya |
+
+`--sort net_apr` buat yang paling banyak nyisain cuan. Top 50 pool ikut di snapshot web
+dan di widget iPhone ([`ios/`](ios/README.md)).
+
+Batasannya: cuma posisi yang udah ditutup dan kehargai (yang masih antre di price queue
+belum ikut), range sempit yang selalu in-range kebaca APR-nya tinggi banget, dan pool
+yang baru rame sehari bisa loncat ke atas: liat `pos`, `wal`, `top%` juga.
+
 ## Nyambung ke RH Smart LP Finder
 
 Kalau folder **RH Smart LP Finder** lu taruh di sebelah folder ini (sama-sama di
@@ -259,6 +282,7 @@ python3 finder.py status          # state sync / ranking / RPC, JSON
 python3 finder.py top --json      # top wallet sebagai JSON (check 0x… --json juga bisa)
 python3 finder.py twin 0x…        # wallet yang gaya LP-nya paling mirip, JSON
 python3 finder.py smart-lp        # pool Smart LP Finder + peringkat terbaik vs skor kita, JSON
+python3 finder.py pools           # pool yang fee-nya paling bagus 7 hari terakhir (--days, --sort, --json)
 python3 finder.py web-check       # snapshot yang tayang di web vs publish terakhir, JSON
 ```
 

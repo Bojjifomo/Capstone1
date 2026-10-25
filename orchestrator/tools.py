@@ -122,6 +122,16 @@ def rh_twin(i):
     return _rh("twin", _evm(i.get("wallet")), "-n", _int(i.get("n", 15), 1, 100, "n"))
 
 
+def rh_pools(i):
+    argv = ["pools", "--json", "-n", _int(i.get("n", 15), 1, 100, "n"),
+            "--days", _int(i.get("days", 7), 1, 90, "days"),
+            "--min-positions", _int(i.get("min_positions", 10), 1, 1000, "min_positions"),
+            "--min-wallets", _int(i.get("min_wallets", 3), 1, 100, "min_wallets")]
+    if i.get("sort"):
+        argv += ["--sort", i["sort"]]
+    return _rh(*argv)
+
+
 def rh_compare(i):
     rows = (i.get("rows") or "").strip()
     if not rows:
@@ -229,6 +239,13 @@ def all_tools():
              "cross-check our figures.", {"wallet": WALLET}, rh_lpagent, required=["wallet"]),
         Tool("rh_twin", "Wallets whose LP style (hold time, range width, size, ladders, pace) is closest to this "
              "one, with similarity 0-1.", {"wallet": WALLET, "n": N}, rh_twin, required=["wallet"]),
+        Tool("rh_pools", "Best fee pools: from priced positions closed in the last `days`, per pool: fee_apr (fees "
+             "÷ capital-days × 365, %), net_apr (same with PnL incl. price moves/IL), fee_per_1k ($ fee per $1,000 per "
+             "day), fees, pnl, positions, wallets, win %, earning (% of positions that earned any fee), hold_h "
+             "(median), range_pct (median range width), top_share (% of fees one wallet took), mcap, fee_tier, and "
+             "the top 3 wallets there with our score. High fee_apr with low net_apr = fees eaten by IL.",
+             {"days": N, "sort": {"type": "string", "enum": ["fee_apr", "net_apr", "fees", "pnl", "wallets"]},
+              "n": N, "min_positions": N, "min_wallets": N}, rh_pools),
         Tool("rh_compare", "Compare rows the user copied from RH Discovery with our figures (✓ within tolerance, "
              "✗ off, and why a wallet isn't ranked).", {"rows": {"type": "string", "description": "pasted table"}},
              rh_compare, required=["rows"]),
