@@ -74,6 +74,18 @@ class CliTest(SeededDB):
                 T.rh_wallet({"wallet": "0x123; rm -rf /"})
             rh.assert_not_called()
 
+    def test_pool_inputs_are_checked_before_the_cli(self):
+        with mock.patch.object(T, "_rh") as rh:
+            for bad in ({"quote": "USDG; rm"}, {"sort": "apr"}, {"min_tvl": "lots"}, {"min_mcap": -1}):
+                with self.assertRaises(T.ToolError):
+                    T.rh_pools(bad)
+            rh.assert_not_called()
+            T.rh_pools({"quote": "USDG", "sort": "1h"})
+            argv = rh.call_args.args
+            self.assertEqual(argv[:2], ("pools", "--json"))
+            self.assertIn("--quote", argv)
+            self.assertEqual(argv[argv.index("--min-mcap") + 1], "500000.0")
+
 
 class Block(NS):
     pass

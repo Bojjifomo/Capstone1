@@ -8,6 +8,7 @@ agent **orchestrator** yang ngejalanin semuanya dari satu tempat.
 | Tool | Folder | Isinya | Jalan di |
 | --- | --- | --- | --- |
 | **LP analysis wallet data** (RH Wallet Finder) | `rh_wallet_finder/` | Index semua posisi LP Uniswap V4 di Robinhood Chain langsung dari chain, ngehargain tiap posisi, ranking wallet jadi Multiday vs Degen, Real PnL, twin finder, Watchlist, cek LP Agent, cek vs RH Discovery. App Streamlit + worker sync di background. | Mac (`Buka Wallet Finder.command`) |
+| **Pool finder** | `rh_wallet_finder/pools.py` | Pool di Robinhood Chain (semua DEX) yang fee-nya paling gede per $ likuiditas: volume 1h / 24h, pace, APR, filter mcap ≥ $500k & TVL ≥ $5k. Data GeckoTerminal, fee tier dibaca on-chain (pool 0% kebuang). Tab **Pools** di app, `finder.py pools`. | Mac / di mana aja (nggak butuh database) |
 | **RH Smart LP Finder** | folder sebelah (`../RH Smart LP Finder`, bukan di repo ini) | Ranking LP satu pool, dihitung pas diklik. Wallet Finder baca database-nya (read-only): saved wallets → Watchlist, ranking per pool → kolom **Smart LP**. Kodenya: `rh_wallet_finder/smartlp.py`. | Mac, `localhost:8787` |
 | **Website widget** (web showcase) | `rh_wallet_finder/web/` | Halaman read-only di Vercel: board Multiday / Degen / 24h, filter, preset, detail wallet. Diisi snapshot yang di-upload Mac (`publish.py` → `/api/publish` → Vercel Blob → `/api/snapshot`). | Vercel |
 
@@ -57,6 +58,7 @@ datanya aja yang perlu udah ke-sync.
 | `rh_twin` | read | Wallet yang gaya LP-nya paling mirip |
 | `rh_compare` | read | Angka kita vs baris yang di-copy dari RH Discovery |
 | `rh_sql` | read | SELECT read-only ke database, buat pertanyaan yang nggak ke-cover tools lain |
+| `rh_pools` | read | Pool dengan fee terbaik per $ likuiditas (1h / 24h / pace), filter mcap & TVL |
 | `slf_summary` | read | Pool yang udah di-scan Smart LP Finder + wallet peringkat terbaik di sebelah skor kita |
 | `web_check` | read | Snapshot yang lagi tayang di web: umurnya, jumlah wallet, cocok nggak sama publish terakhir |
 | `read_docs` | read | Baca README ini / README Wallet Finder |
@@ -85,6 +87,7 @@ python3 finder.py check 0x… --json    # satu wallet + posisinya, JSON (tanpa L
 python3 finder.py twin 0x…            # wallet yang paling mirip, JSON
 python3 finder.py smart-lp            # ringkasan Smart LP Finder vs skor kita, JSON
 python3 finder.py web-check           # snapshot live di web vs publish terakhir, JSON
+python3 finder.py pools --json        # pool dengan fee terbaik per $ likuiditas, JSON
 ```
 
 Tes: `python3 -m unittest discover -s orchestrator/tests -t .` (offline, nggak manggil API).
@@ -109,9 +112,9 @@ Urut dari yang paling ngaruh:
    $Y, delay masuk N menit, slippage → PnL 30 hari kalau ngikutin wallet itu. Jadi tool
    `rh_backtest` buat agent. Nggak butuh apa-apa dari luar.
 5. **Data token** (umur token, market cap, likuiditas, holder) buat nyaring wallet yang
-   untungnya cuma dari satu memecoin yang udah mati. Butuh: API data token yang support
-   Robinhood Chain (cek DexScreener / GeckoTerminal / Blockscout API), atau dihitung sendiri
-   dari pool di chain.
+   untungnya cuma dari satu memecoin yang udah mati. GeckoTerminal udah kepake di Pool
+   finder (`pools.py`, market cap + TVL per pool), tinggal dipasang ke ranking wallet.
+   Holder count masih butuh Blockscout API.
 6. **Endpoint `/api/health` + link per wallet di web showcase**, biar `web_check` nggak perlu
    download satu snapshot penuh dan wallet bisa di-share langsung (`…/#0x…`).
 7. **MCP server** dari `orchestrator/tools.py`, biar tools ini bisa dipanggil dari Claude

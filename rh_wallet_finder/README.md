@@ -67,6 +67,7 @@ python3 rh_wallet_finder/finder.py set-rpc 'https://rpc.solidrpc.io/ak_…/evm/4
 | --- | --- |
 | Wallets / Multiday / Degen / Positions | Wallet di database (+ yang udah ranked) / jumlah multiday player / degen player / posisi V4 yang ke-index |
 | Rail atas `WORKER` / `SYNC` / `RANK` / `HISTORY` / `ETH` | Status sync di background, kapan terakhir sync & ranking (kuning = udah lama), history yang udah ke-load, harga ETH |
+| Tab **Pools** | Pool yang fee-nya paling gede per $ likuiditas sekarang (1h + 24h), filter mcap / TVL. Lihat [Pool finder](#pool-finder-fee-terbaik-buat-buka-lp) |
 | Tab **Multiday** | Wallet yang trade-nya ditahan berjam-jam sampai berhari-hari (median hold ≥ 2 jam). Diranking sesama multiday, posisi yang masih open ikut dihitung (Total PnL) |
 | Tab **Degen** | Wallet yang keluar-masuk cepet (median hold < 2 jam). Diranking sesama degen, pakai realized PnL + profit factor. Bot (hold < 5 menit / > 100 trade sehari) disembunyiin, centang **Show bots** di Filters kalau mau liat |
 | Tab **Last 24h** | Dua kelas campur, cuma posisi yang ditutup 24 jam terakhir (ada kolom Class) |
@@ -244,6 +245,50 @@ Bedanya dua tool ini: Smart LP Finder = **satu pool**, dihitung on-demand pas lu
 klik; Wallet Finder = **semua pool sekaligus**, jalan terus di background dan
 nyimpen hasilnya di database.
 
+## Pool finder: fee terbaik buat buka LP
+
+Pertanyaannya: **pool mana yang sekarang paling banyak ngasih fee per dolar yang
+ditaruh LP?** Tab **Pools** di app, atau dari Terminal:
+
+```bash
+python3 finder.py pools                       # default: mcap ≥ $500k, TVL ≥ $5k, sort blend
+python3 finder.py pools --sort 1h             # yang paling deres 1 jam terakhir
+python3 finder.py pools --sort 24h --quote USDG
+python3 finder.py pools --min-vol-1h 5000 --json
+```
+
+Datanya:
+
+- **Pool, volume 1h / 24h, TVL, market cap**: GeckoTerminal (gratis, tanpa key,
+  semua DEX di Robinhood Chain: Uniswap V3/V4, Aerodrome, Ramses, dll). Diambil
+  top 200 pool by volume 24h + pool yang trending 1 jam terakhir. Free API-nya
+  dibatesin beberapa request per menit, jadi satu scan ±1 menit; hasilnya
+  disimpen di `data/pools.json` dan dipakai ulang 5 menit (`--fresh` = scan ulang).
+- **Fee tier: dibaca dari chain**, bukan dari nama pool. Uniswap V4 →
+  `StateView.getSlot0` (fee yang dipakai sekarang); pool V4 dynamic-fee (hook) →
+  median `fee` dari event Swap 1 jam terakhir; Uniswap / Sushi V3 → `fee()` pool-nya;
+  DEX lain → tier di namanya. Ini penting: banyak pool V4 yang "volume"-nya jutaan
+  ternyata fee-nya **0%** (atau 0,0001%), LP nggak dapet apa-apa di situ; pool kayak
+  gitu otomatis kebuang. Pakai RPC dari `.env` kalau ada, kalau nggak RPC publik
+  `rpc.mainnet.chain.robinhood.com` (cuma 1 multicall + beberapa `eth_getLogs`).
+- **Market cap**: punya token yang bukan ETH / USDG (FDV kalau mcap-nya kosong).
+  Pair ETH/USDG nggak punya token, jadi selalu lolos filter mcap.
+
+| Kolom | Artinya |
+| --- | --- |
+| `Fee` | Fee tier pool (sumbernya di `fee_src`: `chain`, `swaps`, `name`) |
+| `$/1k 1h` / `$/1k 24h` | Fee yang didapet per $1.000 likuiditas di 1 jam / 24 jam terakhir = volume × fee ÷ TVL × 1000 |
+| `APR 1h` / `APR 24h` | Sama, disetahunin (tanpa compounding) |
+| `Pace` | Volume 1 jam terakhir ÷ rata-rata per jam 24h. 2× = lagi dua kali lebih rame dari biasanya, < 1 = lagi sepi |
+| `Blend` | Rata-rata geometris APR 1h dan 24h: tinggi cuma kalau sekarang rame **dan** seharian juga rame (sort default) |
+| `Price 1h / 24h` | Pergerakan harga: gede = risiko IL / range cepet keluar |
+| `Flags` | `few traders` (< 20 trader 24h), `volume ≫ TVL` (volume > 200× TVL, curiga wash), `new <24h` |
+
+Catatan: TVL = semua LP di pool itu, in range atau nggak. Range sempit yang tetap
+in range dapet lebih dari angka ini; yang keluar range dapet 0. Jadi pakai ini
+buat **milih pool**, terus cek grafiknya (link GeckoTerminal / DexScreener) buat
+nentuin range.
+
 ## LP Agent
 
 - Tiap baris ada link `LP Agent ↗` → `app.lpagent.io/portfolio?address=…&chain=ROBINHOOD`.
@@ -273,6 +318,7 @@ python3 finder.py top --json      # top wallet sebagai JSON (check 0x… --json 
 python3 finder.py twin 0x…        # wallet yang gaya LP-nya paling mirip, JSON
 python3 finder.py smart-lp        # pool Smart LP Finder + peringkat terbaik vs skor kita, JSON
 python3 finder.py web-check       # snapshot yang tayang di web vs publish terakhir, JSON
+python3 finder.py pools           # pool dengan fee per $ likuiditas terbaik (1h / 24h), --json juga bisa
 ```
 
 Database-nya `rh_wallet_finder/data/wallets.db` (SQLite). Bisa dibuka pakai

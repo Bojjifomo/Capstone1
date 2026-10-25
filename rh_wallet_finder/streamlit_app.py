@@ -952,6 +952,80 @@ def twins():
                  hide_index=True, height=auto_height(len(df), 560), **stretch(st.dataframe))
 
 
+# ------------------------------------------------------------ pools tab ---
+def pools_tab():
+    import pools as PL
+    st.caption("Which pool pays LPs the most fee per \\$ right now. Pools, volume, TVL and market cap from "
+               "GeckoTerminal (every DEX on Robinhood Chain); fee tier read on chain, so 0% wash pools drop out. "
+               "**\\$/1k** = fee earned per \\$1,000 of liquidity in that window; **pace** = last hour's volume vs its "
+               "24h hourly average; **blend** = APR 1h and 24h together. TVL counts every LP, in range or not.")
+    c = st.columns([1.2, 1.2, 1.2, 1, 1.2, 0.9])
+    min_mcap = c[0].number_input("Min mcap $", 0, value=PL.DEFAULTS["min_mcap"], step=100_000, key="pl_mcap")
+    min_tvl = c[1].number_input("Min TVL $", 0, value=PL.DEFAULTS["min_tvl"], step=1_000, key="pl_tvl")
+    min_v1 = c[2].number_input("Min vol 1h $", 0, value=0, step=1_000, key="pl_v1")
+    quote = c[3].selectbox("Pair with", ["any", "USDG", "WETH"], key="pl_quote")
+    sort = c[4].selectbox("Sort by", list(PL.SORTS), key="pl_sort",
+                          format_func={"blend": "blend (1h + 24h)", "1h": "APR 1h", "24h": "APR 24h",
+                                       "pace": "pace", "tvl": "TVL", "vol1h": "volume 1h",
+                                       "vol24h": "volume 24h"}.get)
+    fresh = c[5].button("Scan now", help="A scan takes about a minute (GeckoTerminal's free rate limit); "
+                                         "one younger than 5 minutes is reused otherwise.")
+    if not fresh and not PL.cached() and not st.session_state.get("pl_scanned"):
+        st.info("Click **Scan now** to load the pools (about a minute).")
+        return
+    bar = st.progress(0.0, text="Scanning pools…") if fresh or not PL.cached() else None
+    prog = (lambda i, n: bar.progress((i + 1) / n, text=f"GeckoTerminal {i + 1}/{n}…")) if bar else None
+    try:
+        res = PL.best(config.load_env(), min_mcap=min_mcap, min_tvl=min_tvl, sort=sort, n=200, min_vol_1h=min_v1,
+                      quote=None if quote == "any" else quote, fresh=fresh, progress=prog)
+    except PL.PoolsError as e:
+        st.error(str(e))
+        return
+    finally:
+        if bar:
+            bar.empty()
+    st.session_state["pl_scanned"] = True
+    st.markdown(f"{res['scanned']} pools scanned {ago(res['at'], time.time())} · **{res['passed_filters']}** pass "
+                f"the filters · {res['zero_fee']} of those pay 0% · {len(res['fee_unknown'])} with an unknown fee")
+    for e in res["errors"]:
+        st.warning(e)
+    if not res["rows"]:
+        st.info("No pool passes these filters.")
+        return
+    df = pd.DataFrame(res["rows"])
+    df["flags"] = df["flags"].map(", ".join)
+    for k in ("mcap", "pace", "chg_1h", "chg_24h"):
+        df[k] = pd.to_numeric(df[k], errors="coerce")
+    keys = ["pair", "dex", "fee_pct", "tvl", "mcap", "vol_1h", "vol_24h", "per1k_1h", "per1k_24h", "apr_1h",
+            "apr_24h", "pace", "blend", "chg_1h", "chg_24h", "traders_24h", "flags", "gt", "dexscreener"]
+    money = lambda v: usd(v)
+    sty = df[keys].style.format({"fee_pct": lambda v: f"{v:.3g}%", "tvl": money, "mcap": money, "vol_1h": money,
+                                 "vol_24h": money, "per1k_1h": lambda v: f"${v:.2f}",
+                                 "per1k_24h": lambda v: f"${v:.2f}", "apr_1h": pct, "apr_24h": pct,
+                                 "blend": pct, "pace": lambda v: "–" if v is None else f"{v:.1f}×",
+                                 "chg_1h": lambda v: "–" if v is None else f"{v:+.1f}%",
+                                 "chg_24h": lambda v: "–" if v is None else f"{v:+.0f}%"}, na_rep="–")
+    st.dataframe(sty, hide_index=True, height=auto_height(len(df), 640), **stretch(st.dataframe), column_config={
+        "pair": col("Column", "Pair", pinned=True),
+        "dex": "DEX",
+        "fee_pct": col("Column", "Fee", help="Fee tier. Read on chain (V4: the pool's fee now; dynamic-fee pools: "
+                                             "median fee of the last hour's swaps); other DEXes: from the name."),
+        "tvl": "TVL", "mcap": col("Column", "Mcap", help="Token side's market cap (FDV when there's none)."),
+        "vol_1h": "Vol 1h", "vol_24h": "Vol 24h",
+        "per1k_1h": col("Column", "$/1k 1h", help="Fee earned per $1,000 of liquidity in the last hour."),
+        "per1k_24h": col("Column", "$/1k 24h", help="Fee earned per $1,000 of liquidity in the last 24 hours."),
+        "apr_1h": "APR 1h", "apr_24h": "APR 24h",
+        "pace": col("Column", "Pace", help="Last hour's volume vs its 24h hourly average (2× = twice as busy)."),
+        "blend": col("Column", "Blend", help="Geometric mean of APR 1h and APR 24h: high only if it pays now "
+                                             "and paid all day."),
+        "chg_1h": "Price 1h", "chg_24h": "Price 24h", "traders_24h": "Traders 24h", "flags": "Flags",
+        "gt": col("LinkColumn", "GeckoTerminal", display_text="open ↗"),
+        "dexscreener": col("LinkColumn", "DexScreener", display_text="open ↗"),
+    })
+    if res["fee_unknown"]:
+        st.caption("Fee unknown, not ranked: " + ", ".join(res["fee_unknown"][:15]))
+
+
 # ------------------------------------------------------------ watchlist ---
 def watchlist():
     con = conn()
@@ -1249,8 +1323,8 @@ def main():
                     f'position returns (median <b>{fee}%</b>: pool fee + {stt.get("slippage", 1)}% slippage), and the '
                     f'board is re-ranked on those numbers.</div>', unsafe_allow_html=True)
     real = st.session_state.get("real", False)
-    t_multi, t_degen, t_day, t_twin, t_watch, t_rhd, t_set = st.tabs(
-        ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "vs RH Discovery", "Settings"])
+    t_multi, t_degen, t_day, t_pools, t_twin, t_watch, t_rhd, t_set = st.tabs(
+        ["Multiday", "Degen", "Last 24h", "Pools", "Twin finder", "Watchlist", "vs RH Discovery", "Settings"])
     for tab, kind in ((t_multi, "multiday"), (t_degen, "degen")):
         with tab:
             live_board("real" if real else "raw", kind, kind=kind)
@@ -1258,6 +1332,8 @@ def main():
                 field_guide()
     with t_day:
         live_board("d1real" if real else "d1raw", "day", top=100)
+    with t_pools:
+        pools_tab()
     with t_twin:
         twins()
     with t_watch:
