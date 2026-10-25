@@ -1273,7 +1273,7 @@ class AppTest(unittest.TestCase):
                                          default_timeout=60).run()
                 self.assertFalse(at.exception, at.exception)
                 self.assertEqual([t.label for t in at.tabs],
-                                 ["Multiday", "Degen", "Last 24h", "Twin finder", "Watchlist", "vs RH Discovery",
+                                 ["Multiday", "Degen", "Last 24h", "Pools", "Twin finder", "Watchlist", "vs RH Discovery",
                                   "Settings"])
                 self.assertTrue(any("WALLET FINDER" in m.value for m in at.markdown))
             finally:

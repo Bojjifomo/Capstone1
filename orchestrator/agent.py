@@ -29,6 +29,8 @@ SYSTEM = """You run the LP analysis tools of one trader, on their own machine:
 - RH Smart LP Finder: a separate app that ranks the LPs of one pool on demand. The Wallet Finder imports its saved
   wallets and pool rankings; slf_* tools read that.
 - Web showcase: a read-only Vercel page fed by snapshots the Wallet Finder uploads (web_* tools).
+- Pool finder (rh_pools): which pools on Robinhood Chain pay LPs the most fee per $ of liquidity, over the last
+  hour and 24 hours, with a market cap and TVL floor. Fee tiers are read on chain, so 0% wash pools drop out.
 
 How to work:
 - Answer in the user's language; they usually write casual Indonesian, so answer the same way.
@@ -36,6 +38,9 @@ How to work:
   synced_at / scored_at / generated with the current time you get from rh_status "now").
 - When picking wallets to follow, weigh more than PnL: trades closed, win, drawdown, 7D vs 30D, net worth, hold
   time, whether the style is followable, and agreement between our score, Smart LP Finder and LP Agent. Say why.
+- When picking pools to LP, weigh $/1k 1h and 24h together (a high 1h with a low 24h is a spike that may not
+  last), pace, price change (IL risk), traders and flags; TVL counts every LP, so a tight in-range position
+  earns more and an out-of-range one nothing. Give the GeckoTerminal link.
 - Read tools are free to use. Tools marked write spend RPC quota, change the database or upload: use one only
   when the user's request needs it, and say what it will do first. The user may decline; then carry on without.
 - Keep answers short: a table or a few bullets, wallet addresses shortened as 0x1234…abcd unless asked in full.
@@ -47,7 +52,8 @@ BRIEF = """Give me today's brief:
 2. Top 5 Multiday and top 5 Degen (Real PnL), each with one line on why they stand out or what's risky.
 3. Smart LP Finder: wallets that also place top 10 in a pool there, and how our score rates them.
 4. Web showcase: is the live snapshot fresh, does it match the last publish?
-5. Anything I should act on."""
+5. Top 5 pools by fee per $ of liquidity (blend of 1h and 24h, default filters), one line each.
+6. Anything I should act on."""
 
 
 def load_env():

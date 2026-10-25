@@ -169,6 +169,35 @@ def rh_import(i):
         os.unlink(f.name)
 
 
+def _num(v, name):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        raise ToolError(f"{name} must be a number")
+    if v < 0:
+        raise ToolError(f"{name} can't be negative")
+    return str(v)
+
+
+def rh_pools(i):
+    argv = ["pools", "--json", "-n", _int(i.get("n", 20), 1, 200, "n"),
+            "--min-mcap", _num(i.get("min_mcap", 500_000), "min_mcap"),
+            "--min-tvl", _num(i.get("min_tvl", 5_000), "min_tvl"),
+            "--min-vol-1h", _num(i.get("min_vol_1h", 0), "min_vol_1h")]
+    sort = i.get("sort", "blend")
+    if sort not in ("blend", "1h", "24h", "pace", "tvl", "vol1h", "vol24h"):
+        raise ToolError("sort must be blend, 1h, 24h, pace, tvl, vol1h or vol24h")
+    argv += ["--sort", sort]
+    quote = (i.get("quote") or "").strip()
+    if quote:
+        if not re.fullmatch(r"[A-Za-z0-9]{1,12}", quote):
+            raise ToolError("quote is a token symbol, e.g. USDG or WETH")
+        argv += ["--quote", quote]
+    if i.get("fresh"):
+        argv.append("--fresh")
+    return _rh(*argv, timeout=300)
+
+
 # ── RH Smart LP Finder ──────────────────────────────────────────────────────────────
 
 def slf_summary(i):
@@ -245,6 +274,18 @@ def all_tools():
              {}, rh_score, risk="write"),
         Tool("rh_import", "Star wallets into the Watchlist: one per line, text after the address becomes the label.",
              {"text": {"type": "string"}}, rh_import, risk="write", required=["text"]),
+
+        Tool("rh_pools", "Pools on Robinhood Chain (every DEX GeckoTerminal lists) that pay LPs the most fee per $ "
+             "of liquidity right now, as JSON. Fee tier read on chain (V4 dynamic-fee pools: median fee of the last "
+             "hour's swaps). Per row: pair, dex, fee_pct, fee_src, tvl, mcap (token side; FDV if no mcap), vol_1h, "
+             "vol_24h, per1k_1h / per1k_24h ($ earned per $1k of liquidity in that window), apr_1h, apr_24h, pace "
+             "(1h volume vs its 24h hourly average), blend (geometric mean of the two APRs), chg_1h/chg_24h (price "
+             "%, IL risk), traders_24h, flags, gt / dexscreener links. Defaults: mcap ≥ $500k, TVL ≥ $5k. A scan "
+             "takes ~1 min (free API rate limit) and is reused for 5 min.",
+             {"sort": {"type": "string", "enum": ["blend", "1h", "24h", "pace", "tvl", "vol1h", "vol24h"]},
+              "min_mcap": N, "min_tvl": N, "min_vol_1h": N, "n": N,
+              "quote": {"type": "string", "description": "only pairs with this token symbol, e.g. USDG or WETH"},
+              "fresh": {**B, "description": "scan again even if the last scan is under 5 minutes old"}}, rh_pools),
 
         Tool("slf_summary", "RH Smart LP Finder as seen from the Wallet Finder: whether its folder/DB is found, its "
              "server link, pools it scanned (pair, wallets ranked, computed_at), saved wallets, and the best "
