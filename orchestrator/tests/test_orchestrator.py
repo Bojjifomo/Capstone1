@@ -68,16 +68,28 @@ class CliTest(SeededDB):
         with mock.patch.dict(os.environ, {"VERCEL_PUBLISH_URL": ""}):
             self.assertIn("error", json.loads(T.web_check({}))["live"])
 
-    def test_pools_is_json_and_checks_its_numbers(self):
-        self.assertEqual(json.loads(T.rh_pools({"days": 7, "sort": "net_apr"})), [])
+    def test_pool_results_is_json_and_checks_its_numbers(self):
+        self.assertEqual(json.loads(T.rh_pool_results({"days": 7, "sort": "net_apr"})), [])
         with self.assertRaises(T.ToolError):
-            T.rh_pools({"days": 0})
+            T.rh_pool_results({"days": 0})
 
     def test_bad_wallet_never_reaches_the_cli(self):
         with mock.patch.object(T, "_rh") as rh:
             with self.assertRaises(T.ToolError):
                 T.rh_wallet({"wallet": "0x123; rm -rf /"})
             rh.assert_not_called()
+
+    def test_pool_inputs_are_checked_before_the_cli(self):
+        with mock.patch.object(T, "_rh") as rh:
+            for bad in ({"quote": "USDG; rm"}, {"sort": "apr"}, {"min_tvl": "lots"}, {"min_mcap": -1}):
+                with self.assertRaises(T.ToolError):
+                    T.rh_pools(bad)
+            rh.assert_not_called()
+            T.rh_pools({"quote": "USDG", "sort": "1h"})
+            argv = rh.call_args.args
+            self.assertEqual(argv[:2], ("pools", "--json"))
+            self.assertIn("--quote", argv)
+            self.assertEqual(argv[argv.index("--min-mcap") + 1], "500000.0")
 
 
 class Block(NS):

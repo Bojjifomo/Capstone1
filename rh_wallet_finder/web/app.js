@@ -357,6 +357,35 @@ function renderBoard() {
     table.style.setProperty("--p2", `${ths[0].offsetWidth + ths[1].offsetWidth}px`);
   }
   state.rows = rows;
+  renderRawLinks();
+}
+
+// ------------------------------------------------------------ raw data --
+function exportUrl(format) {
+  return `${location.origin}/api/export?board=${state.board}${state.real ? "&real=1" : ""}${format === "json" ? "&format=json" : ""}`;
+}
+
+function renderRawLinks() {
+  const csv = exportUrl("csv");
+  $("rawdata").innerHTML = `Raw data of this whole board (no filters): <a href="${esc(csv)}">CSV</a> · ` +
+    `<a href="${esc(exportUrl("json"))}">JSON</a> · in Google Sheets: <code>=IMPORTDATA("${esc(csv)}")</code>`;
+}
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportShown(format) {
+  const X = window.RHWF_EXPORT, rows = state.rows || [];
+  if (!X || !state.snap) return;
+  const name = X.fileName(state.board, state.real, state.snap.generated, format).replace(/\.(csv|json)$/, "-shown.$1");
+  if (format === "csv") return download(name, X.toCSV(rows, days()), "text/csv;charset=utf-8");
+  download(name, JSON.stringify({ board: state.board, real: state.real, window_days: days(),
+                                  generated_utc: new Date(state.snap.generated * 1000).toISOString(),
+                                  filters: filters(), rows: X.records(rows, days()) }, null, 1), "application/json");
 }
 
 function renderGuide() {
@@ -465,6 +494,8 @@ function wire() {
     if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openDrawer(tr.dataset.addr); }
   });
   $("more").addEventListener("click", () => { state.shown += PAGE; renderBoard(); });
+  $("exp_csv").addEventListener("click", () => exportShown("csv"));
+  $("exp_json").addEventListener("click", () => exportShown("json"));
   $("dclose").addEventListener("click", closeDrawer);
   $("scrim").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("drawer").hidden) closeDrawer(); });

@@ -1,6 +1,7 @@
 // RH Pools: iPhone home-screen widget for the Wallet Finder's web showcase.
-// Runs in the Scriptable app (free, App Store). Shows the pools that paid LPs the
-// most fee in the last 7 days, and on the large size the top wallets per class.
+// Runs in the Scriptable app (free, App Store). Shows the pools paying LPs the most
+// fee per $ of liquidity (APR over 24h, and over the last hour), and on the large
+// size the top wallets per class.
 // Data: https://<your site>/api/widget (the snapshot your Mac publishes), so the
 // widget works with the Mac asleep; it just shows how old the numbers are.
 //
@@ -68,15 +69,16 @@ function build(data, family, err) {
     return w;
   }
   if (!data.pools.length) {
-    const t = w.addText("No pool has enough closed positions this week yet.");
+    const t = w.addText("No pool scan yet: open the Pools tab or run finder.py pools on the Mac.");
     t.font = Font.systemFont(fs);
     t.textColor = C.dim;
   }
-  if (family !== "small") line(w, [["pool", C.dim], [null], ["fee APR", C.dim], ["   net", C.dim]], fs - 2);
+  if (family !== "small") line(w, [["pool", C.dim], [null], ["APR 24h", C.dim], ["    1h", C.dim]], fs - 2);
   for (const p of data.pools) {
-    const net = family === "small" ? [] : [[`  ${pct(p.net_apr).padStart(5)}`, p.net_apr >= 0 ? C.up : C.down]];
-    line(w, [[(p.pair || short(p.pool)).slice(0, family === "small" ? 9 : 14), C.text, { bold: true }], [null],
-      [pct(p.fee_apr).padStart(6), C.gold], ...net], fs);
+    // last hour vs the day: green = paying more than its 24h rate right now, red = cooling off
+    const hot = [[`  ${pct(p.apr_1h).padStart(5)}`, (p.apr_1h || 0) >= (p.apr_24h || 0) ? C.up : C.down]];
+    line(w, [[(p.pair || short(p.pool)).replace(/ \/ /g, "/").slice(0, family === "small" ? 9 : 14), C.text,
+      { bold: true }], [null], [pct(p.apr_24h).padStart(6), C.gold], ...(family === "small" ? [] : hot)], fs);
   }
   if (family === "large") {
     for (const kind of ["multiday", "degen"]) {

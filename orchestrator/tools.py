@@ -122,8 +122,8 @@ def rh_twin(i):
     return _rh("twin", _evm(i.get("wallet")), "-n", _int(i.get("n", 15), 1, 100, "n"))
 
 
-def rh_pools(i):
-    argv = ["pools", "--json", "-n", _int(i.get("n", 15), 1, 100, "n"),
+def rh_pool_results(i):
+    argv = ["pool-results", "--json", "-n", _int(i.get("n", 15), 1, 100, "n"),
             "--days", _int(i.get("days", 7), 1, 90, "days"),
             "--min-positions", _int(i.get("min_positions", 10), 1, 1000, "min_positions"),
             "--min-wallets", _int(i.get("min_wallets", 3), 1, 100, "min_wallets")]
@@ -177,6 +177,35 @@ def rh_import(i):
         return _rh("import", f.name)
     finally:
         os.unlink(f.name)
+
+
+def _num(v, name):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        raise ToolError(f"{name} must be a number")
+    if v < 0:
+        raise ToolError(f"{name} can't be negative")
+    return str(v)
+
+
+def rh_pools(i):
+    argv = ["pools", "--json", "-n", _int(i.get("n", 20), 1, 200, "n"),
+            "--min-mcap", _num(i.get("min_mcap", 500_000), "min_mcap"),
+            "--min-tvl", _num(i.get("min_tvl", 5_000), "min_tvl"),
+            "--min-vol-1h", _num(i.get("min_vol_1h", 0), "min_vol_1h")]
+    sort = i.get("sort", "blend")
+    if sort not in ("blend", "1h", "24h", "pace", "tvl", "vol1h", "vol24h"):
+        raise ToolError("sort must be blend, 1h, 24h, pace, tvl, vol1h or vol24h")
+    argv += ["--sort", sort]
+    quote = (i.get("quote") or "").strip()
+    if quote:
+        if not re.fullmatch(r"[A-Za-z0-9]{1,12}", quote):
+            raise ToolError("quote is a token symbol, e.g. USDG or WETH")
+        argv += ["--quote", quote]
+    if i.get("fresh"):
+        argv.append("--fresh")
+    return _rh(*argv, timeout=300)
 
 
 # ── RH Smart LP Finder ──────────────────────────────────────────────────────────────
@@ -239,13 +268,14 @@ def all_tools():
              "cross-check our figures.", {"wallet": WALLET}, rh_lpagent, required=["wallet"]),
         Tool("rh_twin", "Wallets whose LP style (hold time, range width, size, ladders, pace) is closest to this "
              "one, with similarity 0-1.", {"wallet": WALLET, "n": N}, rh_twin, required=["wallet"]),
-        Tool("rh_pools", "Best fee pools: from priced positions closed in the last `days`, per pool: fee_apr (fees "
+        Tool("rh_pool_results", "What LPs actually earned and kept per pool (our priced positions closed in the "
+             "last `days`; rh_pools is the market-wide fee rate right now). Per pool: fee_apr (fees "
              "÷ capital-days × 365, %), net_apr (same with PnL incl. price moves/IL), fee_per_1k ($ fee per $1,000 per "
              "day), fees, pnl, positions, wallets, win %, earning (% of positions that earned any fee), hold_h "
              "(median), range_pct (median range width), top_share (% of fees one wallet took), mcap, fee_tier, and "
              "the top 3 wallets there with our score. High fee_apr with low net_apr = fees eaten by IL.",
              {"days": N, "sort": {"type": "string", "enum": ["fee_apr", "net_apr", "fees", "pnl", "wallets"]},
-              "n": N, "min_positions": N, "min_wallets": N}, rh_pools),
+              "n": N, "min_positions": N, "min_wallets": N}, rh_pool_results),
         Tool("rh_compare", "Compare rows the user copied from RH Discovery with our figures (✓ within tolerance, "
              "✗ off, and why a wallet isn't ranked).", {"rows": {"type": "string", "description": "pasted table"}},
              rh_compare, required=["rows"]),
@@ -262,6 +292,18 @@ def all_tools():
              {}, rh_score, risk="write"),
         Tool("rh_import", "Star wallets into the Watchlist: one per line, text after the address becomes the label.",
              {"text": {"type": "string"}}, rh_import, risk="write", required=["text"]),
+
+        Tool("rh_pools", "Pools on Robinhood Chain (every DEX GeckoTerminal lists) that pay LPs the most fee per $ "
+             "of liquidity right now, as JSON. Fee tier read on chain (V4 dynamic-fee pools: median fee of the last "
+             "hour's swaps). Per row: pair, dex, fee_pct, fee_src, tvl, mcap (token side; FDV if no mcap), vol_1h, "
+             "vol_24h, per1k_1h / per1k_24h ($ earned per $1k of liquidity in that window), apr_1h, apr_24h, pace "
+             "(1h volume vs its 24h hourly average), blend (geometric mean of the two APRs), chg_1h/chg_24h (price "
+             "%, IL risk), traders_24h, flags, gt / dexscreener links. Defaults: mcap ≥ $500k, TVL ≥ $5k. A scan "
+             "takes ~1 min (free API rate limit) and is reused for 5 min.",
+             {"sort": {"type": "string", "enum": ["blend", "1h", "24h", "pace", "tvl", "vol1h", "vol24h"]},
+              "min_mcap": N, "min_tvl": N, "min_vol_1h": N, "n": N,
+              "quote": {"type": "string", "description": "only pairs with this token symbol, e.g. USDG or WETH"},
+              "fresh": {**B, "description": "scan again even if the last scan is under 5 minutes old"}}, rh_pools),
 
         Tool("slf_summary", "RH Smart LP Finder as seen from the Wallet Finder: whether its folder/DB is found, its "
              "server link, pools it scanned (pair, wallets ranked, computed_at), saved wallets, and the best "

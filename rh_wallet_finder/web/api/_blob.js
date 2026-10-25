@@ -34,13 +34,8 @@ function credentials(req, env) {
   return out;
 }
 
-function send(res, status, body) {
-  res.statusCode = status;
-  res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
-}
-
-// The latest snapshot the Wallet Finder published -> { status, body: Buffer (JSON) } or { status, error, tried }.
-// A private store is read with the credential; a public one answers either way.
+// The latest snapshot -> { status: 200, body: Buffer of JSON, gz: the stored gzip or null }
+// or { status, error, tried }
 async function readSnapshot(req, env) {
   const zlib = require("zlib");
   const creds = credentials(req, env);
@@ -61,12 +56,30 @@ async function readSnapshot(req, env) {
   }
   if (!r.ok) {
     const missing = tried.every(t => / (403|404)$/.test(t));
-    return { status: missing ? 404 : 502, tried, error: missing ? "Nothing published yet. In the Wallet Finder: " +
-      "Settings → Web showcase → paste the publish link → Save → Publish now." : `The Blob store answered HTTP ${r.status}.` };
+    return { status: missing ? 404 : 502, tried, error: missing
+      ? "Nothing published yet. In the Wallet Finder: Settings → Web showcase → paste the publish link → Save → " +
+        "Publish now." : `The Blob store answered HTTP ${r.status}.` };
   }
-  let body = Buffer.from(await r.arrayBuffer());
-  if (body[0] === 0x1f && body[1] === 0x8b) body = zlib.gunzipSync(body); // (unless fetch already unpacked it)
-  return { status: 200, body };
+  const got = Buffer.from(await r.arrayBuffer());
+  const gz = got[0] === 0x1f && got[1] === 0x8b ? got : null; // (unless fetch already unpacked it)
+  return { status: 200, body: gz ? zlib.gunzipSync(gz) : got, gz };
 }
 
-module.exports = { PATHNAME, BLOB_API, NO_STORE, credentials, send, readSnapshot };
+// Big bodies go out gzipped when the client takes that (it always does: browsers,
+// curl --compressed, spreadsheets): a function's answer must stay under 4.5 MB.
+function sendBig(req, res, status, body, gz) {
+  const zlib = require("zlib");
+  res.setHeader("vary", "accept-encoding");
+  if (/\bgzip\b/.test(String((req.headers || {})["accept-encoding"] || ""))) {
+    res.setHeader("content-encoding", "gzip");
+    return send(res, status, gz || zlib.gzipSync(Buffer.isBuffer(body) ? body : Buffer.from(body), { level: 6 }));
+  }
+  send(res, status, body);
+}
+
+function send(res, status, body) {
+  res.statusCode = status;
+  res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
+}
+
+module.exports = { PATHNAME, BLOB_API, NO_STORE, credentials, readSnapshot, send, sendBig };

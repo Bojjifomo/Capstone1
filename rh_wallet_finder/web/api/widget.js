@@ -1,5 +1,6 @@
-// A few KB for the phone widget (ios/RH Pools Widget.js): best fee pools of the last
-// 7 days and the top wallets of each class, from the same snapshot as the page.
+// A few KB for the phone widget (ios/RH Pools Widget.js): the pools paying the most fee
+// per $ of liquidity (the Pools tab's last scan) and the top wallets of each class, from
+// the same snapshot as the page.
 //   /api/widget?pools=5&wallets=3
 const { readSnapshot, send } = require("./_blob");
 
@@ -9,12 +10,13 @@ function slim(data, nPools, nWallets) {
   const rows = (data.views && (data.views.real || data.views.raw)) || [];
   const top = kind => rows.filter(r => r.kind === kind).slice(0, nWallets)
     .map(r => Object.fromEntries(PICK.filter(k => r[k] !== undefined).map(k => [k, r[k]])));
-  const pools = (data.pools || []).slice(0, nPools).map(p => ({
-    pair: p.pair, pool: p.pool, fee_tier: p.fee_tier, fee_apr: p.fee_apr, net_apr: p.net_apr,
-    fee_per_1k: p.fee_per_1k, wallets: p.wallets, positions: p.positions, win: p.win, top_share: p.top_share,
+  const board = data.pools && !Array.isArray(data.pools) ? data.pools : { at: null, rows: [] };
+  const pools = (board.rows || []).slice(0, nPools).map(p => ({
+    pair: p.pair, pool: p.pool, dex: p.dex, fee_pct: p.fee_pct, apr_1h: p.apr_1h, apr_24h: p.apr_24h,
+    blend: p.blend, per1k_24h: p.per1k_24h, tvl: p.tvl, pace: p.pace, flags: p.flags,
   }));
   const st = data.status || {};
-  return { generated: data.generated, age_min: Math.round((Date.now() / 1000 - (data.generated || 0)) / 60),
+  return { generated: data.generated, pools_at: board.at, age_min: Math.round((Date.now() / 1000 - (data.generated || 0)) / 60),
            wallets: rows.length, eth_usd: st.eth_usd, pools, multiday: top("multiday"), degen: top("degen") };
 }
 

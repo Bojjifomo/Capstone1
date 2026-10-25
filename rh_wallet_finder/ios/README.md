@@ -4,7 +4,7 @@ Dua bagian, dua-duanya pakai yang udah ada:
 
 | | Apa | Jalan selama |
 | --- | --- | --- |
-| **Widget home screen** | Pool fee terbaik 7 hari + top wallet Multiday / Degen, ngintip doang | Web showcase di Vercel jalan (Mac boleh tidur: widget nunjukin umur datanya) |
+| **Widget home screen** | Pool yang fee per $ likuiditasnya paling gede (APR 24 jam + 1 jam terakhir) + top wallet Multiday / Degen, ngintip doang | Web showcase di Vercel jalan (Mac boleh tidur: widget nunjukin umur datanya) |
 | **Ngobrol sama agent** | Tanya apa aja ke lp-orchestrator dari app Claude di iPhone | Mac nyala + `claude remote-control` jalan di folder `Capstone1` |
 
 ## 1. Widget (app Scriptable)
@@ -12,8 +12,9 @@ Dua bagian, dua-duanya pakai yang udah ada:
 Datanya dari `https://<web lu>/api/widget`, potongan kecil dari snapshot yang di-publish Mac.
 Bagian `pools` baru ikut di snapshot setelah Mac jalan pakai versi ini, jadi:
 
-1. Di Mac: `git pull`, buka lagi `Buka Wallet Finder.command`, terus Settings → **Publish now**
-   (atau tunggu publish otomatis berikutnya).
+1. Di Mac: `git pull`, buka lagi `Buka Wallet Finder.command`. Publish otomatis berikutnya
+   (maks 30 menit) ikut nge-scan pool dulu. Mau langsung: buka tab **Pools** sekali (itu nge-scan),
+   terus Settings → **Publish now**.
 2. Pastiin Vercel udah deploy versi baru (otomatis abis merge ke `main`). Cek: buka
    `https://<web lu>/api/widget` di Safari, harus keluar JSON yang ada `"pools"`.
 3. Di iPhone: install **Scriptable** (gratis, App Store).
@@ -27,9 +28,10 @@ Widget refresh sendiri kira-kira tiap 15 menit (iOS yang nentuin persisnya). Tap
 buka web showcase. Pojok kanan atas = umur data; kuning kalau lebih dari 45 menit (Mac
 lagi mati / nggak publish).
 
-Kolom: **fee APR** = fee yang didapet LP ÷ modal × lama ditahan, disetahunin. **net** = sama
-tapi pakai PnL (fee + naik-turun harga / IL). Fee APR tinggi tapi net merah = fee-nya
-kemakan IL.
+Kolom: **APR 24h** = fee pool itu 24 jam terakhir ÷ likuiditasnya, disetahunin (dari
+[Pool finder](../README.md#pool-finder-fee-terbaik-buat-buka-lp), filter default: mcap ≥ $500k,
+TVL ≥ $5k). **1h** = sama tapi 1 jam terakhir: hijau = lagi lebih deres dari rata-rata
+harinya, merah = lagi adem. Daftar pool-nya di-scan ulang worker sekali sejam sebelum publish.
 
 ## 2. Ngobrol sama agent dari iPhone (Remote Control)
 

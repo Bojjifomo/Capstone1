@@ -75,6 +75,7 @@ class Worker:
         if time.time() - last < float(cfg.get("PUBLISH_MINUTES") or 30) * 60:
             return
         try:
+            publish.refresh_pools(cfg, self.log)
             publish.publish(con, cfg, self.log)
         except Exception as e:  # noqa: BLE001 - the showcase is optional
             self.log(f"Web showcase not updated: {e}")

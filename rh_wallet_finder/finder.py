@@ -12,6 +12,10 @@
   python3 finder.py import-smart-lp saved wallets + pool rankings from RH Smart LP Finder
   python3 finder.py publish [--out FILE]  upload the boards to the web showcase (or write them to FILE)
   python3 finder.py compare FILE    our figures next to rows copied from RH Discovery (FILE, or - to paste)
+  python3 finder.py pools [--sort blend|1h|24h|pace] [--min-mcap 500000] [--min-tvl 5000]
+                                    pools that pay LPs the most fee per $ right now
+  python3 finder.py pool-results [--days 7] [--sort fee_apr|net_apr|fees|pnl|wallets]
+                                    what LPs actually earned and kept per pool (our positions)
 
 Sync, scoring and the CLI use only the standard library; the app needs
 `pip install -r requirements.txt` (Streamlit).
@@ -131,9 +135,9 @@ def cmd_twin(args, cfg):
     print(json.dumps(res, default=str))
 
 
-def cmd_pools(args, cfg):
-    import pools
-    rows = pools.best_pools(db.connect(), days=args.days, min_positions=args.min_positions,
+def cmd_pool_results(args, cfg):
+    import lp_pools
+    rows = lp_pools.best_pools(db.connect(), days=args.days, min_positions=args.min_positions,
                             min_wallets=args.min_wallets, sort=args.sort, limit=args.n)
     if args.json:
         print(json.dumps(rows, default=str))
@@ -186,8 +190,13 @@ def cmd_web_check(args, cfg):
         out["site"] = site
         try:
             with urllib.request.urlopen(urllib.request.Request(
-                    site + "/api/snapshot", headers={"user-agent": "rh-wallet-finder/1.0"}), timeout=30) as r:
-                snap = json.load(r)
+                    site + "/api/snapshot", headers={"user-agent": "rh-wallet-finder/1.0",
+                                                     "accept-encoding": "gzip"}), timeout=30) as r:
+                body = r.read()
+                if r.headers.get("content-encoding") == "gzip":
+                    import gzip
+                    body = gzip.decompress(body)
+                snap = json.loads(body)
             gen = snap.get("generated") or 0
             out["live"] = {"generated": gen, "age_min": round((time.time() - gen) / 60, 1),
                            "wallets": len((snap.get("views") or {}).get("raw") or []), "v": snap.get("v"),
@@ -306,6 +315,53 @@ def cmd_compare(args, cfg):
     print(compare.table(compare.compare(con, rows, cfg=cfg)))
 
 
+def _money(v):
+    if v is None:
+        return "–"
+    for div, unit in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if abs(v) >= div:
+            return f"${v / div:.1f}{unit}"
+    return f"${v:.0f}"
+
+
+def cmd_pools(args, cfg):
+    import pools
+    prog = None if args.json else (lambda i, n: print(f"\rGeckoTerminal {i + 1}/{n}…", end="", file=sys.stderr,
+                                                        flush=True))
+    try:
+        res = pools.best(cfg, min_mcap=args.min_mcap, min_tvl=args.min_tvl, sort=args.sort, n=args.n,
+                         min_vol_1h=args.min_vol_1h, quote=args.quote, fresh=args.fresh, pages=args.pages,
+                         progress=prog)
+    except pools.PoolsError as e:
+        sys.exit(str(e))
+    if prog:
+        print("\r" + " " * 30 + "\r", end="", file=sys.stderr)
+    if args.json:
+        print(json.dumps(res, default=str))
+        return
+    f = res["filters"]
+    print(f"{res['scanned']} pools scanned {(time.time() - res['at']) / 60:.0f} min ago · {res['passed_filters']} with "
+          f"mcap ≥ {_money(f['min_mcap'])} and TVL ≥ {_money(f['min_tvl'])} · {res['zero_fee']} of them pay 0 · "
+          f"sorted by {f['sort']}")
+    hdr = (f"{'#':>2}  {'pair':<22} {'dex':<15} {'fee%':>6} {'src':<5} {'TVL':>7} {'mcap':>7} {'vol 1h':>7} "
+           f"{'vol 24h':>7} {'$/1k 1h':>7} {'$/1k 24h':>8} {'APR 1h':>7} {'APR 24h':>7} {'pace':>5} {'chg24h':>7}  flags")
+    print(hdr)
+    print("-" * len(hdr))
+    for i, p in enumerate(res["rows"], 1):
+        chg = f"{p['chg_24h']:+.0f}%" if p.get("chg_24h") is not None else "–"
+        pace = f"{p['pace']:.1f}" if p.get("pace") is not None else "–"
+        print(f"{i:>2}  {(p['pair'] or '')[:22]:<22} {p['dex'][:15]:<15} {p['fee_pct']:>6.3g} {p['fee_src'][:5]:<5} "
+              f"{_money(p['tvl']):>7} {_money(p['mcap']):>7} {_money(p['vol_1h']):>7} {_money(p['vol_24h']):>7} "
+              f"{p['per1k_1h']:>7.2f} {p['per1k_24h']:>8.2f} {p['apr_1h']:>6.0f}% {p['apr_24h']:>6.0f}% {pace:>5} "
+              f"{chg:>7}  {', '.join(p['flags'])}")
+    if res["fee_unknown"]:
+        print(f"\nFee unknown (not ranked): {', '.join(res['fee_unknown'][:10])}")
+    for e in res["errors"]:
+        print("! " + e)
+    if res["rows"]:
+        print(f"\nTop pick: {res['rows'][0]['gt']}")
+
+
 def cmd_app(args, cfg):
     """streamlit run streamlit_app.py, from this folder so .streamlit/config.toml applies."""
     import subprocess
@@ -374,7 +430,7 @@ def main():
     s.add_argument("wallet")
     s.add_argument("-n", type=int, default=20)
     s.add_argument("--real", action="store_true")
-    s = sub.add_parser("pools", help="pools that paid LPs the most fee per dollar-day (from priced positions)")
+    s = sub.add_parser("pool-results", help="what LPs actually earned and kept per pool (from priced positions)")
     s.add_argument("--days", type=float, default=7, help="positions closed in the last N days (default 7)")
     s.add_argument("--sort", default="fee_apr", choices=["fee_apr", "net_apr", "fees", "pnl", "wallets"])
     s.add_argument("--min-positions", type=int, default=10)
@@ -394,15 +450,26 @@ def main():
     s.add_argument("file", help="text file with the copied rows, or - to paste them")
     s = sub.add_parser("set-rpc")
     s.add_argument("url")
+    s = sub.add_parser("pools", help="pools that pay LPs the most fee per $ of liquidity (1h / 24h), mcap + TVL floor")
+    s.add_argument("--sort", default="blend", choices=["blend", "1h", "24h", "pace", "tvl", "vol1h", "vol24h"],
+                   help="blend = APR 1h and 24h together (default); 1h / 24h = APR over that window")
+    s.add_argument("--min-mcap", type=float, default=500_000, help="token market cap (FDV if no mcap), USD")
+    s.add_argument("--min-tvl", type=float, default=5_000, help="pool liquidity, USD")
+    s.add_argument("--min-vol-1h", type=float, default=0, help="volume in the last hour, USD")
+    s.add_argument("--quote", help="only pairs with this token, e.g. USDG or WETH")
+    s.add_argument("-n", type=int, default=25)
+    s.add_argument("--pages", type=int, default=10, help="GeckoTerminal pages of 20 pools (max 10)")
+    s.add_argument("--fresh", action="store_true", help="scan again even if the last scan is under 5 min old")
+    s.add_argument("--json", action="store_true")
     args = ap.parse_args()
     cfg = config.load_env()
     t = time.time()
     if args.cmd is None:
         args = ap.parse_args(["app"])
     {"app": cmd_app, "worker": cmd_worker, "sync": cmd_sync, "score": cmd_score, "top": cmd_top, "check": cmd_check, "import": cmd_import,
-     "status": cmd_status, "twin": cmd_twin, "smart-lp": cmd_smart_lp, "pools": cmd_pools, "web-check": cmd_web_check,
+     "status": cmd_status, "twin": cmd_twin, "smart-lp": cmd_smart_lp, "pool-results": cmd_pool_results, "web-check": cmd_web_check,
      "set-rpc": cmd_set_rpc, "import-smart-lp": cmd_import_smart_lp, "publish": cmd_publish,
-     "compare": cmd_compare}[args.cmd](args, cfg)
+     "compare": cmd_compare, "pools": cmd_pools}[args.cmd](args, cfg)
     if args.cmd in ("sync", "score"):
         print(f"done in {time.time() - t:.0f}s")
 
