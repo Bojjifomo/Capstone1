@@ -154,6 +154,32 @@ class OnchainFeeTest(unittest.TestCase):
         self.assertNotIn("0x" + "e5" * 20, fees)
         self.assertEqual(rpc.log_calls, 1)
 
+    def test_failed_swap_reads_keep_the_static_fees(self):
+        pools = [{"pool": V4_STATIC, "dex": "uniswap-v4"}, {"pool": V4_DYNAMIC, "dex": "uniswap-v4"}]
+        agg = agg_result([(True, slot0(1 << 96, 3000)), (True, pool_key(3000)),
+                          (True, slot0(1 << 96, 0)), (True, pool_key(P.DYNAMIC_FEE_FLAG))])
+
+        class TenBlocks(FakeRPC):  # free Alchemy: eth_getLogs over more than 10 blocks is refused
+            def call(self, method, params):
+                if method == "eth_getLogs":
+                    raise RuntimeError("Under the Free tier plan, you can make eth_getLogs requests with up to a "
+                                       "10 block range")
+                return super().call(method, params)
+
+        errors = []
+        fees = P.onchain_fees(pools, TenBlocks(agg, []), errors=errors)
+        self.assertEqual(fees, {V4_STATIC: (3000, "chain")})  # the dynamic one falls back to its name
+        self.assertIn("1 dynamic-fee pools", errors[0])
+        # with a logs RPC that takes the range, the dynamic pool is read from its swaps
+        swap = {"topics": [P.SWAP_V4, V4_DYNAMIC], "data": "0x" + "".join(C.word(v) for v in (1, 2, 3, 4, 5, 7000))}
+        fees = P.onchain_fees(pools, TenBlocks(agg, []), logs_rpc=FakeRPC(agg, [swap]))
+        self.assertEqual(fees[V4_DYNAMIC], (7000, "swaps"))
+
+    def test_logs_go_to_rpc_1_and_calls_to_rpc_2(self):
+        cfg = {"RPC_URL": "https://solid.example/evm/4663", "CALL_RPC_URL": "https://alchemy.example/v2/k"}
+        self.assertEqual((P._rpc(cfg).url, P._logs_rpc(cfg).url), (cfg["CALL_RPC_URL"], cfg["RPC_URL"]))
+        self.assertEqual(P._logs_rpc({}).url, P.PUBLIC_RPC)
+
 
 class BestTest(unittest.TestCase):
     def test_ranking_filters_and_unknowns(self):

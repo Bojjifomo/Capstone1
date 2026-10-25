@@ -215,8 +215,11 @@ def _reads_fee_onchain(p):
     return _is_v4(p) or p["dex"].startswith(("uniswap-v3", "sushiswap"))
 
 
-def onchain_fees(pools, rpc, swap_window_s=3600):
-    """{pool: (fee pips or None, source)}. 1 pip = 0.0001%, so 3000 = 0.3%."""
+def onchain_fees(pools, rpc, swap_window_s=3600, logs_rpc=None, errors=None):
+    """{pool: (fee pips or None, source)}. 1 pip = 0.0001%, so 3000 = 0.3%.
+    Dynamic-fee pools need their Swap logs, read through logs_rpc (default rpc). If
+    that fails (free Alchemy takes 10 blocks per eth_getLogs), only those pools fall
+    back to the name; the fees already read stay, and the reason goes in errors."""
     picks = [p for p in pools if _reads_fee_onchain(p)]
     calls = []
     for p in picks:
@@ -248,7 +251,12 @@ def onchain_fees(pools, rpc, swap_window_s=3600):
             else:
                 out[p["pool"]] = (s0["lp_fee"], "chain")
     if dynamic:
-        out.update(swap_fees(dynamic, rpc, swap_window_s))
+        try:
+            out.update(swap_fees(dynamic, logs_rpc or rpc, swap_window_s))
+        except Exception as e:  # noqa: BLE001  the static fees above still count
+            if errors is not None:
+                errors.append(f"{len(dynamic)} dynamic-fee pools use the tier in their name: reading their swaps "
+                              f"failed ({e})")
     return out
 
 
@@ -322,8 +330,15 @@ def keep(p, min_mcap, min_tvl, min_vol_1h=0, quote=None):
 
 # ---- the scan --------------------------------------------------------------
 def _rpc(cfg):
+    """eth_call goes to RPC 2 when there is one, like the Wallet Finder's price reads."""
     from rpc import RPC
     return RPC(cfg.get("CALL_RPC_URL") or cfg.get("RPC_URL") or PUBLIC_RPC, workers=2)
+
+
+def _logs_rpc(cfg):
+    """eth_getLogs goes to RPC 1, like the Wallet Finder's sync: free Alchemy (often RPC 2) takes 10 blocks."""
+    from rpc import RPC
+    return RPC(cfg.get("RPC_URL") or PUBLIC_RPC, workers=2)
 
 
 def scan(cfg, pages=10, progress=None, rpc=None):
@@ -339,7 +354,7 @@ def scan(cfg, pages=10, progress=None, rpc=None):
                 p["mcap"], p["mcap_src"] = caps.get(p["asset"], (None, None))
     errors = []
     try:
-        fees = onchain_fees(pools, rpc or _rpc(cfg))
+        fees = onchain_fees(pools, rpc or _rpc(cfg), logs_rpc=None if rpc else _logs_rpc(cfg), errors=errors)
     except Exception as e:  # noqa: BLE001  no chain: names only
         fees = {}
         errors.append(f"on-chain fee read failed, using the tier in the pool name: {e}")
