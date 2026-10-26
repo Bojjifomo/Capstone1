@@ -12,6 +12,7 @@ import push
 import runner
 import sessions
 import store
+import team
 
 ACTIVE_WINDOW = 60          # transcript written this recently = working
 IDLE_WINDOW = 2 * 3600      # after this with no process = finished
@@ -53,7 +54,7 @@ class Office:
         self.runner = runner.Runner(cfg, on_finish=self.run_finished)
         self.pusher = push.Pusher(cfg.get("push_subject", "mailto:agent-office@localhost"))
         self.codes = guard.Codes(self.notify, dev=cfg.get("_dev", False))
-        self.team = None
+        self.team = team.Team(self)
         self.seen = {}          # sid -> (status, working since) for notifications
         self.monitor_started = False
 
@@ -137,7 +138,13 @@ class Office:
     def detail(self, sid):
         t = self.transcript(sid)
         if not t:
-            return None
+            run = self.runner.latest(sid)
+            if not run:
+                return None
+            # a brand-new session whose transcript isn't written yet
+            return {"id": sid, "name": "A new quest", "status": "working", "note": "", "messages": [],
+                    "pending": [], "queue_items": [], "run": run.public(), "folder": home_path(run.cwd),
+                    "staff": self.team.card(self.team.member_for_cwd(run.cwd))}
         info = self.summary(t, time.time())
         info["messages"] = list(t.messages)
         info["pending"] = [s for _, s in t.pending.values()]

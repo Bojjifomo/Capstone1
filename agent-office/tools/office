@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""office: talk to the Agent Office guild from any shell or Claude Code session.
+
+  office team                      who is in the guild
+  office who "<task>"              best fit for a task
+  office ask <name> "<brief>"      send a self-contained brief and wait for the answer
+  office ask <name> "<brief>" --no-wait    print the session id and return at once
+  office result <session-id>       the answer (waits if they're still working)
+  office status                    every session and its status
+  office doctor                    check the install
+  office install-hook              add the Claude Code Notification hook (exact "needs you")
+  office hook                      (used by the hook itself; reads the event on stdin)
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+BASE = os.environ.get("AGENT_OFFICE_URL", "http://127.0.0.1:7777").rstrip("/")
+HERE = Path(__file__).resolve()
+LABEL = "com.bojjifomo.agent-office"
+
+
+def call(path, body=None, timeout=30):
+    headers = {"Host": urllib.parse.urlsplit(BASE).netloc}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers.update({"Content-Type": "application/json", "X-Agent-Office": "1", "Origin": BASE})
+    req = urllib.request.Request(BASE + path, data=data, headers=headers, method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error", e.reason)
+        except ValueError:
+            msg = e.reason
+        sys.exit("office: %s" % msg)
+    except (urllib.error.URLError, OSError) as e:
+        sys.exit("office: the guild hall is not answering at %s (%s)" % (BASE, e))
+
+
+def follow(rid, timeout):
+    """Wait for a run and return its final text."""
+    v, deadline = -1, time.time() + timeout
+    while time.time() < deadline:
+        run = call("/api/run/%s?v=%d" % (rid, v), timeout=40)
+        v = run["v"]
+        if run["done"]:
+            if not run["ok"]:
+                errors = [e["t"] for e in run["events"] if e["k"] == "error"]
+                sys.exit("office: the errand failed: %s" % (errors[-1] if errors else "unknown error"))
+            return run.get("final") or "\n\n".join(e["t"] for e in run["events"] if e["k"] == "text")
+    sys.exit("office: still working after %ds; check later with `office result %s`" % (timeout, run.get("sid", rid)))
+
+
+def cmd_team(args):
+    team = call("/api/team")
+    if not team["staff"]:
+        print("The guild has no specialists yet. Recruit some in the Guild Hall (Recruit button).")
+        return
+    for division in sorted({s["division"] for s in team["staff"]}):
+        print(division)
+        for s in [s for s in team["staff"] if s["division"] == division]:
+            print("  %-14s %-28s %-8s %s" % (s["name"], s["title"], s["status"], s["role"]))
+
+
+def cmd_who(args):
+    if not args:
+        sys.exit('usage: office who "<task>"')
+    ranking = call("/api/team/who?" + urllib.parse.urlencode({"task": " ".join(args)}))["ranking"]
+    if not ranking:
+        print("Nobody in the guild yet.")
+    for r in ranking[:5]:
+        print("%-14s %5.1f  %s (%s)%s" % (r["name"], r["score"], r["title"], r["role"],
+                                         "  matched: " + ", ".join(r["because"]) if r["because"] else ""))
+
+
+def cmd_ask(args):
+    wait = "--no-wait" not in args
+    timeout = 1800
+    if "--timeout" in args:
+        i = args.index("--timeout")
+        timeout = int(args[i + 1])
+        del args[i:i + 2]
+    args = [a for a in args if a != "--no-wait"]
+    if len(args) < 2:
+        sys.exit('usage: office ask <name> "<brief>" [--no-wait] [--timeout seconds]')
+    brief = " ".join(args[1:])
+    if brief == "-":
+        brief = sys.stdin.read()
+    r = call("/api/team/ask", {"name": args[0], "brief": brief})
+    if not wait:
+        print("%s is on it. Session %s\nCollect the answer with: office result %s" % (r["name"], r["sid"], r["sid"]))
+        return
+    print(follow(r["run"], timeout))
+
+
+def cmd_result(args):
+    if not args:
+        sys.exit("usage: office result <session-id>")
+    sid = args[0]
+    for _ in range(30):
+        try:
+            d = call_quiet("/api/session/" + sid)
+        except LookupError:
+            time.sleep(2)  # the transcript may not exist yet
+            continue
+        run = d.get("run")
+        if run and not run["done"]:
+            print(follow(run["id"], 1800))
+            return
+        replies = [m for m in d["messages"] if m["role"] == "assistant" and m["text"]]
+        print(replies[-1]["text"] if replies else "(no answer yet)")
+        return
+    sys.exit("office: no such session")
+
+
+def call_quiet(path):
+    req = urllib.request.Request(BASE + path, headers={"Host": urllib.parse.urlsplit(BASE).netloc})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            return json.loads(res.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise LookupError(path)
+        raise
+
+
+def cmd_status(args):
+    for s in call("/api/state")["sessions"]:
+        if s["status"] != "archived":
+            print("%-9s %-40.40s %s" % (s["status"], s["name"], s["folder"]))
+
+
+def cmd_hook(args):
+    """Notification hook: never block or fail Claude Code."""
+    try:
+        event = json.loads(sys.stdin.read() or "{}")
+        body = {k: str(event.get(k, "")) for k in ("session_id", "notification_type", "message")}
+        req = urllib.request.Request(BASE + "/api/hook/notify", data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "X-Agent-Office": "1",
+                                              "Origin": BASE, "Host": urllib.parse.urlsplit(BASE).netloc})
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass
+
+
+def settings_path():
+    return Path.home() / ".claude" / "settings.json"
+
+
+def cmd_install_hook(args):
+    path = settings_path()
+    settings = json.loads(path.read_text()) if path.exists() else {}
+    command = "%s hook" % HERE
+    groups = settings.setdefault("hooks", {}).setdefault("Notification", [])
+    if any(h.get("command", "").endswith("office hook") for g in groups for h in g.get("hooks", [])):
+        print("The hook is already installed.")
+        return
+    groups.append({"matcher": "", "hooks": [{"type": "command", "command": command, "timeout": 5}]})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_name("settings.json.bak-%d" % time.time())
+        backup.write_text(path.read_text())
+        print("Backed up your settings to", backup)
+    tmp = path.with_name(".settings.json.tmp")
+    tmp.write_text(json.dumps(settings, indent=2) + "\n")
+    os.replace(tmp, path)
+    print("Installed. New Claude Code sessions will tell the Guild Hall when they wait on a permission prompt.")
+
+
+def cmd_doctor(args):
+    def check(name, ok, hint=""):
+        print("%s %-34s %s" % ("✓" if ok else "✗", name, "" if ok else hint))
+    try:
+        state = call_quiet("/api/state")
+        check("server answers on " + BASE, True)
+    except Exception:
+        check("server answers on " + BASE, False, "launchctl kickstart -k gui/$(id -u)/" + LABEL)
+        return
+    opts = call_quiet("/api/options")
+    check("claude found", opts.get("claude"), "set claude_bin in config.json")
+    if sys.platform == "darwin":
+        loaded = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), LABEL)],
+                                capture_output=True).returncode == 0
+        check("launchd agent loaded", loaded, "sh tools/install.sh")
+    check("ravens (push) subscribed", call_quiet("/api/push/key").get("subscribed"),
+          "open Ravens & seals on the phone (needs https via tailscale serve)")
+    settings = settings_path().read_text() if settings_path().exists() else ""
+    check("Notification hook installed", "office hook" in settings, "office install-hook")
+    skill = Path.home() / ".claude" / "skills" / "agent-office" / "SKILL.md"
+    check("delegation skill installed", skill.exists(), "sh tools/install.sh")
+    print("%d sessions, %d specialists" % (len(state["sessions"]), len(state["team"]["staff"])))
+
+
+COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
+            "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        sys.exit(__doc__)
+    COMMANDS[sys.argv[1]](sys.argv[2:])

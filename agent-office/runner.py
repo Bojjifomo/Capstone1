@@ -77,7 +77,8 @@ class Run:
         with self.cond:
             return {"id": self.id, "sid": self.sid, "events": [dict(e) for e in self.events], "v": self.v,
                     "done": self.done, "ok": self.ok, "cost": self.cost, "started": self.started,
-                    "ended": self.ended, "text": self.text[:400], "mode": self.mode, "origin": self.origin}
+                    "ended": self.ended, "text": self.text[:400], "mode": self.mode, "origin": self.origin,
+                    "final": self.final}
 
 
 class Runner:

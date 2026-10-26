@@ -16,6 +16,11 @@ if [ "$SRC" != "$DEST" ]; then
 fi
 chmod +x "$DEST/tools/office" 2>/dev/null || true
 
+# The office CLI on the PATH, and the delegation skill for every Claude Code session.
+mkdir -p "$HOME/.local/bin" "$HOME/.claude/skills/agent-office"
+ln -sf "$DEST/tools/office" "$HOME/.local/bin/office"
+cp "$DEST/tools/skill/agent-office/SKILL.md" "$HOME/.claude/skills/agent-office/SKILL.md"
+
 # Find claude for the launchd PATH (launchd starts with a bare PATH).
 CLAUDE="$(command -v claude || true)"
 for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
@@ -75,3 +80,5 @@ if [ -n "$TS_NAME" ]; then
 fi
 echo "Restart:  launchctl kickstart -k gui/\$(id -u)/$LABEL"
 echo "Logs:     tail -f $DEST/logs/server.log"
+echo "Optional: office install-hook   (exact 'needs you' when a session waits on a permission prompt)"
+echo "Check:    office doctor"

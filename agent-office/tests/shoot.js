@@ -47,6 +47,39 @@ const SCENES = {
     await page.screenshot({ path: out("ravens") });
     await closeSheet(page);
   },
+  async stage3(page) {
+    const recruits = [
+      ["Lyra", "DeFi researcher", "Track LP fee yields on Robinhood Chain and explain them plainly."],
+      ["Lyra", "Python backend engineer", "Write tests first. Keep functions small."],
+      ["", "Technical writer", "Plain English, short sentences."],
+      ["Thorne", "Security reviewer", "Look for injection, auth and secrets mistakes."],
+    ];
+    for (const [name, role, instructions] of recruits) {
+      await page.click("[data-open=hire]");
+      await wait(page, 500);
+      await page.fill("#hire-form [name=name]", name);
+      await page.fill("#hire-form [name=role]", role);
+      await page.fill("#hire-form [name=instructions]", instructions);
+      await page.click("#hire-form [type=submit]");
+      await wait(page, 900);
+      if (role.startsWith("Python")) await page.screenshot({ path: out("staff") });
+      await closeSheet(page);
+    }
+    await page.click("[data-staff]");
+    await wait(page, 500);
+    await page.fill("#errand-form textarea", "slow: summarize this week's best LP pools");
+    await page.click("#errand-form [type=submit]");
+    await wait(page, 1500);
+    await closeSheet(page);
+    await page.evaluate(() => document.querySelector("#wings").scrollIntoView());
+    await wait(page, 300);
+    await page.screenshot({ path: out("wings") });
+    await page.click("#post-quest");
+    await wait(page, 700);
+    await page.evaluate(() => document.querySelector("#sheet-body").scrollTo(0, 9999));
+    await page.screenshot({ path: out("party-leader") });
+    await closeSheet(page);
+  },
 };
 
 (async () => {

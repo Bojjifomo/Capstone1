@@ -187,10 +187,11 @@ function openSheet(sid, push) {
 }
 
 // A panel is any non-session sheet: settings, new job, and the stage 4 panels.
-function openPanel(name, push) {
+function openPanel(name, push, arg) {
   const panel = Hooks.panels[name];
   if (!panel) return;
   UI.mode = name;
+  UI.arg = arg || null;
   UI.open = null;
   UI.detail = null;
   UI.footKey = null;
@@ -201,8 +202,10 @@ function openPanel(name, push) {
   $("#sheet-foot").innerHTML = "";
   $("#sheet-body").innerHTML = '<p class="loading">One moment…</p>';
   showSheet();
-  if (push !== false) history.pushState({ panel: name }, "");
-  panel.render($("#sheet-body"), true);
+  if (push !== false) history.pushState({ panel: name, arg: UI.arg }, "");
+  Promise.resolve(panel.render($("#sheet-body"), true)).catch((e) => {
+    $("#sheet-body").innerHTML = `<p class="loading">${esc(e.message)}</p>`;
+  });
 }
 
 function closeSheet(fromPop) {
@@ -510,10 +513,12 @@ document.addEventListener("click", async (ev) => {
   const pact = ev.target.closest("[data-panel-act]");
   if (pact) {
     const fn = PANEL_ACTIONS[pact.dataset.panelAct] || (Hooks.panelActions || {})[pact.dataset.panelAct];
-    if (fn) return guarded(pact, async () => { await fn(pact); if (UI.mode) Hooks.panels[UI.mode].render($("#sheet-body")); });
+    if (fn) return guarded(pact, async () => { if (await fn(pact) !== false && UI.mode && Hooks.panels[UI.mode]) Hooks.panels[UI.mode].render($("#sheet-body")); });
   }
   const open = ev.target.closest("[data-open]");
-  if (open) { openPanel(open.dataset.open); return; }
+  if (open) { openPanel(open.dataset.open, true, open.dataset.arg); return; }
+  const member = ev.target.closest("[data-staff]");
+  if (member) { openPanel("staff", true, member.dataset.staff); return; }
   const spot = ev.target.closest("[data-sid]");
   if (spot) { openSheet(spot.dataset.sid); return; }
   if (ev.target.id === "backdrop" || ev.target.closest("#sheet-close")) closeSheet();
@@ -535,7 +540,7 @@ document.addEventListener("keydown", (ev) => {
 });
 window.addEventListener("popstate", (ev) => {
   if (ev.state && ev.state.sheet) openSheet(ev.state.sheet, false);
-  else if (ev.state && ev.state.panel) openPanel(ev.state.panel, false);
+  else if (ev.state && ev.state.panel) openPanel(ev.state.panel, false, ev.state.arg);
   else closeSheet(true);
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });

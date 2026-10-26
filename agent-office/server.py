@@ -22,6 +22,7 @@ sys.path.insert(0, str(HERE))
 import core  # noqa: E402
 import runner  # noqa: E402
 import store  # noqa: E402
+import team  # noqa: E402
 
 STATIC = HERE / "static"
 MAX_BODY = 64 * 1024
@@ -112,6 +113,7 @@ def api_state(req, m):
         "name": APP.cfg.get("name", ""),
         "now": time.time(),
         "sessions": APP.office.all_sessions(),
+        "team": APP.office.team.roster(),
     }
 
 
@@ -215,7 +217,19 @@ def api_job(req, m):
                               code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system)
 
 
-PM_PROMPT = ""  # stage 3
+OFFICE_CLI = HERE / "tools" / "office"
+PM_PROMPT = """You are the party leader for this quest (project manager mode) in bojjifomo's guild.
+Work like this:
+1. Split the work into clear, separate pieces before doing any of it.
+2. See who is in the guild: `{cli} team`. Find the best fit for a piece: `{cli} who "<piece>"`.
+3. Hand a piece to a teammate with a self-contained brief (they cannot see this conversation: include paths,
+   context and what "done" means): `{cli} ask <name> "<brief>" --no-wait`, then collect the answer later with
+   `{cli} result <session-id>`. Independent pieces can run at the same time.
+4. For pieces no teammate fits, use subagents (the Task/Agent tool) and pick the model by need:
+   haiku for lookups and searches, sonnet for normal coding, opus for hard problems (design, tricky bugs).
+5. Check what comes back yourself before you build on it.
+6. Finish with a short report: a table of who did what (teammate or subagent, model, piece, result),
+   then what is left open.""".format(cli=OFFICE_CLI)
 
 
 @route("POST", "/api/code")
@@ -259,6 +273,51 @@ def api_push_test(req, m):
 @route("GET", "/api/push/last")
 def api_push_last(req, m):
     return APP.office.pusher.last or {}
+
+
+# ---- stage 3: the team -------------------------------------------------------
+
+STAFF = r"(?P<staff>[0-9a-f]{8})"
+
+
+@route("GET", "/api/team")
+def api_team(req, m):
+    roster = APP.office.team.roster()
+    known = sorted({t[3] for t in team.TITLES} | {team.DEFAULT_TITLE[2]} | set(roster["divisions"]))
+    return dict(roster, known_divisions=known)
+
+
+@route("GET", "/api/team/who")
+def api_team_who(req, m):
+    task = (req.query.get("task") or [""])[0][:2000]
+    return {"ranking": APP.office.team.rank(task)}
+
+
+@route("POST", "/api/staff")
+def api_hire(req, m):
+    b = req.body
+    try:
+        member, renamed = APP.office.team.hire(text_field(b, "name"), text_field(b, "role"),
+                                               text_field(b, "instructions", 8001), text_field(b, "division"),
+                                               text_field(b, "model") or "sonnet")
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio")}, "renamed_from": renamed}
+
+
+@route("POST", "/api/staff/" + STAFF + "/dismiss")
+def api_dismiss(req, m):
+    return {"dismissed": APP.office.team.dismiss(m.group("staff"))}
+
+
+@route("POST", "/api/team/ask")
+def api_team_ask(req, m):
+    try:
+        return APP.office.team.ask(text_field(req.body, "name"), text_field(req.body, "brief", runner.MAX_TEXT + 1))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except ValueError as e:
+        raise HttpError(400, str(e))
 
 
 # ---- HTTP plumbing ------------------------------------------------------

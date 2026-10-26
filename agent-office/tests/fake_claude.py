@@ -35,7 +35,10 @@ def out(obj):
 log({"type": "user", "message": {"role": "user", "content": text}})
 out({"type": "system", "subtype": "init", "session_id": sid, "model": "claude-sonnet-5-5", "permissionMode": mode})
 mid = "msg_" + uuid.uuid4().hex[:10]
-reply = "**Heard you.** You said: %s\n\n```\nmode=%s\n```" % (text[:200], mode)
+reply = "**Heard you.** You said: %s\n\n```\nmode=%s pm=%s\n```" % (
+    text[:200], mode, "yes" if "--append-system-prompt" in args else "no")
+if "ASKBACK" in text:
+    reply += "\n\nShould I keep going with the next part?"
 out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": mid}}})
 for i in range(0, len(reply), 12):
     out({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": reply[i:i + 12]}}})

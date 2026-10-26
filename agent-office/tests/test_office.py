@@ -339,5 +339,97 @@ class Stage2(ServerCase):
         self.post("/api/push/unsubscribe")
 
 
+class Stage3(ServerCase):
+    wait_run = Stage2.wait_run
+
+    def hire(self, **kw):
+        body = {"name": "", "role": "Python backend engineer", "instructions": "Write tests first.", "division": ""}
+        body.update(kw)
+        status, r = self.post("/api/staff", body)
+        self.assertEqual(status, 200, r)
+        return r
+
+    def cli(self, *args, stdin=None):
+        env = dict(os.environ, HOME=str(self.home), AGENT_OFFICE_URL="http://127.0.0.1:%d" % PORT)
+        p = subprocess.run([sys.executable, str(self.app / "tools" / "office")] + list(args), env=env,
+                           input=stdin, capture_output=True, text=True, timeout=60)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_a_hire_unique_names_and_folder(self):
+        a = self.hire(name="Lyra")
+        self.assertEqual(a["staff"]["name"], "Lyra")
+        self.assertEqual(a["staff"]["title"], "Artificer of the Deep Halls")
+        self.assertEqual(a["staff"]["division"], "The Forge")
+        b = self.hire(name="lyra", role="DeFi researcher", instructions="Track LP fee yields on Robinhood Chain.")
+        self.assertEqual(b["staff"]["name"], "lyra II")
+        self.assertEqual(b["renamed_from"], "lyra")
+        self.assertEqual(b["staff"]["division"], "The Counting House")
+        c = self.hire(role="Technical writer", instructions="Plain English, short sentences.")
+        self.assertEqual(c["staff"]["name"], "Aldric")
+        md = (self.home / "Agents" / "lyra" / "CLAUDE.md").read_text()
+        self.assertIn("Write tests first.", md)
+        self.assertIn("Never ask the user questions", md)
+        self.assertEqual(self.post("/api/staff", {"role": ""})[0], 400)
+
+    def test_b_who_and_team_cli(self):
+        code, out = self.cli("team")
+        self.assertEqual(code, 0, out)
+        self.assertIn("The Forge", out)
+        code, out = self.cli("who", "research the best LP fee pools")
+        self.assertEqual(out.split()[0], "lyra")
+        code, out = self.cli("who", "write the release notes")
+        self.assertEqual(out.split()[0], "Aldric")
+
+    def test_c_ask_waits_for_answer_and_helpers_never_need_you(self):
+        code, out = self.cli("ask", "Aldric", "Draft a README intro. ASKBACK")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Heard you", out)
+        time.sleep(2.5)
+        state = self.request("GET", "/api/state")[1]
+        aldric = [m for m in state["team"]["staff"] if m["name"] == "Aldric"][0]
+        self.assertNotEqual(aldric["status"], "needs")
+        helper = [s for s in state["sessions"] if s["id"] == aldric["sid"]][0]
+        self.assertTrue(helper["helper"])
+        self.assertNotEqual(helper["status"], "needs")
+
+    def test_d_no_wait_then_result(self):
+        code, out = self.cli("ask", "lyra II", "slow: list three pools", "--no-wait")
+        self.assertEqual(code, 0, out)
+        sid = out.split("Session ")[1].split()[0]
+        code, out = self.cli("result", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn("list three pools", out)
+
+    def test_e_lead_still_needs_you(self):
+        sid = fixtures.sid(5)
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "ASKBACK please", "mode": "acceptEdits"})
+        self.wait_run(r["run"])
+        time.sleep(5)
+        s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[sid]
+        self.assertEqual(s["status"], "needs")
+
+    def test_f_pm_mode_appends_prompt(self):
+        pid = [p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp")][0]["id"]
+        status, r = self.post("/api/job", {"project": pid, "text": "ship the health endpoint", "mode": "acceptEdits", "pm": True})
+        run = self.wait_run(r["run"])
+        self.assertIn("pm=yes", run["events"][0]["t"])
+
+    def test_g_install_hook_is_idempotent(self):
+        code, out = self.cli("install-hook")
+        self.assertEqual(code, 0, out)
+        code, out = self.cli("install-hook")
+        self.assertIn("already", out)
+        settings = json.loads((self.home / ".claude" / "settings.json").read_text())
+        self.assertEqual(len(settings["hooks"]["Notification"]), 1)
+        code, _ = self.cli("hook", stdin=json.dumps({"session_id": fixtures.sid(6), "notification_type": "permission_prompt",
+                                                     "message": "Claude needs your permission to use Bash"}))
+        self.assertEqual(code, 0)
+
+    def test_h_dismiss(self):
+        r = self.hire(name="Temp", role="tester")
+        self.assertTrue(self.post("/api/staff/%s/dismiss" % r["staff"]["id"])[1]["dismissed"])
+        self.assertTrue((self.home / "Agents" / "temp").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
