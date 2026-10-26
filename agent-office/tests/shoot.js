@@ -120,21 +120,47 @@ const SCENES = {
     await page.screenshot({ path: out("panel") });
     await closeSheet(page);
   },
+  async town(page) {
+    await page.evaluate(async () => {
+      const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) }).then((r) => r.json());
+      await post("/api/staff", { name: "Lyra", role: "LP ops monitor (devops)", instructions: "Watch the LP tools.", division: "The Watchtower" });
+      await post("/api/staff", { name: "Orin", role: "Product innovator and planner", instructions: "Ideas.", division: "The War Room" });
+      await post("/api/staff", { name: "Brynn", role: "Python backend engineer", instructions: "Tests first.", division: "The Forge" });
+      await post("/api/staff", { name: "Quill", role: "Technical writer", instructions: "Plain English.", division: "The Scriptorium" });
+    });
+    await page.reload();
+    await page.waitForSelector(".bld");
+    await wait(page, 800);
+    await page.evaluate(() => fetch("/api/team/ask", { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify({ name: "Brynn", brief: "slow: slow: add a health endpoint" }) }));
+    await wait(page, 5200);
+    await page.screenshot({ path: out("day") });
+    await page.click('[data-bld="hall"]');
+    await wait(page, 1200);
+    await page.screenshot({ path: out("hall-inside") });
+    await page.click("#town-back");
+    await wait(page, 700);
+    await page.click('[data-bld="d:The Forge"]');
+    await wait(page, 1200);
+    await page.screenshot({ path: out("forge-inside") });
+    await page.click("#town-back");
+    await wait(page, 500);
+  },
 };
 
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  if (process.env.NIGHT) await page.addInitScript(() => { Date.prototype.getHours = () => 21; });
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("dialog", (d) => d.accept());
   await page.goto(base + "/");
-  await page.waitForSelector(".spot");
+  await page.waitForSelector("#town-stage canvas");
   await wait(page, 600);
   for (const name of stage.split(",")) { scene = name; await SCENES[name](page); }
   await page.goto(base + "/");
-  await page.waitForSelector(".spot");
+  await wait(page, 900);
   await page.screenshot({ path: out("hall"), fullPage: true });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   console.log(JSON.stringify({ errors, horizontalOverflow: overflow }));

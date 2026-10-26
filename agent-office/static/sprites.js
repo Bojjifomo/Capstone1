@@ -68,5 +68,73 @@ const Sprites = (() => {
       `<g class="hand hl">${left}</g><g class="hand hr">${right}</g></svg>`;
   }
 
-  return { svg, hash, look, KINDS };
+  // Canvas versions for the town, cached per character + pose + frame.
+  // pose: stand | walk | write | read | sit | sleep (head on a pillow)
+  const cache = new Map();
+
+  function colorsOf(l) {
+    return {
+      H: l.hat, B: l.hat, M: "#a0aec0", V: "#2d3748", C: l.hat, F: "#e53e3e", W: "#edf2f7", G: "#d69e2e",
+      h: l.hair, S: l.skin, E: "#1a1a2e", e: shade(l.skin, -40), R: l.robe, L: "#5c3d1e", D: "#3b2a1a",
+      K: l.skin, P: "#f3e4c3", O: "#8b5a2b",
+    };
+  }
+
+  function shade(hex, amt) {
+    const n = parseInt(hex.slice(1), 16);
+    const c = (v) => Math.max(0, Math.min(255, v + amt));
+    return "#" + [c(n >> 16), c((n >> 8) & 255), c(n & 255)].map((v) => v.toString(16).padStart(2, "0")).join("");
+  }
+
+  function rows(l, pose, frame) {
+    const hat = HATS[l.kind].slice();
+    let head = HEAD.slice();
+    let body = BODY.slice();
+    if (pose === "sleep") {
+      head = ["...SSSSSS...", "...SeSSeS...", "...SSSSSS...", "....SSSS...."];
+      return hat.concat(head);
+    }
+    if (pose === "walk") {
+      body[6] = frame ? "...DD..DD..." : "..DD....DD..";
+      body[2] = frame ? "KRRRRRRRRRR." : ".RRRRRRRRRRK";
+    } else if (pose === "write") {
+      body[2] = frame ? ".RRRKRRRRRR." : ".RRRRRRKRRR.";
+    } else if (pose === "read") {
+      body[1] = ".RRROOOORRR.";
+      body[2] = ".RKOPPPPOKR.";
+      if (frame) body[2] = ".RKOPPOPOKR.";
+    } else {
+      body[2] = ".KRRRRRRRRK.";
+    }
+    if (pose === "sit" || pose === "read" || pose === "write") body = body.slice(0, 5);
+    if (l.beard && l.kind === "wizard") head = [head[0], head[1], "...WWWWWW...", "....WWWW...."];
+    return hat.concat(head, body);
+  }
+
+  function canvas(seed, kind, pose, frame) {
+    const key = seed + "|" + (kind || "") + "|" + pose + "|" + (frame || 0);
+    if (cache.has(key)) return cache.get(key);
+    const l = look(seed, kind);
+    const colors = colorsOf(l);
+    const art = rows(l, pose, frame || 0);
+    const c = document.createElement("canvas");
+    c.width = 12;
+    c.height = art.length;
+    const g = c.getContext("2d");
+    art.forEach((row, y) => {
+      for (let x = 0; x < row.length; x++) {
+        const col = colors[row[x]];
+        if (col) { g.fillStyle = col; g.fillRect(x, y, 1, 1); }
+      }
+    });
+    if (l.kind === "ranger" && pose !== "sleep") {
+      g.fillStyle = l.hat;
+      g.fillRect(2, 5, 1, 2);
+      g.fillRect(9, 5, 1, 2);
+    }
+    cache.set(key, c);
+    return c;
+  }
+
+  return { svg, canvas, hash, look, shade, KINDS };
 })();
