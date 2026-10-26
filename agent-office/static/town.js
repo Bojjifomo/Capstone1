@@ -918,8 +918,13 @@ const Town = (() => {
 
   // ---- DOM: stage size, hit areas, labels ----------------------------------------------
 
+  function availableWidth() {
+    return el.stage.parentElement.clientWidth || el.town.clientWidth || document.documentElement.clientWidth || 0;
+  }
+
   function sizeStage() {
-    const cssW = Math.min(el.stage.parentElement.clientWidth, 760);
+    T.avail = availableWidth();
+    const cssW = Math.min(T.avail, 760);
     T.S = T.view === "town" ? TOWN_SCALE : ROOM_SCALE;
     T.W = Math.floor(cssW / T.S);
     T.dpr = Math.min(3, Math.round(window.devicePixelRatio || 1));
@@ -1027,7 +1032,10 @@ const Town = (() => {
   }
 
   function rebuild() {
+    if (T.list) return;
     sizeStage();
+    // a home-screen app on iOS can report a width of 0 right after launch; measure again shortly
+    if (T.W < 40) { clearTimeout(T.retry); T.retry = setTimeout(rebuild, 250); return; }
     const homes = homesNow();
     if (T.view === "town") {
       buildTown(homes);
@@ -1084,7 +1092,7 @@ const Town = (() => {
     T.people = homes.flatMap((h) => h.people);
     const key = JSON.stringify([T.view, T.room, daylight().name, homes.map((h) => [h.id, h.people.map((p) => [p.id, p.name, p.act])])]);
     noticeChanges(homes);
-    if (key !== lastKey) { lastKey = key; rebuild(); }
+    if (key !== lastKey || Math.abs(availableWidth() - (T.avail || 0)) > 2) { lastKey = key; rebuild(); }
   }
 
   function loop(now) {
@@ -1134,7 +1142,12 @@ const Town = (() => {
       else if (!ev.state || !(ev.state.sheet || ev.state.panel)) leave(true);
     });
     let resizeTimer = null;
-    window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(rebuild, 150); });
+    const later = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(rebuild, 150); };
+    window.addEventListener("resize", later);
+    window.addEventListener("pageshow", later);
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => { if (Math.abs(availableWidth() - (T.avail || 0)) > 2) later(); }).observe(el.stage.parentElement);
+    }
     let saved = "town";
     try { saved = localStorage.getItem("ao-view") || "town"; } catch (e) { saved = "town"; }
     setList(saved === "list");
