@@ -66,15 +66,19 @@ const SCENES = {
       if (role.startsWith("Python")) await page.screenshot({ path: out("staff") });
       await closeSheet(page);
     }
+    await page.click(".bld[data-bld^='d:']");
+    await wait(page, 900);
     await page.click("[data-staff]");
     await wait(page, 500);
     await page.fill("#errand-form textarea", "slow: summarize this week's best LP pools");
     await page.click("#errand-form [type=submit]");
     await wait(page, 1500);
     await closeSheet(page);
-    await page.evaluate(() => document.querySelector("#wings").scrollIntoView());
+    await page.click("#town-back");
+    await wait(page, 600);
+    await page.evaluate(() => document.querySelector("#chatlog").scrollIntoView());
     await wait(page, 300);
-    await page.screenshot({ path: out("wings") });
+    await page.screenshot({ path: out("chatlog") });
     await page.click("#post-quest");
     await wait(page, 700);
     await page.evaluate(() => document.querySelector("#sheet-body").scrollTo(0, 9999));
@@ -110,7 +114,7 @@ const SCENES = {
       await post({ by: "Orin", title: "Shareable wallet links on the LP website", app: "LP website", summary: "Open a wallet straight from a link like …/#0x5784.", impact: "medium", effort: "S", plan: "Small change in web/app.js." });
     }, plan);
     await page.reload();
-    await page.waitForSelector(".spot");
+    await page.waitForSelector(".bld");
     await wait(page, 500);
     await page.screenshot({ path: out("toolbar") });
     await page.click("#petitions-btn");

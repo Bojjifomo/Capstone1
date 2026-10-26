@@ -41,7 +41,6 @@
         <button type="button" id="town-back" class="town-btn" hidden>← Town</button>
         <h2 id="town-title">Guild Town</h2>
         <span id="town-sub" class="town-sub"></span>
-        <button type="button" id="view-toggle" class="town-btn">☰ List</button>
       </div>
       <div class="stage-wrap">
         <div id="town-stage" class="stage">
@@ -53,21 +52,16 @@
         </div>
       </div>
       <div id="town-roster" class="roster" hidden></div>
+      <section id="chatlog" class="chatlog" aria-label="Guild chat">
+        <div class="chat-tabs" role="tablist">
+          <button type="button" class="on" data-ch="all">All</button><button type="button" data-ch="guild">Guild</button><button type="button" data-ch="system">System</button><button type="button" data-ch="say">Chatter</button>
+        </div>
+        <div id="chat-lines" class="chat-lines" role="log" aria-live="off"></div>
+      </section>
     </section>
     <div id="notice-board" class="notice-board" hidden>
       <h2>Notice board</h2>
       <div id="notices"></div>
-    </div>
-    <div id="list-view" hidden>
-      <div class="list-bar"><button type="button" id="view-toggle-2" class="town-btn">🏰 Town</button></div>
-      <div class="hall">
-        <div class="wall" aria-hidden="true">
-          <span class="torch"></span><span class="banner b1"></span><span class="hearth"><i></i><i></i><i></i></span><span class="banner b2"></span><span class="torch"></span>
-        </div>
-        <div id="floor" class="floor"></div>
-        <p id="empty" class="empty" hidden>The hall is quiet. No adventurers yet.</p>
-      </div>
-      <div id="wings"></div>
     </div>
     <details id="returned" class="shelf" hidden>
       <summary>Returned from their quests <span class="count"></span></summary>
@@ -106,6 +100,7 @@
 <script src="/static/panels.js" defer></script>
 <script src="/static/petitions.js" defer></script>
 <script src="/static/profile.js" defer></script>
+<script src="/static/chatlog.js" defer></script>
 <script src="/static/town.js" defer></script>
 </body>
 </html>

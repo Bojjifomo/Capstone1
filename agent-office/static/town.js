@@ -616,7 +616,8 @@ const Town = (() => {
 
   function say(p, text, delay) {
     setTimeout(() => {
-      if (!el.hits || T.list) return;
+      if (!el.hits) return;
+      if (typeof ChatLog !== "undefined") ChatLog.add("say", p.label || p.name, text, p.sid);
       const at = anchorOf(p);
       if (!at) return;
       const bubble = document.createElement("div");
@@ -1032,7 +1033,10 @@ const Town = (() => {
   }
 
   function rebuild() {
-    if (T.list) return;
+    try { build(); } catch (e) { if (typeof reportError === "function") reportError(e, "town"); }
+  }
+
+  function build() {
     sizeStage();
     // a home-screen app on iOS can report a width of 0 right after launch; measure again shortly
     if (T.W < 40) { clearTimeout(T.retry); T.retry = setTimeout(rebuild, 250); return; }
@@ -1097,24 +1101,13 @@ const Town = (() => {
 
   function loop(now) {
     requestAnimationFrame(loop);
-    const visible = !T.list && !document.hidden && !document.body.classList.contains("sheet-open");
+    const visible = !document.hidden && !document.body.classList.contains("sheet-open");
     if (!visible || reduced) return;
     if (now - T.last < 33) return;
     const dt = Math.min(0.1, (now - (T.last || now)) / 1000);
     T.last = now;
     T.time += dt;
-    step(dt);
-    paint();
-  }
-
-  function setList(on) {
-    T.list = on;
-    el.town.hidden = on;
-    document.getElementById("list-view").hidden = !on;
-    el.toggle.textContent = on ? "🏰 Town" : "☰ List";
-    el.toggle2.textContent = el.toggle.textContent;
-    try { localStorage.setItem("ao-view", on ? "list" : "town"); } catch (e) { /* private mode */ }
-    if (!on) rebuild();
+    try { step(dt); paint(); } catch (e) { if (typeof reportError === "function") reportError(e, "town frame"); }
   }
 
   function init() {
@@ -1127,8 +1120,6 @@ const Town = (() => {
     el.title = document.getElementById("town-title");
     el.sub = document.getElementById("town-sub");
     el.back = document.getElementById("town-back");
-    el.toggle = document.getElementById("view-toggle");
-    el.toggle2 = document.getElementById("view-toggle-2");
     el.roster = document.getElementById("town-roster");
     T.built = true;
     el.back.addEventListener("click", () => leave(false));
@@ -1136,7 +1127,6 @@ const Town = (() => {
       const b = ev.target.closest("[data-bld]");
       if (b) enter(b.dataset.bld);
     });
-    [el.toggle, el.toggle2].forEach((btn) => btn.addEventListener("click", () => setList(!T.list)));
     window.addEventListener("popstate", (ev) => {
       if (ev.state && ev.state.town) enter(ev.state.town, false);
       else if (!ev.state || !(ev.state.sheet || ev.state.panel)) leave(true);
@@ -1148,9 +1138,7 @@ const Town = (() => {
     if (window.ResizeObserver) {
       new ResizeObserver(() => { if (Math.abs(availableWidth() - (T.avail || 0)) > 2) later(); }).observe(el.stage.parentElement);
     }
-    let saved = "town";
-    try { saved = localStorage.getItem("ao-view") || "town"; } catch (e) { saved = "town"; }
-    setList(saved === "list");
+    rebuild();
     if (T.state) update(T.state);
     requestAnimationFrame(loop);
   }
