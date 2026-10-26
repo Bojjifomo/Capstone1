@@ -564,5 +564,41 @@ class Petitions(ServerCase):
         self.assertEqual(self.post("/api/petitions", {"title": "", "plan": "x"})[0], 400)
 
 
+class Profiles(ServerCase):
+    def test_persona_pay_and_facts(self):
+        s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[fixtures.sid(4)]
+        p = s["persona"]
+        for key in ("name", "title", "age", "quirk", "home", "bio", "motto"):
+            self.assertTrue(p[key], key)
+        again = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[fixtures.sid(4)]
+        self.assertEqual(again["persona"], p)  # the same character every time
+        self.assertEqual(s["started_as"], "Terminal")
+        self.assertGreater(s["pay"]["month"], 0)
+        self.assertEqual(self.request("GET", "/api/session/" + fixtures.sid(1))[1]["last_tool"], "Bash")
+
+    def test_division_assignment(self):
+        sid = fixtures.sid(5)
+        self.post("/api/session/%s/division" % sid, {"division": "The Counting House"})
+        s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[sid]
+        self.assertEqual(s["division"], "The Counting House")
+        self.post("/api/session/%s/division" % sid, {"division": ""})
+        s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[sid]
+        self.assertEqual(s["division"], "")
+
+    def test_haiku_summary_and_replies(self):
+        sid = fixtures.sid(2)
+        status, r = self.post("/api/session/%s/summarize" % sid)
+        self.assertEqual(status, 200, r)
+        self.assertIn("v1 endpoints", r["summary"])
+        status, r = self.post("/api/session/%s/suggest" % sid)
+        self.assertEqual(status, 200, r)
+        self.assertEqual(len(r["replies"]), 3)
+        before = {x["id"] for x in self.request("GET", "/api/state")[1]["sessions"]}
+        time.sleep(2.2)
+        after = {x["id"] for x in self.request("GET", "/api/state")[1]["sessions"]}
+        self.assertEqual(before, after)  # no stray sessions from Haiku calls
+        self.assertEqual(self.request("POST", "/api/session/%s/suggest" % sid, {})[0], 403)  # still guarded
+
+
 if __name__ == "__main__":
     unittest.main()

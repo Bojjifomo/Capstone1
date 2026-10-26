@@ -16,6 +16,7 @@ const Town = (() => {
     "The Atelier": { roof: "#a0523d", wall: "#efe0c8", sign: "brush" },
     "The War Room": { roof: "#6d1f2c", wall: "#d8c7a8", sign: "sword" },
     "The Common Room": { roof: "#7a5a2a", wall: "#e0cfaa", sign: "mug" },
+    "The Tavern": { roof: "#8b5a2b", wall: "#ead7ad", sign: "mug", tavern: true },
   };
   const ROOFS = ["#7a5a2a", "#2f5d8e", "#5b3a8e", "#2c6b6b", "#8e3b2a", "#4a4f6b"];
   const ICONS = {
@@ -124,16 +125,22 @@ const Town = (() => {
     const now = Date.now() / 1000;
     const night = daylight().night;
     const leads = state.sessions.filter((s) => !s.staff && !s.helper && ["working", "needs", "idle"].includes(s.status))
-      .map((s) => ({ id: s.id, sid: s.id, name: s.name, seed: s.id, kind: null, status: s.status, note: s.note, act: activity(s, now, night) }));
+      .map((s) => ({ id: s.id, sid: s.id, name: s.name, label: s.persona ? s.persona.name.split(" ")[0] : s.name,
+        title: s.persona && s.persona.title, seed: s.id, kind: null, status: s.status, note: s.note,
+        act: activity(s, now, night), home: s.division ? "d:" + s.division : "hall" }));
     const team = state.team || { staff: [], divisions: [] };
-    const divisions = team.divisions.filter((d) => team.staff.some((m) => m.division === d));
-    const homes = [{ id: "hall", name: "Guild Hall", hall: true, people: leads }];
-    divisions.forEach((d) => homes.push({
-      id: "d:" + d, name: d, people: team.staff.filter((m) => m.division === d).map((m) => ({
-        id: m.id, staff: m.id, sid: m.sid, name: m.name, title: m.title, seed: m.seed, kind: m.kind,
-        status: m.status, note: m.note, act: activity(m, now, night),
-      })),
+    const staff = team.staff.map((m) => ({
+      id: m.id, staff: m.id, sid: m.sid, name: m.name, label: m.name, title: m.title, seed: m.seed, kind: m.kind,
+      status: m.status, note: m.note, act: activity(m, now, night), home: "d:" + m.division, specialist: true,
     }));
+    const everyone = leads.concat(staff);
+    const divisions = [];
+    everyone.forEach((p) => { if (p.home !== "hall" && !divisions.includes(p.home)) divisions.push(p.home); });
+    // awake and idle: everyone takes their break at the tavern
+    const at = (id) => everyone.filter((p) => p.home === id && p.act !== "read");
+    const homes = [{ id: "hall", name: "Guild Hall", hall: true, people: at("hall") },
+      { id: "tavern", name: "The Tavern", tavern: true, people: everyone.filter((p) => p.act === "read") }];
+    divisions.forEach((id) => homes.push({ id, name: id.slice(2), people: at(id) }));
     return homes;
   }
 
@@ -394,7 +401,21 @@ const Town = (() => {
 
   // ---- the room inside a building ----------------------------------------------------
 
+  function tavernLayout(home, W) {
+    const wallH = 46;
+    const cols = Math.max(1, Math.floor((W - 8) / 46));
+    const tables = [];
+    home.people.forEach((p, i) => {
+      const t = Math.floor(i / 2), c = t % cols, r = Math.floor(t / cols);
+      const span = (W - 8) / cols;
+      tables.push({ p, side: i % 2, x: Math.round(4 + span * c + span / 2), y: wallH + 40 + r * 30 });
+    });
+    const rows = Math.max(1, Math.ceil(Math.ceil(home.people.length / 2) / cols));
+    return { W, H: Math.max(wallH + 40 + rows * 30 + 4, 116), wallH, home, chairs: [], desks: [], beds: [], tables };
+  }
+
   function roomLayout(home, W) {
+    if (home.tavern) return tavernLayout(home, W);
     const wallH = 46;
     const people = home.people.slice();
     const readers = people.filter((p) => p.act === "read");
@@ -458,7 +479,7 @@ const Town = (() => {
     rect(g, wx - 1, 7, 18, 20, "#2d1b10");
     R.window = { x: wx, y: 8, w: 16, h: 18 };
     const sx = Math.round(R.W * 0.3);
-    if (sx + 24 < wx && !st.sparks) {
+    if (sx + 24 < wx && !st.sparks && !st.tavern) {
       for (let s = 0; s < 3; s++) {
         const y = 8 + s * 11;
         rect(g, sx, y + 9, 22, 2, "#6b4423");
@@ -475,6 +496,13 @@ const Town = (() => {
     rect(g, 1, R.wallH - 26, 28, 3, "#4a443e");
     rect(g, 8, R.wallH - 14, 14, 17, "#1a1210");
     R.fire = { x: 15, y: R.wallH + 2, forge: !!st.sparks };
+    if (st.tavern) {
+      const bx = Math.round(R.W * 0.3);
+      for (let i = 0; i < 4; i++) { disc(g, bx + 4 + i * 9, R.wallH - 30, 4, "#6b4423"); rect(g, bx + 1 + i * 9, R.wallH - 31, 7, 1, "#4a2e1a"); }
+      rect(g, bx - 2, R.wallH - 12, R.W - bx - 26, 12, "#6b4423");
+      rect(g, bx - 2, R.wallH - 12, R.W - bx - 26, 2, "#a8743e");
+      for (let x = bx + 2; x < R.W - 30; x += 8) { rect(g, x, R.wallH - 17, 3, 4, "#e8d8b4"); rect(g, x, R.wallH - 17, 3, 1, "#ffffff"); }
+    }
     if (st.sparks) {
       // a weapon rack where the bookshelf would be
       for (let i = 0; i < 5; i++) {
@@ -534,25 +562,102 @@ const Town = (() => {
   function noticeChanges(homes) {
     const L = T.layout;
     if (!L) return;
+    const routeTo = (id) => { const b = L.buildings.find((x) => x.id === id); return b ? routeOf(b, L) : null; };
     const hallRoute = routeOf(L.hall, L);
-    homes.slice(1).forEach((home) => {
-      const b = L.buildings.find((x) => x.id === home.id);
-      if (!b) return;
-      const route = routeOf(b, L);
-      home.people.forEach((m) => {
-        const before = T.prev.get(m.id);
-        if (before && before !== m.status) {
-          // a new errand: walk from the hall with the brief; a finished one: carry the answer back
-          if (m.status === "working") sendWalker(m, hallRoute, route.concat([{ x: route[route.length - 1].x, y: L.roadY }]));
-          else if (before === "working") sendWalker(m, route, hallRoute);
-        }
-        T.prev.set(m.id, m.status);
-      });
-    });
+    homes.forEach((home) => home.people.forEach((m) => {
+      const before = T.prev.get(m.id);
+      T.prev.set(m.id, { status: m.status, act: m.act });
+      if (!before) return;
+      const homeRoute = routeTo(m.home), tavernRoute = routeTo("tavern");
+      if (!homeRoute) return;
+      if (m.specialist && m.status === "working" && before.status !== "working") {
+        sendWalker(m, hallRoute, homeRoute);  // a new errand: carry the brief from the hall
+        say(m, "On my way!");
+      } else if (m.specialist && before.status === "working" && m.status !== "working") {
+        sendWalker(m, homeRoute, hallRoute);  // done: carry the answer back
+        say(m, "Done! Here you go");
+        reply(m, "Nice deploy!", "Thanks!");
+      } else if (m.act === "read" && before.act !== "read" && tavernRoute) {
+        sendWalker(m, homeRoute, tavernRoute);
+        if (before.act === "work") say(m, "Quick break, brb");
+      } else if (before.act === "read" && m.act !== "read" && tavernRoute) {
+        sendWalker(m, tavernRoute, homeRoute);
+        if (m.act === "work") say(m, "Back to it!");
+      }
+    }));
+  }
+
+  // ---- chatter: little speech bubbles, the way a busy hall sounds ---------------------
+
+  const LINES = {
+    work: ["Almost there…", "One more test", "Who broke main?", "Reading the logs", "Hmm, curious", "Sharpening the quill",
+      "The RPC is grumpy today", "Double-checking the decimals", "Squeezing into a rack, very cosy", "This bug is sneaky"],
+    read: ["Tokens are pricey", "Fossils can wait, tea cannot", "Quick hop, then back to decimals", "Sunbathing on warm pixels, brb",
+      "Another round?", "Heard the Forge shipped", "Moon rocks can wait, probably", "All good?", "Who's paying this round?"],
+    sleep: ["Zzz…", "Zzz… merge… zzz", "Five more minutes", "Zzz… green tests… zzz"],
+    needs: ["Guildmaster? A word?", "Waiting on your call", "Need your seal on this!", "Psst, over here!"],
+  };
+  const REPLIES = { "Who broke main?": "Not me!", "Tokens are pricey": "Worth it!", "Another round?": "Just one!",
+    "Heard the Forge shipped": "Nice deploy!", "Almost there…": "You got this", "All good?": "All good",
+    "Who's paying this round?": "The treasury, sadly", "This bug is sneaky": "Squash it!" };
+  const pickOf = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+  function anchorOf(p) {
+    if (T.view === "room") {
+      const R = T.roomLayout;
+      const spot = R && R.chairs.concat(R.desks, R.beds, R.tables || []).find((s) => s.p === p || (s.p && s.p.id === p.id));
+      return spot && spot.hit ? { x: spot.hit[0] + spot.hit[2] / 2, y: spot.hit[1] } : null;
+    }
+    const L = T.layout;
+    const id = p.act === "read" ? "tavern" : p.home;
+    const b = L && L.buildings.find((x) => x.id === id);
+    return b ? { x: b.x + (Math.random() - 0.5) * 16, y: b.y - b.hw - b.hr - 8 } : null;
+  }
+
+  function say(p, text, delay) {
+    setTimeout(() => {
+      if (!el.hits || T.list) return;
+      const at = anchorOf(p);
+      if (!at) return;
+      const bubble = document.createElement("div");
+      bubble.className = "chat";
+      bubble.textContent = text;
+      bubble.style.left = pct(at.x, T.W);
+      bubble.style.top = pct(at.y, T.H);
+      el.hits.appendChild(bubble);
+      setTimeout(() => bubble.classList.add("gone"), 3400);
+      setTimeout(() => bubble.remove(), 3900);
+    }, delay || 0);
+  }
+
+  function reply(p, first, answer) {
+    const others = (T.people || []).filter((o) => o.id !== p.id && o.act !== "sleep");
+    if (!others.length) return;
+    const other = pickOf(others);
+    say(other, first, 1500);
+    if (answer) say(p, answer, 3000);
+  }
+
+  let nextChat = 4;
+  function chatter() {
+    if (T.time < nextChat) return;
+    nextChat = T.time + 5 + Math.random() * 5;
+    const people = T.view === "room" ? (T.roomHome ? T.roomHome.people : []) : (T.people || []);
+    if (!people.length) return;
+    const p = pickOf(people);
+    let line = pickOf(LINES[p.act] || LINES.read);
+    if (p.act === "read" && T.state && T.state.cost_today > 20 && Math.random() < 0.5) line = "Tokens are pricey";
+    say(p, line);
+    const answer = REPLIES[line];
+    if (answer) {
+      const others = people.filter((o) => o.id !== p.id && o.act !== "sleep");
+      if (others.length) say(pickOf(others), answer, 1700);
+    }
   }
 
   function step(dt) {
     const L = T.layout;
+    chatter();
     T.walkers.forEach((w) => {
       let left = dt * 16;
       while (left > 0 && w.i < w.path.length - 1) {
@@ -723,6 +828,18 @@ const Town = (() => {
       }
       d.hit = p.act === "needs" ? [deskX + 9, d.y - 24, 14, 30] : [deskX - 12, d.y - 16, 24, 22];
     } }));
+    (R.tables || []).forEach((s) => items.push({ y: s.y, draw: () => {
+      const p = s.p, sx = s.x + (s.side ? 10 : -10);
+      sprite(g, p.seed, p.kind, "sit", 0, sx, s.y - 1, !!s.side);
+      if (!s.side) {
+        oval(g, s.x, s.y - 3, 7, 3, "#6b4423");
+        oval(g, s.x, s.y - 4, 6, 2, "#8b5a2b");
+        rect(g, s.x - 1, s.y - 1, 2, 4, "#4a2e1a");
+        rect(g, s.x - 4, s.y - 7, 2, 3, "#e8d8b4");
+        rect(g, s.x + 2, s.y - 7, 2, 3, "#e8d8b4");
+      }
+      s.hit = [sx - 6, s.y - 15, 12, 16];
+    } }));
     R.beds.forEach((b) => items.push({ y: b.y + 20, draw: () => {
       const p = b.p;
       rect(g, b.x - 7, b.y, 14, 23, "#5a3820");
@@ -830,7 +947,22 @@ const Town = (() => {
 
   function counts(people) {
     const n = (a) => people.filter((p) => p.act === a).length;
-    return [n("needs") && "! " + n("needs"), n("work") && "⚒ " + n("work"), n("read") && "📖 " + n("read"), n("sleep") && "☾ " + n("sleep")].filter(Boolean).join("  ");
+    return [n("needs") && "! " + n("needs"), n("work") && "⚒ " + n("work"), n("read") && "🍺 " + n("read"), n("sleep") && "☾ " + n("sleep")].filter(Boolean).join("  ");
+  }
+
+  const DOING = { work: "Working", needs: "Awaits you", read: "On break", sleep: "Asleep" };
+
+  function roster(home) {
+    const people = home.people;
+    const working = people.filter((p) => p.act === "work").length;
+    const specialists = people.filter((p) => p.specialist).length;
+    el.roster.hidden = false;
+    el.roster.innerHTML = `<header><b>${esc(home.name)}</b><small>${people.length} ${people.length === 1 ? "person" : "people"} · ${working} working` +
+      (specialists ? ` · ${specialists} specialist${specialists === 1 ? "" : "s"}` : "") + `</small></header>` +
+      (people.length ? people.map((p) =>
+        `<button type="button" class="roster-row a-${esc(p.act)}" ${p.staff ? `data-staff="${esc(p.staff)}"` : `data-sid="${esc(p.sid)}"`}>` +
+        `${Sprites.svg(p.seed, p.kind, 22)}<span><b>${esc(p.label || p.name)}</b><small>${esc(p.title || "")}${p.title ? " · " : ""}${esc(p.specialist ? "Specialist" : p.name)}</small></span>` +
+        `<em>${esc(DOING[p.act] || "")}</em></button>`).join("") : `<p class="sub">Nobody here right now.</p>`);
   }
 
   function townHits() {
@@ -862,7 +994,7 @@ const Town = (() => {
     el.hits.textContent = "";
     const R = T.roomLayout;
     paint();  // fills in the hit rects
-    const spots = R.chairs.concat(R.desks, R.beds);
+    const spots = R.chairs.concat(R.desks, R.beds, R.tables || []);
     spots.forEach((s) => {
       if (!s.hit) return;
       const p = s.p;
@@ -870,12 +1002,13 @@ const Town = (() => {
       btn.type = "button";
       btn.className = "hit person";
       if (p.staff) btn.dataset.staff = p.staff; else btn.dataset.sid = p.sid;
-      const doing = { work: "at work", needs: "awaits your word", read: "reading by the fire", sleep: "asleep" }[p.act];
+      const doing = { work: "at work", needs: "awaits your word", read: "on a break", sleep: "asleep" }[p.act];
       btn.setAttribute("aria-label", `${p.name}: ${doing}`);
       place(btn, s.hit[0], s.hit[1], s.hit[2], s.hit[3]);
       const tag = document.createElement("span");
       tag.className = "name-tag" + (p.act === "needs" ? " alert" : "");
-      tag.textContent = p.name.length > 18 ? p.name.slice(0, 17) + "…" : p.name;
+      const label = p.label || p.name;
+      tag.textContent = label.length > 14 ? label.slice(0, 13) + "…" : label;
       btn.appendChild(tag);
       el.hits.appendChild(btn);
     });
@@ -903,6 +1036,7 @@ const Town = (() => {
       el.title.textContent = "Guild Town";
       el.sub.textContent = daylight().name === "night" ? "Night has fallen" : "";
       el.back.hidden = true;
+      el.roster.hidden = true;
     } else {
       const home = homes.find((h) => h.id === T.room) || homes[0];
       T.room = home.id;
@@ -913,6 +1047,7 @@ const Town = (() => {
       el.back.hidden = false;
       T.roomHome = home;
       roomHits();
+      roster(home);
     }
     paint();
   }
@@ -946,6 +1081,7 @@ const Town = (() => {
     T.state = state;
     if (!T.built) return;
     const homes = residents(state);
+    T.people = homes.flatMap((h) => h.people);
     const key = JSON.stringify([T.view, T.room, daylight().name, homes.map((h) => [h.id, h.people.map((p) => [p.id, p.name, p.act])])]);
     noticeChanges(homes);
     if (key !== lastKey) { lastKey = key; rebuild(); }
@@ -985,6 +1121,7 @@ const Town = (() => {
     el.back = document.getElementById("town-back");
     el.toggle = document.getElementById("view-toggle");
     el.toggle2 = document.getElementById("view-toggle-2");
+    el.roster = document.getElementById("town-roster");
     T.built = true;
     el.back.addEventListener("click", () => leave(false));
     el.hits.addEventListener("click", (ev) => {

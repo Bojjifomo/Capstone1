@@ -29,6 +29,8 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 | Part | What it does |
 | --- | --- |
 | The town | An HD-2D pixel town (drawn in code, no assets): the Guild Hall on the plaza holds your lead sessions, each division is its own building. Agents write at desks, read by the fire, sleep in bed, and walk the road with a scroll when they carry an errand. Day and night follow the clock; tap a building to go inside, tap someone to open them. `☰ List` switches to the plain list |
+| Life in town | Every agent has a fantasy persona (name, kin and calling, age, quirk, home town, bio, motto). Idle agents walk to **the Tavern** for a break and back to their desk when work starts; they chatter in speech bubbles ("Who broke main?" / "Not me!"). Sessions can be moved into a division's building. Tapping a building shows its roster |
+| Profile card | Top of every sheet: persona plus Started as, Division, Project, Branch, Model, Pay today / 7 days / 30 days, Last activity, Last tool, Folder. **✨ Summarize with Haiku** and **✨ Suggest replies** run one-shot Haiku calls (no tools, nothing saved) |
 | The hall | Sessions from `~/.claude/projects` and `ps`: questing (working), awaiting your word (a real question, AskUserQuestion, plan approval or a permission prompt), resting, returned, archived |
 | Sheet | Recent conversation as light markdown with copy buttons, a message box, a queue (Send now / Remove), Stop |
 | Post a quest | New session in a known project folder, a permission mode, a model, optional party leader (project manager) mode |
@@ -53,12 +55,12 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`petitions.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `assignments.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 
 ```sh
 sh tests/run_copy.sh                         # throwaway copy on :7790 with a fake $HOME and a fake claude
-python3 -m unittest discover -s tests        # 41 tests: parsing, status rules, security, runs, team, panels
+python3 -m unittest discover -s tests        # 44 tests: parsing, status rules, security, runs, team, panels
 node tests/shoot.js stage1,stage2,stage4     # phone-width screenshots into docs/screens/
 ```

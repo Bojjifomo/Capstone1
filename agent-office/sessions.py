@@ -155,6 +155,8 @@ class Transcript:
         self.last_ts = 0.0
         self.model = ""
         self.entrypoint = ""
+        self.started_as = ""
+        self.last_tool = ""
         self.branch = ""
         self.messages = deque(maxlen=KEEP_MESSAGES)
         self.pending = {}  # tool_use id -> summary, cleared by its tool_result
@@ -215,6 +217,7 @@ class Transcript:
             self.last_ts = max(self.last_ts, ts)
         self.cwd = e.get("cwd") or self.cwd
         self.entrypoint = e.get("entrypoint") or self.entrypoint
+        self.started_as = self.started_as or e.get("entrypoint") or ""
         self.branch = e.get("gitBranch") or self.branch
         msg = e.get("message") or {}
         if kind == "assistant":
@@ -251,6 +254,7 @@ class Transcript:
             elif block.get("type") == "tool_use":
                 summary = tool_summary(block.get("name", "?"), block.get("input"))
                 self.pending[block.get("id")] = (block.get("name", "?"), summary)
+                self.last_tool = block.get("name", "?")
                 tools.append(summary)
         mid = msg.get("id") or ""
         same = mid and mid == self.last_msg_id and self.messages and self.messages[-1]["role"] == "assistant"
@@ -309,6 +313,15 @@ class Transcript:
         if self.last_kind == "interrupt":
             return True
         return self.last_kind == "assistant" and not self.pending and self.stop_reason != "tool_use"
+
+    def pay(self):
+        """Estimated cost today, over the last 7 days and the last 30 days."""
+        from datetime import timedelta
+        today = datetime.now().date()
+        def since(days):
+            first = (today - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+            return sum(r[4] for d, models in self.usage.items() if d >= first for r in models.values())
+        return {"today": round(since(1), 4), "week": round(since(7), 4), "month": round(since(30), 4)}
 
     def usage_total(self):
         total = [0, 0, 0, 0, 0.0]

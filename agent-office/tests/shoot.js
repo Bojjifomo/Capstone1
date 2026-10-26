@@ -145,6 +145,38 @@ const SCENES = {
     await page.click("#town-back");
     await wait(page, 500);
   },
+  async life(page) {
+    await page.evaluate(async () => {
+      const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) }).then((r) => r.json());
+      await post("/api/staff", { name: "Lyra", role: "LP ops monitor (devops)", instructions: "Watch the LP tools.", division: "The Watchtower" });
+      await post("/api/staff", { name: "Orin", role: "Product innovator and planner", instructions: "Ideas.", division: "The War Room" });
+      await post("/api/staff", { name: "Brynn", role: "Python backend engineer", instructions: "Tests first.", division: "The Forge" });
+      await post("/api/session/00000000-0000-0444-4444-444444444444/division", { division: "The Counting House" });
+    });
+    await page.reload();
+    await page.waitForSelector(".bld");
+    await page.waitForSelector(".chat", { timeout: 20000 }).catch(() => {});
+    await wait(page, 300);
+    await page.screenshot({ path: out("town") });
+    await page.click('[data-bld="tavern"]');
+    await wait(page, 800);
+    await page.waitForSelector(".chat", { timeout: 20000 }).catch(() => {});
+    await wait(page, 300);
+    await page.screenshot({ path: out("tavern"), fullPage: true });
+    await page.click("#town-back");
+    await wait(page, 600);
+    await page.click('[data-bld="hall"]');
+    await wait(page, 900);
+    await page.click('.hit.person[data-sid="00000000-0000-0222-2222-222222222222"]');
+    await wait(page, 1000);
+    await page.screenshot({ path: out("profile") });
+    await page.click('[data-act="suggest"]');
+    await wait(page, 1200);
+    await page.click('[data-act="summarize"]');
+    await wait(page, 1500);
+    await page.screenshot({ path: out("haiku") });
+    await closeSheet(page);
+  },
 };
 
 (async () => {

@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import core  # noqa: E402
+import haiku  # noqa: E402
 import panels  # noqa: E402
 import runner  # noqa: E402
 import store  # noqa: E402
@@ -386,6 +387,39 @@ def api_search(req, m):
 @route("GET", "/api/ledger")
 def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
+
+
+# ---- profiles: division, Haiku summaries and quick replies ----------------------
+
+@route("POST", "/api/session/" + SID + "/division")
+def api_assign(req, m):
+    APP.office.assign(m.group("sid"), text_field(req.body, "division"))
+    return {"ok": True}
+
+
+def last_reply(sid):
+    t = APP.office.transcript(sid)
+    if not t:
+        raise HttpError(404, "no such session")
+    if not t.last_text:
+        raise HttpError(400, "they haven't said anything yet")
+    return t.last_text
+
+
+@route("POST", "/api/session/" + SID + "/summarize")
+def api_summarize(req, m):
+    try:
+        return {"summary": haiku.summarize(APP.cfg, last_reply(m.group("sid")))}
+    except RuntimeError as e:
+        raise HttpError(502, str(e))
+
+
+@route("POST", "/api/session/" + SID + "/suggest")
+def api_suggest(req, m):
+    try:
+        return {"replies": haiku.replies(APP.cfg, last_reply(m.group("sid")))}
+    except RuntimeError as e:
+        raise HttpError(502, str(e))
 
 
 # ---- petitions: updates that wait for your yes ---------------------------------
