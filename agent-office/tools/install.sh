@@ -71,8 +71,25 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 
+# bootstrap right after bootout fails ("5: Input/output error") while the old one is still stopping.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+  sleep 1
+done
+STARTED=""
+for i in 1 2 3 4 5; do
+  if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then STARTED=1; break; fi
+  sleep 2
+done
+if [ -z "$STARTED" ]; then
+  echo "Could not start the agent. Try:  launchctl bootstrap gui/\$(id -u) $PLIST" >&2
+  exit 1
+fi
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) echo "Note: add ~/.local/bin to your PATH for the office command:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;;
+esac
 echo
 echo "Agent Office is running:  http://127.0.0.1:7777   and   http://100.89.176.76:7777"
 if [ -n "$TS_NAME" ]; then

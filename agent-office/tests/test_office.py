@@ -516,5 +516,53 @@ class Stage4(ServerCase):
         self.assertTrue(any(e["text"] == "ledger check" for e in entries))
 
 
+class Petitions(ServerCase):
+    wait_run = Stage2.wait_run
+    cli = Stage3.cli
+
+    def propose(self, title, cwd=None):
+        env = dict(os.environ, HOME=str(self.home), AGENT_OFFICE_URL="http://127.0.0.1:%d" % PORT)
+        cwd = cwd or self.home / "Agents" / "orin"
+        cwd.mkdir(parents=True, exist_ok=True)
+        p = subprocess.run([sys.executable, str(self.app / "tools" / "office"), "propose", "--title", title,
+                            "--app", "RH Wallet Finder", "--summary", "Alert when a starred wallet moves.",
+                            "--impact", "high", "--effort", "M"], cwd=str(cwd), env=env,
+                           input="## Plan\n\n1. Watch LP events\n2. Push an alert", capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return p.stdout.split()[1]
+
+    def test_propose_reject_and_build(self):
+        pid = self.propose("Watchlist alerts")
+        listing = self.request("GET", "/api/petitions")[1]["petitions"]
+        item = [p for p in listing if p["id"] == pid][0]
+        self.assertEqual((item["by"], item["status"], item["impact"], item["effort"]), ("Orin", "pending", "high", "M"))
+        self.assertEqual(self.request("GET", "/api/state")[1]["petitions"], 1)
+
+        status, r = self.post("/api/petitions/%s/build" % pid, {})
+        self.assertEqual(status, 400)  # not approved yet
+        project = [p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp")][0]["id"]
+        status, r = self.post("/api/petitions/%s/decide" % pid, {"decision": "approve", "build": True, "note": "keep it small",
+                                                              "project": project, "mode": "acceptEdits"})
+        self.assertEqual(status, 200, r)
+        run = self.wait_run(r["run"])
+        brief = run["text"]
+        self.assertIn("Watchlist alerts", brief)
+        self.assertIn("Do not merge", "".join(e["t"] for e in run["events"]) + Path(self.app / "petitions.py").read_text())
+        item = [p for p in self.request("GET", "/api/petitions")[1]["petitions"] if p["id"] == pid][0]
+        self.assertEqual((item["status"], item["sid"], item["note"]), ("building", r["sid"], "keep it small"))
+        time.sleep(2.2)
+        names = {s["id"]: s["name"] for s in self.request("GET", "/api/state")[1]["sessions"]}
+        self.assertEqual(names[r["sid"]], "Petition: Watchlist alerts")
+
+        pid2 = self.propose("Dark mode for the website")
+        self.assertEqual(self.post("/api/petitions/%s/decide" % pid2, {"decision": "maybe"})[0], 400)
+        self.post("/api/petitions/%s/decide" % pid2, {"decision": "reject", "note": "not now"})
+        self.assertEqual(self.post("/api/petitions/%s/decide" % pid2, {"decision": "approve"})[0], 400)
+        code, out = self.cli("petitions")
+        self.assertIn("rejected", out)
+        self.assertIn("note: not now", out)
+        self.assertEqual(self.post("/api/petitions", {"title": "", "plan": "x"})[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -32,6 +32,7 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 | Sheet | Recent conversation as light markdown with copy buttons, a message box, a queue (Send now / Remove), Stop |
 | Post a quest | New session in a known project folder, a permission mode, a model, optional party leader (project manager) mode |
 | The guild | Recruited specialists in `~/Agents/<name>`, grouped into division wings; `office team / who / ask / result` |
+| Petitions | Update proposals from the guild (`office propose`): read the plan, then Approve & build (a quest that ends in a PR, never a merge), Approve for later, or Reject with a note |
 | Treasury | Tokens and estimated cost per day, model and session |
 | Familiars | Your launchd jobs: running, last run, last error, Run now |
 | Vault | Free space, the biggest folders, six fixed cleaners (each needs a phone seal) |
@@ -51,12 +52,12 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 
 ```sh
 sh tests/run_copy.sh                         # throwaway copy on :7790 with a fake $HOME and a fake claude
-python3 -m unittest discover -s tests        # 39 tests: parsing, status rules, security, runs, team, panels
+python3 -m unittest discover -s tests        # 41 tests: parsing, status rules, security, runs, team, panels
 node tests/shoot.js stage1,stage2,stage4     # phone-width screenshots into docs/screens/
 ```

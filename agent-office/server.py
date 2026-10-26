@@ -117,6 +117,7 @@ def api_state(req, m):
         "team": APP.office.team.roster(),
         "cost_today": panels.cost_today(APP.office),
         "disk": APP.office.vault.free(),
+        "petitions": APP.office.petitions.pending_count(),
     }
 
 
@@ -385,6 +386,68 @@ def api_search(req, m):
 @route("GET", "/api/ledger")
 def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
+
+
+# ---- petitions: updates that wait for your yes ---------------------------------
+
+PETITION = r"(?P<petition>[0-9a-f]{8})"
+
+
+@route("GET", "/api/petitions")
+def api_petitions(req, m):
+    return {"petitions": APP.office.petitions.listing()}
+
+
+@route("POST", "/api/petitions")
+def api_petition_add(req, m):
+    b = req.body
+    try:
+        item = APP.office.petitions.add(text_field(b, "by"), text_field(b, "title"), text_field(b, "app"),
+                                        text_field(b, "summary", 1000), text_field(b, "plan", 20001),
+                                        text_field(b, "impact"), text_field(b, "effort"))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    APP.office.ledger.add("petition", "%s: %s" % (item["by"], item["title"]))
+    APP.office.notify("%s petitions the guild" % item["by"], item["title"] + (" (" + item["app"] + ")" if item["app"] else ""),
+                      tag="petition-" + item["id"], url="/#p=" + item["id"])
+    return {"petition": item}
+
+
+def build_petition(item, b):
+    """Start a quest that carries out an approved petition."""
+    result = APP.office.new_job(text_field(b, "project"), APP.office.petitions.brief(item), text_field(b, "mode"),
+                                model=text_field(b, "model"), code_id=text_field(b, "code_id"),
+                                code=text_field(b, "code"))
+    APP.office.petitions.mark_building(item["id"], result["sid"])
+    APP.office.rename(result["sid"], "Petition: " + item["title"][:50])
+    APP.office.ledger.add("build", item["title"], sid=result["sid"])
+    return result
+
+
+@route("POST", "/api/petitions/" + PETITION + "/decide")
+def api_petition_decide(req, m):
+    b = req.body
+    decision = text_field(b, "decision")
+    try:
+        item = APP.office.petitions.decide(m.group("petition"), decision, text_field(b, "note", 1001))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    APP.office.ledger.add("approve" if decision == "approve" else "reject", item["title"])
+    if decision == "approve" and b.get("build"):
+        return dict(build_petition(item, b), petition=item["id"])
+    return {"petition": item["id"], "status": item["status"]}
+
+
+@route("POST", "/api/petitions/" + PETITION + "/build")
+def api_petition_build(req, m):
+    item = APP.office.petitions.get(m.group("petition"))
+    if not item:
+        raise HttpError(404, "no such petition")
+    if item["status"] != "approved":
+        raise HttpError(400, "approve it first")
+    return dict(build_petition(item, req.body), petition=item["id"])
 
 
 # ---- HTTP plumbing ------------------------------------------------------

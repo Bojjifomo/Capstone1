@@ -9,6 +9,7 @@ from pathlib import Path
 
 import guard
 import panels
+import petitions
 import push
 import runner
 import sessions
@@ -57,6 +58,7 @@ class Office:
         self.codes = guard.Codes(self.notify, dev=cfg.get("_dev", False))
         self.team = team.Team(self)
         self.ledger = panels.Ledger()
+        self.petitions = petitions.Petitions()
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
         self.old = {}           # transcripts older than the scan window, loaded on demand

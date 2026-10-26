@@ -7,6 +7,9 @@
   office ask <name> "<brief>" --no-wait    print the session id and return at once
   office result <session-id>       the answer (waits if they're still working)
   office status                    every session and its status
+  office propose --title "<t>" --app "<app>" [--summary "<s>"] [--impact high|medium|low] [--effort S|M|L] < plan.md
+                                   send bojjifomo an update that waits for approval (plan on stdin)
+  office petitions                 every petition and what bojjifomo decided
   office doctor                    check the install
   office install-hook              add the Claude Code Notification hook (exact "needs you")
   office hook                      (used by the hook itself; reads the event on stdin)
@@ -133,6 +136,49 @@ def call_quiet(path):
         raise
 
 
+def flags(args, names):
+    """--name value pairs -> dict; anything else is left in args."""
+    found, rest, i = {}, [], 0
+    while i < len(args):
+        key = args[i][2:] if args[i].startswith("--") else None
+        if key in names and i + 1 < len(args):
+            found[key] = args[i + 1]
+            i += 2
+        else:
+            rest.append(args[i])
+            i += 1
+    return found, rest
+
+
+def cmd_propose(args):
+    opts, _ = flags(args, {"title", "app", "summary", "impact", "effort", "by", "plan-file"})
+    if not opts.get("title"):
+        sys.exit('usage: office propose --title "<title>" --app "<app>" [--summary ...] [--impact high|medium|low] '
+                 '[--effort S|M|L] [--plan-file plan.md]   (or the plan on stdin)')
+    if opts.get("plan-file"):
+        plan = Path(opts["plan-file"]).read_text()
+    elif not sys.stdin.isatty():
+        plan = sys.stdin.read()
+    else:
+        sys.exit("office: give the plan on stdin or with --plan-file")
+    cwd = Path.cwd()
+    agents = Path.home() / "Agents"
+    by = opts.get("by") or (cwd.relative_to(agents).parts[0].capitalize() if agents in cwd.parents or cwd == agents else "")
+    r = call("/api/petitions", {"by": by, "title": opts["title"], "app": opts.get("app", ""),
+                                "summary": opts.get("summary", ""), "plan": plan,
+                                "impact": opts.get("impact", "").lower(), "effort": opts.get("effort", "").upper()})
+    print("Petition %s sent to bojjifomo: %s" % (r["petition"]["id"], r["petition"]["title"]))
+
+
+def cmd_petitions(args):
+    items = call("/api/petitions")["petitions"]
+    if not items:
+        print("No petitions yet.")
+    for p in items:
+        print("%s  %-9s %-50.50s %s%s" % (p["id"], p["status"], p["title"], p["by"],
+                                         ("  note: " + p["note"]) if p["note"] else ""))
+
+
 def cmd_status(args):
     for s in call("/api/state")["sessions"]:
         if s["status"] != "archived":
@@ -201,6 +247,7 @@ def cmd_doctor(args):
 
 
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
+            "propose": cmd_propose, "petitions": cmd_petitions,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":

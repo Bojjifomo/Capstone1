@@ -16,6 +16,21 @@ Use the `office` CLI to work with them:
 ~/Projects/agent-office/tools/office result <session-id>     # collect the answer (waits if still working)
 ```
 
+## Proposing an update (petitions)
+
+Changes to bojjifomo's existing apps are not made on your own say-so. Write the plan, then send it as a petition;
+nothing is built until they approve it from the Guild Hall on their phone:
+
+```sh
+~/Projects/agent-office/tools/office propose --title "<short title>" --app "<which app>" \
+    --summary "<one sentence: what and why>" --impact high|medium|low --effort S|M|L < plan.md
+~/Projects/agent-office/tools/office petitions     # what was approved, rejected (with their note) or is being built
+```
+
+A good plan says: the problem, the change (files and modules it touches), how it will be tested, the risks
+(RPC cost, keys, data that could be wrong) and how to roll it back. When a petition is approved and built, a new
+session gets the plan and opens a pull request; it never merges.
+
 ## Writing a brief
 
 Teammates cannot see your conversation. Every brief must stand on its own:
