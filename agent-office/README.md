@@ -5,7 +5,7 @@ and you can check on them and give them orders from your phone.
 
 Python 3 standard library only, plain HTML/CSS/JS, no build step, no frameworks.
 
-![The hall at phone width](docs/screens/stage4-hall.png)
+![The guild town at night](docs/screens/town-night.png)
 
 ## Install / update on the Mac
 
@@ -28,6 +28,7 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 
 | Part | What it does |
 | --- | --- |
+| The town | An HD-2D pixel town (drawn in code, no assets): the Guild Hall on the plaza holds your lead sessions, each division is its own building. Agents write at desks, read by the fire, sleep in bed, and walk the road with a scroll when they carry an errand. Day and night follow the clock; tap a building to go inside, tap someone to open them. `☰ List` switches to the plain list |
 | The hall | Sessions from `~/.claude/projects` and `ps`: questing (working), awaiting your word (a real question, AskUserQuestion, plan approval or a permission prompt), resting, returned, archived |
 | Sheet | Recent conversation as light markdown with copy buttons, a message box, a queue (Send now / Remove), Stop |
 | Post a quest | New session in a known project folder, a permission mode, a model, optional party leader (project manager) mode |
