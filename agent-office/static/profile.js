@@ -104,6 +104,7 @@ document.addEventListener("change", async (ev) => {
 
 // The staff panel gets the same card, with their pay summed over every errand.
 (() => {
+  if (!Hooks.panels.staff) return;
   const base = Hooks.panels.staff.render;
   Hooks.panels.staff.render = function (body) {
     base.call(this, body);

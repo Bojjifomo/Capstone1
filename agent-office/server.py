@@ -426,7 +426,7 @@ def api_suggest(req, m):
 def api_client_error(req, m):
     """The page reports its own JavaScript errors here, so phone-only bugs end up in server.log."""
     b = req.body
-    sys.stderr.write("client error [%s] %s | %s | %s\n" % (text_field(b, "where")[:40], text_field(b, "message", 400)[:300],
+    sys.stderr.write("client error [%s] %s | %s | %s\n" % (text_field(b, "where")[:40], text_field(b, "message", 400)[:300].replace("\n", " / "),
                                                        text_field(b, "ua", 400)[:160], text_field(b, "stack", 2100)[:1500].replace("\n", " / ")))
     return {"ok": True}
 

@@ -100,7 +100,7 @@ function renderShelf(id, list) {
     `<span><b>${esc(s.name)}</b><small>${esc(s.project)} · ${esc(ago(s.active))}</small></span></button>`).join("");
 }
 
-const Hooks = { header: [], panels: {} };
+const Hooks = { header: [], panels: {}, forms: {}, panelActions: {} };   // each script adds to these, so one failing script can't break the others
 
 // Errors on the phone are otherwise invisible: show them once and send them to server.log.
 const seenErrors = new Set();
@@ -123,7 +123,11 @@ function reportError(err, where) {
   api("/api/client-error", { where, message, stack: String((err && err.stack) || "").slice(0, 2000), ua: navigator.userAgent })
     .catch(() => {});
 }
-window.addEventListener("error", (ev) => reportError(ev.error || ev.message, "page"));
+window.addEventListener("error", (ev) => {
+  // a script that failed to download fires on its element, not as an ErrorEvent
+  if (ev.target && ev.target.tagName === "SCRIPT") reportError("could not load " + ev.target.src, "load");
+  else if (ev instanceof ErrorEvent) reportError(ev.error || ev.message, "page" + (ev.filename ? " " + ev.filename.split("/").pop() + ":" + ev.lineno : ""));
+}, true);
 window.addEventListener("unhandledrejection", (ev) => reportError(ev.reason, "promise"));
 
 function renderHall() {
