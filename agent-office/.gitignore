@@ -1,0 +1,4 @@
+# runtime state lives next to server.py
+/*.json
+logs/
+__pycache__/

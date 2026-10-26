@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1430">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Guild Hall">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/static/style.css">
+<title>Agent Office</title>
+</head>
+<body>
+<header id="top">
+  <div class="crest" aria-hidden="true"></div>
+  <div class="titles">
+    <h1>The Guild Hall</h1>
+    <p id="greeting">Lighting the torches…</p>
+  </div>
+  <div id="vault-chip" class="chip" hidden></div>
+</header>
+<div id="tally" class="tally" aria-live="polite"></div>
+
+<main id="views">
+  <section id="view-hall" class="view" aria-label="Guild hall">
+    <div id="notice-board" class="notice-board" hidden>
+      <h2>Notice board</h2>
+      <div id="notices"></div>
+    </div>
+    <div class="hall">
+      <div class="wall" aria-hidden="true">
+        <span class="torch"></span><span class="banner b1"></span><span class="hearth"><i></i><i></i><i></i></span><span class="banner b2"></span><span class="torch"></span>
+      </div>
+      <div id="floor" class="floor"></div>
+      <p id="empty" class="empty" hidden>The hall is quiet. No adventurers yet.</p>
+    </div>
+    <div id="wings"></div>
+    <details id="returned" class="shelf" hidden>
+      <summary>Returned from their quests <span class="count"></span></summary>
+      <div class="shelf-list"></div>
+    </details>
+    <details id="archives" class="shelf" hidden>
+      <summary>The archives <span class="count"></span></summary>
+      <div class="shelf-list"></div>
+    </details>
+  </section>
+</main>
+
+<div id="backdrop" class="backdrop" hidden></div>
+<section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-name" hidden>
+  <div class="grip" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <div id="sheet-portrait" class="portrait"></div>
+    <div class="sheet-titles">
+      <h2 id="sheet-name"></h2>
+      <p id="sheet-meta" class="meta"></p>
+    </div>
+    <button type="button" id="sheet-close" class="icon-btn" aria-label="Close">✕</button>
+  </header>
+  <div id="sheet-actions" class="sheet-actions"></div>
+  <div id="sheet-body" class="sheet-body"></div>
+  <footer id="sheet-foot" class="sheet-foot"></footer>
+</section>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="/static/md.js" defer></script>
+<script src="/static/sprites.js" defer></script>
+<script src="/static/app.js" defer></script>
+</body>
+</html>
