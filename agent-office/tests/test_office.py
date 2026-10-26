@@ -213,6 +213,16 @@ class Crypto(unittest.TestCase):
                          "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6Tlz"
                          "AC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN")
 
+    def test_localhost_subject_replaced(self):
+        import store
+        old, store.DATA_DIR = store.DATA_DIR, Path(tempfile.mkdtemp())
+        try:
+            self.assertEqual(push.Pusher("mailto:agent-office@localhost").subject, push.DEFAULT_SUBJECT)
+            self.assertEqual(push.Pusher("mailto:me@example.com").subject, "mailto:me@example.com")
+        finally:
+            shutil.rmtree(store.DATA_DIR)
+            store.DATA_DIR = old
+
     def test_endpoint_allowlist(self):
         self.assertTrue(push.endpoint_allowed("https://web.push.apple.com/abc"))
         self.assertTrue(push.endpoint_allowed("https://wns2-par02p.notify.windows.com/w/?token=x"))
