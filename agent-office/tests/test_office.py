@@ -1,0 +1,510 @@
+"""Tests for Agent Office. Run: python3 -m unittest discover -s tests"""
+import http.client
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+
+import fixtures  # noqa: E402
+import guard  # noqa: E402
+import push  # noqa: E402
+import sessions  # noqa: E402
+
+PORT = 7791
+
+
+class ServerCase(unittest.TestCase):
+    """Starts a copy of the server on PORT against a fake $HOME."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ao-test-"))
+        cls.home = fixtures.build(cls.tmp / "home")
+        cls.app = cls.tmp / "app"
+        shutil.copytree(ROOT, cls.app, ignore=shutil.ignore_patterns("*.json", "docs", "__pycache__", "logs"))
+        cls.write_config(cls.app)
+        env = dict(os.environ, HOME=str(cls.home), AGENT_OFFICE_DATA="")
+        cls.log = open(cls.tmp / "server.log", "w")
+        cls.proc = subprocess.Popen([sys.executable, "server.py", "--port", str(PORT), "--bind", "127.0.0.1", "--dev"],
+                                    cwd=str(cls.app), env=env, stdout=cls.log, stderr=subprocess.STDOUT)
+        for _ in range(50):
+            try:
+                cls.request("GET", "/api/state")
+                break
+            except OSError:
+                time.sleep(0.1)
+
+    @classmethod
+    def write_config(cls, app):
+        (app / "config.json").write_text(json.dumps({
+            "bind": ["127.0.0.1"], "port": PORT, "claude_bin": str(app / "tests" / "fake_claude.py"),
+            "project_roots": [str(cls.home / "Projects")], "agents_dir": str(cls.home / "Agents"),
+            "launchctl_bin": str(cls.home / "bin" / "launchctl")}))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(5)
+        cls.log.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    @staticmethod
+    def request(method, path, body=None, headers=None, host=None):
+        conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+        h = {"Host": host or "127.0.0.1:%d" % PORT}
+        h.update(headers or {})
+        data = json.dumps(body).encode() if body is not None else None
+        if data is not None:
+            h.setdefault("Content-Type", "application/json")
+        conn.request(method, path, body=data, headers=h)
+        res = conn.getresponse()
+        raw = res.read()
+        conn.close()
+        try:
+            return res.status, json.loads(raw)
+        except ValueError:
+            return res.status, raw
+
+    def seal(self, purpose):
+        """Ask for a code and read it from the dev-mode log, like reading it off the phone."""
+        status, r = self.post("/api/code", {"purpose": purpose})
+        self.assertEqual(status, 200, r)
+        time.sleep(0.2)
+        lines = [l for l in (self.tmp / "server.log").read_text().splitlines() if "seal code for " + purpose in l]
+        return {"code_id": r["code_id"], "code": lines[-1].rsplit(" ", 1)[1]}
+
+    @classmethod
+    def post(cls, path, body=None, **kw):
+        headers = {"X-Agent-Office": "1", "Origin": "http://127.0.0.1:%d" % PORT}
+        headers.update(kw.pop("headers", {}))
+        return cls.request("POST", path, body or {}, headers=headers, **kw)
+
+
+class QuestionDetection(unittest.TestCase):
+    def test_real_questions(self):
+        self.assertTrue(sessions.ends_with_question("Done.\n\nShould I also migrate the old endpoints?"))
+        self.assertTrue(sessions.ends_with_question("Which one do you prefer?\n\n- A\n- B?"))
+        self.assertTrue(sessions.ends_with_question("Want me to push it? **"))
+
+    def test_not_questions(self):
+        self.assertFalse(sessions.ends_with_question("All 42 tests pass. Done."))
+        self.assertFalse(sessions.ends_with_question("Let me know if you want changes."))
+        self.assertFalse(sessions.ends_with_question("Why? Because the cache was stale.\n\nFixed it.\n\nAll good."))
+        self.assertFalse(sessions.ends_with_question("```\nis_ok?\n```"))
+        self.assertFalse(sessions.ends_with_question("Done.\n\n> Should we ship?"))
+
+
+class Parsing(unittest.TestCase):
+    def test_usage_dedupes_message_ids(self):
+        tmp = Path(tempfile.mkdtemp())
+        f = tmp / "11111111-1111-1111-1111-111111111111.jsonl"
+        line = fixtures.assistant(time.time(), "hi", mid="msg_same")
+        f.write_text(json.dumps(line) + "\n" + json.dumps(line) + "\n")
+        t = sessions.Transcript(f)
+        t.update()
+        self.assertEqual(t.usage_total()[1], 800)
+        self.assertEqual(len(t.messages), 1)
+        shutil.rmtree(tmp)
+
+    def test_partial_line_waits(self):
+        tmp = Path(tempfile.mkdtemp())
+        f = tmp / "11111111-1111-1111-1111-111111111112.jsonl"
+        whole = json.dumps(fixtures.user("hello", time.time())) + "\n"
+        f.write_text(whole + whole[:20])
+        t = sessions.Transcript(f)
+        t.update()
+        self.assertEqual(len(t.messages), 1)
+        with open(f, "a") as fh:
+            fh.write(whole[20:])
+        t.update()
+        self.assertEqual(len(t.messages), 2)
+        shutil.rmtree(tmp)
+
+    def test_costs(self):
+        u = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        self.assertAlmostEqual(sessions.usage_cost("claude-opus-5-5", u), 24.0)
+        self.assertAlmostEqual(sessions.usage_cost("claude-haiku-5-5", u), 0.6)
+        self.assertEqual(sessions.usage_cost("<synthetic>", u), 0)
+
+
+class Stage1(ServerCase):
+    def state(self):
+        status, data = self.request("GET", "/api/state")
+        self.assertEqual(status, 200)
+        return {s["id"]: s for s in data["sessions"]}
+
+    def test_a_statuses(self):  # runs first: later tests change state
+        s = self.state()
+        self.assertEqual(s[fixtures.sid(1)]["status"], "working")
+        self.assertEqual(s[fixtures.sid(2)]["status"], "needs")
+        self.assertEqual(s[fixtures.sid(3)]["status"], "needs")
+        self.assertIn("Which audience", s[fixtures.sid(3)]["note"])
+        self.assertEqual(s[fixtures.sid(4)]["status"], "idle")  # finished a reply, asked nothing
+        self.assertEqual(s[fixtures.sid(5)]["status"], "idle")
+        self.assertEqual(s[fixtures.sid(6)]["status"], "finished")
+
+    def test_detail_and_rename_archive(self):
+        sid = fixtures.sid(4)
+        status, d = self.request("GET", "/api/session/" + sid)
+        self.assertEqual(status, 200)
+        self.assertIn("Pipeline report", d["messages"][-1]["text"])
+        self.assertEqual(self.post("/api/session/%s/rename" % sid, {"name": "Pipeline Paladin"})[0], 200)
+        self.assertEqual(self.state()[sid]["name"], "Pipeline Paladin")
+        self.post("/api/session/%s/archive" % sid, {"archived": True})
+        self.assertEqual(self.state()[sid]["status"], "archived")
+        self.post("/api/session/%s/archive" % sid, {"archived": False})
+        self.assertTrue((self.app / "names.json").exists())
+
+    def test_bad_host_rejected(self):
+        self.assertEqual(self.request("GET", "/api/state", host="evil.example:7791")[0], 403)
+        self.assertEqual(self.request("GET", "/", host="attacker.com")[0], 403)
+
+    def test_post_needs_header_and_origin(self):
+        path = "/api/session/%s/rename" % fixtures.sid(5)
+        self.assertEqual(self.request("POST", path, {"name": "x"})[0], 403)
+        self.assertEqual(self.request("POST", path, {"name": "x"}, headers={"X-Agent-Office": "1"})[0], 403)
+        self.assertEqual(self.post(path, {"name": "x"}, headers={"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.post(path, {"name": "x"}, headers={"X-Agent-Office": "0"})[0], 403)
+        self.assertEqual(self.post(path, {"name": ""})[0], 200)
+
+    def test_static_is_contained(self):
+        self.assertEqual(self.request("GET", "/static/../server.py")[0], 404)
+        self.assertEqual(self.request("GET", "/static/%2e%2e/server.py")[0], 404)
+        status, body = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Guild Hall", body)
+
+    def test_security_headers(self):
+        conn = http.client.HTTPConnection("127.0.0.1", PORT)
+        conn.request("GET", "/", headers={"Host": "127.0.0.1:%d" % PORT})
+        res = conn.getresponse()
+        res.read()
+        self.assertIn("default-src 'self'", res.getheader("Content-Security-Policy"))
+        self.assertEqual(res.getheader("X-Frame-Options"), "DENY")
+        conn.close()
+
+    def test_hook_flags_permission(self):
+        sid = fixtures.sid(5)
+        self.post("/api/hook/notify", {"session_id": sid, "notification_type": "permission_prompt",
+                                       "message": "Claude needs your permission to use Bash"})
+        s = self.state()[sid]
+        self.assertEqual(s["status"], "needs")
+        self.assertIn("permission", s["note"])
+
+
+class Crypto(unittest.TestCase):
+    def test_rfc8291_vector(self):
+        u = push.unb64u
+        body = push.encrypt(b"When I grow up, I want to be a watermelon",
+                            u("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"),
+                            u("BTBZMqHH6r4Tts7J_aSIgg"),
+                            as_private=int.from_bytes(u("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"), "big"),
+                            salt=u("DGv6ra1nlYgDCS1FRnbzlw"))
+        self.assertEqual(push.b64u(body),
+                         "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6Tlz"
+                         "AC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN")
+
+    def test_endpoint_allowlist(self):
+        self.assertTrue(push.endpoint_allowed("https://web.push.apple.com/abc"))
+        self.assertTrue(push.endpoint_allowed("https://wns2-par02p.notify.windows.com/w/?token=x"))
+        self.assertFalse(push.endpoint_allowed("http://web.push.apple.com/abc"))
+        self.assertFalse(push.endpoint_allowed("https://evil.example/web.push.apple.com"))
+        self.assertFalse(push.endpoint_allowed("https://127.0.0.1:7777/api/state"))
+
+
+class Seals(unittest.TestCase):
+    def setUp(self):
+        self.sent = []
+        self.codes = guard.Codes(lambda title, body: self.sent.append(title) or True)
+
+    def code(self):
+        return self.sent[-1].split(": ")[1]
+
+    def test_right_code_once(self):
+        cid = self.codes.request("bypass:new", "x")
+        self.assertTrue(self.codes.verify(cid, self.code(), "bypass:new"))
+        self.assertFalse(self.codes.verify(cid, self.code(), "bypass:new"))  # single use
+
+    def test_wrong_purpose_and_tries(self):
+        cid = self.codes.request("bypass:new", "x")
+        self.assertFalse(self.codes.verify(cid, self.code(), "clean:npm"))
+        cid = self.codes.request("bypass:new", "x")
+        good = self.code()
+        for _ in range(guard.MAX_TRIES):
+            self.assertFalse(self.codes.verify(cid, "000000" if good != "000000" else "111111", "bypass:new"))
+        self.assertFalse(self.codes.verify(cid, good, "bypass:new"))  # locked out
+
+    def test_expiry_and_memory_only(self):
+        cid = self.codes.request("bypass:new", "x")
+        self.codes.pending[cid]["expires"] = time.time() - 1
+        self.assertFalse(self.codes.verify(cid, self.code(), "bypass:new"))
+        self.assertNotIn(self.code(), json.dumps({k: str(v) for k, v in self.codes.__dict__.items()}))
+
+    def test_no_phone_no_code(self):
+        codes = guard.Codes(lambda t, b: False)
+        with self.assertRaises(RuntimeError):
+            codes.request("bypass:new", "x")
+
+
+class Stage2(ServerCase):
+    def wait_run(self, rid):
+        v = -1
+        for _ in range(60):
+            status, run = self.request("GET", "/api/run/%s?v=%d" % (rid, v))
+            self.assertEqual(status, 200)
+            v = run["v"]
+            if run["done"]:
+                return run
+        self.fail("run never finished")
+
+    def test_send_streams_reply_into_transcript(self):
+        sid = fixtures.sid(4)
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "status report please", "mode": "acceptEdits"})
+        self.assertEqual(status, 200, r)
+        run = self.wait_run(r["run"])
+        self.assertTrue(run["ok"])
+        self.assertIn("Heard you", "".join(e["t"] for e in run["events"] if e["k"] == "text"))
+        time.sleep(2.2)
+        status, d = self.request("GET", "/api/session/" + sid)
+        self.assertIn("status report please", d["messages"][-2]["text"])
+
+    def test_busy_session_queues(self):
+        sid = fixtures.sid(1)  # transcript written seconds ago: working
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "after that, run lint", "mode": "acceptEdits"})
+        self.assertEqual(status, 200)
+        qid = r["queued"]["id"]
+        self.assertEqual(self.request("GET", "/api/session/" + sid)[1]["queue_items"][0]["text"], "after that, run lint")
+        status, r = self.post("/api/session/%s/queue/%s/now" % (sid, qid))
+        self.assertEqual(status, 200)
+        self.wait_run(r["run"])
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "slow one", "mode": "acceptEdits"})
+        rid = r.get("run")
+        status, r2 = self.post("/api/session/%s/send" % sid, {"text": "then this", "mode": "acceptEdits"})
+        self.assertIn("queued", r2)
+        self.assertEqual(self.post("/api/session/%s/queue/%s/remove" % (sid, r2["queued"]["id"]))[1], {"removed": True})
+        if rid:
+            self.wait_run(rid)
+
+    def test_bypass_needs_seal(self):
+        status, r = self.post("/api/session/%s/send" % fixtures.sid(5), {"text": "go", "mode": "bypassPermissions"})
+        self.assertEqual(status, 409)
+        self.assertEqual(r["needs_code"], "bypass:" + fixtures.sid(5))
+        status, r = self.post("/api/session/%s/send" % fixtures.sid(5),
+                              {"text": "go", "mode": "bypassPermissions", "code_id": "nope", "code": "123456"})
+        self.assertEqual(status, 409)
+        self.assertEqual(self.post("/api/code", {"purpose": "rm -rf /"})[0], 400)
+
+    def test_unknown_mode_and_paths_rejected(self):
+        status, r = self.post("/api/session/%s/send" % fixtures.sid(5), {"text": "go", "mode": "--dangerously-skip-permissions"})
+        self.assertEqual(status, 409)
+        status, r = self.post("/api/job", {"project": "/etc", "text": "hi", "mode": "acceptEdits"})
+        self.assertEqual(status, 409)
+        self.assertIn("unknown project", r["error"])
+
+    def test_desktop_session_refused(self):
+        sid = fixtures.sid(2)
+        fake_app = self.tmp / "Claude.app" / "Contents"
+        fake_app.mkdir(parents=True)
+        exe = fake_app / "claude"
+        exe.write_text("#!/bin/sh\nsleep 30\n")
+        exe.chmod(0o755)
+        proc = subprocess.Popen([str(exe), "--resume", sid])
+        try:
+            time.sleep(2.5)
+            s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[sid]
+            self.assertTrue(s["desktop"])
+            status, r = self.post("/api/session/%s/send" % sid, {"text": "hi", "mode": "acceptEdits"})
+            self.assertEqual(status, 409)
+            self.assertTrue(r["desktop"])
+        finally:
+            proc.terminate()
+            proc.wait()
+
+    def test_new_job(self):
+        projects = self.request("GET", "/api/projects")[1]["projects"]
+        self.assertTrue(all("path" not in p for p in projects))
+        pid = [p for p in projects if p["label"].endswith("webapp")][0]["id"]
+        status, r = self.post("/api/job", {"project": pid, "text": "add a health endpoint", "mode": "plan"})
+        self.assertEqual(status, 200, r)
+        run = self.wait_run(r["run"])
+        self.assertIn("mode=plan", run["events"][0]["t"])
+        time.sleep(2.2)
+        self.assertIn(r["sid"], {x["id"] for x in self.request("GET", "/api/state")[1]["sessions"]})
+
+    def test_push_subscription_validated(self):
+        bad = {"endpoint": "https://evil.example/x", "keys": {"p256dh": "x", "auth": "y"}}
+        self.assertEqual(self.post("/api/push/subscribe", {"subscription": bad})[0], 400)
+        key = push.b64u(push.public_of(push.new_private()))
+        good = {"endpoint": "https://web.push.apple.com/QAbc", "keys": {"p256dh": key, "auth": push.b64u(os.urandom(16))}}
+        self.assertEqual(self.post("/api/push/subscribe", {"subscription": good})[0], 200)
+        self.assertTrue(self.request("GET", "/api/push/key")[1]["subscribed"])
+        self.post("/api/push/unsubscribe")
+
+
+class Stage3(ServerCase):
+    wait_run = Stage2.wait_run
+
+    def hire(self, **kw):
+        body = {"name": "", "role": "Python backend engineer", "instructions": "Write tests first.", "division": ""}
+        body.update(kw)
+        status, r = self.post("/api/staff", body)
+        self.assertEqual(status, 200, r)
+        return r
+
+    def cli(self, *args, stdin=None):
+        env = dict(os.environ, HOME=str(self.home), AGENT_OFFICE_URL="http://127.0.0.1:%d" % PORT)
+        p = subprocess.run([sys.executable, str(self.app / "tools" / "office")] + list(args), env=env,
+                           input=stdin, capture_output=True, text=True, timeout=60)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_a_hire_unique_names_and_folder(self):
+        a = self.hire(name="Lyra")
+        self.assertEqual(a["staff"]["name"], "Lyra")
+        self.assertEqual(a["staff"]["title"], "Artificer of the Deep Halls")
+        self.assertEqual(a["staff"]["division"], "The Forge")
+        b = self.hire(name="lyra", role="DeFi researcher", instructions="Track LP fee yields on Robinhood Chain.")
+        self.assertEqual(b["staff"]["name"], "lyra II")
+        self.assertEqual(b["renamed_from"], "lyra")
+        self.assertEqual(b["staff"]["division"], "The Counting House")
+        c = self.hire(role="Technical writer", instructions="Plain English, short sentences.")
+        self.assertEqual(c["staff"]["name"], "Aldric")
+        md = (self.home / "Agents" / "lyra" / "CLAUDE.md").read_text()
+        self.assertIn("Write tests first.", md)
+        self.assertIn("Never ask the user questions", md)
+        self.assertEqual(self.post("/api/staff", {"role": ""})[0], 400)
+
+    def test_b_who_and_team_cli(self):
+        code, out = self.cli("team")
+        self.assertEqual(code, 0, out)
+        self.assertIn("The Forge", out)
+        code, out = self.cli("who", "research the best LP fee pools")
+        self.assertEqual(out.split()[0], "lyra")
+        code, out = self.cli("who", "write the release notes")
+        self.assertEqual(out.split()[0], "Aldric")
+
+    def test_c_ask_waits_for_answer_and_helpers_never_need_you(self):
+        code, out = self.cli("ask", "Aldric", "Draft a README intro. ASKBACK")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Heard you", out)
+        time.sleep(2.5)
+        state = self.request("GET", "/api/state")[1]
+        aldric = [m for m in state["team"]["staff"] if m["name"] == "Aldric"][0]
+        self.assertNotEqual(aldric["status"], "needs")
+        helper = [s for s in state["sessions"] if s["id"] == aldric["sid"]][0]
+        self.assertTrue(helper["helper"])
+        self.assertNotEqual(helper["status"], "needs")
+
+    def test_d_no_wait_then_result(self):
+        code, out = self.cli("ask", "lyra II", "slow: list three pools", "--no-wait")
+        self.assertEqual(code, 0, out)
+        sid = out.split("Session ")[1].split()[0]
+        code, out = self.cli("result", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn("list three pools", out)
+
+    def test_e_lead_still_needs_you(self):
+        sid = fixtures.sid(5)
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "ASKBACK please", "mode": "acceptEdits"})
+        self.wait_run(r["run"])
+        time.sleep(5)
+        s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[sid]
+        self.assertEqual(s["status"], "needs")
+
+    def test_f_pm_mode_appends_prompt(self):
+        pid = [p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp")][0]["id"]
+        status, r = self.post("/api/job", {"project": pid, "text": "ship the health endpoint", "mode": "acceptEdits", "pm": True})
+        run = self.wait_run(r["run"])
+        self.assertIn("pm=yes", run["events"][0]["t"])
+
+    def test_g_install_hook_is_idempotent(self):
+        code, out = self.cli("install-hook")
+        self.assertEqual(code, 0, out)
+        code, out = self.cli("install-hook")
+        self.assertIn("already", out)
+        settings = json.loads((self.home / ".claude" / "settings.json").read_text())
+        self.assertEqual(len(settings["hooks"]["Notification"]), 1)
+        code, _ = self.cli("hook", stdin=json.dumps({"session_id": fixtures.sid(6), "notification_type": "permission_prompt",
+                                                     "message": "Claude needs your permission to use Bash"}))
+        self.assertEqual(code, 0)
+
+    def test_h_dismiss(self):
+        r = self.hire(name="Temp", role="tester")
+        self.assertTrue(self.post("/api/staff/%s/dismiss" % r["staff"]["id"])[1]["dismissed"])
+        self.assertTrue((self.home / "Agents" / "temp").exists())
+
+
+class Stage4(ServerCase):
+    def test_usage(self):
+        status, u = self.request("GET", "/api/usage")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(u["days"]), 14)
+        self.assertGreater(u["today"], 0)
+        self.assertIn("Opus 5.5", [m["model"] for m in u["models"]])
+        self.assertGreater(self.request("GET", "/api/state")[1]["cost_today"], 0)
+
+    def test_bots(self):
+        jobs = {j["label"]: j for j in self.request("GET", "/api/bots")[1]["jobs"]}
+        self.assertTrue(jobs["com.bojjifomo.agent-office"]["running"])
+        report = jobs["com.bojjifomo.daily-report"]
+        self.assertTrue(report["failed"])
+        self.assertIn("timed out", report["error"])
+        self.assertEqual(report["schedule"], "daily at 07:30")
+        self.assertEqual(jobs["com.bojjifomo.lp-scanner"]["schedule"], "every 15 min")
+        status, r = self.post("/api/bots/%s/run" % jobs["com.bojjifomo.lp-scanner"]["id"])
+        self.assertEqual(status, 200, r)
+        self.assertIn("kickstart gui/", (self.home / "launchctl.log").read_text())
+        self.assertEqual(self.post("/api/bots/%s/run" % jobs["com.bojjifomo.agent-office"]["id"])[0], 409)
+        self.assertEqual(self.post("/api/bots/0000000000/run")[0], 404)
+
+    def test_disk_and_sealed_cleaner(self):
+        d = self.request("GET", "/api/disk?rescan=1")[1]
+        self.assertGreater(d["total"], 0)
+        for _ in range(30):
+            d = self.request("GET", "/api/disk")[1]
+            if d["folders"] and not d["scanning"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(d["folders"][0]["path"], "~/Downloads")
+        self.assertEqual(self.post("/api/disk/clean/trash", {})[0], 409)
+        self.assertEqual(self.post("/api/disk/clean/rm-rf", {})[0], 404)
+        wrong = self.seal("clean:npm")
+        self.assertEqual(self.post("/api/disk/clean/trash", wrong)[0], 409)  # seal for another cleaner
+        status, r = self.post("/api/disk/clean/trash", self.seal("clean:trash"))
+        self.assertEqual(status, 200, r)
+        self.assertEqual(list((self.home / ".Trash").iterdir()), [])
+        self.assertTrue((self.home / "Downloads" / "blob.bin").exists())
+
+    def test_bypass_with_seal_runs(self):
+        sid = fixtures.sid(5)
+        body = dict(self.seal("bypass:" + sid), text="go wild", mode="bypassPermissions")
+        status, r = self.post("/api/session/%s/send" % sid, body)
+        self.assertEqual(status, 200, r)
+        run = Stage2.wait_run(self, r["run"])
+        self.assertIn("mode=bypassPermissions", run["events"][0]["t"])
+        self.assertEqual(self.post("/api/session/%s/send" % sid, body)[0], 409)  # the seal was single-use
+
+    def test_search(self):
+        r = self.request("GET", "/api/search?q=" + "v1%20endpoints")[1]
+        self.assertEqual(r["results"][0]["id"], fixtures.sid(2))
+        self.assertEqual(r["results"][0]["match"].lower(), "v1 endpoints")
+        old = self.request("GET", "/api/search?q=websocket")[1]["results"]
+        self.assertTrue(any(h["id"] == fixtures.sid(6) for h in old))
+        self.assertEqual(self.request("GET", "/api/search?q=x")[1]["results"], [])
+
+    def test_ledger_records_actions(self):
+        self.post("/api/session/%s/send" % fixtures.sid(4), {"text": "ledger check", "mode": "acceptEdits"})
+        entries = self.request("GET", "/api/ledger")[1]["entries"]
+        self.assertTrue(any(e["text"] == "ledger check" for e in entries))
+
+
+if __name__ == "__main__":
+    unittest.main()
