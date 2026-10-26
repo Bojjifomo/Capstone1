@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import guard
+import panels
 import push
 import runner
 import sessions
@@ -55,6 +56,10 @@ class Office:
         self.pusher = push.Pusher(cfg.get("push_subject", "mailto:agent-office@localhost"))
         self.codes = guard.Codes(self.notify, dev=cfg.get("_dev", False))
         self.team = team.Team(self)
+        self.ledger = panels.Ledger()
+        self.familiars = panels.Familiars(cfg)
+        self.vault = panels.Vault()
+        self.old = {}           # transcripts older than the scan window, loaded on demand
         self.seen = {}          # sid -> (status, working since) for notifications
         self.monitor_started = False
 
@@ -133,7 +138,18 @@ class Office:
 
     def transcript(self, sid):
         self.scanner.refresh()
-        return self.scanner.transcripts.get(sid)
+        t = self.scanner.transcripts.get(sid)
+        if t or not sessions.SID_RE.match(sid):
+            return t
+        if sid not in self.old:
+            found = next(iter(sessions.projects_dir().glob("*/%s.jsonl" % sid)), None)
+            if not found:
+                return None
+            if len(self.old) > 20:
+                self.old.pop(next(iter(self.old)))
+            self.old[sid] = sessions.Transcript(found)
+        self.old[sid].update()
+        return self.old[sid]
 
     def detail(self, sid):
         t = self.transcript(sid)
@@ -187,6 +203,8 @@ class Office:
         if mode not in runner.MODES:
             raise Refused("unknown permission mode")
         if mode in runner.RISKY_MODES and not self.codes.verify(code_id, code, purpose):
+            if code_id:
+                self.ledger.add("seal", "wrong or expired seal for " + purpose)
             raise Refused("this needs a fresh guild seal from your phone", needs_code=purpose)
 
     def send(self, sid, text, mode, model="", code_id="", code="", now_please=False):

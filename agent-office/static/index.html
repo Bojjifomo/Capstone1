@@ -21,10 +21,17 @@
     <h1>The Guild Hall</h1>
     <p id="greeting">Lighting the torches…</p>
   </div>
-  <div id="vault-chip" class="chip" hidden></div>
+  <button type="button" id="vault-chip" class="chip" hidden></button>
   <button type="button" class="icon-btn top-btn" data-open="settings" aria-label="Ravens and seals">🪶</button>
 </header>
 <div id="tally" class="tally" aria-live="polite"></div>
+<nav class="toolbar" aria-label="Panels">
+  <button type="button" data-open="usage">⛁ Treasury</button>
+  <button type="button" data-open="bots">🐾 Familiars</button>
+  <button type="button" data-open="disk">🏛 Vault</button>
+  <button type="button" data-open="search">🔮 Scry</button>
+  <button type="button" data-open="ledger">📖 Ledger</button>
+</nav>
 
 <main id="views">
   <section id="view-hall" class="view" aria-label="Guild hall">
@@ -74,5 +81,6 @@
 <script src="/static/sprites.js" defer></script>
 <script src="/static/app.js" defer></script>
 <script src="/static/team.js" defer></script>
+<script src="/static/panels.js" defer></script>
 </body>
 </html>

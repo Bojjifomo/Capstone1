@@ -33,8 +33,9 @@ class ServerCase(unittest.TestCase):
         shutil.copytree(ROOT, cls.app, ignore=shutil.ignore_patterns("*.json", "docs", "__pycache__", "logs"))
         cls.write_config(cls.app)
         env = dict(os.environ, HOME=str(cls.home), AGENT_OFFICE_DATA="")
+        cls.log = open(cls.tmp / "server.log", "w")
         cls.proc = subprocess.Popen([sys.executable, "server.py", "--port", str(PORT), "--bind", "127.0.0.1", "--dev"],
-                                    cwd=str(cls.app), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                    cwd=str(cls.app), env=env, stdout=cls.log, stderr=subprocess.STDOUT)
         for _ in range(50):
             try:
                 cls.request("GET", "/api/state")
@@ -46,12 +47,14 @@ class ServerCase(unittest.TestCase):
     def write_config(cls, app):
         (app / "config.json").write_text(json.dumps({
             "bind": ["127.0.0.1"], "port": PORT, "claude_bin": str(app / "tests" / "fake_claude.py"),
-            "project_roots": [str(cls.home / "Projects")], "agents_dir": str(cls.home / "Agents")}))
+            "project_roots": [str(cls.home / "Projects")], "agents_dir": str(cls.home / "Agents"),
+            "launchctl_bin": str(cls.home / "bin" / "launchctl")}))
 
     @classmethod
     def tearDownClass(cls):
         cls.proc.terminate()
         cls.proc.wait(5)
+        cls.log.close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @staticmethod
@@ -70,6 +73,14 @@ class ServerCase(unittest.TestCase):
             return res.status, json.loads(raw)
         except ValueError:
             return res.status, raw
+
+    def seal(self, purpose):
+        """Ask for a code and read it from the dev-mode log, like reading it off the phone."""
+        status, r = self.post("/api/code", {"purpose": purpose})
+        self.assertEqual(status, 200, r)
+        time.sleep(0.2)
+        lines = [l for l in (self.tmp / "server.log").read_text().splitlines() if "seal code for " + purpose in l]
+        return {"code_id": r["code_id"], "code": lines[-1].rsplit(" ", 1)[1]}
 
     @classmethod
     def post(cls, path, body=None, **kw):
@@ -429,6 +440,70 @@ class Stage3(ServerCase):
         r = self.hire(name="Temp", role="tester")
         self.assertTrue(self.post("/api/staff/%s/dismiss" % r["staff"]["id"])[1]["dismissed"])
         self.assertTrue((self.home / "Agents" / "temp").exists())
+
+
+class Stage4(ServerCase):
+    def test_usage(self):
+        status, u = self.request("GET", "/api/usage")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(u["days"]), 14)
+        self.assertGreater(u["today"], 0)
+        self.assertIn("Opus 5.5", [m["model"] for m in u["models"]])
+        self.assertGreater(self.request("GET", "/api/state")[1]["cost_today"], 0)
+
+    def test_bots(self):
+        jobs = {j["label"]: j for j in self.request("GET", "/api/bots")[1]["jobs"]}
+        self.assertTrue(jobs["com.bojjifomo.agent-office"]["running"])
+        report = jobs["com.bojjifomo.daily-report"]
+        self.assertTrue(report["failed"])
+        self.assertIn("timed out", report["error"])
+        self.assertEqual(report["schedule"], "daily at 07:30")
+        self.assertEqual(jobs["com.bojjifomo.lp-scanner"]["schedule"], "every 15 min")
+        status, r = self.post("/api/bots/%s/run" % jobs["com.bojjifomo.lp-scanner"]["id"])
+        self.assertEqual(status, 200, r)
+        self.assertIn("kickstart gui/", (self.home / "launchctl.log").read_text())
+        self.assertEqual(self.post("/api/bots/%s/run" % jobs["com.bojjifomo.agent-office"]["id"])[0], 409)
+        self.assertEqual(self.post("/api/bots/0000000000/run")[0], 404)
+
+    def test_disk_and_sealed_cleaner(self):
+        d = self.request("GET", "/api/disk?rescan=1")[1]
+        self.assertGreater(d["total"], 0)
+        for _ in range(30):
+            d = self.request("GET", "/api/disk")[1]
+            if d["folders"] and not d["scanning"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(d["folders"][0]["path"], "~/Downloads")
+        self.assertEqual(self.post("/api/disk/clean/trash", {})[0], 409)
+        self.assertEqual(self.post("/api/disk/clean/rm-rf", {})[0], 404)
+        wrong = self.seal("clean:npm")
+        self.assertEqual(self.post("/api/disk/clean/trash", wrong)[0], 409)  # seal for another cleaner
+        status, r = self.post("/api/disk/clean/trash", self.seal("clean:trash"))
+        self.assertEqual(status, 200, r)
+        self.assertEqual(list((self.home / ".Trash").iterdir()), [])
+        self.assertTrue((self.home / "Downloads" / "blob.bin").exists())
+
+    def test_bypass_with_seal_runs(self):
+        sid = fixtures.sid(5)
+        body = dict(self.seal("bypass:" + sid), text="go wild", mode="bypassPermissions")
+        status, r = self.post("/api/session/%s/send" % sid, body)
+        self.assertEqual(status, 200, r)
+        run = Stage2.wait_run(self, r["run"])
+        self.assertIn("mode=bypassPermissions", run["events"][0]["t"])
+        self.assertEqual(self.post("/api/session/%s/send" % sid, body)[0], 409)  # the seal was single-use
+
+    def test_search(self):
+        r = self.request("GET", "/api/search?q=" + "v1%20endpoints")[1]
+        self.assertEqual(r["results"][0]["id"], fixtures.sid(2))
+        self.assertEqual(r["results"][0]["match"].lower(), "v1 endpoints")
+        old = self.request("GET", "/api/search?q=websocket")[1]["results"]
+        self.assertTrue(any(h["id"] == fixtures.sid(6) for h in old))
+        self.assertEqual(self.request("GET", "/api/search?q=x")[1]["results"], [])
+
+    def test_ledger_records_actions(self):
+        self.post("/api/session/%s/send" % fixtures.sid(4), {"text": "ledger check", "mode": "acceptEdits"})
+        entries = self.request("GET", "/api/ledger")[1]["entries"]
+        self.assertTrue(any(e["text"] == "ledger check" for e in entries))
 
 
 if __name__ == "__main__":

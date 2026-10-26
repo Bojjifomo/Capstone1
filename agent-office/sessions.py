@@ -29,6 +29,7 @@ PRICES.sort(key=lambda p: -len(p[0]))
 DEFAULT_PRICE = (3, 15, 0.30)
 
 ASK_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 SESSION_ID_RE = re.compile(r"(?:--resume|-r|--session-id)[ =]([0-9a-f]{8}-[0-9a-f-]{27})")
 CLAUDE_CMD_RE = re.compile(r"(?:^|/)claude(?:\s|$)|@anthropic-ai/claude-code")
 

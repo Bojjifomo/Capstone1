@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import core  # noqa: E402
+import panels  # noqa: E402
 import runner  # noqa: E402
 import store  # noqa: E402
 import team  # noqa: E402
@@ -114,6 +115,8 @@ def api_state(req, m):
         "now": time.time(),
         "sessions": APP.office.all_sessions(),
         "team": APP.office.team.roster(),
+        "cost_today": panels.cost_today(APP.office),
+        "disk": APP.office.vault.free(),
     }
 
 
@@ -171,9 +174,12 @@ def api_options(req, m):
 @route("POST", "/api/session/" + SID + "/send")
 def api_send(req, m):
     b = req.body
-    return APP.office.send(m.group("sid"), text_field(b, "text", runner.MAX_TEXT + 1), text_field(b, "mode"),
-                           model=text_field(b, "model"), code_id=text_field(b, "code_id"),
-                           code=text_field(b, "code"), now_please=bool(b.get("now")))
+    sid = m.group("sid")
+    result = APP.office.send(sid, text_field(b, "text", runner.MAX_TEXT + 1), text_field(b, "mode"),
+                             model=text_field(b, "model"), code_id=text_field(b, "code_id"),
+                             code=text_field(b, "code"), now_please=bool(b.get("now")))
+    APP.office.ledger.add("queue" if "queued" in result else "send", text_field(b, "text"), sid=sid, mode=text_field(b, "mode"))
+    return result
 
 
 @route("POST", "/api/session/" + SID + "/queue/" + QID + "/now")
@@ -212,9 +218,11 @@ def api_projects(req, m):
 def api_job(req, m):
     b = req.body
     system = PM_PROMPT if b.get("pm") else ""
-    return APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
-                              text_field(b, "mode"), model=text_field(b, "model"),
-                              code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system)
+    result = APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
+                                text_field(b, "mode"), model=text_field(b, "model"),
+                                code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system)
+    APP.office.ledger.add("job", text_field(b, "text"), sid=result["sid"], mode=text_field(b, "mode"), pm=bool(system))
+    return result
 
 
 OFFICE_CLI = HERE / "tools" / "office"
@@ -239,7 +247,9 @@ def api_code(req, m):
         raise HttpError(400, "unknown purpose")
     label = "run with permissions bypassed" if purpose.startswith("bypass") else "run the " + purpose[6:] + " cleaner"
     try:
-        return {"code_id": APP.office.codes.request(purpose, label), "expires_in": 120}
+        cid = APP.office.codes.request(purpose, label)
+        APP.office.ledger.add("seal", "sent a seal to " + label)
+        return {"code_id": cid, "expires_in": 120}
     except RuntimeError as e:
         raise HttpError(409, str(e))
 
@@ -302,22 +312,79 @@ def api_hire(req, m):
                                                text_field(b, "model") or "sonnet")
     except ValueError as e:
         raise HttpError(400, str(e))
+    APP.office.ledger.add("hire", "%s the %s" % (member["name"], member["title"]))
     return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio")}, "renamed_from": renamed}
 
 
 @route("POST", "/api/staff/" + STAFF + "/dismiss")
 def api_dismiss(req, m):
-    return {"dismissed": APP.office.team.dismiss(m.group("staff"))}
+    member = APP.office.team.find(m.group("staff"))
+    done = APP.office.team.dismiss(m.group("staff"))
+    if done:
+        APP.office.ledger.add("dismiss", member["name"])
+    return {"dismissed": done}
 
 
 @route("POST", "/api/team/ask")
 def api_team_ask(req, m):
     try:
-        return APP.office.team.ask(text_field(req.body, "name"), text_field(req.body, "brief", runner.MAX_TEXT + 1))
+        result = APP.office.team.ask(text_field(req.body, "name"), text_field(req.body, "brief", runner.MAX_TEXT + 1))
+        APP.office.ledger.add("errand", "%s: %s" % (result["name"], text_field(req.body, "brief")), sid=result["sid"])
+        return result
     except LookupError as e:
         raise HttpError(404, str(e))
     except ValueError as e:
         raise HttpError(400, str(e))
+
+
+# ---- stage 4: panels -----------------------------------------------------------
+
+@route("GET", "/api/usage")
+def api_usage(req, m):
+    return panels.usage(APP.office)
+
+
+@route("GET", "/api/bots")
+def api_bots(req, m):
+    return {"jobs": APP.office.familiars.jobs(), "mac": sys.platform == "darwin"}
+
+
+@route("POST", r"/api/bots/(?P<job>[0-9a-f]{10})/run")
+def api_bot_run(req, m):
+    try:
+        label = APP.office.familiars.run_now(m.group("job"))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    APP.office.ledger.add("bot", "started " + label)
+    return {"started": label}
+
+
+@route("GET", "/api/disk")
+def api_disk(req, m):
+    return APP.office.vault.report(rescan=bool(req.query.get("rescan")))
+
+
+@route("POST", r"/api/disk/clean/(?P<cleaner>[a-z0-9_]{1,32})")
+def api_disk_clean(req, m):
+    cid = m.group("cleaner")
+    if cid not in panels.CLEANERS:
+        raise HttpError(404, "no such cleaner")
+    if not APP.office.codes.verify(text_field(req.body, "code_id"), text_field(req.body, "code"), "clean:" + cid):
+        APP.office.ledger.add("seal", "wrong or expired seal for cleaner " + cid)
+        raise core.Refused("this needs a fresh guild seal from your phone", needs_code="clean:" + cid)
+    result = APP.office.vault.clean(cid)
+    APP.office.ledger.add("clean", "%s freed %.1f GB" % (result["title"], result["freed"] / 1e9))
+    return result
+
+
+@route("GET", "/api/search")
+def api_search(req, m):
+    return panels.search(APP.office, (req.query.get("q") or [""])[0])
+
+
+@route("GET", "/api/ledger")
+def api_ledger(req, m):
+    return {"entries": APP.office.ledger.recent()}
 
 
 # ---- HTTP plumbing ------------------------------------------------------

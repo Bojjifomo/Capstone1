@@ -117,7 +117,51 @@ def build(home):
         assistant(now - 2 * 86400, "Prototype works; see ws_demo.py. Closing this out."),
     ], now - 2 * 86400)
     (home / "Projects" / "webapp").mkdir(parents=True, exist_ok=True)
+    build_mac_bits(home)
     return home
+
+
+FAKE_LAUNCHCTL = """#!/bin/sh
+# Stands in for launchctl in tests.
+if [ "$1" = "list" ]; then
+  printf '%s\\t%s\\t%s\\n' PID Status Label 4242 0 com.bojjifomo.agent-office - 0 com.bojjifomo.lp-scanner - 1 com.bojjifomo.daily-report
+  exit 0
+fi
+echo "$@" >> "$HOME/launchctl.log"
+"""
+
+
+def build_mac_bits(home):
+    """LaunchAgents with logs, a fake launchctl, and some big folders for the vault."""
+    import plistlib
+    agents = home / "Library" / "LaunchAgents"
+    logs = home / "logs"
+    agents.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(exist_ok=True)
+    jobs = {
+        "com.bojjifomo.agent-office": {"KeepAlive": True, "ProgramArguments": ["/usr/bin/python3", "server.py"]},
+        "com.bojjifomo.lp-scanner": {"StartInterval": 900, "ProgramArguments": ["/usr/bin/python3", "scan.py"]},
+        "com.bojjifomo.daily-report": {"StartCalendarInterval": {"Hour": 7, "Minute": 30},
+                                       "ProgramArguments": ["/bin/sh", "report.sh"]},
+    }
+    for label, p in jobs.items():
+        p.update(Label=label, StandardOutPath=str(logs / (label + ".out")), StandardErrorPath=str(logs / (label + ".err")))
+        with open(agents / (label + ".plist"), "wb") as f:
+            plistlib.dump(p, f)
+        (logs / (label + ".out")).write_text("ok\n")
+        (logs / (label + ".err")).write_text("")
+    (logs / "com.bojjifomo.daily-report.err").write_text(
+        "fetching prices\nTraceback (most recent call last):\nConnectionError: rpc.example timed out after 30s\n")
+    tool = home / "bin" / "launchctl"
+    tool.parent.mkdir(exist_ok=True)
+    tool.write_text(FAKE_LAUNCHCTL)
+    tool.chmod(0o755)
+    for rel, mb in (("Downloads", 6), (".npm", 3), (".Trash", 2), ("Library/Caches", 4)):
+        d = home / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "blob.bin").write_bytes(os.urandom(mb * 1024 * 1024))
+    (home / ".Trash" / "old folder").mkdir(exist_ok=True)
+    (home / ".Trash" / "old folder" / "x.txt").write_text("bye")
 
 
 if __name__ == "__main__":

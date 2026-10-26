@@ -5,7 +5,8 @@ const path = require("path");
 const stage = process.argv[2] || "stage1";
 const port = process.argv[3] || "7790";
 const base = `http://127.0.0.1:${port}`;
-const out = (name) => path.join(__dirname, "..", "docs", "screens", `${stage}-${name}.png`);
+let scene = stage;
+const out = (name) => path.join(__dirname, "..", "docs", "screens", `${scene}-${name}.png`);
 const sid = (n) => "00000000-0000-0" + String(n).repeat(3) + "-" + String(n).repeat(4) + "-" + String(n).repeat(12);
 const wait = (page, ms) => page.waitForTimeout(ms);
 
@@ -80,6 +81,27 @@ const SCENES = {
     await page.screenshot({ path: out("party-leader") });
     await closeSheet(page);
   },
+  async stage4(page) {
+    await page.click("[data-open=disk]");
+    await wait(page, 2500);
+    await page.click("[data-panel-act=rescan]").catch(() => {});
+    await wait(page, 4500);
+    await page.screenshot({ path: out("vault") });
+    await closeSheet(page);
+    for (const name of ["usage", "bots", "ledger"]) {
+      await page.click(`.toolbar [data-open=${name}]`);
+      await wait(page, 900);
+      await page.screenshot({ path: out(name) });
+      await closeSheet(page);
+    }
+    await page.click(".toolbar [data-open=search]");
+    await wait(page, 400);
+    await page.fill("#search-form input", "endpoints");
+    await page.click("#search-form [type=submit]");
+    await wait(page, 900);
+    await page.screenshot({ path: out("scrying") });
+    await closeSheet(page);
+  },
 };
 
 (async () => {
@@ -92,7 +114,7 @@ const SCENES = {
   await page.goto(base + "/");
   await page.waitForSelector(".spot");
   await wait(page, 600);
-  for (const name of stage.split(",")) await SCENES[name](page);
+  for (const name of stage.split(",")) { scene = name; await SCENES[name](page); }
   await page.goto(base + "/");
   await page.waitForSelector(".spot");
   await page.screenshot({ path: out("hall"), fullPage: true });
