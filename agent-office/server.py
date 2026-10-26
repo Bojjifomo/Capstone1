@@ -638,6 +638,9 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # The default backlog is 5. Through `tailscale serve` a phone opens a connection per file at
+    # once; on macOS the extra ones are refused and those scripts never load.
+    request_queue_size = 128
 
 
 def serve(addr, port):
