@@ -1147,4 +1147,6 @@ const Town = (() => {
 })();
 
 Hooks.header.push((state) => Town.update(state));
-document.addEventListener("DOMContentLoaded", () => Town.init());
+// a retried download can arrive after DOMContentLoaded
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => Town.init());
+else { Town.init(); if (UI.state) Town.update(UI.state); }

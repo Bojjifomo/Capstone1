@@ -125,7 +125,16 @@ function reportError(err, where) {
 }
 window.addEventListener("error", (ev) => {
   // a script that failed to download fires on its element, not as an ErrorEvent
-  if (ev.target && ev.target.tagName === "SCRIPT") reportError("could not load " + ev.target.src, "load");
+  if (ev.target && ev.target.tagName === "SCRIPT") {
+    const old = ev.target;
+    if (old.dataset.retried) { reportError("could not load " + old.src, "load"); return; }
+    // try once more; async=false keeps retried scripts in their original order
+    const again = document.createElement("script");
+    again.src = old.src.split("?")[0] + "?retry=" + Date.now();
+    again.async = false;
+    again.dataset.retried = "1";
+    old.after(again);
+  }
   else if (ev instanceof ErrorEvent) reportError(ev.error || ev.message, "page" + (ev.filename ? " " + ev.filename.split("/").pop() + ":" + ev.lineno : ""));
 }, true);
 window.addEventListener("unhandledrejection", (ev) => reportError(ev.reason, "promise"));
