@@ -47,7 +47,7 @@ Hooks.panels.hire = {
 Hooks.jobExtras = () =>
   `<label class="check"><input type="checkbox" name="pm"><span>Party leader mode<small>The lead splits the quest, hands pieces to the guild and to subagents (Haiku for lookups, Sonnet for coding, Opus for hard problems), then reports who did what.</small></span></label>`;
 
-Hooks.forms = {
+Object.assign(Hooks.forms, {
   async "hire-form"(form) {
     const r = await api("/api/staff", {
       name: form.name.value, role: form.role.value, instructions: form.instructions.value,
@@ -69,9 +69,9 @@ Hooks.forms = {
     followRun(r.run);
     toast(`${m.name} is on it.`);
   },
-};
+});
 
-Hooks.panelActions = {
+Object.assign(Hooks.panelActions, {
   async dismiss() {
     const m = memberById(UI.arg);
     if (!m || !confirm(`Dismiss ${m.name} from the guild?`)) return false;
@@ -80,4 +80,4 @@ Hooks.panelActions = {
     closeSheet();
     return false;
   },
-};
+});
