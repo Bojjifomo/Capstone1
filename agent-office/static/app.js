@@ -279,7 +279,7 @@ function footerHTML(d) {
   if (d.status === "archived") return `<p class="foot-note">Archived. Restore it to send word.</p>`;
   const o = UI.options || { modes: ["acceptEdits"], default_mode: "acceptEdits" };
   return `<form id="say" class="say" autocomplete="off">` +
-    `<div class="chips">${W.quick.map((q) => `<button type="button" class="chip-btn" data-act="quick" data-text="${esc(q)}">${esc(q)}</button>`).join("")}</div>` +
+    `<div class="chips">${(Hooks.chips ? Hooks.chips(d) : "") + W.quick.map((q) => `<button type="button" class="chip-btn" data-act="quick" data-text="${esc(q)}">${esc(q)}</button>`).join("")}</div>` +
     `<textarea name="text" rows="2" maxlength="20000" placeholder="Send word to ${esc(d.name)}…" aria-label="Message"></textarea>` +
     `<div class="say-row"><select name="mode" aria-label="Permission mode">${options(o.modes, W.modes, o.default_mode)}</select>` +
     `<button type="submit" class="btn primary">Send</button></div></form>`;
@@ -300,10 +300,13 @@ function renderSheet(d, first) {
   const run = UI.run && UI.run.sid === d.id ? UI.run : d.run;
   const msgs = d.messages.length ? d.messages.map(messageHTML).join("") : (run ? "" : '<p class="loading">No words exchanged yet.</p>');
   const pending = d.pending && d.pending.length && !(run && !run.done) ? `<p class="pending">Working on: ${d.pending.map(esc).join(", ")}</p>` : "";
-  body.innerHTML = msgs + pending + runHTML(run) + queueHTML(d);
+  const top = Hooks.sheetTop ? Hooks.sheetTop(d) : "";
+  body.innerHTML = top + msgs + pending + runHTML(run) + queueHTML(d);
   const footKey = JSON.stringify([d.id, !!d.desktop, d.status === "archived"]);
   if (UI.footKey !== footKey) { UI.footKey = footKey; $("#sheet-foot").innerHTML = footerHTML(d); }
-  if (first || nearBottom) body.scrollTop = body.scrollHeight;
+  // a new sheet opens on the profile card; after that, stay pinned to the latest words
+  if (first && top) body.scrollTop = 0;
+  else if (first || nearBottom) body.scrollTop = body.scrollHeight;
 }
 
 // Long-poll a run so the reply streams into the sheet.

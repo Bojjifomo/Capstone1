@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import personas
 import sessions
 import store
 
@@ -203,9 +204,21 @@ class Team:
                 status, note = "working", "on an errand from the lead"
             entry = {k: s[k] for k in ("id", "name", "role", "title", "kind", "seed", "division", "bio", "model")}
             entry.update(status=status, note=note, sid=t.id if t else "", active=t.mtime if t else 0,
-                         last=(t.last_text or "")[-300:] if t else "")
+                         last=(t.last_text or "")[-300:] if t else "", pay=self.pay_of(s),
+                         persona=personas.persona(s["seed"], s["role"] + " " + s["instructions"][:200],
+                                                  name=s["name"], title=s["title"], topic=s["role"].lower()))
+            entry["persona"]["bio"] = s["bio"] + " " + entry["persona"]["bio"]
             out.append(entry)
         return {"staff": out, "divisions": list(self.divisions)}
+
+    def pay_of(self, member):
+        total = {"today": 0.0, "week": 0.0, "month": 0.0}
+        with self.office.scanner.lock:
+            for t in self.office.scanner.transcripts.values():
+                if t.cwd == member["folder"]:
+                    for k, v in t.pay().items():
+                        total[k] += v
+        return {k: round(v, 4) for k, v in total.items()}
 
     def ask(self, key, brief, origin="office-ask"):
         member = self.find(key)

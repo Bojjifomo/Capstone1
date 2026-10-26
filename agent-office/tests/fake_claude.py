@@ -10,6 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 args = sys.argv[1:]
+if "--no-session-persistence" in args:
+    # a one-shot Haiku call: summary or quick replies
+    system = args[args.index("--system-prompt") + 1]
+    text = sys.stdin.read()
+    if "JSON array" in system:
+        result = '["Yes, go ahead.", "Show me the diff first.", "Leave the v1 endpoints for now."]'
+    else:
+        result = "- Split payments into a service and a router\n- Asks whether to migrate the v1 endpoints (%d chars read)" % len(text)
+    print(json.dumps({"type": "result", "result": result}))
+    sys.exit(0)
 sid = args[args.index("--resume") + 1] if "--resume" in args else args[args.index("--session-id") + 1]
 mode = args[args.index("--permission-mode") + 1]
 line = sys.stdin.readline()

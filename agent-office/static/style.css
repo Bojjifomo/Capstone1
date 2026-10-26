@@ -578,3 +578,46 @@ button.chip { cursor: pointer; font-family: var(--sans); }
   position: absolute; left: 50%; top: 62%; transform: translate(-50%, -50%); margin: 0; text-align: center;
   font: italic 14px var(--serif); color: var(--parch); background: rgba(30, 20, 12, .7); padding: 6px 12px; border-radius: 8px;
 }
+
+/* ---- chatter, roster, profile cards ---- */
+.chat {
+  position: absolute; transform: translate(-50%, -100%); pointer-events: none; z-index: 5; white-space: nowrap;
+  background: #fffaf0; color: var(--ink); font: 600 10.5px/1.2 var(--sans); padding: 3px 7px; border-radius: 9px;
+  box-shadow: 0 2px 0 rgba(0,0,0,.25); animation: pop .18s ease-out; transition: opacity .4s ease;
+  max-width: 60%; overflow: hidden; text-overflow: ellipsis;
+}
+.chat::after { content: ""; position: absolute; left: 50%; bottom: -4px; margin-left: -4px; border: 4px solid transparent; border-top-color: #fffaf0; border-bottom: 0; }
+.chat.gone { opacity: 0; }
+@keyframes pop { from { transform: translate(-50%, -80%) scale(.7); opacity: 0; } to { transform: translate(-50%, -100%) scale(1); opacity: 1; } }
+.roster { margin: 10px auto 0; max-width: 760px; background: var(--stone); border: 1px solid var(--stone-2); border-radius: 10px; padding: 8px 10px; }
+.roster header { display: flex; align-items: baseline; gap: 8px; padding: 2px 2px 6px; }
+.roster header b { font: 600 15px var(--serif); color: var(--parch); }
+.roster header small { color: var(--muted); font-size: 12px; }
+.roster-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--stone-2); padding: 7px 2px; cursor: pointer; }
+.roster-row span { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.roster-row b { font-size: 14px; color: var(--parch); }
+.roster-row small { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roster-row em { font-style: normal; font-size: 12px; color: var(--idle); white-space: nowrap; }
+.roster-row.a-work em { color: var(--work); }
+.roster-row.a-needs em { color: var(--needs); }
+.roster-row.a-read em { color: var(--gold); }
+.profile { background: #fffaf0; border: 1px solid var(--parch-edge); border-radius: 10px; padding: 6px 10px 10px; margin-bottom: 12px; }
+.profile > summary { cursor: pointer; font: 600 12px var(--serif); color: var(--ink-soft); padding: 2px 0 6px; }
+.pf-top { display: flex; gap: 12px; align-items: center; }
+.pf-portrait { width: 62px; height: 62px; flex: none; border-radius: 50%; border: 3px solid var(--gold); background: radial-gradient(#f3e4c3, #d9c08c); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.pf-who { min-width: 0; }
+.pf-who h3 { margin: 0; font: 700 18px/1.15 var(--serif); }
+.pf-title { display: inline-block; margin-top: 3px; font-size: 11.5px; font-weight: 700; color: #7a5a12; background: rgba(224, 176, 76, .25); border-radius: 999px; padding: 1px 8px; }
+.pf-line { margin: 4px 0 0; font-size: 12px; color: var(--ink-soft); }
+.pf-bio { margin: 10px 0 4px; font-size: 14px; }
+.pf-motto { margin: 0 0 8px; font: italic 13.5px var(--serif); color: #9a6b12; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 6px 0 8px; font-size: 13px; }
+.facts dt { color: var(--ink-soft); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.pf-division { font: 13px var(--sans); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--parch-edge); background: #fff; color: var(--ink); }
+.pf-last { border-top: 1px solid var(--parch-edge); padding-top: 8px; }
+.pf-last small { color: var(--ink-soft); font-size: 11.5px; }
+.pf-last p { margin: 4px 0 8px; font-size: 13.5px; }
+.pf-summary { background: rgba(224, 176, 76, .14); border-radius: 8px; padding: 6px 10px; }
+.chip-btn.ai { border-color: #c9a46a; color: #7a5a12; background: #fff4dc; }
+.profile-card .pf-bio { margin-top: 8px; }

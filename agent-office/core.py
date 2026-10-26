@@ -9,6 +9,7 @@ from pathlib import Path
 
 import guard
 import panels
+import personas
 import petitions
 import push
 import runner
@@ -38,6 +39,10 @@ def plain(text, limit=140):
     return text if len(text) <= limit else text[:limit - 1] + "\u2026"
 
 
+STARTED_AS = {"cli": "Terminal", "sdk-cli": "Agent Office", "claude-desktop": "Claude app", "remote": "Remote control",
+              "sdk-ts": "SDK", "sdk-py": "SDK", "claude-vscode": "VS Code", "mcp": "MCP"}
+
+
 def home_path(p):
     p = str(p)
     home = str(Path.home())
@@ -51,6 +56,7 @@ class Office:
         self.lock = threading.RLock()
         self.names = store.load("names.json", {})
         self.archived = store.load("archived.json", {})
+        self.assigned = store.load("assignments.json", {})  # sid -> division
         self.flags = {}  # sid -> (ts, message), from the Notification hook; memory only
         self.agents_dir = str(Path(cfg.get("agents_dir", "~/Agents")).expanduser())
         self.runner = runner.Runner(cfg, on_finish=self.run_finished)
@@ -128,6 +134,13 @@ class Office:
             info["queue"] = len(self.runner.queue_of(t.id))
         if self.team:
             info["staff"] = self.team.staff_for_session(t)
+        info["division"] = self.assigned.get(t.id, "")
+        info["pay"] = t.pay()
+        info["last_tool"] = t.last_tool
+        info["started_as"] = STARTED_AS.get(t.started_as, t.started_as or "Terminal")
+        staff = info.get("staff")
+        info["persona"] = personas.persona(staff["seed"] if staff else t.id, t.title + " " + info["project"],
+                                           name=staff["name"] if staff else None, topic=info["project"] + " project")
         return info
 
     def all_sessions(self):
@@ -190,6 +203,15 @@ class Office:
             else:
                 self.archived.pop(sid, None)
             store.save("archived.json", self.archived)
+
+    def assign(self, sid, division):
+        division = " ".join(str(division).split())[:40]
+        with self.lock:
+            if division:
+                self.assigned[sid] = division
+            else:
+                self.assigned.pop(sid, None)
+            store.save("assignments.json", self.assigned)
 
     def flag(self, sid, message):
         self.flags[sid] = (time.time(), " ".join(str(message).split())[:160] or "needs your permission")
