@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
     "agents_dir": "~/Agents",
     "project_roots": ["~/Projects"],
     "claude_bin": "",           # empty = look in the usual places
-    "push_subject": "mailto:agent-office@localhost",
+    "push_subject": "mailto:bojjifomo@users.noreply.github.com",
     "default_mode": "acceptEdits",
 }
 
@@ -277,7 +277,7 @@ def api_push_unsubscribe(req, m):
 @route("POST", "/api/push/test")
 def api_push_test(req, m):
     ok = APP.office.notify("A raven from the guild hall", "Notifications work. You'll hear from me when someone needs you.")
-    return {"sent": ok}
+    return {"sent": ok, "error": "" if ok else (APP.office.pusher.last_error or "no phone is subscribed")}
 
 
 @route("GET", "/api/push/last")

@@ -7,14 +7,20 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import ssl
 import struct
+import sys
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
 import store
+
+# Apple rejects a VAPID subject it can't treat as a real contact (e.g. anything @localhost).
+DEFAULT_SUBJECT = "mailto:bojjifomo@users.noreply.github.com"
 
 # Only real browser push services; the server never POSTs anywhere else.
 PUSH_HOSTS = ("web.push.apple.com", "fcm.googleapis.com", "updates.push.services.mozilla.com",
@@ -226,7 +232,10 @@ class Pusher:
     """One subscription (your phone). Keys live in vapid.json, the subscription in push.json."""
 
     def __init__(self, subject):
+        if not str(subject).startswith(("mailto:", "https://")) or str(subject).endswith("@localhost"):
+            subject = DEFAULT_SUBJECT
         self.subject = subject
+        self.last_error = ""
         keys = store.load("vapid.json", None)
         if not keys:
             priv = new_private()
@@ -270,11 +279,23 @@ class Pusher:
             "TTL": "3600", "Urgency": urgency, "Topic": "".join(c for c in tag if c.isalnum())[:32] or "office",
         })
         try:
-            with urllib.request.urlopen(req, timeout=10) as res:
+            with urllib.request.urlopen(req, timeout=10, context=_tls()) as res:
+                self.last_error = ""
                 return 200 <= res.status < 300
         except urllib.error.HTTPError as e:
+            detail = e.read(300).decode("utf-8", "replace").strip()
+            self.last_error = "push service said %d %s" % (e.code, detail or e.reason)
             if e.code in (404, 410):  # the phone dropped the subscription
                 self.unsubscribe()
-            return False
-        except (urllib.error.URLError, OSError):
-            return False
+        except (urllib.error.URLError, OSError) as e:
+            self.last_error = "could not reach the push service: %s" % getattr(e, "reason", e)
+        sys.stderr.write("push failed: %s\n" % self.last_error)
+        return False
+
+
+def _tls():
+    # Some Python builds on macOS ship without CA certificates; the system bundle is always there.
+    ctx = ssl.create_default_context()
+    if os.path.exists("/etc/ssl/cert.pem"):
+        ctx.load_verify_locations("/etc/ssl/cert.pem")
+    return ctx

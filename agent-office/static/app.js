@@ -455,7 +455,7 @@ const PANEL_ACTIONS = {
   },
   async test() {
     const r = await api("/api/push/test", {});
-    toast(r.sent ? "Raven sent." : "The raven got lost. Try subscribing again.");
+    toast(r.sent ? "Raven sent." : "The raven got lost: " + r.error);
   },
   async unsubscribe() {
     const reg = await navigator.serviceWorker.ready;

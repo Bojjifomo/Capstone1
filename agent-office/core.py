@@ -53,7 +53,7 @@ class Office:
         self.flags = {}  # sid -> (ts, message), from the Notification hook; memory only
         self.agents_dir = str(Path(cfg.get("agents_dir", "~/Agents")).expanduser())
         self.runner = runner.Runner(cfg, on_finish=self.run_finished)
-        self.pusher = push.Pusher(cfg.get("push_subject", "mailto:agent-office@localhost"))
+        self.pusher = push.Pusher(cfg.get("push_subject", push.DEFAULT_SUBJECT))
         self.codes = guard.Codes(self.notify, dev=cfg.get("_dev", False))
         self.team = team.Team(self)
         self.ledger = panels.Ledger()
