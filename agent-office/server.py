@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import core  # noqa: E402
+import runner  # noqa: E402
 import store  # noqa: E402
 
 STATIC = HERE / "static"
@@ -34,6 +35,7 @@ DEFAULT_CONFIG = {
     "project_roots": ["~/Projects"],
     "claude_bin": "",           # empty = look in the usual places
     "push_subject": "mailto:agent-office@localhost",
+    "default_mode": "acceptEdits",
 }
 
 
@@ -83,6 +85,7 @@ class App:
         self.cfg = cfg
         self.dev = dev
         self.version = compute_version()
+        cfg["_dev"] = dev
         self.office = core.Office(cfg)
         self.hosts = set()
         self.started = time.time()
@@ -143,6 +146,119 @@ def api_hook_notify(req, m):
     if kind == "permission_prompt" or "permission" in message.lower() or "waiting for your input" in message.lower():
         APP.office.flag(sid, message)
     return {"ok": True}
+
+
+# ---- stage 2: talk to sessions ---------------------------------------------
+
+RID = r"(?P<rid>[0-9a-f]{12})"
+QID = r"(?P<qid>[0-9a-f]{8})"
+PURPOSE_RE = re.compile(r"^(bypass:(new|[0-9a-f-]{36})|clean:[a-z0-9_]{1,32})$")
+
+
+def text_field(body, key, limit=200):
+    value = body.get(key, "")
+    return value if isinstance(value, str) else str(value)[:limit]
+
+
+@route("GET", "/api/options")
+def api_options(req, m):
+    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES), "models": list(runner.MODELS),
+            "default_mode": APP.cfg.get("default_mode", "acceptEdits"), "claude": bool(runner.find_claude(APP.cfg))}
+
+
+@route("POST", "/api/session/" + SID + "/send")
+def api_send(req, m):
+    b = req.body
+    return APP.office.send(m.group("sid"), text_field(b, "text", runner.MAX_TEXT + 1), text_field(b, "mode"),
+                           model=text_field(b, "model"), code_id=text_field(b, "code_id"),
+                           code=text_field(b, "code"), now_please=bool(b.get("now")))
+
+
+@route("POST", "/api/session/" + SID + "/queue/" + QID + "/now")
+def api_queue_now(req, m):
+    return APP.office.send_now(m.group("sid"), m.group("qid"))
+
+
+@route("POST", "/api/session/" + SID + "/queue/" + QID + "/remove")
+def api_queue_remove(req, m):
+    return {"removed": bool(APP.office.runner.take(m.group("sid"), m.group("qid")))}
+
+
+@route("GET", "/api/run/" + RID)
+def api_run(req, m):
+    try:
+        after = int((req.query.get("v") or ["-1"])[0])
+    except ValueError:
+        after = -1
+    run = APP.office.runner.wait(m.group("rid"), after, timeout=20)
+    if run is None:
+        raise HttpError(404, "no such run")
+    return run
+
+
+@route("POST", "/api/run/" + RID + "/stop")
+def api_run_stop(req, m):
+    return {"stopped": APP.office.runner.stop(m.group("rid"))}
+
+
+@route("GET", "/api/projects")
+def api_projects(req, m):
+    return {"projects": [{"id": p["id"], "label": p["label"]} for p in APP.office.projects()]}
+
+
+@route("POST", "/api/job")
+def api_job(req, m):
+    b = req.body
+    system = PM_PROMPT if b.get("pm") else ""
+    return APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
+                              text_field(b, "mode"), model=text_field(b, "model"),
+                              code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system)
+
+
+PM_PROMPT = ""  # stage 3
+
+
+@route("POST", "/api/code")
+def api_code(req, m):
+    purpose = text_field(req.body, "purpose")
+    if not PURPOSE_RE.match(purpose):
+        raise HttpError(400, "unknown purpose")
+    label = "run with permissions bypassed" if purpose.startswith("bypass") else "run the " + purpose[6:] + " cleaner"
+    try:
+        return {"code_id": APP.office.codes.request(purpose, label), "expires_in": 120}
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+
+
+@route("GET", "/api/push/key")
+def api_push_key(req, m):
+    return {"key": APP.office.pusher.public, "subscribed": APP.office.pusher.subscribed}
+
+
+@route("POST", "/api/push/subscribe")
+def api_push_subscribe(req, m):
+    try:
+        APP.office.pusher.subscribe(req.body.get("subscription"))
+    except (ValueError, TypeError) as e:
+        raise HttpError(400, str(e))
+    return {"ok": True}
+
+
+@route("POST", "/api/push/unsubscribe")
+def api_push_unsubscribe(req, m):
+    APP.office.pusher.unsubscribe()
+    return {"ok": True}
+
+
+@route("POST", "/api/push/test")
+def api_push_test(req, m):
+    ok = APP.office.notify("A raven from the guild hall", "Notifications work. You'll hear from me when someone needs you.")
+    return {"sent": ok}
+
+
+@route("GET", "/api/push/last")
+def api_push_last(req, m):
+    return APP.office.pusher.last or {}
 
 
 # ---- HTTP plumbing ------------------------------------------------------
@@ -250,6 +366,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = fn(Request(self, parse_qs(parts.query), body), m)
             except HttpError as e:
                 return self.send(e.status, {"error": e.message})
+            except core.Refused as e:
+                return self.send(409, e.info)
+            except RuntimeError as e:
+                return self.send(409, {"error": str(e)})
             except Exception:
                 traceback.print_exc()
                 return self.send(500, {"error": "server error"})
@@ -311,6 +431,7 @@ def start(cfg, dev=False):
     port = int(cfg["port"])
     binds = [b for b in cfg["bind"] if b not in ("0.0.0.0", "::", "")]
     APP.allow_hosts(binds, port)
+    APP.office.start_watching()
     for addr in binds:
         if addr == "127.0.0.1":
             serve(addr, port)

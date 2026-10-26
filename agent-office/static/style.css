@@ -362,3 +362,60 @@ button { font: inherit; color: inherit; }
   background: var(--ink); color: var(--parch); padding: 8px 14px; border-radius: 8px; font-size: 14px;
   box-shadow: 0 4px 16px rgba(0,0,0,.4); max-width: calc(100vw - 32px);
 }
+
+/* ---- stage 2: talking, queue, panels ---- */
+.top-btn { color: var(--gold); font-size: 20px; align-self: center; }
+.fab {
+  position: fixed; right: 16px; bottom: calc(16px + var(--safe-b)); z-index: 10;
+  background: linear-gradient(#8e2a3a, #6d1f2c); color: var(--parch); border: 2px solid var(--gold);
+  border-radius: 999px; padding: 11px 18px; font: 600 15px var(--serif); box-shadow: 0 6px 18px rgba(0,0,0,.45); cursor: pointer;
+}
+.fab:active { transform: translateY(1px); }
+body.sheet-open .fab { display: none; }
+.say textarea, .form textarea, .form select, .say select, .form input[type=text] {
+  width: 100%; font: 16px/1.4 var(--sans); color: var(--ink); background: #fffaf0;
+  border: 1px solid var(--parch-edge); border-radius: 8px; padding: 8px 10px;
+}
+.say textarea { resize: none; max-height: 30vh; }
+.say-row { display: flex; gap: 8px; margin-top: 6px; }
+.say-row select { flex: 1; min-width: 0; font-size: 14px; padding: 6px 8px; }
+.say-row .btn { padding: 8px 18px; font-size: 15px; }
+.chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip-btn {
+  flex: none; background: #fffaf0; border: 1px solid var(--parch-edge); border-radius: 999px; padding: 4px 10px;
+  font-size: 12.5px; color: var(--ink-soft); cursor: pointer;
+}
+.run { border-top: 1px dashed var(--parch-edge); margin-top: 6px; padding-top: 6px; }
+.run-head { display: flex; align-items: center; gap: 8px; font: 600 13px var(--serif); color: #2f855a; margin: 4px 0; }
+.run-head .btn { margin-left: auto; padding: 3px 10px; }
+.run-head.failed { color: #9b2c2c; }
+.quill { width: 12px; height: 12px; border-radius: 50%; background: #2f855a; animation: hop .8s ease-in-out infinite; }
+.run-error { color: #9b2c2c; font-size: 13px; white-space: pre-wrap; background: #fff1f0; border-radius: 6px; padding: 6px 8px; }
+.queue { margin-top: 10px; background: rgba(224, 176, 76, .14); border: 1px solid var(--parch-edge); border-radius: 8px; padding: 6px 10px; }
+.queue h4 { margin: 4px 0 6px; font: 600 14px var(--serif); }
+.q-item { border-top: 1px solid rgba(201, 171, 114, .5); padding: 6px 0; }
+.q-item:first-of-type { border-top: 0; }
+.q-item p { margin: 0 0 4px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.q-row { display: flex; gap: 6px; align-items: center; }
+.q-row small { flex: 1; color: var(--ink-soft); font-size: 11.5px; }
+.q-row .btn { padding: 3px 9px; font-size: 12.5px; }
+.desktop-note p { margin: 0 0 8px; font-size: 14px; }
+.desktop-note .btn { display: inline-block; text-decoration: none; }
+.foot-note { margin: 0; font-size: 13px; color: var(--ink-soft); }
+.form { display: grid; gap: 12px; }
+.form label { display: grid; gap: 4px; font: 600 13px var(--serif); color: var(--ink-soft); }
+.form .check { display: flex; gap: 8px; align-items: flex-start; font: 14px var(--sans); color: var(--ink); }
+.form .check input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.form .check small { display: block; color: var(--ink-soft); font-size: 12px; }
+.btn.wide { width: 100%; padding: 11px; font-size: 16px; }
+.panel-icon { font-size: 28px; }
+.panel-sec { border-bottom: 1px solid var(--parch-edge); padding: 4px 0 12px; }
+.panel-sec:last-child { border-bottom: 0; }
+.panel-sec h3 { font: 600 15.5px var(--serif); margin: 8px 0 4px; }
+.panel-sec p { margin: 4px 0 8px; font-size: 14px; }
+.panel-sec code { font: 12px var(--mono); background: rgba(107, 68, 35, .12); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.warn { background: #fff4e0; border: 1px solid #e8b960; border-radius: 6px; padding: 8px 10px; }
+body.sheet-open .toast { bottom: auto; top: calc(12px + var(--safe-t)); }
+.sheet-actions .note.n-working { color: #2f855a; }

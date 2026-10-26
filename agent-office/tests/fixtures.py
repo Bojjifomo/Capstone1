@@ -45,6 +45,7 @@ def backoff(attempt):
 def write(home, project, n, title, entries, mtime):
     folder = home / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", project)
     folder.mkdir(parents=True, exist_ok=True)
+    Path(project).mkdir(parents=True, exist_ok=True)
     path = folder / (sid(n) + ".jsonl")
     with open(path, "w") as f:
         if title:

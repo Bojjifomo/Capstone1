@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import fixtures  # noqa: E402
+import guard  # noqa: E402
+import push  # noqa: E402
 import sessions  # noqa: E402
 
 PORT = 7791
@@ -42,7 +44,9 @@ class ServerCase(unittest.TestCase):
 
     @classmethod
     def write_config(cls, app):
-        pass
+        (app / "config.json").write_text(json.dumps({
+            "bind": ["127.0.0.1"], "port": PORT, "claude_bin": str(app / "tests" / "fake_claude.py"),
+            "project_roots": [str(cls.home / "Projects")], "agents_dir": str(cls.home / "Agents")}))
 
     @classmethod
     def tearDownClass(cls):
@@ -184,6 +188,155 @@ class Stage1(ServerCase):
         s = self.state()[sid]
         self.assertEqual(s["status"], "needs")
         self.assertIn("permission", s["note"])
+
+
+class Crypto(unittest.TestCase):
+    def test_rfc8291_vector(self):
+        u = push.unb64u
+        body = push.encrypt(b"When I grow up, I want to be a watermelon",
+                            u("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"),
+                            u("BTBZMqHH6r4Tts7J_aSIgg"),
+                            as_private=int.from_bytes(u("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"), "big"),
+                            salt=u("DGv6ra1nlYgDCS1FRnbzlw"))
+        self.assertEqual(push.b64u(body),
+                         "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6Tlz"
+                         "AC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN")
+
+    def test_endpoint_allowlist(self):
+        self.assertTrue(push.endpoint_allowed("https://web.push.apple.com/abc"))
+        self.assertTrue(push.endpoint_allowed("https://wns2-par02p.notify.windows.com/w/?token=x"))
+        self.assertFalse(push.endpoint_allowed("http://web.push.apple.com/abc"))
+        self.assertFalse(push.endpoint_allowed("https://evil.example/web.push.apple.com"))
+        self.assertFalse(push.endpoint_allowed("https://127.0.0.1:7777/api/state"))
+
+
+class Seals(unittest.TestCase):
+    def setUp(self):
+        self.sent = []
+        self.codes = guard.Codes(lambda title, body: self.sent.append(title) or True)
+
+    def code(self):
+        return self.sent[-1].split(": ")[1]
+
+    def test_right_code_once(self):
+        cid = self.codes.request("bypass:new", "x")
+        self.assertTrue(self.codes.verify(cid, self.code(), "bypass:new"))
+        self.assertFalse(self.codes.verify(cid, self.code(), "bypass:new"))  # single use
+
+    def test_wrong_purpose_and_tries(self):
+        cid = self.codes.request("bypass:new", "x")
+        self.assertFalse(self.codes.verify(cid, self.code(), "clean:npm"))
+        cid = self.codes.request("bypass:new", "x")
+        good = self.code()
+        for _ in range(guard.MAX_TRIES):
+            self.assertFalse(self.codes.verify(cid, "000000" if good != "000000" else "111111", "bypass:new"))
+        self.assertFalse(self.codes.verify(cid, good, "bypass:new"))  # locked out
+
+    def test_expiry_and_memory_only(self):
+        cid = self.codes.request("bypass:new", "x")
+        self.codes.pending[cid]["expires"] = time.time() - 1
+        self.assertFalse(self.codes.verify(cid, self.code(), "bypass:new"))
+        self.assertNotIn(self.code(), json.dumps({k: str(v) for k, v in self.codes.__dict__.items()}))
+
+    def test_no_phone_no_code(self):
+        codes = guard.Codes(lambda t, b: False)
+        with self.assertRaises(RuntimeError):
+            codes.request("bypass:new", "x")
+
+
+class Stage2(ServerCase):
+    def wait_run(self, rid):
+        v = -1
+        for _ in range(60):
+            status, run = self.request("GET", "/api/run/%s?v=%d" % (rid, v))
+            self.assertEqual(status, 200)
+            v = run["v"]
+            if run["done"]:
+                return run
+        self.fail("run never finished")
+
+    def test_send_streams_reply_into_transcript(self):
+        sid = fixtures.sid(4)
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "status report please", "mode": "acceptEdits"})
+        self.assertEqual(status, 200, r)
+        run = self.wait_run(r["run"])
+        self.assertTrue(run["ok"])
+        self.assertIn("Heard you", "".join(e["t"] for e in run["events"] if e["k"] == "text"))
+        time.sleep(2.2)
+        status, d = self.request("GET", "/api/session/" + sid)
+        self.assertIn("status report please", d["messages"][-2]["text"])
+
+    def test_busy_session_queues(self):
+        sid = fixtures.sid(1)  # transcript written seconds ago: working
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "after that, run lint", "mode": "acceptEdits"})
+        self.assertEqual(status, 200)
+        qid = r["queued"]["id"]
+        self.assertEqual(self.request("GET", "/api/session/" + sid)[1]["queue_items"][0]["text"], "after that, run lint")
+        status, r = self.post("/api/session/%s/queue/%s/now" % (sid, qid))
+        self.assertEqual(status, 200)
+        self.wait_run(r["run"])
+        status, r = self.post("/api/session/%s/send" % sid, {"text": "slow one", "mode": "acceptEdits"})
+        rid = r.get("run")
+        status, r2 = self.post("/api/session/%s/send" % sid, {"text": "then this", "mode": "acceptEdits"})
+        self.assertIn("queued", r2)
+        self.assertEqual(self.post("/api/session/%s/queue/%s/remove" % (sid, r2["queued"]["id"]))[1], {"removed": True})
+        if rid:
+            self.wait_run(rid)
+
+    def test_bypass_needs_seal(self):
+        status, r = self.post("/api/session/%s/send" % fixtures.sid(5), {"text": "go", "mode": "bypassPermissions"})
+        self.assertEqual(status, 409)
+        self.assertEqual(r["needs_code"], "bypass:" + fixtures.sid(5))
+        status, r = self.post("/api/session/%s/send" % fixtures.sid(5),
+                              {"text": "go", "mode": "bypassPermissions", "code_id": "nope", "code": "123456"})
+        self.assertEqual(status, 409)
+        self.assertEqual(self.post("/api/code", {"purpose": "rm -rf /"})[0], 400)
+
+    def test_unknown_mode_and_paths_rejected(self):
+        status, r = self.post("/api/session/%s/send" % fixtures.sid(5), {"text": "go", "mode": "--dangerously-skip-permissions"})
+        self.assertEqual(status, 409)
+        status, r = self.post("/api/job", {"project": "/etc", "text": "hi", "mode": "acceptEdits"})
+        self.assertEqual(status, 409)
+        self.assertIn("unknown project", r["error"])
+
+    def test_desktop_session_refused(self):
+        sid = fixtures.sid(2)
+        fake_app = self.tmp / "Claude.app" / "Contents"
+        fake_app.mkdir(parents=True)
+        exe = fake_app / "claude"
+        exe.write_text("#!/bin/sh\nsleep 30\n")
+        exe.chmod(0o755)
+        proc = subprocess.Popen([str(exe), "--resume", sid])
+        try:
+            time.sleep(2.5)
+            s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[sid]
+            self.assertTrue(s["desktop"])
+            status, r = self.post("/api/session/%s/send" % sid, {"text": "hi", "mode": "acceptEdits"})
+            self.assertEqual(status, 409)
+            self.assertTrue(r["desktop"])
+        finally:
+            proc.terminate()
+            proc.wait()
+
+    def test_new_job(self):
+        projects = self.request("GET", "/api/projects")[1]["projects"]
+        self.assertTrue(all("path" not in p for p in projects))
+        pid = [p for p in projects if p["label"].endswith("webapp")][0]["id"]
+        status, r = self.post("/api/job", {"project": pid, "text": "add a health endpoint", "mode": "plan"})
+        self.assertEqual(status, 200, r)
+        run = self.wait_run(r["run"])
+        self.assertIn("mode=plan", run["events"][0]["t"])
+        time.sleep(2.2)
+        self.assertIn(r["sid"], {x["id"] for x in self.request("GET", "/api/state")[1]["sessions"]})
+
+    def test_push_subscription_validated(self):
+        bad = {"endpoint": "https://evil.example/x", "keys": {"p256dh": "x", "auth": "y"}}
+        self.assertEqual(self.post("/api/push/subscribe", {"subscription": bad})[0], 400)
+        key = push.b64u(push.public_of(push.new_private()))
+        good = {"endpoint": "https://web.push.apple.com/QAbc", "keys": {"p256dh": key, "auth": push.b64u(os.urandom(16))}}
+        self.assertEqual(self.post("/api/push/subscribe", {"subscription": good})[0], 200)
+        self.assertTrue(self.request("GET", "/api/push/key")[1]["subscribed"])
+        self.post("/api/push/unsubscribe")
 
 
 if __name__ == "__main__":
