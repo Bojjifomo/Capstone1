@@ -88,42 +88,8 @@ function statusLine(s) {
   return W.short[s.status] + (s.model ? " · " + s.model : "");
 }
 
-function spotKey(s) {
-  return JSON.stringify([s.name, s.status, statusLine(s), s.queue || 0, s.staff && s.staff.title]);
-}
 
-function spotInner(s) {
-  const who = s.staff ? `<span class="role">${esc(s.staff.title)}</span>` : "";
-  const queue = s.queue ? `<span class="queue-badge" title="Messages waiting">${s.queue}</span>` : "";
-  return `<span class="bubble" aria-hidden="true">!</span>` +
-    `<span class="zz" aria-hidden="true"><i>z</i><i>z</i></span>` +
-    `<span class="char">${Sprites.svg(s.staff ? s.staff.seed : s.id, s.staff && s.staff.kind)}</span>` +
-    `<span class="table" aria-hidden="true"><i class="candle"></i><i class="scroll"></i></span>` +
-    `<span class="plate"><b>${esc(s.staff ? s.staff.name : s.name)}</b>${who}<span class="st"><i class="dot"></i>${esc(statusLine(s))}</span></span>${queue}`;
-}
 
-function placeSpots(container, list) {
-  const keep = new Set();
-  list.forEach((s, idx) => {
-    keep.add(s.id);
-    let el = UI.spots.get(s.id);
-    if (!el) {
-      el = document.createElement("button");
-      el.type = "button";
-      el.dataset.sid = s.id;
-      UI.spots.set(s.id, el);
-    }
-    const key = spotKey(s);
-    if (el.dataset.key !== key) {
-      el.dataset.key = key;
-      el.className = "spot s-" + s.status + (s.desktop ? " desktop" : "");
-      el.innerHTML = spotInner(s);
-      el.setAttribute("aria-label", `${s.name}: ${W.status[s.status]}`);
-    }
-    if (el.parentNode !== container || container.children[idx] !== el) container.insertBefore(el, container.children[idx] || null);
-  });
-  return keep;
-}
 
 function renderShelf(id, list) {
   const shelf = $(id);
@@ -134,17 +100,34 @@ function renderShelf(id, list) {
     `<span><b>${esc(s.name)}</b><small>${esc(s.project)} · ${esc(ago(s.active))}</small></span></button>`).join("");
 }
 
-const Hooks = { wings: null, header: [], panels: {} };
+const Hooks = { header: [], panels: {} };
+
+// Errors on the phone are otherwise invisible: show them once and send them to server.log.
+const seenErrors = new Set();
+function reportError(err, where) {
+  const message = String((err && err.message) || err || "unknown error").slice(0, 300);
+  const key = where + message;
+  if (seenErrors.has(key)) return;
+  seenErrors.add(key);
+  console.error(where, err);
+  let bar = $("#client-error");
+  if (!bar) {
+    bar = document.createElement("button");
+    bar.type = "button";
+    bar.id = "client-error";
+    bar.className = "client-error";
+    bar.addEventListener("click", () => bar.remove());
+    document.body.appendChild(bar);
+  }
+  bar.textContent = `⚠ ${where}: ${message} (tap to hide)`;
+  api("/api/client-error", { where, message, stack: String((err && err.stack) || "").slice(0, 2000), ua: navigator.userAgent })
+    .catch(() => {});
+}
+window.addEventListener("error", (ev) => reportError(ev.error || ev.message, "page"));
+window.addEventListener("unhandledrejection", (ev) => reportError(ev.reason, "promise"));
 
 function renderHall() {
   const all = UI.state.sessions;
-  const onFloor = all.filter((s) => !s.staff && !s.helper && ["working", "needs", "idle"].includes(s.status));
-  const kept = placeSpots($("#floor"), onFloor);
-  const wingKept = Hooks.wings ? Hooks.wings(all) : new Set();
-  for (const [sid, el] of UI.spots) {
-    if (!kept.has(sid) && !wingKept.has(sid)) { el.remove(); UI.spots.delete(sid); }
-  }
-  $("#empty").hidden = onFloor.length > 0;
 
   const needs = all.filter((s) => s.status === "needs");
   $("#notice-board").hidden = !needs.length;
@@ -161,7 +144,8 @@ function renderHall() {
     `<span class="t-idle">☾ ${count("idle")} resting</span>` +
     (UI.state.cost_today !== undefined ? `<span class="t-gold">⛁ ${money(UI.state.cost_today)} today</span>` : "");
   $("#greeting").textContent = `Welcome back, ${UI.state.name || "guildmaster"}.`;
-  Hooks.header.forEach((fn) => fn(UI.state));
+  // each hook on its own, so one failing part can't take the others down
+  Hooks.header.forEach((fn) => { try { fn(UI.state); } catch (e) { reportError(e, "header"); } });
 }
 
 // ---- the sheet: shared frame ------------------------------------------
@@ -482,7 +466,7 @@ async function poll() {
     if (UI.version && state.version !== UI.version) { location.reload(); return; }
     UI.version = state.version;
     UI.state = state;
-    renderHall();
+    try { renderHall(); } catch (e) { reportError(e, "hall"); }
     if (UI.mode === "session") loadDetail(false);
     else if (UI.mode && Hooks.panels[UI.mode] && Hooks.panels[UI.mode].refresh) Hooks.panels[UI.mode].refresh($("#sheet-body"));
   } catch (e) {
