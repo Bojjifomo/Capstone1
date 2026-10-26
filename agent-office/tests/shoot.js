@@ -102,6 +102,24 @@ const SCENES = {
     await page.screenshot({ path: out("scrying") });
     await closeSheet(page);
   },
+  async petitions(page) {
+    const plan = "## Problem\nYou find out late when a starred wallet opens a position.\n\n## Change\n1. `worker.py`: after each sync, diff LP events for Watchlist wallets.\n2. `alerts.py` (new): push via the Guild Hall ravens.\n3. Settings toggle **Watchlist alerts**.\n\n## Testing\nUnit tests with recorded events; no extra RPC calls.\n\n## Risk\nNone for RPC quota: reuses events already fetched.";
+    await page.evaluate(async (plan) => {
+      const post = (body) => fetch("/api/petitions", { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) });
+      await post({ by: "Orin", title: "Ping me when a Watchlist wallet opens a position", app: "RH Wallet Finder", summary: "Push alert within 5 minutes of a starred wallet opening, adding to or closing an LP position.", impact: "high", effort: "M", plan });
+      await post({ by: "Orin", title: "Shareable wallet links on the LP website", app: "LP website", summary: "Open a wallet straight from a link like …/#0x5784.", impact: "medium", effort: "S", plan: "Small change in web/app.js." });
+    }, plan);
+    await page.reload();
+    await page.waitForSelector(".spot");
+    await wait(page, 500);
+    await page.screenshot({ path: out("toolbar") });
+    await page.click("#petitions-btn");
+    await wait(page, 900);
+    await page.evaluate(() => document.querySelector(".petition details").open = true);
+    await wait(page, 300);
+    await page.screenshot({ path: out("panel") });
+    await closeSheet(page);
+  },
 };
 
 (async () => {

@@ -530,7 +530,7 @@ document.addEventListener("submit", (ev) => {
   const btn = form.querySelector("[type=submit]");
   if (form.id === "say") guarded(btn, () => sendWord(form));
   else if (form.id === "job-form") guarded(btn, () => postQuest(form));
-  else if (Hooks.forms && Hooks.forms[form.id]) guarded(btn, () => Hooks.forms[form.id](form));
+  else if (Hooks.forms && Hooks.forms[form.id || form.dataset.form]) guarded(btn, () => Hooks.forms[form.id || form.dataset.form](form, ev.submitter));
 });
 
 document.addEventListener("keydown", (ev) => {
@@ -548,6 +548,8 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) poll
 function openFromHash() {
   const m = location.hash.match(/^#s=([0-9a-f-]{36})$/);
   if (m) { history.replaceState(null, "", "/"); openSheet(m[1]); }
+  const p = location.hash.match(/^#p=([0-9a-f]{8})$/);
+  if (p) { history.replaceState(null, "", "/"); openPanel("petitions", true, p[1]); }
 }
 window.addEventListener("hashchange", openFromHash);
 

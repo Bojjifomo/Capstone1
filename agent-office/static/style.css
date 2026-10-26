@@ -500,3 +500,23 @@ button.chip { cursor: pointer; font-family: var(--sans); }
 .ledger-text { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ledger-row time { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
 .ledger-row .btn { grid-column: 2 / 4; justify-self: start; padding: 2px 9px; font-size: 12px; }
+
+/* ---- petitions ---- */
+.toolbar .badge {
+  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px;
+  background: var(--needs); color: #fff; font: 700 11px/18px var(--sans); text-align: center;
+}
+.petition { border: 1px solid var(--parch-edge); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: #fffaf0; }
+.petition header { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+.petition header b { font: 700 15px/1.3 var(--serif); }
+.petition > p { margin: 4px 0; font-size: 14px; }
+.petition.st-pending { border-color: #c53030; box-shadow: 0 0 0 1px rgba(197, 48, 48, .25); }
+.petition.st-pending .tag { background: #fde2e1; color: #9b1c1c; }
+.petition.st-building .tag, .petition.st-approved .tag { background: #def7e5; color: #276749; }
+.petition.st-rejected { opacity: .7; }
+.petition details { margin: 6px 0; }
+.petition summary { cursor: pointer; font: 600 13px var(--serif); color: var(--ink-soft); }
+.petition .md { margin-top: 6px; max-height: 50vh; overflow: auto; }
+.petition-form { margin-top: 8px; gap: 8px; }
+.petition-form .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.petition-note { font-size: 13px; color: var(--ink-soft); }
