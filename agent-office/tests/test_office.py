@@ -711,6 +711,7 @@ class ExternalAccess(ServerCase):
         self.assertEqual(self.call("GET", "/api/quests")[0], 200)
         self.assertEqual(self.call("GET", "/api/progress")[0], 200)
         self.assertEqual(self.call("GET", "/api/gold")[0], 200)
+        self.assertEqual(self.call("GET", "/api/weather")[0], 200)
         self.assertEqual(self.call("GET", "/api/raids")[0], 200)
         self.assertEqual(self.call("POST", "/api/gold/release/abcdef01", {})[0], 403)
         self.assertEqual(self.call("POST", "/api/orchestrator/brief", {})[0], 403)

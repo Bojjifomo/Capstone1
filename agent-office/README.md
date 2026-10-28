@@ -139,6 +139,14 @@ Pending petitions older than `petition_expire_days` (default 14, `0` turns it of
 
 After a build quest finishes, a GitHub pull-request URL in its report is stored on the petition. Every `pr_poll_seconds` (default 300, `0` turns it off) the hall asks `gh pr view` when `gh` is on the PATH, otherwise the public GitHub API. `merged` and `closed` update the petition; if GitHub cannot be reached the status stays `building`. A quest that fails before any PR link is `failed`.
 
+## The living town
+
+The clock is Asia/Jakarta, wherever the phone's own zone is set. Adventurers walk the paths to their building when a quest or errand starts, and walk back carrying a little chest when it ends. Resting ones stroll the road. Empty buildings are dimmed; a building with someone at work has lit windows and chimney smoke.
+
+Chatter and External lines (not the raw `GET /api/…` audit) appear as speech bubbles. Guild Hall, the external assistant, stands as the Guildmaster beside the Guild Hall and speaks its own posts.
+
+The sky follows Bitcoin's 24 hour change from CoinGecko, cached for 10 minutes in `weather.json`. Green or flat is sun, a mild drop is cloud, a hard drop is rain. If the fetch fails the last sky stays, or a clear day if there never was one. `GET /api/weather` is on the token allowlist. On a narrow screen the town draws at 1x and skips the blur pass so it stays smooth.
+
 ## Gold and raids
 
 `daily_budget_usd` (default `0`) is the day's Claude budget. `daily_gold` (default `100`) is the purse it maps onto. Gold left is `purse × (1 − spent today / budget)`. At `0` the purse stays full and nothing is paused, which is how the hall behaves until you set a budget. When gold hits zero, new quests, errands, petition builds, and Quill's brief wait in `gold.json`. Replies to someone already on a quest still go through. On the phone, tick **Open the strongbox anyway** or press **Let it through** in the Treasury. A token caller cannot do either; `POST /api/job` while the treasury is empty is refused. `GET /api/gold` and `GET /api/raids` are on the allowlist.
