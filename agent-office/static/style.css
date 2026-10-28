@@ -518,6 +518,30 @@ button.chip { cursor: pointer; font-family: var(--sans); }
 .petition.st-rejected, .petition.st-expired, .petition.st-closed { opacity: .75; }
 .petition .pr-link { font-size: 13px; }
 .petition .pr-link a { color: #2f5d8e; }
+.rarity-Rare { color: #2b6cb0; }
+.rarity-Epic { color: #6b46c1; }
+.rarity-Legendary { color: #b7791f; }
+.xp-card { margin-top: 8px; }
+.xp-card h3 { margin: 0 0 6px; font: 700 15px var(--serif); }
+.pips { display: flex; gap: 3px; margin: 4px 0; }
+.pips i { width: 14px; height: 8px; background: #e6d3b0; border-radius: 1px; }
+.pips i.on { background: #b7791f; }
+.xp-stats { display: flex; gap: 14px; margin: 8px 0; }
+.xp-stats div { display: flex; flex-direction: column; }
+.xp-stats b { font: 700 16px var(--serif); }
+.xp-stats small { color: var(--ink-soft); font-size: 11px; }
+.medals { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.medal { font-size: 11px; padding: 2px 7px; border: 1px solid #b7791f; border-radius: 999px; color: #7a4e12; background: #fff6df; }
+.xp-history { margin: 6px 0 0; padding-left: 16px; font-size: 13px; }
+.quest-board { margin: 0 0 8px; padding: 8px; background: #2a2118; border: 2px solid #8a6a3a; border-radius: 8px; color: #f3e4c3; }
+.quest-board h3 { margin: 0 0 6px; font: 700 14px var(--serif); color: #e0b04c; }
+.quest-board .sub { color: #cbb892; }
+.quest-board .quest { display: block; width: 100%; text-align: left; background: #3a2e22; color: #f3e4c3; border: 0; border-left: 3px solid #a89880; margin: 4px 0; padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+.quest-board .quest b { display: block; font: 600 13px var(--serif); }
+.quest-board .quest small { color: #cbb892; }
+.quest-board .rarity-Rare { border-left-color: #7eb6ff; }
+.quest-board .rarity-Epic { border-left-color: #c084fc; }
+.quest-board .rarity-Legendary { border-left-color: #f6e27a; }
 .brief-out {
   white-space: pre-wrap; max-height: 40vh; overflow: auto; margin: 8px 0;
   font: 12px/1.45 ui-monospace, monospace; background: #1b1430; color: #f3e4c3;

@@ -211,6 +211,8 @@ def api_state(req, m):
         "cost_today": panels.cost_today(APP.office),
         "disk": APP.office.vault.free(),
         "petitions": APP.office.petitions.pending_count(),
+        "board": APP.office.progress.board(APP.office.petitions),
+        "unlocks": APP.office.progress.unlocks(),
     }
 
 
@@ -486,6 +488,26 @@ def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
 
 
+@route("GET", "/api/quests")
+def api_quests(req, m):
+    return {"board": APP.office.progress.board(APP.office.petitions)}
+
+
+@route("GET", "/api/progress")
+def api_progress(req, m):
+    key = ((req.query.get("key") or [""])[0] or "")[:80]
+    if key:
+        return {"key": key, "progress": APP.office.progress.public(key)}
+    rows = []
+    for actor_key, actor in list(APP.office.progress.actors.items()):
+        view = APP.office.progress.public(actor_key)
+        view["key"] = actor_key
+        view["name"] = actor.get("name") or ""
+        rows.append(view)
+    rows.sort(key=lambda row: -row["xp"])
+    return {"adventurers": rows[:40]}
+
+
 @route("GET", "/api/orchestrator")
 def api_orchestrator(req, m):
     """Quill's latest read-only brief. Starting one is local-only."""
@@ -566,7 +588,7 @@ PETITION = r"(?P<petition>[0-9a-f]{8})"
 
 @route("GET", "/api/petitions")
 def api_petitions(req, m):
-    return {"petitions": APP.office.petitions.listing()}
+    return {"petitions": [APP.office.progress.decorate(p) for p in APP.office.petitions.listing()]}
 
 
 @route("POST", "/api/petitions")
@@ -614,6 +636,10 @@ def api_petition_decide(req, m):
         raise HttpError(400, str(e))
     APP.office.ledger.add("approve" if decision == "approve" else "reject", item["title"])
     APP.office.emit("petition.decided", dict(petitions.public(item), decision=decision))
+    try:
+        APP.office.progress.on_decision(item, decision)
+    except Exception:
+        traceback.print_exc()
     if decision == "approve" and b.get("build"):
         return dict(build_petition(item, b), petition=item["id"])
     return {"petition": item["id"], "status": item["status"]}
@@ -665,6 +691,8 @@ TOKEN_ROUTES = (
     ("GET", re.compile(r"^/api/usage$")),
     ("GET", re.compile(r"^/api/bots$")),
     ("GET", re.compile(r"^/api/orchestrator$")),
+    ("GET", re.compile(r"^/api/quests$")),
+    ("GET", re.compile(r"^/api/progress$")),
     ("POST", re.compile(r"^/api/petitions$")),
     ("POST", re.compile(r"^/api/petitions/[0-9a-f]{8}/decide$")),
     ("POST", re.compile(r"^/api/team/ask$")),
