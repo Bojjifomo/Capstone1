@@ -958,12 +958,22 @@ const Town = (() => {
 
   const DOING = { work: "Working", needs: "Awaits you", read: "On break", sleep: "Asleep" };
 
+  function questBoard() {
+    const rows = (T.state && T.state.board) || [];
+    const body = rows.length ? rows.map((q) =>
+      `<button type="button" class="quest rarity-${esc(q.rarity || "Common")}" data-open="petitions" data-arg="${esc(q.id)}">` +
+      `<b>${esc(q.title)}</b><small>${esc(q.rarity)} · ${q.xp} XP · ${esc(q.by || "")}</small></button>`).join("")
+      : `<p class="sub">No open petitions. The board is clear.</p>`;
+    return `<div class="quest-board"><h3>Quest board</h3>${body}</div>`;
+  }
+
   function roster(home) {
     const people = home.people;
     const working = people.filter((p) => p.act === "work").length;
     const specialists = people.filter((p) => p.specialist).length;
     el.roster.hidden = false;
-    el.roster.innerHTML = `<header><b>${esc(home.name)}</b><small>${people.length} ${people.length === 1 ? "person" : "people"} · ${working} working` +
+    const board = home.hall ? questBoard() : "";
+    el.roster.innerHTML = board + `<header><b>${esc(home.name)}</b><small>${people.length} ${people.length === 1 ? "person" : "people"} · ${working} working` +
       (specialists ? ` · ${specialists} specialist${specialists === 1 ? "" : "s"}` : "") + `</small></header>` +
       (people.length ? people.map((p) =>
         `<button type="button" class="roster-row a-${esc(p.act)}" ${p.staff ? `data-staff="${esc(p.staff)}"` : `data-sid="${esc(p.sid)}"`}>` +

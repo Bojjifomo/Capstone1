@@ -12,6 +12,7 @@ import guard
 import panels
 import personas
 import petitions
+import progress
 import push
 import runner
 import sessions
@@ -69,6 +70,7 @@ class Office:
         self.team = team.Team(self)
         self.ledger = panels.Ledger()
         self.petitions = petitions.Petitions(cfg)
+        self.progress = progress.Progress(self)
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
         self.old = {}           # transcripts older than the scan window, loaded on demand
@@ -148,6 +150,8 @@ class Office:
         staff = info.get("staff")
         info["persona"] = personas.persona(staff["seed"] if staff else t.id, t.title + " " + info["project"],
                                            name=staff["name"] if staff else None, topic=info["project"] + " project")
+        info["progress"] = self.progress.public(staff["id"] if staff else t.id)
+        info["persona"]["title"] = progress.titled(info["persona"]["title"], info["progress"]["rank"])
         return info
 
     def all_sessions(self):
@@ -342,6 +346,11 @@ class Office:
         elif phase == "finished":
             text = " ".join((state.get("text") or state.get("error") or "done").split())
             self.ledger.add("guild", text[:240] or "the brief is in", by=name)
+            try:
+                self.progress.on_brief(state)
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
     def _pr_interval(self):
         try:
@@ -368,6 +377,11 @@ class Office:
             if item.get("status") in ("failed", "merged", "closed"):
                 self.ledger.add("guild", "Petition %s is %s" % (item.get("title") or item["id"], item["status"]))
                 self.emit("petition.closed", petitions.public(item))
+        try:
+            self.progress.on_quest(run, item)
+        except Exception:
+            import traceback
+            traceback.print_exc()
         self.emit("quest.finished", data)
 
     def _expire_petitions(self):
@@ -415,6 +429,12 @@ class Office:
         for item in changed:
             self.ledger.add("guild", "Petition %s is %s" % (item.get("title") or item["id"], item["status"]))
             self.emit("petition.closed", petitions.public(item))
+            if item.get("status") == "merged":
+                try:
+                    self.progress.on_merged(item)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
 
     def _check_prs(self):
         interval = self._pr_interval()

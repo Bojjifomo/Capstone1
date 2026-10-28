@@ -708,6 +708,8 @@ class ExternalAccess(ServerCase):
         self.assertEqual(self.call("GET", "/api/petitions")[0], 200)
         self.assertEqual(self.call("GET", "/api/ledger")[0], 200)
         self.assertEqual(self.call("GET", "/api/orchestrator")[0], 200)
+        self.assertEqual(self.call("GET", "/api/quests")[0], 200)
+        self.assertEqual(self.call("GET", "/api/progress")[0], 200)
         self.assertEqual(self.call("POST", "/api/orchestrator/brief", {})[0], 403)
         brief = self.call("POST", "/api/team/ask", {"name": "Quill", "brief": "today"})
         self.assertEqual(brief[0], 403)
