@@ -8,15 +8,19 @@ import uuid
 from pathlib import Path
 
 import briefing
+import economy
 import guard
 import panels
 import personas
 import petitions
+import progress
 import push
+import raids
 import runner
 import sessions
 import store
 import team
+import weather
 import webhooks
 
 ACTIVE_WINDOW = 60          # transcript written this recently = working
@@ -69,6 +73,10 @@ class Office:
         self.team = team.Team(self)
         self.ledger = panels.Ledger()
         self.petitions = petitions.Petitions(cfg)
+        self.progress = progress.Progress(self)
+        self.economy = economy.Economy(self)
+        self.raids = raids.Raids(self)
+        self.weather = weather.Weather()
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
         self.old = {}           # transcripts older than the scan window, loaded on demand
@@ -148,6 +156,8 @@ class Office:
         staff = info.get("staff")
         info["persona"] = personas.persona(staff["seed"] if staff else t.id, t.title + " " + info["project"],
                                            name=staff["name"] if staff else None, topic=info["project"] + " project")
+        info["progress"] = self.progress.public(staff["id"] if staff else t.id)
+        info["persona"]["title"] = progress.titled(info["persona"]["title"], info["progress"]["rank"])
         return info
 
     def all_sessions(self):
@@ -297,16 +307,41 @@ class Office:
                 return p["path"]
         raise Refused("unknown project folder")
 
-    def new_job(self, pid, text, mode, model="", code_id="", code="", system="", helper=False, origin="phone"):
+    def new_job(self, pid, text, mode, model="", code_id="", code="", system="", helper=False, origin="phone",
+                external=False, override=False, from_queue=False):
         text = str(text).strip()
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write the first message (up to %d characters)" % runner.MAX_TEXT)
         path = pid if helper else self.project_path(pid)
-        self.check_mode(mode, "bypass:new", code_id, code)
+        if not from_queue:
+            self.check_mode(mode, "bypass:new", code_id, code)
+            held = self.economy.consider(external, override, "job", text[:80], {
+                "project": pid, "text": text, "mode": mode, "model": model, "system": system,
+                "helper": bool(helper), "origin": origin,
+            })
+            if held:
+                if held.get("blocked"):
+                    raise Refused("the treasury is empty", paused=True)
+                return held
         sid = str(uuid.uuid4())
         run = self.runner.start(sid, path, text, mode, new=True, model=model, system=system,
                                 origin=origin, helper=helper)
+        if system:
+            self.raids.begin(sid, text)
         return {"run": run.id, "sid": sid}
+
+    def start_queued(self, item):
+        payload = item.get("payload") or {}
+        kind = item.get("kind")
+        if kind == "brief":
+            return self.briefing.start()
+        if kind == "errand":
+            return self.team.ask(payload.get("name") or "", payload.get("brief") or "",
+                                 origin=payload.get("origin") or "queue", from_queue=True)
+        return self.new_job(payload.get("project") or "", payload.get("text") or "", payload.get("mode") or "acceptEdits",
+                            model=payload.get("model") or "", system=payload.get("system") or "",
+                            helper=bool(payload.get("helper")), origin=payload.get("origin") or "queue",
+                            from_queue=True)
 
     def pump(self):
         """Start queued messages for sessions that have gone quiet."""
@@ -342,6 +377,11 @@ class Office:
         elif phase == "finished":
             text = " ".join((state.get("text") or state.get("error") or "done").split())
             self.ledger.add("guild", text[:240] or "the brief is in", by=name)
+            try:
+                self.progress.on_brief(state)
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
     def _pr_interval(self):
         try:
@@ -368,6 +408,16 @@ class Office:
             if item.get("status") in ("failed", "merged", "closed"):
                 self.ledger.add("guild", "Petition %s is %s" % (item.get("title") or item["id"], item["status"]))
                 self.emit("petition.closed", petitions.public(item))
+        try:
+            self.progress.on_quest(run, item)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        try:
+            self.raids.on_run(run)
+        except Exception:
+            import traceback
+            traceback.print_exc()
         self.emit("quest.finished", data)
 
     def _expire_petitions(self):
@@ -415,6 +465,25 @@ class Office:
         for item in changed:
             self.ledger.add("guild", "Petition %s is %s" % (item.get("title") or item["id"], item["status"]))
             self.emit("petition.closed", petitions.public(item))
+            if item.get("status") == "merged":
+                try:
+                    self.progress.on_merged(item)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+
+    def _check_weather(self):
+        if time.time() < getattr(self, "_weather_next", 0):
+            return
+        self._weather_next = time.time() + 60
+
+        def run():
+            try:
+                self.weather.refresh()
+            except Exception:
+                pass
+
+        threading.Thread(target=run, daemon=True, name="weather").start()
 
     def _check_prs(self):
         interval = self._pr_interval()
@@ -451,6 +520,12 @@ class Office:
                 self._expire_petitions()
                 self._check_familiars()
                 self._check_prs()
+                try:
+                    self.economy.pump()
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                self._check_weather()
             except Exception:
                 import traceback
                 traceback.print_exc()

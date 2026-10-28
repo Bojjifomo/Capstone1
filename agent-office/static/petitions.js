@@ -29,8 +29,8 @@ function petitionForm(p, projects, o) {
 }
 
 function petitionCard(p, open, projects, o) {
-  const tags = [p.app, p.impact && "impact " + p.impact, p.effort && "effort " + p.effort].filter(Boolean);
-  return `<article class="petition st-${esc(p.status)}"><header><b>${esc(p.title)}</b><span class="tag">${esc(PETITION_STATUS[p.status] || p.status)}</span></header>` +
+  const tags = [p.rarity, p.xp ? p.xp + " XP" : "", p.app, p.impact && "impact " + p.impact, p.effort && "effort " + p.effort].filter(Boolean);
+  return `<article class="petition st-${esc(p.status)} rarity-${esc(p.rarity || "Common")}"><header><b>${esc(p.title)}</b><span class="tag">${esc(PETITION_STATUS[p.status] || p.status)}</span></header>` +
     `<p class="sub">from ${esc(p.by)} · ${esc(ago(p.created))}${tags.length ? " · " + tags.map(esc).join(" · ") : ""}</p>` +
     (p.summary ? `<p>${esc(p.summary)}</p>` : "") +
     `<details${open ? " open" : ""}><summary>The plan</summary><div class="md">${MD.render(p.plan)}</div></details>` +
@@ -75,6 +75,11 @@ Hooks.forms.petition = async (form, submitter) => {
     const path = act === "build" ? `/api/petitions/${pid}/decide` : `/api/petitions/${pid}/build`;
     r = await withSeal("bypass:new", isRisky(build.mode), (seal) =>
       api(path, Object.assign({ decision: "approve", build: true, note }, build, seal)));
+    if (r.queued_for_gold) {
+      toast(r.reason || "Queued until the treasury refills.");
+      Hooks.panels.petitions.render($("#sheet-body"));
+      return;
+    }
     UI.run = { id: r.run, sid: r.sid, events: [], text: "Building the approved petition", done: false, v: -1 };
     history.replaceState({ sheet: r.sid }, "");
     openSheet(r.sid, false);

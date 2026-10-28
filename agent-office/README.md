@@ -139,6 +139,28 @@ Pending petitions older than `petition_expire_days` (default 14, `0` turns it of
 
 After a build quest finishes, a GitHub pull-request URL in its report is stored on the petition. Every `pr_poll_seconds` (default 300, `0` turns it off) the hall asks `gh pr view` when `gh` is on the PATH, otherwise the public GitHub API. `merged` and `closed` update the petition; if GitHub cannot be reached the status stays `building`. A quest that fails before any PR link is `failed`.
 
+## The living town
+
+The clock is Asia/Jakarta, wherever the phone's own zone is set. Adventurers walk the paths to their building when a quest or errand starts, and walk back carrying a little chest when it ends. Resting ones stroll the road. Empty buildings are dimmed; a building with someone at work has lit windows and chimney smoke.
+
+Chatter and External lines (not the raw `GET /api/…` audit) appear as speech bubbles. Guild Hall, the external assistant, stands as the Guildmaster beside the Guild Hall and speaks its own posts.
+
+The sky follows Bitcoin's 24 hour change from CoinGecko, cached for 10 minutes in `weather.json`. Green or flat is sun, a mild drop is cloud, a hard drop is rain. If the fetch fails the last sky stays, or a clear day if there never was one. `GET /api/weather` is on the token allowlist. On a narrow screen the town draws at 1x and skips the blur pass so it stays smooth.
+
+## Gold and raids
+
+`daily_budget_usd` (default `0`) is the day's Claude budget. `daily_gold` (default `100`) is the purse it maps onto. Gold left is `purse × (1 − spent today / budget)`. At `0` the purse stays full and nothing is paused, which is how the hall behaves until you set a budget. When gold hits zero, new quests, errands, petition builds, and Quill's brief wait in `gold.json`. Replies to someone already on a quest still go through. On the phone, tick **Open the strongbox anyway** or press **Let it through** in the Treasury. A token caller cannot do either; `POST /api/job` while the treasury is empty is refused. `GET /api/gold` and `GET /api/raids` are on the allowlist.
+
+A party-leader quest is a raid. The task is a boss with 100 HP. Each finished errand knocks off 34, but not the last point. When the leader's run ends in success the boss falls, the guild log records the victory, and the leader and the party each take 80 XP. The fight is kept in `raids.json`.
+
+## Ranks
+
+Every adventurer keeps XP in `progress.json`. A finished quest grants 10 / 25 / 60 / 120 for Common / Rare / Epic / Legendary. Rarity comes from the petition: high impact and L effort is Legendary, high+M or medium+L is Epic, high or medium or M is Rare, anything else is Common. Approving a petition grants half (at least 5) to the person who filed it. A merged pull request grants the full amount again to whoever built it.
+
+Ranks drive the title in the town: Apprentice at 0 XP, Journeyman at 40, Adept at 120, Master at 300. Level is `1 + XP // 25`. The character sheet (open anyone) shows the XP bar, success rate, thrift, speed, badges, and recent quests. The Guild Hall's quest board lists open petitions with their rarity. Badges (First Quest, 10 Quests, First PR Merged, Zero-Cost Day, Petition Sealed, Legendary Quest) toast once and land in the guild log. Zero-Cost Day is a completed quest whose reported cost is $0.
+
+`GET /api/quests` and `GET /api/progress` are on the token allowlist.
+
 ## The Counting House
 
 Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
