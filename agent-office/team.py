@@ -8,6 +8,7 @@ from pathlib import Path
 
 import briefing
 import personas
+import progress
 import sessions
 import store
 
@@ -228,6 +229,8 @@ class Team:
                          persona=personas.persona(s["seed"], s["role"] + " " + s["instructions"][:200],
                                                   name=s["name"], title=s["title"], topic=s["role"].lower()))
             entry["persona"]["bio"] = s["bio"] + " " + entry["persona"]["bio"]
+            entry["progress"] = self.office.progress.public(s["id"])
+            entry["persona"]["title"] = progress.titled(entry["persona"]["title"], entry["progress"]["rank"])
             out.append(entry)
         out.append(self._resident_entry())
         divisions = list(self.divisions)
@@ -249,6 +252,8 @@ class Team:
                      persona=personas.persona(member["seed"], member["role"], name=member["name"],
                                               title=member["title"], topic="LP briefs"))
         entry["persona"]["bio"] = member["bio"] + " " + entry["persona"]["bio"]
+        entry["progress"] = self.office.progress.public(member["id"])
+        entry["persona"]["title"] = progress.titled(entry["persona"]["title"], entry["progress"]["rank"])
         return entry
 
     def pay_of(self, member):

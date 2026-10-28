@@ -139,6 +139,14 @@ Pending petitions older than `petition_expire_days` (default 14, `0` turns it of
 
 After a build quest finishes, a GitHub pull-request URL in its report is stored on the petition. Every `pr_poll_seconds` (default 300, `0` turns it off) the hall asks `gh pr view` when `gh` is on the PATH, otherwise the public GitHub API. `merged` and `closed` update the petition; if GitHub cannot be reached the status stays `building`. A quest that fails before any PR link is `failed`.
 
+## Ranks
+
+Every adventurer keeps XP in `progress.json`. A finished quest grants 10 / 25 / 60 / 120 for Common / Rare / Epic / Legendary. Rarity comes from the petition: high impact and L effort is Legendary, high+M or medium+L is Epic, high or medium or M is Rare, anything else is Common. Approving a petition grants half (at least 5) to the person who filed it. A merged pull request grants the full amount again to whoever built it.
+
+Ranks drive the title in the town: Apprentice at 0 XP, Journeyman at 40, Adept at 120, Master at 300. Level is `1 + XP // 25`. The character sheet (open anyone) shows the XP bar, success rate, thrift, speed, badges, and recent quests. The Guild Hall's quest board lists open petitions with their rarity. Badges (First Quest, 10 Quests, First PR Merged, Zero-Cost Day, Petition Sealed, Legendary Quest) toast once and land in the guild log. Zero-Cost Day is a completed quest whose reported cost is $0.
+
+`GET /api/quests` and `GET /api/progress` are on the token allowlist.
+
 ## The Counting House
 
 Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
