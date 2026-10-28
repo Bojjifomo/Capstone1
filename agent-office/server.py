@@ -217,6 +217,7 @@ def api_state(req, m):
         "unlocks": APP.office.progress.unlocks(),
         "gold": APP.office.economy.snapshot(),
         "raid": APP.office.raids.public(),
+        "weather": APP.office.weather.public(),
     }
 
 
@@ -498,6 +499,11 @@ def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
 
 
+@route("GET", "/api/weather")
+def api_weather(req, m):
+    return APP.office.weather.public()
+
+
 @route("GET", "/api/gold")
 def api_gold(req, m):
     return APP.office.economy.snapshot()
@@ -732,6 +738,7 @@ TOKEN_ROUTES = (
     ("GET", re.compile(r"^/api/quests$")),
     ("GET", re.compile(r"^/api/progress$")),
     ("GET", re.compile(r"^/api/gold$")),
+    ("GET", re.compile(r"^/api/weather$")),
     ("GET", re.compile(r"^/api/raids$")),
     ("POST", re.compile(r"^/api/petitions$")),
     ("POST", re.compile(r"^/api/petitions/[0-9a-f]{8}/decide$")),

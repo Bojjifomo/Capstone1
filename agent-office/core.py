@@ -20,6 +20,7 @@ import runner
 import sessions
 import store
 import team
+import weather
 import webhooks
 
 ACTIVE_WINDOW = 60          # transcript written this recently = working
@@ -75,6 +76,7 @@ class Office:
         self.progress = progress.Progress(self)
         self.economy = economy.Economy(self)
         self.raids = raids.Raids(self)
+        self.weather = weather.Weather()
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
         self.old = {}           # transcripts older than the scan window, loaded on demand
@@ -470,6 +472,19 @@ class Office:
                     import traceback
                     traceback.print_exc()
 
+    def _check_weather(self):
+        if time.time() < getattr(self, "_weather_next", 0):
+            return
+        self._weather_next = time.time() + 60
+
+        def run():
+            try:
+                self.weather.refresh()
+            except Exception:
+                pass
+
+        threading.Thread(target=run, daemon=True, name="weather").start()
+
     def _check_prs(self):
         interval = self._pr_interval()
         if interval <= 0 or self._pr_busy or time.time() < self._pr_next:
@@ -510,6 +525,7 @@ class Office:
                 except Exception:
                     import traceback
                     traceback.print_exc()
+                self._check_weather()
             except Exception:
                 import traceback
                 traceback.print_exc()
