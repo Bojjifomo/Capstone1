@@ -81,6 +81,18 @@ button { font: inherit; color: inherit; }
 .t-needs { color: var(--needs); }
 .t-idle { color: var(--idle); }
 .t-gold { color: var(--gold); }
+.t-gold.broke { color: #f6a5a5; }
+.t-cost { color: var(--muted); }
+.gold-banner { margin: 8px 16px 0; padding: 8px 10px; background: #3b1d1d; color: #f6d0d0; border: 1px solid #9b1c1c; border-radius: 8px; font-size: 13px; }
+.raid { margin: 8px 16px 0; padding: 8px 10px; background: #2a1218; border: 2px solid #8a3040; border-radius: 8px; color: #f3e4c3; }
+.raid .boss { display: flex; justify-content: space-between; gap: 8px; font: 700 14px var(--serif); }
+.raid .hp { display: block; height: 10px; margin: 6px 0; background: #3a2420; border-radius: 4px; overflow: hidden; }
+.raid .hp i { display: block; height: 100%; background: #c53030; width: 0; }
+.raid .party { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.attacker { animation: hop .5s ease-in-out infinite; }
+.attacker::before { content: "⚔ "; }
+.raid .loot { margin: 6px 0 0; color: #f6e27a; }
+.raid.victory { border-color: #b7791f; }
 
 #views { max-width: 1100px; margin: 0 auto; padding: 0 12px; }
 .view h2, .panel h2 { font: 600 17px var(--serif); color: var(--gold); margin: 14px 4px 8px; }

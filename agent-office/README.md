@@ -139,6 +139,12 @@ Pending petitions older than `petition_expire_days` (default 14, `0` turns it of
 
 After a build quest finishes, a GitHub pull-request URL in its report is stored on the petition. Every `pr_poll_seconds` (default 300, `0` turns it off) the hall asks `gh pr view` when `gh` is on the PATH, otherwise the public GitHub API. `merged` and `closed` update the petition; if GitHub cannot be reached the status stays `building`. A quest that fails before any PR link is `failed`.
 
+## Gold and raids
+
+`daily_budget_usd` (default `0`) is the day's Claude budget. `daily_gold` (default `100`) is the purse it maps onto. Gold left is `purse × (1 − spent today / budget)`. At `0` the purse stays full and nothing is paused, which is how the hall behaves until you set a budget. When gold hits zero, new quests, errands, petition builds, and Quill's brief wait in `gold.json`. Replies to someone already on a quest still go through. On the phone, tick **Open the strongbox anyway** or press **Let it through** in the Treasury. A token caller cannot do either; `POST /api/job` while the treasury is empty is refused. `GET /api/gold` and `GET /api/raids` are on the allowlist.
+
+A party-leader quest is a raid. The task is a boss with 100 HP. Each finished errand knocks off 34, but not the last point. When the leader's run ends in success the boss falls, the guild log records the victory, and the leader and the party each take 80 XP. The fight is kept in `raids.json`.
+
 ## Ranks
 
 Every adventurer keeps XP in `progress.json`. A finished quest grants 10 / 25 / 60 / 120 for Common / Rare / Epic / Legendary. Rarity comes from the petition: high impact and L effort is Legendary, high+M or medium+L is Epic, high or medium or M is Rare, anything else is Common. Approving a petition grants half (at least 5) to the person who filed it. A merged pull request grants the full amount again to whoever built it.
