@@ -164,7 +164,7 @@ const ROUTER_SLIPPAGE_PERCENT = 1;
 const TRADE_PRICE_MAX_AGE_MS = 30 * 1000;
 
 // -- 5. Rarely need changing. -------------------------------------------------
-const VERSION           = "close-v119 (realised kept current by the Mac)";
+const VERSION           = "close-v120 (range from one pool, steady across refreshes)";
 const MINUTES_TO_CONFIRM = 20;   // a transaction unclaimed this long expires
 const GAS_LIMIT_BUFFER = 1.30;   // ask for 30% more gas than estimated
 const MAX_FEE_MULT     = 2.0;    // allow the fee to double before failing
@@ -5393,6 +5393,11 @@ async function updateClaims(positions, poolKeys, feeRaw, poolPrices, mintBlocks,
 // whichever token DexScreener calls "base", and for some pools here that is USDG,
 // which put a stablecoin's cap in a token's column. Supply equals what DexScreener
 // implies where it is oriented correctly (checked: identical to 4 significant digits).
+// Raw supplies, scaled by supplyUnits once token metadata is in. This runs in
+// parallel with discoverTokens, so reading decimals here used whatever the
+// registry held at that instant: 18 for a token seen for the first time, which
+// put a 6- or 9-decimal token's cap, and its range ends, off by a factor of a
+// billion until the next refresh.
 async function fetchTotalSupplies(addrs) {
   const out = new Map();
   if (!addrs.length) return out;
@@ -5400,10 +5405,48 @@ async function fetchTotalSupplies(addrs) {
   for (let i = 0; i < addrs.length; i++) {
     const r = res[i];
     if (!r || !r.success || r.data.length < 64) continue;
-    const dec = (KNOWN_TOKENS[addrs[i]] || { decimals: 18 }).decimals;
-    out.set(addrs[i], Number(decU256(r.data.slice(0, 64))) / Math.pow(10, dec));
+    out.set(addrs[i], decU256(r.data.slice(0, 64)));
   }
   return out;
+}
+
+// Whole-token supplies, with the last good figure standing in for a read that
+// failed this time. Supply hardly moves, but a missing one switched the range
+// ends from supply x pool price to the cross-pool cap and back again, so the
+// same range read as different numbers from one refresh to the next.
+function supplyUnits(raw, addrs) {
+  const last = loadJson("supplies") || {};
+  const out = new Map(), keep = {};
+  for (const a of addrs) {
+    const dec = (KNOWN_TOKENS[a] || { decimals: 18 }).decimals;
+    const v = raw.has(a) ? Number(raw.get(a)) / Math.pow(10, dec) : null;
+    if (v != null && Number.isFinite(v) && v > 0) { out.set(a, v); keep[a] = v; }
+    else if (last[a] > 0) { out.set(a, last[a]); keep[a] = last[a]; }
+  }
+  saveJson("supplies", keep);
+  return out;
+}
+
+// Which side of a pair is the money it is quoted in: USDG first, then ETH or
+// WETH. Fixed by address. The grouping used to ask whether that side had a USD
+// price this refresh, and ETH only has one when its price loads, so a refresh
+// where it did not moved every ETH pair into another row, read upside down.
+function quoteRank(a) {
+  return a === USDG_ADDR ? 2 : (a === ZERO_TOKEN || a === WETH_ADDR) ? 1 : 0;
+}
+
+// The pool a row's range strip is drawn against: the one holding most of the
+// row's value, ties to the lower key so the choice never depends on order.
+// Each pool has its own price, and pools quoted in different money do not even
+// share a tick scale, so the strip cannot mix them. Taking the first position
+// seen made the bar, the % and the cap ends follow whichever pool happened to
+// come back first, against a range stretched over every pool.
+function rangeRefPool(spans) {
+  let ref = null;
+  for (const sp of spans) {
+    if (!ref || sp.usd > ref.usd + 1e-9 || (Math.abs(sp.usd - ref.usd) <= 1e-9 && sp.key < ref.key)) ref = sp;
+  }
+  return ref;
 }
 
 // ----------------------------- wallet + market --------------------------------
@@ -7366,7 +7409,7 @@ function fmtRangePct(p) {
 // Same colour rule as the bar: green while any position is in range, yellow when
 // price is above the whole range, red when below.
 function rangeColor(r, p) {
-  if (r.inRange) return COL.green;
+  if (r.barInRange != null ? r.barInRange : r.inRange) return COL.green;
   return (p != null && p >= 100) ? COL.yellow : COL.red;
 }
 
@@ -7617,7 +7660,7 @@ function buildWidget(d, stale, dataTime) {
       row.addSpacer(GAP);
       col(row, fmtAge(r.ageDays), W.age, DAT, COL.muted, true);
       row.addSpacer(GAP);
-      const bar = row.addImage(rangeBar(r.inRange, r.tickLower, r.tickUpper, r.currentTick, barW, 12, r.flipRange));
+      const bar = row.addImage(rangeBar(r.barInRange != null ? r.barInRange : r.inRange, r.tickLower, r.tickUpper, r.currentTick, barW, 12, r.flipRange));
       bar.imageSize = new Size(barW, 12);
       col(row, fmtRangePct(rp), LBLW, Font.semiboldSystemFont(7.5), rangeColor(r, rp), true);
       if (i < list.length - 1) w.addSpacer(5);
@@ -7870,10 +7913,11 @@ async function main(opts) {
     for (const [key, pk] of poolKeys) poolIdOf.set(key, computePoolId(pk));
 
     const liveStartedAt = Date.now();
-    const [, market, supplies, poolPrices, feeRaw, wallet, fallbackEthPrice, tokenMarket] = await Promise.all([
+    const supplyAddrs = [...allTokens].filter(a => !STABLES[a]);
+    const [, market, rawSupplies, poolPrices, feeRaw, wallet, fallbackEthPrice, tokenMarket] = await Promise.all([
       discoverTokens([...allTokens]),
       fetchPoolMarketData([...new Set(poolIdOf.values())]).catch(() => new Map()),
-      fetchTotalSupplies([...allTokens].filter(a => !STABLES[a])).catch(() => new Map()),
+      fetchTotalSupplies(supplyAddrs).catch(() => new Map()),
       fetchPoolPrices(poolKeys),
       fetchFees(positions, poolKeys).catch(() => new Map()),
       fetchWalletBalances(WALLET).catch(() => ({ eth: 0, weth: 0, usdg: 0 })),
@@ -7881,6 +7925,7 @@ async function main(opts) {
       fetchTokenMarketPrices([...allTokens]).catch(() => new Map()),
     ]);
     timings.live = Date.now() - liveStartedAt;
+    const supplies = supplyUnits(rawSupplies, supplyAddrs);
 
     const ethPrice = ethPriceFromMarket(market) || fallbackEthPrice;
     if (ethPrice) _ethUsd = ethPrice;   // used to price gas in the progress log
@@ -7953,7 +7998,10 @@ async function main(opts) {
     const newBaseline = { ...baseline };
     const pairMap = new Map();
 
-    for (const pos of positions) {
+    // Fixed order, so nothing below depends on the order the ids arrived in.
+    const byId = (a, b) => { try { const x = BigInt(a.tokenId), y = BigInt(b.tokenId); return x < y ? -1 : x > y ? 1 : 0; }
+                             catch (e) { return String(a.tokenId) < String(b.tokenId) ? -1 : 1; } };
+    for (const pos of [...positions].sort(byId)) {
       const pp = poolPrices.get(pos.poolKeyStr);
       if (!pp) continue;
 
@@ -7996,8 +8044,8 @@ async function main(opts) {
 
       const sym0 = tokenSymbol(pos.currency0);
       const sym1 = tokenSymbol(pos.currency1);
-      const isStable0 = STABLES[pos.currency0] && STABLES[pos.currency0].usd !== null;
-      const isStable1 = STABLES[pos.currency1] && STABLES[pos.currency1].usd !== null;
+      const q0 = quoteRank(pos.currency0), q1 = quoteRank(pos.currency1);
+      const isStable0 = q0 > q1, isStable1 = q1 > q0;
       const pair = isStable0 ? sym1 : isStable1 ? sym0 : `${sym0}/${sym1}`;
       // Keyed by contract address, never by the rendered symbol. UNIPCS is at
       // least four separate contracts on this chain; keying by symbol merged the
@@ -8019,9 +8067,21 @@ async function main(opts) {
           pools: new Map(),
           // Identifies what this row would burn if its Close button is tapped.
           positions: [],
+          // Every position's range and pool, for the range strip; see rangeRefPool.
+          spans: [], poolSpans: new Map(),
         });
       }
       const g = pairMap.get(groupKey);
+      {
+        const tokPx = tokenUsdPrice(g.tokenAddr, pos, pp);
+        const ps = g.poolSpans.get(pos.poolKeyStr)
+          || { key: pos.poolKeyStr, tick: pp.tick, usd: 0,
+               price: tokPx != null && Number.isFinite(tokPx) && tokPx > 0 ? tokPx : null };
+        ps.usd += val.totalUsd || 0;
+        g.poolSpans.set(pos.poolKeyStr, ps);
+        g.spans.push({ key: pos.poolKeyStr, tickLower: pos.tickLower,
+                       tickUpper: pos.tickUpper, inRange: !!val.inRange });
+      }
       // Remembered for Cleanup, which cannot rely on the indexer alone.
       rememberTokens([pos.currency0, pos.currency1]);
       // Open positions' tokens are never flagged as spam (strikeSpam).
@@ -8080,6 +8140,14 @@ async function main(opts) {
 
     const rows = [...pairMap.values()].map(g => {
       const ageDays = g.mintedAt ? Math.max((nowSec - g.mintedAt) / 86400, 1 / 1440) : null;
+      // The strip is the reference pool's ladder against that pool's own price,
+      // so the bar, the % and the cap ends always describe one consistent thing.
+      // Positions in the token's other pools still count in the value and in
+      // "n/m in range".
+      const ref = rangeRefPool([...g.poolSpans.values()]);
+      const strip = ref ? g.spans.filter(sp => sp.key === ref.key) : [];
+      const stripLo = strip.length ? Math.min(...strip.map(sp => sp.tickLower)) : g.tickMin;
+      const stripHi = strip.length ? Math.max(...strip.map(sp => sp.tickUpper)) : g.tickMax;
       return {
       pair: g.pair,
       groupKey: g.groupKey,
@@ -8149,13 +8217,18 @@ async function main(opts) {
       pnlPct: Number.isFinite(g.pnl) && g.baselineSum > 0 ? (g.pnl / g.baselineSum) * 100 : null,
       inRange: g.inRange > 0,
       inRangeCount: g.inRange,
-      tickLower: g.tickMin,
-      tickUpper: g.tickMax,
-      currentTick: g.currentTick,
+      tickLower: stripLo,
+      tickUpper: stripHi,
+      currentTick: ref ? ref.tick : g.currentTick,
+      // What the strip's colour follows, so a green % is never drawn against a
+      // marker outside the bar: in range in the pool the strip is drawn for.
+      barInRange: strip.length ? strip.some(sp => sp.inRange) : g.inRange > 0,
       // Needed by mcapAtTick: the range must be priced off this pool, not off
       // the cross-pool reference that r.mcap uses.
       supply: g.supply,
-      poolTokenPrice: g.tokenPrice,
+      // The reference pool's own price or none: borrowing another pool's here
+      // would scale it by this pool's tick. With none, mcapAtTick uses r.mcap.
+      poolTokenPrice: ref ? ref.price : g.tokenPrice,
       posCount: g.posCount,
       positions: planReentryGroup(g.positions),
       flipRange: g.flipRange,
@@ -8510,7 +8583,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, onClose,
     sLo.widthWeight = 16;
     sLo.titleFont = Font.systemFont(11);
     sLo.titleColor = COL.muted;
-    const sBar = strip.addImage(rangeBar(r.inRange, r.tickLower, r.tickUpper, r.currentTick, 200, 12, r.flipRange));
+    const sBar = strip.addImage(rangeBar(r.barInRange != null ? r.barInRange : r.inRange, r.tickLower, r.tickUpper, r.currentTick, 200, 12, r.flipRange));
     sBar.widthWeight = 48;
     sBar.centerAligned();
     const sHi = strip.addText(showCap(capHi));
