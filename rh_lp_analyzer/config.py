@@ -40,7 +40,7 @@ ETH_USD_POOLS = [
 ]
 
 EXPLORER = "https://robinhoodchain.blockscout.com"
-ALCHEMY_RPC = "https://robinhood-mainnet.g.alchemy.com/v2/{key}"
+ALCHEMY_RPC = os.environ.get("RHLA_ALCHEMY_RPC") or "https://robinhood-mainnet.g.alchemy.com/v2/{key}"
 
 DEFAULTS = {
     # RPC_URL does eth_getLogs (and calls); CALL_RPC_URL, when set, shares the
@@ -64,6 +64,10 @@ DEFAULTS = {
     "WALLET_FINDER_DB": "",
     "RPC_WORKERS": "6",
     "LOG_CHUNK": "20000",
+    # Public mode: every visitor connects their own Alchemy key (and, if they like,
+    # another RPC); nothing of theirs is written to disk and the RPC links above are
+    # never used. auto = on when running on Streamlit Community Cloud.
+    "BYO_KEYS": "auto",
 }
 SETTING_KEYS = ("RPC_URL", "CALL_RPC_URL", "SELL_SLIPPAGE_PCT", "MULTIDAY_HOURS", "LOOKBACK_DAYS", "EXPLORER_API",
                 "RPC_WORKERS")
@@ -135,3 +139,25 @@ def mask(url):
         if len(p) >= 20 and i > 2:
             parts[i] = p[:7] + "…" + p[-4:]
     return "/".join(parts)
+
+
+def byo_keys(cfg=None):
+    """True when each visitor brings their own keys (see BYO_KEYS)."""
+    v = str((cfg or load_env()).get("BYO_KEYS", "auto")).strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return Path("/mount/src").exists()  # Streamlit Community Cloud checks the repo out here
+
+
+ALCHEMY_KEY_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
+def alchemy_key(v):
+    """The API key out of whatever was pasted: the bare key or its Robinhood Chain link."""
+    v = (v or "").strip()
+    m = re.search(r"alchemy\.com/v2/([A-Za-z0-9_-]+)", v)
+    if m:
+        return m.group(1)
+    return v if ALCHEMY_KEY_RE.fullmatch(v) else None

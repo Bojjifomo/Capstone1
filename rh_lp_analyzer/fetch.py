@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE INDEX IF NOT EXISTS pos_owner ON positions(owner);
 CREATE TABLE IF NOT EXISTS saved (addr TEXT PRIMARY KEY, label TEXT, added INTEGER);
+-- saved wallets per user ('local' on your own computer; a hash of the visitor's key online)
+CREATE TABLE IF NOT EXISTS saved_by (owner TEXT, addr TEXT, label TEXT, added INTEGER, PRIMARY KEY (owner, addr));
+INSERT OR IGNORE INTO saved_by SELECT 'local', addr, label, added FROM saved;
 CREATE TABLE IF NOT EXISTS lp_txs (addr TEXT, tx TEXT, block INTEGER, PRIMARY KEY (addr, tx));
 CREATE TABLE IF NOT EXISTS receipts (tx TEXT PRIMARY KEY);  -- receipts already read
 """

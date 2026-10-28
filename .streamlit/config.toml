@@ -1,0 +1,22 @@
+# Streamlit Community Cloud reads its config from the repo root: this is RH LP Analyzer's
+# (rh_lp_analyzer/streamlit_app.py). Running from another folder uses that folder's own config.
+[theme]
+base = "dark"
+primaryColor = "#2dd4aa"
+backgroundColor = "#080c12"
+secondaryBackgroundColor = "#0e141d"
+textColor = "#e9eef5"
+borderColor = "#1d2735"
+showWidgetBorder = true
+baseRadius = "0.4rem"
+buttonRadius = "0.4rem"
+linkColor = "#2dd4aa"
+dataframeBorderColor = "#1d2735"
+dataframeHeaderBackgroundColor = "#121a26"
+dataframeHeaderTextColor = "#b3bdcb"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

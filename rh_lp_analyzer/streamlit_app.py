@@ -370,19 +370,47 @@ def conn():
     return F.connect()
 
 
+def byo():
+    return config.byo_keys()
+
+
+def cfg():
+    """Settings for this visitor. Online (bring-your-own-keys) the RPCs are the keys
+    they connected in this session, never the server's; on your own computer, .env."""
+    c = config.load_env()
+    if not byo():
+        return c
+    k = st.session_state.get("keys") or {}
+    alch = config.ALCHEMY_RPC.format(key=k["alchemy"]) if k.get("alchemy") else ""
+    # eth_getLogs goes to the first RPC: their extra one (bigger log ranges) when they gave one
+    return {**c, "RPC_URL": k.get("rpc") or alch, "CALL_RPC_URL": alch if k.get("rpc") else "",
+            "WALLET_FINDER_DB": "0", "LOOKBACK_DAYS": str(k.get("lookback", c["LOOKBACK_DAYS"])),
+            "EXPLORER_API": k.get("explorer", c["EXPLORER_API"])}
+
+
+def user_id():
+    """Who owns the saved wallets: 'local' on your computer, a hash of the key online."""
+    if not byo():
+        return "local"
+    import hashlib
+    key = (st.session_state.get("keys") or {}).get("alchemy") or ""
+    return "u:" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 def rpcs():
     from rpc import make_rpcs
-    cfg = config.load_env()
-    return make_rpcs(cfg) if cfg["RPC_URL"] else (None, None)
+    c = cfg()
+    return make_rpcs(c) if c["RPC_URL"] else (None, None)
 
 
 def load(addrs, per):
     """Read and price these wallets for this period (once per session and period,
     or again on Analyze / Refresh), with a progress bar."""
-    cfg = config.load_env()
+    conf = cfg()
     rpc, call_rpc = rpcs()
     if rpc is None:
-        st.error("No RPC yet. Open **Settings** above and paste your Robinhood Chain RPC (SolidRPC link, or an "
+        st.error("Connect your Alchemy API key above first." if byo() else
+                 "No RPC yet. Open **Settings** above and paste your Robinhood Chain RPC (SolidRPC link, or an "
                  "Alchemy API key).")
         return False
     start, _ = A.period(per, time.time())
@@ -393,7 +421,7 @@ def load(addrs, per):
     c = conn()
     t0 = time.time()
     try:
-        res = F.Loader(c, rpc, call_rpc, cfg, progress).load(addrs, start)
+        res = F.Loader(c, rpc, call_rpc, conf, progress).load(addrs, start)
         calls = rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
         notes = []
         if F.get_meta(c, "explorer_off_until", 0) > t0 and "explorer" not in res.get("sources", []):
@@ -464,46 +492,49 @@ def filters_now():
 
 
 def report_data(addrs, per, real, filtered=True):
-    cfg = config.load_env()
+    conf = cfg()
     now = time.time()
     start, end = A.period(per, now)
     c = conn()
-    pos, skipped = F.positions(c, addrs, start, cfg)
+    pos, skipped = F.positions(c, addrs, start, conf)
     first = F.first_seen(c, addrs)
     c.close()
     if filtered:
         lo, hi, sides = filters_now()
         pos = A.filter_positions(pos, lo, hi, sides)
-    a = A.analyze(pos, now, start, end, real, float(cfg.get("MULTIDAY_HOURS") or 2) * 3600)
+    a = A.analyze(pos, now, start, end, real, float(conf.get("MULTIDAY_HOURS") or 2) * 3600)
     return {"analysis": a, "skipped": skipped, "positions": pos, "first_seen": first, "start": start, "end": end,
             "pnl": (lambda p: p["pnl"] - (p["cost"] or 0)) if real else (lambda p: p["pnl"])}
 
 
 def saved_wallets():
     c = conn()
-    rows = [dict(r) for r in c.execute("SELECT addr, label FROM saved ORDER BY added DESC")]
+    rows = [dict(r) for r in c.execute("SELECT addr, label FROM saved_by WHERE owner=? ORDER BY added DESC",
+                                       (user_id(),))]
     c.close()
     return rows
 
 
 def save_wallet(addr, label=None):
     c = conn()
-    c.execute("INSERT INTO saved(addr, label, added) VALUES(?,?,?) ON CONFLICT(addr) DO UPDATE SET "
-              "label=COALESCE(excluded.label, saved.label)", (addr, label, int(time.time())))
+    c.execute("INSERT INTO saved_by(owner, addr, label, added) VALUES(?,?,?,?) ON CONFLICT(owner, addr) DO UPDATE "
+              "SET label=COALESCE(excluded.label, saved_by.label)", (user_id(), addr, label, int(time.time())))
     c.commit()
     c.close()
 
 
 def forget_wallet(addr):
     c = conn()
-    c.execute("DELETE FROM saved WHERE addr=?", (addr,))
+    c.execute("DELETE FROM saved_by WHERE owner=? AND addr=?", (user_id(), addr))
+    if user_id() == "local":
+        c.execute("DELETE FROM saved WHERE addr=?", (addr,))  # the old table, so it isn't copied back
     c.commit()
     c.close()
 
 
 def better_wallets(kind, addrs, n=6):
     """Wallets of the same class ranked above on RH Wallet Finder's board (read-only)."""
-    p = finder_db.path(config.load_env())
+    p = finder_db.path(cfg())
     if not p:
         return None
     try:
@@ -548,6 +579,83 @@ def gate():
                 st.session_state["authed"] = True
                 st.rerun()
             st.error("Wrong password.")
+    return False
+
+
+def check_rpc(url):
+    """(ok, message): the link answers as Robinhood Chain and can read old state."""
+    from rpc import RPC
+    try:
+        r = RPC(url, workers=1)
+        cid = int(r.call("eth_chainId", []), 16)
+        if cid != config.CHAIN_ID:
+            return False, f"that's chain {cid}, not Robinhood Chain ({config.CHAIN_ID})"
+        head = int(r.call("eth_blockNumber", []), 16)
+        r.call("eth_getBalance", [config.MULTICALL3, hex(max(1, head - 500_000))])  # archive reads work
+        return True, f"block {head:,}"
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "401" in msg or "403" in msg or "must be authenticated" in msg.lower() or "invalid api key" in msg.lower():
+            return False, "the key was refused (check it, and that Robinhood Chain is enabled for the app)"
+        return False, msg[:160]
+
+
+def connect_panel():
+    """Online: every visitor connects their own Alchemy key (required) and,
+    optionally, another Robinhood Chain RPC. Kept in this session only."""
+    k = st.session_state.get("keys") or {}
+    if k.get("alchemy"):
+        with st.expander(f"🔑 Connected · Alchemy {k['alchemy'][:4]}…{k['alchemy'][-4:]}"
+                         + (" · extra RPC ✓" if k.get("rpc") else "") + "  —  settings / change keys"):
+            c1, c2 = st.columns(2)
+            look = c1.number_input("Lookback days: positions opened this long before the period still count",
+                                   min_value=0, max_value=120, value=int(k.get("lookback", 14)))
+            ex = c2.checkbox("Use the Blockscout explorer when it answers", value=k.get("explorer", "1") == "1")
+            if look != k.get("lookback", 14) or ("1" if ex else "0") != k.get("explorer", "1"):
+                st.session_state["keys"] = {**k, "lookback": look, "explorer": "1" if ex else "0"}
+            if st.button("Disconnect (forget my keys in this session)"):
+                for key in ("keys", "loaded_runs", "gaps_by", "an_run", "last_load"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+        return True
+    st.markdown("""
+<div class="card"><div class="title">Connect your API keys</div>
+<p style="color:#b6c2d0;font-size:14px;margin:10px 0 4px">This app reads Robinhood Chain with <b>your own</b> keys, so it
+runs on your quota. They stay in this browser session only (server memory): never written to disk, gone when you
+close the tab.</p></div>""", unsafe_allow_html=True)
+    with st.form("keys_form"):
+        a = st.text_input("Alchemy API key (required)", type="password",
+                          placeholder="the key from your Alchemy app, or its robinhood-mainnet link")
+        r = st.text_input("Another Robinhood Chain RPC (optional)", type="password",
+                          placeholder="https://… (SolidRPC, QuickNode, … ) for faster first reads")
+        go = st.form_submit_button("Connect", type="primary", **stretch(st.form_submit_button))
+    with st.expander("How do I get an Alchemy API key?"):
+        st.markdown("""
+1. Sign up (free) at [dashboard.alchemy.com](https://dashboard.alchemy.com).
+2. **Create new app** → pick the **Robinhood Chain** network (mainnet) → create.
+3. Open the app → **API key** → copy it and paste it above.
+
+The free plan is enough: this app reads wallets with `eth_call` and receipts, not big log scans. An extra RPC with
+large `eth_getLogs` ranges (a paid SolidRPC / QuickNode / … link) makes the first read of very active wallets faster.
+""")
+    if go:
+        key = config.alchemy_key(a)
+        if not key:
+            st.error("That doesn't look like an Alchemy API key.")
+            return False
+        with st.spinner("Checking your keys…"):
+            ok, msg = check_rpc(config.ALCHEMY_RPC.format(key=key))
+            if not ok:
+                st.error(f"Alchemy: {msg}")
+                return False
+            extra = r.strip()
+            if extra:
+                ok2, msg2 = check_rpc(extra)
+                if not ok2:
+                    st.error(f"Extra RPC: {msg2}")
+                    return False
+        st.session_state["keys"] = {"alchemy": key, "rpc": extra, "lookback": 14, "explorer": "1"}
+        st.rerun()
     return False
 
 
@@ -632,7 +740,11 @@ def main():
     header()
     if not gate():
         return
-    settings()
+    if byo():
+        if not connect_panel():
+            return
+    else:
+        settings()
     prefill()
     mode = st.radio("Mode", MODES, horizontal=True, key="an_mode", label_visibility="collapsed")
     n = len(parse_addrs(st.session_state.get("an_text")))
@@ -778,7 +890,7 @@ def report(addrs, per):
                 c2.button("Analyze", key=f"better_{b['addr']}", on_click=open_one, args=(b["addr"],))
     st.toggle("💧 Real PnL — charge the cost of selling the token back", key="real",
               help="Each position pays for selling back the token side it returns: the pool fee + "
-                   f"{config.load_env()['SELL_SLIPPAGE_PCT']}% slippage.")
+                   f"{cfg()['SELL_SLIPPAGE_PCT']}% slippage.")
     if not a:
         st.info("Nothing closed or open in this period" + (" with these filters" if any(filters_now()) else "")
                 + ". Pick a longer period or loosen the filters.")

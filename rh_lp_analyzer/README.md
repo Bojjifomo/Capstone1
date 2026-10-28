@@ -20,13 +20,34 @@ Buka **⚙ Settings — RPC**, paste link RPC Robinhood Chain lu (SolidRPC) di
 RPC 1, dan (disarankan) Alchemy API key di RPC 2 → **Save & test**. Disimpen di
 `rh_lp_analyzer/.env` (di-gitignore, jangan di-commit: repo public).
 
-Di **Streamlit Cloud**: main file `rh_lp_analyzer/streamlit_app.py`, isi Secrets:
+## Versi online (Streamlit Community Cloud) — tiap user pakai key sendiri
 
-```toml
-RPC_URL = "https://rpc.solidrpc.io/ak_…/evm/4663"
-CALL_RPC_URL = "alchemy key"
-APP_PASSWORD = "password buat halaman ini"
-```
+Di Streamlit Cloud app otomatis masuk **mode "bring your own keys"**:
+
+- Tiap pengunjung **wajib isi Alchemy API key**-nya sendiri (gratis), plus opsional RPC
+  Robinhood Chain lain (SolidRPC / QuickNode / …) biar baca pertama wallet aktif lebih cepat.
+- Key dicek dulu (harus Robinhood Chain, chain id 4663, dan bisa baca state lama). Sebelum
+  connect, nggak bisa Analyze.
+- Key **cuma disimpan di sesi browser itu** (memori server): nggak pernah ditulis ke disk,
+  hilang pas tab ditutup. Semua request pakai kuota user itu sendiri, bukan punya lu.
+- Saved wallets dipisah per user (pakai hash dari key-nya). Cache data chain (data publik)
+  dipakai bareng, jadi wallet yang udah pernah dibaca orang lain kebaca lebih cepat.
+- Database RH Wallet Finder nggak dipakai online (cuma ada di Mac lu).
+
+**Cara deploy:**
+1. Buka [share.streamlit.io](https://share.streamlit.io) → login pakai GitHub → **Create app**.
+2. Repository `Bojjifomo/Capstone1`, branch yang ada folder `rh_lp_analyzer`, main file
+   **`rh_lp_analyzer/streamlit_app.py`**. Python 3.11 atau lebih baru.
+3. Deploy. Tema diambil dari `.streamlit/config.toml` di root repo (Community Cloud cuma baca
+   dari situ), dependency dari `rh_lp_analyzer/requirements.txt`.
+4. Opsional, di **Settings → Secrets** app-nya:
+   ```toml
+   APP_PASSWORD = "password buat masuk halaman"   # kalau mau dibatasi
+   # BYO_KEYS = "0" + RPC_URL / CALL_RPC_URL = semua pengunjung pakai RPC lu (kuota lu)
+   ```
+
+Di Mac (bukan Cloud) app tetap baca RPC dari `.env` / Settings kayak biasa. Mau nyobain mode
+online di Mac: `BYO_KEYS=1 python3 -m streamlit run rh_lp_analyzer/streamlit_app.py`.
 
 ## Isinya (layout ala Apex Liquidity)
 
