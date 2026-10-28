@@ -52,6 +52,8 @@ DEFAULT_CONFIG = {
     "orchestrator_name": "Quill",
     "orchestrator_root": "",        # repo that contains orchestrator/; empty = sibling of agent-office
     "orchestrator_timeout": 600,
+    "daily_budget_usd": 0,          # 0 = gold is not rationed; set a budget to pause quests when it is spent
+    "daily_gold": 100,              # the full purse that budget maps onto
 }
 
 
@@ -213,6 +215,8 @@ def api_state(req, m):
         "petitions": APP.office.petitions.pending_count(),
         "board": APP.office.progress.board(APP.office.petitions),
         "unlocks": APP.office.progress.unlocks(),
+        "gold": APP.office.economy.snapshot(),
+        "raid": APP.office.raids.public(),
     }
 
 
@@ -316,7 +320,11 @@ def api_job(req, m):
     system = PM_PROMPT if b.get("pm") else ""
     result = APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
                                 text_field(b, "mode"), model=text_field(b, "model"),
-                                code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system)
+                                code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system,
+                                external=req.external, override=bool(b.get("override")))
+    if result.get("queued_for_gold"):
+        APP.office.ledger.add("guild", "Queued until gold returns: " + text_field(b, "text")[:160])
+        return result
     APP.office.ledger.add("job", text_field(b, "text"), sid=result["sid"], mode=text_field(b, "mode"), pm=bool(system))
     return result
 
@@ -427,8 +435,10 @@ def api_team_ask(req, m):
         member = APP.office.team.find(text_field(req.body, "name"))
         if req.external and member and member.get("builtin"):
             raise HttpError(403, "token callers do not start briefs")
+        if req.external and APP.office.economy.snapshot()["paused"]:
+            raise HttpError(409, "the treasury is empty")
         result = APP.office.team.ask(text_field(req.body, "name"), text_field(req.body, "brief", runner.MAX_TEXT + 1))
-        if result.get("briefing"):
+        if result.get("briefing") or result.get("queued_for_gold"):
             return result
         APP.office.ledger.add("errand", "%s: %s" % (result["name"], text_field(req.body, "brief")), sid=result["sid"])
         return result
@@ -486,6 +496,26 @@ def api_search(req, m):
 @route("GET", "/api/ledger")
 def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
+
+
+@route("GET", "/api/gold")
+def api_gold(req, m):
+    return APP.office.economy.snapshot()
+
+
+@route("GET", "/api/raids")
+def api_raids(req, m):
+    return {"raid": APP.office.raids.public()}
+
+
+@route("POST", r"/api/gold/release/(?P<qid>[0-9a-f]{8})")
+def api_gold_release(req, m):
+    if req.external:
+        raise HttpError(403, "token callers cannot open the strongbox")
+    try:
+        return APP.office.economy.release(m.group("qid"))
+    except LookupError as e:
+        raise HttpError(404, str(e))
 
 
 @route("GET", "/api/quests")
@@ -607,11 +637,13 @@ def api_petition_add(req, m):
     return {"petition": item}
 
 
-def build_petition(item, b):
+def build_petition(item, b, external=False):
     """Start a quest that carries out an approved petition."""
     result = APP.office.new_job(text_field(b, "project"), APP.office.petitions.brief(item), text_field(b, "mode"),
                                 model=text_field(b, "model"), code_id=text_field(b, "code_id"),
-                                code=text_field(b, "code"))
+                                code=text_field(b, "code"), external=external, override=bool(b.get("override")))
+    if result.get("queued_for_gold"):
+        return result
     try:
         APP.office.petitions.mark_building(item["id"], result["sid"])
     except LookupError as e:
@@ -641,7 +673,10 @@ def api_petition_decide(req, m):
     except Exception:
         traceback.print_exc()
     if decision == "approve" and b.get("build"):
-        return dict(build_petition(item, b), petition=item["id"])
+        result = build_petition(item, b, external=req.external)
+        if result.get("queued_for_gold"):
+            return result
+        return dict(result, petition=item["id"])
     return {"petition": item["id"], "status": item["status"]}
 
 
@@ -652,7 +687,10 @@ def api_petition_build(req, m):
         raise HttpError(404, "no such petition")
     if item["status"] != "approved":
         raise HttpError(400, "approve it first")
-    return dict(build_petition(item, req.body), petition=item["id"])
+    result = build_petition(item, req.body, external=req.external)
+    if result.get("queued_for_gold"):
+        return result
+    return dict(result, petition=item["id"])
 
 
 # ---- HTTP plumbing ------------------------------------------------------
@@ -693,6 +731,8 @@ TOKEN_ROUTES = (
     ("GET", re.compile(r"^/api/orchestrator$")),
     ("GET", re.compile(r"^/api/quests$")),
     ("GET", re.compile(r"^/api/progress$")),
+    ("GET", re.compile(r"^/api/gold$")),
+    ("GET", re.compile(r"^/api/raids$")),
     ("POST", re.compile(r"^/api/petitions$")),
     ("POST", re.compile(r"^/api/petitions/[0-9a-f]{8}/decide$")),
     ("POST", re.compile(r"^/api/team/ask$")),

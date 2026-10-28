@@ -265,7 +265,7 @@ class Team:
                         total[k] += v
         return {k: round(v, 4) for k, v in total.items()}
 
-    def ask(self, key, brief, origin="office-ask"):
+    def ask(self, key, brief, origin="office-ask", from_queue=False):
         member = self.find(key)
         if not member:
             raise LookupError("no teammate called %r; try `office team`" % key)
@@ -274,11 +274,24 @@ class Team:
             raise ValueError("the brief is empty")
         if member.get("builtin"):
             # The text is only a label. The process is always `orchestrator brief`, read-only.
+            if not from_queue:
+                held = self.office.economy.consider(False, False, "brief", "today's brief", {})
+                if held:
+                    if held.get("blocked"):
+                        raise RuntimeError("the treasury is empty")
+                    held["name"] = member["name"]
+                    return held
             result = self.office.briefing.start()
             result["name"] = member["name"]
             return result
         Path(member["folder"]).mkdir(parents=True, exist_ok=True)
         result = self.office.new_job(member["folder"], brief, member.get("mode", "acceptEdits"),
-                                     model=member.get("model", "sonnet"), helper=True, origin=origin)
+                                     model=member.get("model", "sonnet"), helper=True, origin=origin,
+                                     from_queue=from_queue)
+        if result.get("queued_for_gold"):
+            result["name"] = member["name"]
+            return result
+        if getattr(self.office, "raids", None):
+            self.office.raids.join(member["name"])
         result["name"] = member["name"]
         return result
