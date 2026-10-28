@@ -66,6 +66,18 @@ BRIEF = """Give me today's brief:
 6. Anything I should act on."""
 
 
+def read_only():
+    return os.environ.get("ORCHESTRATOR_READ_ONLY") == "1"
+
+
+def select_tools(tools=None):
+    """The guild hall sets ORCHESTRATOR_READ_ONLY=1 so a brief cannot call write tools."""
+    tools = list(all_tools() if tools is None else tools)
+    if read_only():
+        return [tool for tool in tools if tool.risk == "read"]
+    return tools
+
+
 def load_env():
     """KEY=value lines from .env files the user already keeps, without overriding the environment."""
     for path in (ROOT / ".env", ROOT / "orchestrator" / ".env"):
@@ -84,13 +96,15 @@ class Agent:
     def __init__(self, auto_yes=False, verbose=False, out=print):
         import anthropic
         self.client = anthropic.Anthropic()
-        self.tools = {t.name: t for t in all_tools()}
+        self.tools = {t.name: t for t in select_tools()}
         self.auto_yes = auto_yes
         self.verbose = verbose
         self.out = out
         self.messages = []
 
     def confirm(self, tool, args):
+        if tool.risk != "read" and read_only():
+            return False
         if self.auto_yes:
             return True
         if not sys.stdin.isatty():
@@ -103,6 +117,8 @@ class Agent:
         if not tool:
             return f"unknown tool {block.name}", True
         args = block.input if isinstance(block.input, dict) else {}
+        if tool.risk != "read" and read_only():
+            return "Blocked: this brief is read-only and will not run write tools.", True
         if tool.risk != "read" and not self.confirm(tool, args):
             return "The user declined this action. Don't retry it; carry on without it or ask them.", True
         self.out(f"  · {block.name} {json.dumps(args, ensure_ascii=False)[:120]}")

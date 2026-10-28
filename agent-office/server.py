@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE))
 import core  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
+import petitions  # noqa: E402
 import runner  # noqa: E402
 import store  # noqa: E402
 import team  # noqa: E402
@@ -44,6 +45,13 @@ DEFAULT_CONFIG = {
     "claude_bin": "",           # empty = look in the usual places
     "push_subject": "mailto:bojjifomo@users.noreply.github.com",
     "default_mode": "acceptEdits",
+    "webhooks": [],                 # [{url, secret?, header?, events?}] see webhooks.py
+    "webhook_timeout": 5,
+    "petition_expire_days": 14,     # pending petitions older than this expire; 0 disables
+    "pr_poll_seconds": 300,         # how often to ask GitHub about open petition PRs; 0 disables
+    "orchestrator_name": "Quill",
+    "orchestrator_root": "",        # repo that contains orchestrator/; empty = sibling of agent-office
+    "orchestrator_timeout": 600,
 }
 
 
@@ -414,7 +422,12 @@ def api_dismiss(req, m):
 @route("POST", "/api/team/ask")
 def api_team_ask(req, m):
     try:
+        member = APP.office.team.find(text_field(req.body, "name"))
+        if req.external and member and member.get("builtin"):
+            raise HttpError(403, "token callers do not start briefs")
         result = APP.office.team.ask(text_field(req.body, "name"), text_field(req.body, "brief", runner.MAX_TEXT + 1))
+        if result.get("briefing"):
+            return result
         APP.office.ledger.add("errand", "%s: %s" % (result["name"], text_field(req.body, "brief")), sid=result["sid"])
         return result
     except LookupError as e:
@@ -471,6 +484,23 @@ def api_search(req, m):
 @route("GET", "/api/ledger")
 def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
+
+
+@route("GET", "/api/orchestrator")
+def api_orchestrator(req, m):
+    """Quill's latest read-only brief. Starting one is local-only."""
+    return APP.office.briefing.public()
+
+
+@route("POST", "/api/orchestrator/brief")
+def api_orchestrator_brief(req, m):
+    if req.external:
+        raise HttpError(403, "token callers do not start briefs")
+    try:
+        result = APP.office.briefing.start()
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+    return result
 
 
 @route("POST", "/api/ledger")
@@ -549,6 +579,7 @@ def api_petition_add(req, m):
     except ValueError as e:
         raise HttpError(400, str(e))
     APP.office.ledger.add("petition", "%s: %s" % (item["by"], item["title"]))
+    APP.office.emit("petition.added", petitions.public(item))
     APP.office.notify("%s petitions the guild" % item["by"], item["title"] + (" (" + item["app"] + ")" if item["app"] else ""),
                       tag="petition-" + item["id"], url="/#p=" + item["id"])
     return {"petition": item}
@@ -565,6 +596,7 @@ def build_petition(item, b):
         raise HttpError(404, str(e))
     APP.office.rename(result["sid"], "Petition: " + item["title"][:50])
     APP.office.ledger.add("build", item["title"], sid=result["sid"])
+    APP.office.emit("build.started", {"id": item["id"], "title": item["title"], "sid": result["sid"], "by": item.get("by") or ""})
     return result
 
 
@@ -581,6 +613,7 @@ def api_petition_decide(req, m):
     except ValueError as e:
         raise HttpError(400, str(e))
     APP.office.ledger.add("approve" if decision == "approve" else "reject", item["title"])
+    APP.office.emit("petition.decided", dict(petitions.public(item), decision=decision))
     if decision == "approve" and b.get("build"):
         return dict(build_petition(item, b), petition=item["id"])
     return {"petition": item["id"], "status": item["status"]}
@@ -631,6 +664,7 @@ TOKEN_ROUTES = (
     ("GET", re.compile(r"^/api/ledger$")),
     ("GET", re.compile(r"^/api/usage$")),
     ("GET", re.compile(r"^/api/bots$")),
+    ("GET", re.compile(r"^/api/orchestrator$")),
     ("POST", re.compile(r"^/api/petitions$")),
     ("POST", re.compile(r"^/api/petitions/[0-9a-f]{8}/decide$")),
     ("POST", re.compile(r"^/api/team/ask$")),

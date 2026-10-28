@@ -1,7 +1,10 @@
 // Petitions: updates the guild proposes, waiting for your yes or no.
 "use strict";
 
-const PETITION_STATUS = { pending: "awaits you", approved: "approved", building: "being built", rejected: "rejected" };
+const PETITION_STATUS = {
+  pending: "awaits you", approved: "approved", building: "being built", rejected: "rejected",
+  merged: "merged", closed: "closed", failed: "failed", expired: "expired",
+};
 
 Hooks.header.push((state) => {
   const badge = $("#petitions-btn .badge");
@@ -32,6 +35,10 @@ function petitionCard(p, open, projects, o) {
     (p.summary ? `<p>${esc(p.summary)}</p>` : "") +
     `<details${open ? " open" : ""}><summary>The plan</summary><div class="md">${MD.render(p.plan)}</div></details>` +
     (p.note ? `<p class="petition-note"><b>Your note:</b> ${esc(p.note)}</p>` : "") +
+    (p.pr_url ? `<p class="pr-link"><a href="${esc(p.pr_url)}" target="_blank" rel="noopener noreferrer">Pull request</a>` +
+      (p.status === "building" ? " · open, waiting on review" : "") + `</p>` : "") +
+    (p.status === "building" && p.quest_ok && !p.pr_url ? `<p class="sub">The build quest finished. No pull request link yet.</p>` : "") +
+    (p.status === "failed" ? `<p class="sub">The build quest failed before it opened a pull request.</p>` : "") +
     (p.status === "pending" || p.status === "approved" ? petitionForm(p, projects, o) : "") +
     (p.sid ? `<button type="button" class="btn" data-sid="${esc(p.sid)}">Open the build quest</button>` : "") +
     `</article>`;

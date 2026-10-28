@@ -10,6 +10,7 @@
   office propose --title "<t>" --app "<app>" [--summary "<s>"] [--impact high|medium|low] [--effort S|M|L] < plan.md
                                    send bojjifomo an update that waits for approval (plan on stdin)
   office petitions                 every petition and what bojjifomo decided
+  office brief                     Quill's read-only Counting House brief (never write tools)
   office doctor                    check the install
   office install-hook              add the Claude Code Notification hook (exact "needs you")
   office hook                      (used by the hook itself; reads the event on stdin)
@@ -124,6 +125,11 @@ def cmd_ask(args):
     if brief == "-":
         brief = sys.stdin.read()
     r = call("/api/team/ask", {"name": args[0], "brief": brief})
+    if r.get("briefing"):
+        print("%s is writing today's brief (read-only tools only)." % r["name"])
+        if wait:
+            print(wait_brief(timeout))
+        return
     if not wait:
         print("%s is on it. Session %s\nCollect the answer with: office result %s" % (r["name"], r["sid"], r["sid"]))
         return
@@ -202,8 +208,32 @@ def cmd_petitions(args):
     if not items:
         print("No petitions yet.")
     for p in items:
-        print("%s  %-9s %-50.50s %s%s" % (p["id"], p["status"], p["title"], p["by"],
-                                         ("  note: " + p["note"]) if p["note"] else ""))
+        print("%s  %-9s %-50.50s %s%s%s" % (p["id"], p["status"], p["title"], p["by"],
+                                            ("  note: " + p["note"]) if p["note"] else "",
+                                            ("  " + p["pr_url"]) if p.get("pr_url") else ""))
+
+
+def wait_brief(timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cur = call("/api/orchestrator", timeout=30)
+        if not cur.get("running"):
+            if cur.get("ok") is False:
+                sys.exit("office: the brief failed: %s" % (cur.get("error") or "unknown error"))
+            return cur.get("text") or "(empty brief)"
+        time.sleep(2)
+    sys.exit("office: the brief is still running; read it in the Counting House")
+
+
+def cmd_brief(args):
+    """Today's LP brief. Read-only: the server never passes --yes."""
+    try:
+        call("/api/orchestrator/brief", {}, timeout=30)
+    except SystemExit as exc:
+        if "already" not in str(exc):
+            raise
+        print(exc)
+    print(wait_brief(600))
 
 
 def cmd_status(args):
@@ -276,7 +306,7 @@ def cmd_doctor(args):
 
 
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
-            "propose": cmd_propose, "petitions": cmd_petitions,
+            "propose": cmd_propose, "petitions": cmd_petitions, "brief": cmd_brief,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":
