@@ -72,6 +72,8 @@ class Petitions:
     def mark_building(self, pid, sid):
         with self.lock:
             item = self.get(pid)
+            if item is None:
+                raise LookupError("no such petition")
             item["status"] = "building"
             item["sid"] = sid
             self.save()

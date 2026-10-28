@@ -128,12 +128,14 @@ Hooks.forms["search-form"] = async (form) => {
 
 Hooks.panels.ledger = {
   title: "The ledger",
-  subtitle: "Everything done from this page: messages, quests, errands, seals, cleaners.",
+  subtitle: "Everything done from this page, plus token calls from outside (marked with their origin).",
   icon: ICON("📖"),
   async render(body) {
     const { entries } = await api("/api/ledger");
     body.innerHTML = entries.length ? entries.map((e) =>
-      `<div class="ledger-row"><span class="tag t-${esc(e.kind)}">${esc(e.kind)}</span><span class="ledger-text">${esc(e.text)}</span><time>${esc(ago(e.ts))}</time>` +
+      `<div class="ledger-row"><span class="tag t-${esc(e.kind)}">${esc(e.kind)}</span><span class="ledger-text">` +
+      (e.origin ? `<span class="tag">${esc(e.origin)}</span> ` : "") +
+      ((e.kind === "guild" || e.kind === "chatter") && e.by ? esc(e.by) + ": " : "") + `${esc(e.text)}</span><time>${esc(ago(e.ts))}</time>` +
       (e.sid ? `<button type="button" class="btn" data-sid="${esc(e.sid)}">Open</button>` : "") + `</div>`).join("")
       : '<p class="loading">Nothing written in the ledger yet.</p>';
   },

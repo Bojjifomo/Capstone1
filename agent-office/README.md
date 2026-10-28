@@ -23,6 +23,7 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 * Push notifications and the home-screen app need https. Run `tailscale serve --bg --https=443 http://127.0.0.1:7777`
   once, open `https://<your-mac>.<tailnet>.ts.net` on the phone, Share → Add to Home Screen, then 🪶 → *Send ravens to this phone*.
   `install.sh` puts that ts.net name in the Host allowlist for you.
+* An external assistant on the public internet is a different door. See [External access](#external-access-tailscale-funnel). Funnel and Serve cannot share a port, so leave Serve on 443 for the phone.
 
 ## What's in it
 
@@ -40,17 +41,74 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 | Familiars | Your launchd jobs: running, last run, last error, Run now |
 | Vault | Free space, the biggest folders, six fixed cleaners (each needs a phone seal) |
 | Scrying | Search across every transcript |
-| Ledger | Every action taken from the page: messages, quests, errands, seals, cleaners |
+| Ledger | Every action taken from the page, and every token call from outside: messages, quests, errands, seals, cleaners |
 | Ravens & seals | Web push to your phone; one-time 6-digit seals for risky actions |
 
 ## Security
 
 * Binds to 127.0.0.1 and the Tailscale IP only (never 0.0.0.0). The Tailscale bind retries until that address exists.
-* The Host header must be on the allowlist (stops DNS rebinding). Every POST needs `X-Agent-Office: 1` and a matching `Origin`, or it gets a 403.
+* The Host header must be on the allowlist (stops DNS rebinding). Every POST needs `X-Agent-Office: 1` and a matching `Origin`, or it gets a 403. A request with no `Authorization` header still follows exactly these rules.
+* Public Funnel traffic and names in `external_hosts` need `Authorization: Bearer <token>`. The token only opens the route list in the next section. A wrong token is 401. Seals still apply to risky quest modes.
 * The browser sends ids, never paths or commands. Project folders, cleaners and launchd jobs are looked up server-side, and nothing uses `shell=True`.
 * Bypassing permissions and running cleaners need a seal: 6 digits pushed to the phone, stored only as a salted sha256 in memory, valid for 2 minutes, 3 tries, single use, bound to the one action.
 * A strict CSP (no inline script or style), and every piece of transcript text is escaped before it becomes HTML.
 * Push only goes to known browser push services (Apple, Google, Mozilla, Microsoft).
+
+## External access (Tailscale Funnel)
+
+The phone stays on Tailscale Serve, inside the tailnet. To let Guild Hall (the assistant on another machine) call this dashboard over the public internet, give the server a secret and turn on Funnel. Local pages and tailnet requests do not change.
+
+Tailscale sends public Funnel requests to the same MagicDNS name as Serve, and marks them with `Tailscale-Funnel-Request: ?1`. It sets that header itself and strips any copy the caller sent, so it cannot be forged through the proxy. Those requests need the bearer token even though `install.sh` already put the name in `extra_hosts` for the phone. A Serve request to that name has no such header and keeps working as before.
+
+1. Choose a secret. The environment wins over the file, so a launchd plist can hold it without a second copy in git (`config.json` is gitignored either way):
+
+   ```sh
+   # config.json, next to server.py — leave this blank if the environment is set
+   "external_token": ""
+   ```
+
+   `AGENT_OFFICE_TOKEN` in the server's environment overrides `external_token`. Never commit a real token. Restart the agent after changing it (`launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`). `install.sh` rewrites the plist, so put the variable back if you keep it there; a value in `config.json` survives install.
+
+2. Optional: list extra Funnel names in `external_hosts`. A name in that list needs the token on every request, header or not, so do not put the phone's MagicDNS name there if the phone should keep opening the page without a token. The Funnel header already covers that name.
+
+   `external_origin` (default `grokbot`) is the marker written on ledger lines for token calls.
+
+3. Turn on Funnel in the background. This is the current Tailscale command (client 1.52 and later; checked against the Funnel docs). It proxies local port 7777 and publishes HTTPS on port 443:
+
+   ```sh
+   tailscale funnel --bg 7777
+   tailscale funnel status          # prints https://<mac>.<tailnet>.ts.net
+   tailscale funnel reset           # turn it off
+   ```
+
+   `tailscale funnel 7777` without `--bg` does the same until you stop it. Funnel on macOS needs an open-source Tailscale build, not the Mac App Store app. The last of Serve or Funnel to claim a port wins, and Funnel makes that port public, so do not point Funnel at the port Serve is using for the phone. The tailnet URL `http://100.x.x.x:7777` keeps working either way.
+
+4. From the other machine:
+
+   ```sh
+   curl -sS "https://<mac>.<tailnet>.ts.net/api/state" \
+     -H "Authorization: Bearer $AGENT_OFFICE_TOKEN"
+
+   curl -sS -X POST "https://<mac>.<tailnet>.ts.net/api/ledger" \
+     -H "Authorization: Bearer $AGENT_OFFICE_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"kind":"chatter","text":"The watch reports all quiet.","by":"Guild Hall"}'
+   ```
+
+   `office` sends the same header when `AGENT_OFFICE_TOKEN` is set and `AGENT_OFFICE_URL` is a remote https URL. It does not send the token to `127.0.0.1`, `localhost`, or a Tailscale CGNAT address (`100.64.0.0/10`), so the CLI on the Mac stays on the old rules. Remote `office` can only call the routes below. `office result` and session messages stay on the Mac.
+
+### What a token may call
+
+| | |
+| --- | --- |
+| Read | `GET /api/state`, `/api/petitions`, `/api/team`, `/api/team/who`, `/api/ledger`, `/api/usage`, `/api/bots` |
+| Write | `POST /api/petitions` (new petition), `POST /api/petitions/<id>/decide` (approve or reject, with a note), `POST /api/team/ask`, `POST /api/job` (a new quest, including `"pm": true`), `POST /api/ledger` (`kind` `guild` or `chatter`, `text`, `by`) |
+
+Anything else, including session send, hiring, launchd, cleaners, seals, push, and the static page, is 403. `decide` with `"build": true` is 403 as well; building a petition stays on the phone. A risky quest mode still needs a phone seal.
+
+Every accepted token call is a ledger line `kind: external` with `origin` set (default `grokbot`), and that same origin is stamped on the action itself (the quest, the petition, the errand). The town chat has an **External** tab for these lines; `chatter` also shows under Chatter and `guild` under Guild.
+
+A missing or wrong token on a Funnel request or an `external_hosts` name is 401. The failure is written to the server log without the token. After 8 failures from the same client within 10 minutes the answer is 429. Funnel connects from 127.0.0.1 and sets `X-Forwarded-For` to the public client; that address is what the limit counts. A correct token clears the count. A wrong token on localhost is also 401, so a mismatched `AGENT_OFFICE_TOKEN` fails closed. A correct token on localhost does not open the allowlist and does not skip the Origin check.
 
 ## State files (next to server.py, written atomically)
 
@@ -61,6 +119,6 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 
 ```sh
 sh tests/run_copy.sh                         # throwaway copy on :7790 with a fake $HOME and a fake claude
-python3 -m unittest discover -s tests        # 44 tests: parsing, status rules, security, runs, team, panels
+python3 -m unittest discover -s tests        # 56 tests: parsing, status rules, security, runs, team, panels, external token
 node tests/shoot.js stage1,stage2,stage4     # phone-width screenshots into docs/screens/
 ```

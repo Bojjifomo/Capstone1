@@ -24,32 +24,43 @@ const ChatLog = (() => {
     const box = $("#chat-lines");
     if (!box) return;
     const near = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-    const shown = channel === "all" ? lines : lines.filter((l) => l.ch === channel);
+    // Raw token-call audits stay on the External tab. All still shows what they said and did.
+    const shown = lines.filter((l) => channel === "all" ? l.ch !== "external" : (l.ch === channel || l.also === channel));
     box.innerHTML = shown.length ? shown.map(lineHTML).join("") : '<div class="chat-line c-system"><span class="msg">The hall is quiet.</span></div>';
     if (near || !primed) box.scrollTop = box.scrollHeight;
   }
 
-  function add(ch, who, text, sid, ts) {
+  function add(ch, who, text, sid, ts, also) {
     if (!text) return;
     ts = ts || Date.now() / 1000;
-    const key = ch + "|" + Math.round(ts) + "|" + who + "|" + text;
+    const key = ch + "|" + (also || "") + "|" + Math.round(ts) + "|" + who + "|" + text;
     if (seen.has(key)) return;
     seen.add(key);
     let i = lines.length;
     while (i > 0 && lines[i - 1].ts > ts) i--;
-    lines.splice(i, 0, { ch, who: String(who || "Guild"), text: String(text).slice(0, 300), sid: sid || null, ts });
+    lines.splice(i, 0, { ch, also: also || "", who: String(who || "Guild"), text: String(text).slice(0, 300), sid: sid || null, ts });
     while (lines.length > MAX) lines.shift();
     render();
   }
 
-  const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Seal", hire: "Guild", dismiss: "Guild", errand: "Errand", bot: "Familiar", clean: "Vault" };
+  const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Seal", hire: "Guild", dismiss: "Guild", errand: "Errand", bot: "Familiar", clean: "Vault", guild: "Guild Hall", chatter: "Guild Hall", external: "External" };
   const LEDGER_VERB = { queue: "queued: ", job: "posted a quest: ", hire: "welcomed ", dismiss: "dismissed ", errand: "sent ", bot: "", clean: "" };
+
+  function ingestLedger(e) {
+    if (e.kind === "external") {
+      add("external", e.origin || "External", e.text, e.sid, e.ts);
+      return;
+    }
+    const who = e.by || e.origin || LEDGER_WHO[e.kind] || e.kind;
+    const text = (LEDGER_VERB[e.kind] || "") + e.text;
+    const ch = e.kind === "chatter" ? "say" : "guild";
+    add(ch, who, text, e.sid, e.ts, e.origin ? "external" : "");
+  }
 
   async function loadLedger() {
     try {
       const { entries } = await api("/api/ledger");
-      entries.slice().reverse().forEach((e) =>
-        add("guild", LEDGER_WHO[e.kind] || e.kind, (LEDGER_VERB[e.kind] || "") + e.text, e.sid, e.ts));
+      entries.slice().reverse().forEach(ingestLedger);
     } catch (e) { /* the chat is a nice-to-have */ }
   }
 

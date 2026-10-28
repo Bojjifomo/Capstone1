@@ -628,7 +628,7 @@ button.chip { cursor: pointer; font-family: var(--sans); }
   background: rgba(10,8,20,.78); box-shadow: inset 0 0 0 1px rgba(0,0,0,.5);
   font: 12.5px/1.45 ui-monospace, "SF Mono", Menlo, monospace; color: #e8e2d0;
 }
-.chat-tabs { display: flex; gap: 2px; padding: 4px 4px 0; border-bottom: 1px solid rgba(224,176,76,.25); }
+.chat-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 4px 4px 0; border-bottom: 1px solid rgba(224,176,76,.25); }
 .chat-tabs button {
   flex: 1; min-height: 32px; border: 0; border-radius: 4px 4px 0 0; cursor: pointer;
   background: rgba(255,255,255,.05); color: #b9ae92; font: 600 12px var(--serif, serif);
@@ -646,6 +646,8 @@ button.chip { cursor: pointer; font-family: var(--sans); }
 .c-system .msg { color: #f6e3a8; }
 .c-say .who { color: #8fc3ff; }
 .c-say .msg { color: #e6edf7; }
+.c-external .who { color: #d2a8ff; }
+.c-external .msg { color: #efe4ff; }
 
 /* ---- visible client error (helps debug the phone) ---- */
 .client-error {
