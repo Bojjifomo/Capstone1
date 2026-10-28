@@ -38,7 +38,7 @@ const Town = (() => {
   const T = {
     view: "town", room: null, W: 0, H: 0, S: TOWN_SCALE, dpr: 1,
     buf: null, g: null, bg: null, layout: null, roomLayout: null,
-    walkers: [], villagers: [], particles: [], flies: [],
+    walkers: [], wanderers: [], villagers: [], particles: [], flies: [],
     prev: new Map(), state: null, time: 0, last: 0, list: false, built: false,
   };
   const reduced = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -103,13 +103,31 @@ const Town = (() => {
 
   // ---- time of day ----------------------------------------------------------------
 
+  function jakartaHour() {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(new Date());
+      const hour = Number(parts.find((p) => p.type === "hour").value);
+      const minute = Number(parts.find((p) => p.type === "minute").value);
+      return hour + minute / 60;
+    } catch (e) {
+      return ((Date.now() / 3600000) + 7) % 24;
+    }
+  }
+
   function daylight() {
-    const h = new Date().getHours() + new Date().getMinutes() / 60;
+    // The owner's clock is Asia/Jakarta, even when the phone is set somewhere else.
+    const h = jakartaHour();
     if (h >= 20 || h < 5) return { name: "night", tint: "#3b4a8c", k: 0.62, glow: 1, night: true };
     if (h >= 18.5) return { name: "dusk", tint: "#8a6ab0", k: 0.42, glow: 0.85, night: true };
     if (h >= 16.5) return { name: "golden", tint: "#ffb070", k: 0.22, glow: 0.55, night: false };
     if (h < 7) return { name: "dawn", tint: "#ffc8a0", k: 0.25, glow: 0.6, night: false };
     return { name: "day", tint: "#fff4e0", k: 0.05, glow: 0.35, night: false };
+  }
+
+  function skyName() {
+    return (T.state && T.state.weather && T.state.weather.sky) || "sunny";
   }
 
   // ---- who lives where ----------------------------------------------------------
@@ -370,8 +388,9 @@ const Town = (() => {
     L.buildings.forEach((b) => {
       const busy = b.people.some((p) => p.act === "work" || p.act === "needs");
       const awake = b.people.some((p) => p.act !== "sleep");
-      b.lit = b.people.length > 0 && (busy || (awake && night) || (awake && b.hall));
-      b.art = renderBuilding(b, b.lit);
+      b.lit = busy;
+      b.dim = !b.plot && b.people.length === 0;
+      b.art = renderBuilding(b, b.lit || (night && awake));
       b.busy = busy;
       b.sleepy = b.people.length > 0 && !awake;
     });
@@ -551,12 +570,18 @@ const Town = (() => {
   // ---- particles, walkers, villagers ---------------------------------------------------
 
   function puff(x, y, kind) {
+    if (T.lite && T.particles.length > 12) return;
     T.particles.push({ x, y, vx: (Math.random() - 0.5) * 3, vy: kind === "spark" ? -14 - Math.random() * 6 : -5 - Math.random() * 3,
       life: kind === "spark" ? 0.7 : 2.6, age: 0, kind });
   }
 
-  function sendWalker(m, from, to) {
-    T.walkers.push({ seed: m.seed, kind: m.kind, path: [from[0]].concat(from.slice(1), to.slice().reverse()), i: 0, x: from[0].x, y: from[0].y, scroll: true });
+  function sendWalker(m, from, to, flags) {
+    if (!from || !to || !from.length || !to.length) return;
+    flags = flags || {};
+    T.walkers.push({
+      id: m.id, seed: m.seed, kind: m.kind, path: [from[0]].concat(from.slice(1), to.slice().reverse()),
+      i: 0, x: from[0].x, y: from[0].y, scroll: !flags.loot, loot: !!flags.loot,
+    });
   }
 
   function noticeChanges(homes) {
@@ -566,17 +591,18 @@ const Town = (() => {
     const hallRoute = routeOf(L.hall, L);
     homes.forEach((home) => home.people.forEach((m) => {
       const before = T.prev.get(m.id);
-      T.prev.set(m.id, { status: m.status, act: m.act });
+      T.prev.set(m.id, { status: m.status, act: m.act, home: m.home });
       if (!before) return;
       const homeRoute = routeTo(m.home), tavernRoute = routeTo("tavern");
+      const fromRoute = routeTo(before.act === "read" ? "tavern" : (before.home || m.home)) || hallRoute;
       if (!homeRoute) return;
-      if (m.specialist && m.status === "working" && before.status !== "working") {
-        sendWalker(m, hallRoute, homeRoute);  // a new errand: carry the brief from the hall
+      if (m.status === "working" && before.status !== "working") {
+        sendWalker(m, fromRoute, homeRoute);  // errand or quest: walk to their building
         say(m, "On my way!");
-      } else if (m.specialist && before.status === "working" && m.status !== "working") {
-        sendWalker(m, homeRoute, hallRoute);  // done: carry the answer back
+      } else if (before.status === "working" && m.status !== "working") {
+        const back = m.act === "read" && tavernRoute ? tavernRoute : hallRoute;
+        sendWalker(m, homeRoute, back, { loot: true });  // home, carrying the prize
         say(m, "Done! Here you go");
-        reply(m, "Nice deploy!", "Thanks!");
       } else if (m.act === "read" && before.act !== "read" && tavernRoute) {
         sendWalker(m, homeRoute, tavernRoute);
         if (before.act === "work") say(m, "Quick break, brb");
@@ -585,6 +611,22 @@ const Town = (() => {
         if (m.act === "work") say(m, "Back to it!");
       }
     }));
+    wander(homes);
+  }
+
+  function wander(homes) {
+    if (reduced || !T.layout) { T.wanderers = []; return; }
+    const resting = [];
+    homes.forEach((h) => h.people.forEach((p) => { if (p.act === "read") resting.push(p); }));
+    const cap = T.lite ? 2 : 3;
+    const walking = new Set(T.walkers.map((w) => w.id));
+    const live = new Set(resting.map((p) => p.id));
+    T.wanderers = T.wanderers.filter((w) => live.has(w.id) && !walking.has(w.id));
+    resting.forEach((p) => {
+      if (T.wanderers.length >= cap || walking.has(p.id) || T.wanderers.some((w) => w.id === p.id)) return;
+      const road = T.layout.roadY;
+      T.wanderers.push({ id: p.id, seed: p.seed, kind: p.kind, x: 16 + Math.random() * 40, y: road + 1, tx: T.W - 24, wait: Math.random() * 2, flip: false });
+    });
   }
 
   // ---- chatter: little speech bubbles, the way a busy hall sounds ---------------------
@@ -614,21 +656,39 @@ const Town = (() => {
     return b ? { x: b.x + (Math.random() - 0.5) * 16, y: b.y - b.hw - b.hr - 8 } : null;
   }
 
+  function bubbleAt(at, text) {
+    if (!at || !el.hits) return;
+    const bubble = document.createElement("div");
+    bubble.className = "chat";
+    bubble.textContent = text;
+    bubble.style.left = pct(at.x, T.W);
+    bubble.style.top = pct(at.y, T.H);
+    el.hits.appendChild(bubble);
+    setTimeout(() => bubble.classList.add("gone"), 3400);
+    setTimeout(() => bubble.remove(), 3900);
+  }
+
   function say(p, text, delay) {
     setTimeout(() => {
       if (!el.hits) return;
-      if (typeof ChatLog !== "undefined") ChatLog.add("say", p.label || p.name, text, p.sid);
-      const at = anchorOf(p);
-      if (!at) return;
-      const bubble = document.createElement("div");
-      bubble.className = "chat";
-      bubble.textContent = text;
-      bubble.style.left = pct(at.x, T.W);
-      bubble.style.top = pct(at.y, T.H);
-      el.hits.appendChild(bubble);
-      setTimeout(() => bubble.classList.add("gone"), 3400);
-      setTimeout(() => bubble.remove(), 3900);
+      if (typeof ChatLog !== "undefined") ChatLog.add("say", p.label || p.name, text, p.sid, null, "", { local: true });
+      bubbleAt(anchorOf(p), text);
     }, delay || 0);
+  }
+
+  function speak(line) {
+    if (!line || !line.text || !T.layout || T.view !== "town") return;
+    const who = String(line.who || "");
+    const audit = line.ch === "external" && /^(GET|POST|PUT|DELETE)\b/.test(line.text);
+    if (audit) return;
+    const guildmaster = line.ch === "external" || /guild hall|guildmaster/i.test(who);
+    if (guildmaster) {
+      bubbleAt({ x: guildmasterAt(T.layout).x, y: guildmasterAt(T.layout).y - 28 }, line.text);
+      return;
+    }
+    if (line.ch !== "say" && line.ch !== "guild") return;
+    const person = (T.people || []).find((p) => who && ((p.label || p.name) === who || String(p.name || "").indexOf(who) === 0));
+    if (person) bubbleAt(anchorOf(person), line.text);
   }
 
   function reply(p, first, answer) {
@@ -669,6 +729,15 @@ const Town = (() => {
       if (w.i >= w.path.length - 1) { w.done = true; puff(w.x, w.y - 6, "smoke"); }
     });
     T.walkers = T.walkers.filter((w) => !w.done);
+    if (L && !reduced) {
+      T.wanderers.forEach((v) => {
+        if (v.wait > 0) { v.wait -= dt; return; }
+        const d = v.tx - v.x;
+        if (Math.abs(d) < 1) { v.wait = 1.5 + Math.random() * 3; v.tx = 12 + Math.random() * (T.W - 24); return; }
+        v.flip = d < 0;
+        v.x += Math.sign(d) * Math.min(Math.abs(d), dt * (T.lite ? 7 : 9));
+      });
+    }
     if (L) {
       T.villagers.forEach((v) => {
         if (v.wait > 0) { v.wait -= dt; return; }
@@ -689,12 +758,14 @@ const Town = (() => {
     g.drawImage(T.bg, 0, 0);
     const items = [];
     L.buildings.forEach((b) => items.push({ y: b.y, draw: () => {
+      if (b.dim) g.globalAlpha = 0.55;
       g.drawImage(b.art.canvas, Math.round(b.x - b.art.ox), Math.round(b.y - b.art.oy));
-      b.art.lights.forEach((l) => lights.push({ x: b.x + l.x, y: b.y + l.y, r: l.r, c: l.c, rect: [b.x + l.rect[0], b.y + l.rect[1], l.rect[2], l.rect[3]] }));
-      if (b.art.chimney && (b.busy || (b.lit && day.night))) {
+      g.globalAlpha = 1;
+      if (!b.dim) b.art.lights.forEach((l) => lights.push({ x: b.x + l.x, y: b.y + l.y, r: l.r, c: l.c, rect: [b.x + l.rect[0], b.y + l.rect[1], l.rect[2], l.rect[3]] }));
+      if (b.art.chimney && b.busy) {
         const cx = b.x - b.art.ox + b.art.chimney.x, cy = b.y - b.art.oy + b.art.chimney.y;
-        if (Math.random() < 0.08) puff(cx, cy, "smoke");
-        if (b.busy && styleOf(b.name).sparks && Math.random() < 0.15) puff(cx, cy, "spark");
+        if (Math.random() < (T.lite ? 0.04 : 0.08)) puff(cx, cy, "smoke");
+        if (b.busy && styleOf(b.name).sparks && Math.random() < (T.lite ? 0.06 : 0.15)) puff(cx, cy, "spark");
       }
     } }));
     L.trees.forEach((tr) => items.push({ y: tr.y, draw: () => g.drawImage(tr.art, tr.x - 11, tr.y - 27) }));
@@ -707,9 +778,16 @@ const Town = (() => {
     items.push({ y: L.fountain.y + 4, draw: () => drawFountain(g, L.fountain, t, lights, day) });
     T.walkers.forEach((w) => items.push({ y: w.y, draw: () => {
       sprite(g, w.seed, w.kind, "walk", Math.floor(t * 6) % 2, w.x, w.y, w.flip);
-      rect(g, Math.round(w.x + (w.flip ? -6 : 4)), Math.round(w.y - 7), 2, 3, "#f3e4c3");
+      if (w.loot) {
+        const lx = Math.round(w.x + (w.flip ? -8 : 4));
+        rect(g, lx, Math.round(w.y - 10), 5, 4, "#c48a2a");
+        rect(g, lx + 1, Math.round(w.y - 12), 3, 2, "#f6e27a");
+      } else if (w.scroll) rect(g, Math.round(w.x + (w.flip ? -6 : 4)), Math.round(w.y - 7), 2, 3, "#f3e4c3");
       if (day.night) lights.push({ x: w.x, y: w.y - 6, r: 8, c: "255,220,150" });
     } }));
+    T.wanderers.forEach((w) => items.push({ y: w.y, draw: () => sprite(g, w.seed, w.kind, w.wait > 0 ? "stand" : "walk", Math.floor(t * 5) % 2, w.x, w.y, w.flip) }));
+    const gm = guildmasterAt(L);
+    items.push({ y: gm.y, draw: () => sprite(g, "guildmaster", "cleric", "stand", 0, gm.x, gm.y, false) });
     if (!day.night || day.name === "dusk") {
       T.villagers.forEach((v) => items.push({ y: v.y, draw: () => sprite(g, v.seed, v.kind, v.wait > 0 ? "stand" : "walk", Math.floor(t * 5) % 2, v.x, v.y, v.flip) }));
     }
@@ -877,6 +955,7 @@ const Town = (() => {
       g.globalCompositeOperation = "source-over";
     }
     lights.forEach((l) => { if (l.rect) rect(g, l.rect[0], l.rect[1], l.rect[2], l.rect[3], LIT_WINDOW); });
+    if (T.view === "town") drawSky(g, t);
     if (T.view === "town" && day.night) {
       T.flies.forEach((f, i) => {
         const x = f.x + Math.sin(t * f.s + i) * 6, y = f.y + Math.cos(t * f.s * 0.8 + i) * 4;
@@ -910,11 +989,34 @@ const Town = (() => {
       gl.fillRect((l.x - l.r) * k, (l.y - l.r) * k, l.r * 2 * k, l.r * 2 * k);
     });
     gl.globalCompositeOperation = "source-over";
-    // tilt-shift: a blurred copy shows only at the top and bottom edges
-    const bl = el.blur.getContext("2d");
-    bl.imageSmoothingEnabled = false;
-    bl.clearRect(0, 0, el.blur.width, el.blur.height);
-    bl.drawImage(el.canvas, 0, 0, el.blur.width, el.blur.height);
+    // tilt-shift is the expensive pass; phones skip it
+    if (!T.lite) {
+      const bl = el.blur.getContext("2d");
+      bl.imageSmoothingEnabled = false;
+      bl.clearRect(0, 0, el.blur.width, el.blur.height);
+      bl.drawImage(el.canvas, 0, 0, el.blur.width, el.blur.height);
+    }
+  }
+
+  function drawSky(g, t) {
+    const sky = skyName();
+    if (sky === "sunny") return;
+    if (sky === "cloudy") {
+      g.globalAlpha = 0.16;
+      rect(g, 0, 0, T.W, T.H, "#8d97a6");
+      g.globalAlpha = 1;
+      return;
+    }
+    g.globalAlpha = 0.28;
+    rect(g, 0, 0, T.W, T.H, "#5d6b7c");
+    g.globalAlpha = 0.9;
+    const drops = T.lite ? 28 : 48;
+    for (let i = 0; i < drops; i++) {
+      const x = (i * 29 + t * 48) % T.W;
+      const y = (i * 47 + t * 90) % T.H;
+      rect(g, x, y, 1, 4, "#e7eef8");
+    }
+    g.globalAlpha = 1;
   }
 
   // ---- DOM: stage size, hit areas, labels ----------------------------------------------
@@ -928,7 +1030,10 @@ const Town = (() => {
     const cssW = Math.min(T.avail, 760);
     T.S = T.view === "town" ? TOWN_SCALE : ROOM_SCALE;
     T.W = Math.floor(cssW / T.S);
-    T.dpr = Math.min(3, Math.round(window.devicePixelRatio || 1));
+    const narrow = cssW < 520;
+    T.lite = narrow || reduced;
+    const dpr = window.devicePixelRatio || 1;
+    T.dpr = T.lite ? 1 : Math.min(2, dpr);
   }
 
   function applySize() {
@@ -940,7 +1045,12 @@ const Town = (() => {
     el.blur.width = Math.round(cssW / 2); el.blur.height = Math.round(cssH / 2);
     T.buf = offscreen(T.W, T.H);
     T.g = T.buf.getContext("2d");
-    T.flies = Array.from({ length: 14 }, () => ({ x: Math.random() * T.W, y: 20 + Math.random() * (T.H - 30), s: 0.5 + Math.random() }));
+    T.flies = Array.from({ length: T.lite ? 4 : 14 }, () => ({ x: Math.random() * T.W, y: 20 + Math.random() * (T.H - 30), s: 0.5 + Math.random() }));
+  }
+
+  function guildmasterAt(L) {
+    const hall = L.hall || L.buildings.find((b) => b.hall) || { x: L.W / 2, y: 40, w: 40 };
+    return { x: hall.x + Math.round((hall.w || 40) / 2) + 10, y: hall.y + 1 };
   }
 
   const pct = (v, total) => (v / total * 100).toFixed(3) + "%";
@@ -1056,7 +1166,9 @@ const Town = (() => {
       applySize();
       townHits();
       el.title.textContent = "Guild Town";
-      el.sub.textContent = daylight().name === "night" ? "Night has fallen" : "";
+      const day = daylight();
+      const sky = skyName();
+      el.sub.textContent = (day.night ? "Night in Jakarta" : day.name + " in Jakarta") + (sky === "rain" ? " · rain" : sky === "cloudy" ? " · cloudy" : "");
       el.back.hidden = true;
       el.roster.hidden = true;
     } else {
@@ -1153,7 +1265,7 @@ const Town = (() => {
     requestAnimationFrame(loop);
   }
 
-  return { init, update, enter, leave };
+  return { init, update, enter, leave, speak };
 })();
 
 Hooks.header.push((state) => Town.update(state));

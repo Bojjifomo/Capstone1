@@ -30,7 +30,7 @@ const ChatLog = (() => {
     if (near || !primed) box.scrollTop = box.scrollHeight;
   }
 
-  function add(ch, who, text, sid, ts, also) {
+  function add(ch, who, text, sid, ts, also, opts) {
     if (!text) return;
     ts = ts || Date.now() / 1000;
     const key = ch + "|" + (also || "") + "|" + Math.round(ts) + "|" + who + "|" + text;
@@ -41,6 +41,9 @@ const ChatLog = (() => {
     lines.splice(i, 0, { ch, also: also || "", who: String(who || "Guild"), text: String(text).slice(0, 300), sid: sid || null, ts });
     while (lines.length > MAX) lines.shift();
     render();
+    if (!(opts && opts.local) && typeof Town !== "undefined" && Town.speak) {
+      try { Town.speak({ ch, who: String(who || "Guild"), text: String(text).slice(0, 140), sid: sid || null }); } catch (e) { /* the map can live without a bubble */ }
+    }
   }
 
   const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Seal", hire: "Guild", dismiss: "Guild", errand: "Errand", bot: "Familiar", clean: "Vault", guild: "Guild Hall", chatter: "Guild Hall", external: "External" };
