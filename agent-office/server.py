@@ -5,8 +5,10 @@ Standard library only. Binds to 127.0.0.1 and the Tailscale IP, never 0.0.0.0.
 """
 import argparse
 import hashlib
+import hmac
 import json
 import mimetypes
+import os
 import re
 import sys
 import threading
@@ -34,6 +36,9 @@ DEFAULT_CONFIG = {
     "port": 7777,
     "bind": ["127.0.0.1", "100.89.176.76"],
     "extra_hosts": [],          # e.g. your-mac.tailnet-name.ts.net when using `tailscale serve`
+    "external_hosts": [],       # Funnel names that accept a bearer token and nothing else
+    "external_token": "",       # prefer AGENT_OFFICE_TOKEN in the environment; never commit a real token
+    "external_origin": "grokbot",
     "agents_dir": "~/Agents",
     "project_roots": ["~/Projects"],
     "claude_bin": "",           # empty = look in the usual places
@@ -50,6 +55,79 @@ def load_config():
     else:
         cfg.update(saved)
     return cfg
+
+
+def configured_token(cfg):
+    """Bearer token for external callers. The environment wins; blank means that door is shut."""
+    env = os.environ.get("AGENT_OFFICE_TOKEN", "")
+    if isinstance(env, str) and env.strip():
+        return env.strip()
+    saved = cfg.get("external_token", "")
+    if isinstance(saved, str) and saved.strip():
+        return saved.strip()
+    return ""
+
+
+def tokens_match(presented, expected):
+    """Constant-time compare. Both sides are hashed so a different length cannot skip compare_digest."""
+    if not presented or not expected:
+        return False
+    if len(presented) > 512 or len(expected) > 512:
+        return False
+    got = hashlib.sha256(presented.encode("utf-8")).digest()
+    want = hashlib.sha256(expected.encode("utf-8")).digest()
+    return hmac.compare_digest(got, want)
+
+
+def remember_host(bucket, raw, port):
+    h = str(raw).strip().lower().rstrip(".")
+    if not h:
+        return
+    bucket.add(h)
+    bare, sep, maybe = h.rpartition(":")
+    if sep and maybe.isdigit() and bare:
+        bucket.add(bare)
+    elif ":" not in h:
+        bucket.add("%s:%d" % (h, port))
+
+
+def external_origin_name(cfg):
+    name = str(cfg.get("external_origin") or "grokbot").strip()
+    if re.match(r"^[A-Za-z0-9_.:-]{1,40}$", name):
+        return name
+    return "grokbot"
+
+
+class TokenFailures:
+    """Wrong bearer attempts, per client address. A correct token clears the count."""
+
+    WINDOW = 600
+    MAX_FAILS = 8
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.events = {}
+
+    def fail(self, key):
+        now = time.time()
+        with self.lock:
+            recent = [t for t in self.events.get(key, []) if now - t < self.WINDOW]
+            recent.append(now)
+            self.events[key] = recent[-32:]
+            count = len(self.events[key])
+            if len(self.events) > 1024:  # a forged X-Forwarded-For must not grow without bound
+                stale = [k for k, v in self.events.items() if k != key and (not v or now - v[-1] >= self.WINDOW)]
+                for k in stale:
+                    self.events.pop(k, None)
+                overflow = len(self.events) - 1024
+                if overflow > 0:
+                    for k in [k for k in self.events if k != key][:overflow]:
+                        self.events.pop(k, None)
+            return count
+
+    def ok(self, key):
+        with self.lock:
+            self.events.pop(key, None)
 
 
 def compute_version():
@@ -91,16 +169,22 @@ class App:
         cfg["_dev"] = dev
         self.office = core.Office(cfg)
         self.hosts = set()
+        self.external_hosts = set()
+        self.token = configured_token(cfg)
+        self.origin_name = external_origin_name(cfg)
+        self.failures = TokenFailures()
         self.started = time.time()
 
     def allow_hosts(self, binds, port):
         for b in binds:
             self.hosts.add("%s:%d" % (b, port))
         self.hosts.add("localhost:%d" % port)
-        for h in self.cfg.get("extra_hosts", []):
+        for h in self.cfg.get("extra_hosts", []) or []:
             h = str(h).lower()
             self.hosts.add(h)
             self.hosts.add("%s:%d" % (h, port))
+        for h in self.cfg.get("external_hosts", []) or []:
+            remember_host(self.external_hosts, h, port)
 
 
 APP = None
@@ -389,6 +473,20 @@ def api_ledger(req, m):
     return {"entries": APP.office.ledger.recent()}
 
 
+@route("POST", "/api/ledger")
+def api_ledger_post(req, m):
+    """A line in the town log, for example from the external assistant."""
+    kind = " ".join(text_field(req.body, "kind", 20).split()).lower()
+    if kind not in ("guild", "chatter"):
+        raise HttpError(400, "kind must be guild or chatter")
+    text = " ".join(text_field(req.body, "text", 400).split())
+    if not text:
+        raise HttpError(400, "text is required")
+    by = " ".join(text_field(req.body, "by", 40).split())[:40] or "Guild Hall"
+    APP.office.ledger.add(kind, text[:300], by=by)
+    return {"ok": True}
+
+
 # ---- profiles: division, Haiku summaries and quick replies ----------------------
 
 @route("POST", "/api/session/" + SID + "/division")
@@ -461,7 +559,10 @@ def build_petition(item, b):
     result = APP.office.new_job(text_field(b, "project"), APP.office.petitions.brief(item), text_field(b, "mode"),
                                 model=text_field(b, "model"), code_id=text_field(b, "code_id"),
                                 code=text_field(b, "code"))
-    APP.office.petitions.mark_building(item["id"], result["sid"])
+    try:
+        APP.office.petitions.mark_building(item["id"], result["sid"])
+    except LookupError as e:
+        raise HttpError(404, str(e))
     APP.office.rename(result["sid"], "Petition: " + item["title"][:50])
     APP.office.ledger.add("build", item["title"], sid=result["sid"])
     return result
@@ -470,6 +571,8 @@ def build_petition(item, b):
 @route("POST", "/api/petitions/" + PETITION + "/decide")
 def api_petition_decide(req, m):
     b = req.body
+    if req.external and b.get("build"):
+        raise HttpError(403, "token callers approve or reject; they do not start the build")
     decision = text_field(b, "decision")
     try:
         item = APP.office.petitions.decide(m.group("petition"), decision, text_field(b, "note", 1001))
@@ -511,10 +614,33 @@ STATIC_ALIASES = {"/": "index.html", "/sw.js": "sw.js", "/manifest.webmanifest":
 
 
 class Request:
-    def __init__(self, handler, query, body):
+    def __init__(self, handler, query, body, external=False):
         self.handler = handler
         self.query = query
         self.body = body
+        self.external = external
+
+
+# Routes a bearer token may call. Session send, seals, cleaners, launchd, hiring and the
+# static UI stay closed. Risky quest modes still go through the phone seal inside new_job.
+TOKEN_ROUTES = (
+    ("GET", re.compile(r"^/api/state$")),
+    ("GET", re.compile(r"^/api/petitions$")),
+    ("GET", re.compile(r"^/api/team$")),
+    ("GET", re.compile(r"^/api/team/who$")),
+    ("GET", re.compile(r"^/api/ledger$")),
+    ("GET", re.compile(r"^/api/usage$")),
+    ("GET", re.compile(r"^/api/bots$")),
+    ("POST", re.compile(r"^/api/petitions$")),
+    ("POST", re.compile(r"^/api/petitions/[0-9a-f]{8}/decide$")),
+    ("POST", re.compile(r"^/api/team/ask$")),
+    ("POST", re.compile(r"^/api/job$")),
+    ("POST", re.compile(r"^/api/ledger$")),
+)
+
+
+def token_route_allowed(method, path):
+    return any(m == method and rx.match(path) for m, rx in TOKEN_ROUTES)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -527,6 +653,7 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
 
     def send(self, status, body, ctype="application/json; charset=utf-8", extra=None):
+        self._last_status = status
         if isinstance(body, (dict, list)):
             body = json.dumps(body).encode()
         elif isinstance(body, str):
@@ -545,13 +672,79 @@ class Handler(BaseHTTPRequestHandler):
     def deny(self, why):
         self.send(403, {"error": "forbidden", "why": why})
 
-    def host_ok(self):
-        return self.headers.get("Host", "").strip().lower() in APP.hosts
+    def request_host(self):
+        return self.headers.get("Host", "").strip().lower().rstrip(".")
 
     def origin_ok(self):
-        host = self.headers.get("Host", "").strip().lower()
+        host = self.request_host()
         origin = self.headers.get("Origin", "").strip().lower()
         return origin in ("http://" + host, "https://" + host)
+
+    def from_loopback(self):
+        peer = self.client_address[0] if self.client_address else ""
+        return peer in ("127.0.0.1", "::1")
+
+    def funnel_request(self):
+        """Public Funnel ingress. Tailscale sets this on its loopback proxy and strips a forged copy."""
+        if not self.from_loopback():
+            return False
+        return self.headers.get("Tailscale-Funnel-Request", "").strip() == "?1"
+
+    def client_key(self):
+        """Who to count failed tokens against. Funnel's proxy is loopback and puts the client in X-Forwarded-For."""
+        peer = self.client_address[0] if self.client_address else ""
+        if peer in ("127.0.0.1", "::1"):
+            parts = [p.strip() for p in self.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+            if parts and len(parts[-1]) <= 64 and re.match(r"^[0-9A-Fa-f:.]+$", parts[-1]):
+                return parts[-1]
+        return peer or "unknown"
+
+    def presented_token(self):
+        raw = self.headers.get("Authorization")
+        if raw is None:
+            return None
+        parts = raw.strip().split(None, 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return ""
+        return parts[1].strip()
+
+    def reject_token(self, key):
+        n = APP.failures.fail(key)
+        path = urlsplit(self.path).path
+        sys.stderr.write("agent-office: rejected bearer token from %s for %s %s\n" % (key, self.command, path))
+        sys.stderr.flush()
+        if n >= TokenFailures.MAX_FAILS:
+            self.send(429, {"error": "too many attempts"})
+        else:
+            self.send(401, {"error": "unauthorized"})
+
+    def token_gate(self, required):
+        """'token' (route allowlist), 'open' (today's rules), or None when the response is already sent.
+
+        A bearer token is required for external_hosts and for real Funnel requests. On an ordinary
+        host a correct token changes nothing; a wrong one is rejected so a mismatch fails closed.
+        """
+        presented = self.presented_token()
+        key = self.client_key()
+        if not APP.token:
+            if required:
+                self.reject_token(key)
+                return None
+            return "open"
+        if presented is not None and tokens_match(presented, APP.token):
+            APP.failures.ok(key)
+            return "token" if required else "open"
+        if required or presented is not None:
+            self.reject_token(key)
+            return None
+        return "open"
+
+    def audit_external(self, method, path):
+        status = getattr(self, "_last_status", 0)
+        try:
+            APP.office.ledger.add("external", "%s %s -> %s" % (method, path[:180], status), status=status)
+        except Exception:
+            traceback.print_exc()
 
     def do_GET(self):
         self.dispatch("GET")
@@ -568,52 +761,73 @@ class Handler(BaseHTTPRequestHandler):
     do_DELETE = do_PATCH = do_OPTIONS = do_PUT
 
     def dispatch(self, method):
-        if not self.host_ok():
+        host = self.request_host()
+        if host not in APP.hosts and host not in APP.external_hosts:
             return self.deny("host")
+        # external_hosts always need a token. A Funnel request to a normal host (the phone's
+        # ts.net name is already in extra_hosts) needs one too. Tailnet Serve has no such header.
+        required = host in APP.external_hosts or self.funnel_request()
+        gate = self.token_gate(required)
+        if gate is None:
+            return
+        token_mode = gate == "token"
         parts = urlsplit(self.path)
         body = {}
-        if method == "POST":
-            if self.headers.get("X-Agent-Office") != "1" or not self.origin_ok():
-                return self.deny("origin")
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = -1
-            if length < 0 or length > MAX_BODY:
-                return self.send(413, {"error": "too large"})
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                body = json.loads(raw or b"{}")
-            except ValueError:
-                return self.send(400, {"error": "bad json"})
-            if not isinstance(body, dict):
-                return self.send(400, {"error": "bad json"})
-        for m_, pattern, fn in ROUTES:
-            if m_ != method:
-                continue
-            m = pattern.match(parts.path)
-            if not m:
-                continue
-            try:
-                result = fn(Request(self, parse_qs(parts.query), body), m)
-            except HttpError as e:
-                return self.send(e.status, {"error": e.message})
-            except core.Refused as e:
-                return self.send(409, e.info)
-            except RuntimeError as e:
-                return self.send(409, {"error": str(e)})
-            except Exception:
-                traceback.print_exc()
-                return self.send(500, {"error": "server error"})
-            if result is None:  # the route already wrote its own response
-                return
-            status = 200
-            if isinstance(result, tuple):
-                status, result = result
-            return self.send(status, result, extra={"Cache-Control": "no-store"})
-        if method == "GET":
-            return self.static(parts.path)
-        self.send(404, {"error": "not found"})
+        try:
+            if token_mode:
+                panels.set_ledger_origin(APP.origin_name)
+            if method == "POST":
+                if not token_mode and (self.headers.get("X-Agent-Office") != "1" or not self.origin_ok()):
+                    return self.deny("origin")
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = -1
+                if length < 0 or length > MAX_BODY:
+                    return self.send(413, {"error": "too large"})
+                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    body = json.loads(raw or b"{}")
+                except ValueError:
+                    return self.send(400, {"error": "bad json"})
+                if not isinstance(body, dict):
+                    return self.send(400, {"error": "bad json"})
+            for m_, pattern, fn in ROUTES:
+                if m_ != method:
+                    continue
+                m = pattern.match(parts.path)
+                if not m:
+                    continue
+                if token_mode and not token_route_allowed(method, parts.path):
+                    return self.send(403, {"error": "forbidden", "why": "route"})
+                try:
+                    result = fn(Request(self, parse_qs(parts.query), body, external=token_mode), m)
+                except HttpError as e:
+                    return self.send(e.status, {"error": e.message})
+                except core.Refused as e:
+                    return self.send(409, e.info)
+                except RuntimeError as e:
+                    return self.send(409, {"error": str(e)})
+                except Exception:
+                    traceback.print_exc()
+                    return self.send(500, {"error": "server error"})
+                if result is None:  # the route already wrote its own response
+                    return
+                status = 200
+                if isinstance(result, tuple):
+                    status, result = result
+                return self.send(status, result, extra={"Cache-Control": "no-store"})
+            if token_mode:
+                return self.send(403, {"error": "forbidden", "why": "route"})
+            if method == "GET":
+                return self.static(parts.path)
+            self.send(404, {"error": "not found"})
+        finally:
+            if token_mode:
+                try:
+                    self.audit_external(method, parts.path)
+                finally:
+                    panels.set_ledger_origin(None)
 
     def static(self, path):
         name = STATIC_ALIASES.get(path)

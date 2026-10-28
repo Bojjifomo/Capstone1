@@ -325,6 +325,18 @@ def search(office, query, limit=40, budget=4.0):
 
 # ---- Ledger: what was done from the phone ---------------------------------------
 
+_ledger_origin = threading.local()
+
+
+def set_ledger_origin(origin):
+    """Mark ledger lines written on this thread. Pass "" to clear it when the request ends."""
+    _ledger_origin.value = origin or None
+
+
+def current_ledger_origin():
+    return getattr(_ledger_origin, "value", None) or None
+
+
 class Ledger:
     MAX_LINES = 2000
 
@@ -333,6 +345,9 @@ class Ledger:
         self.lock = threading.Lock()
 
     def add(self, kind, text, **extra):
+        origin = extra.get("origin") or current_ledger_origin()
+        if origin:
+            extra["origin"] = origin
         line = json.dumps(dict(extra, ts=time.time(), kind=kind, text=str(text)[:300])) + "\n"
         with self.lock:
             with open(self.path, "a", encoding="utf-8") as f:

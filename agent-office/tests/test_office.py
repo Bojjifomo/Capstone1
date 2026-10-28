@@ -32,7 +32,7 @@ class ServerCase(unittest.TestCase):
         cls.app = cls.tmp / "app"
         shutil.copytree(ROOT, cls.app, ignore=shutil.ignore_patterns("*.json", "docs", "__pycache__", "logs"))
         cls.write_config(cls.app)
-        env = dict(os.environ, HOME=str(cls.home), AGENT_OFFICE_DATA="")
+        env = dict(os.environ, HOME=str(cls.home), AGENT_OFFICE_DATA="", AGENT_OFFICE_TOKEN="")
         cls.log = open(cls.tmp / "server.log", "w")
         cls.proc = subprocess.Popen([sys.executable, "server.py", "--port", str(PORT), "--bind", "127.0.0.1", "--dev"],
                                     cwd=str(cls.app), env=env, stdout=cls.log, stderr=subprocess.STDOUT)
@@ -48,7 +48,11 @@ class ServerCase(unittest.TestCase):
         (app / "config.json").write_text(json.dumps({
             "bind": ["127.0.0.1"], "port": PORT, "claude_bin": str(app / "tests" / "fake_claude.py"),
             "project_roots": [str(cls.home / "Projects")], "agents_dir": str(cls.home / "Agents"),
-            "launchctl_bin": str(cls.home / "bin" / "launchctl")}))
+            "launchctl_bin": str(cls.home / "bin" / "launchctl"),
+            "extra_hosts": ["mac.tailnet.ts.net"],
+            "external_hosts": ["guild.example.ts.net"],
+            "external_token": "test-token-not-a-secret",
+            "external_origin": "grokbot"}))
 
     @classmethod
     def tearDownClass(cls):
@@ -563,6 +567,12 @@ class Petitions(ServerCase):
         self.assertIn("note: not now", out)
         self.assertEqual(self.post("/api/petitions", {"title": "", "plan": "x"})[0], 400)
 
+    def test_build_bad_id_is_404(self):
+        status, body = self.post("/api/petitions/deadbeef/build", {})
+        self.assertEqual(status, 404)
+        self.assertNotEqual(body.get("error"), "server error")
+        self.assertIn("no such petition", body.get("error", ""))
+
 
 class Profiles(ServerCase):
     def test_persona_pay_and_facts(self):
@@ -598,6 +608,205 @@ class Profiles(ServerCase):
         after = {x["id"] for x in self.request("GET", "/api/state")[1]["sessions"]}
         self.assertEqual(before, after)  # no stray sessions from Haiku calls
         self.assertEqual(self.request("POST", "/api/session/%s/suggest" % sid, {})[0], 403)  # still guarded
+
+
+class TokenCompare(unittest.TestCase):
+    def test_match_and_config(self):
+        import server
+        self.assertTrue(server.tokens_match("abc", "abc"))
+        self.assertFalse(server.tokens_match("abc", "abd"))
+        self.assertFalse(server.tokens_match("abc", "abcd"))
+        self.assertFalse(server.tokens_match("", "abc"))
+        self.assertFalse(server.tokens_match("a" * 513, "a" * 513))
+        names = set()
+        server.remember_host(names, "Guild.Example.ts.net.", 7777)
+        self.assertIn("guild.example.ts.net", names)
+        self.assertIn("guild.example.ts.net:7777", names)
+        old = os.environ.get("AGENT_OFFICE_TOKEN")
+        try:
+            os.environ["AGENT_OFFICE_TOKEN"] = "  from-env  "
+            self.assertEqual(server.configured_token({"external_token": "from-file"}), "from-env")
+            os.environ["AGENT_OFFICE_TOKEN"] = "   "
+            self.assertEqual(server.configured_token({"external_token": "from-file"}), "from-file")
+            os.environ.pop("AGENT_OFFICE_TOKEN", None)
+            self.assertEqual(server.configured_token({}), "")
+            self.assertEqual(server.external_origin_name({}), "grokbot")
+            self.assertEqual(server.external_origin_name({"external_origin": "hall bot!"}), "grokbot")
+        finally:
+            if old is None:
+                os.environ.pop("AGENT_OFFICE_TOKEN", None)
+            else:
+                os.environ["AGENT_OFFICE_TOKEN"] = old
+
+    def test_mark_building_bad_id(self):
+        import store
+        import petitions
+        old = store.DATA_DIR
+        tmp = Path(tempfile.mkdtemp())
+        store.DATA_DIR = tmp
+        try:
+            book = petitions.Petitions()
+            with self.assertRaises(LookupError):
+                book.mark_building("deadbeef", "not-a-session")
+            with self.assertRaises(LookupError):
+                book.mark_building("", "x")
+            self.assertEqual(book.items, [])
+        finally:
+            store.DATA_DIR = old
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+_OMIT = object()
+
+
+class ExternalAccess(ServerCase):
+    """Bearer token for Funnel and external_hosts. Local requests with no token stay as they were."""
+
+    TOKEN = "test-token-not-a-secret"
+    HOST = "guild.example.ts.net"
+    PHONE = "mac.tailnet.ts.net"
+
+    def call(self, method, path, body=None, token=_OMIT, host=None, extra=None):
+        headers = dict(extra or {})
+        if token is not None:
+            headers["Authorization"] = "Bearer " + (self.TOKEN if token is _OMIT else token)
+        return self.request(method, path, body, headers=headers, host=host or self.HOST)
+
+    def test_no_token_keeps_local_behavior(self):
+        self.assertEqual(self.request("GET", "/api/state")[0], 200)
+        self.assertEqual(self.request("GET", "/api/state", host=self.PHONE)[0], 200)  # tailnet Serve name
+        opened = self.request("GET", "/api/state", host=self.HOST, headers={"X-Forwarded-For": "203.0.113.4"})
+        self.assertEqual(opened[0], 401)
+        sid = fixtures.sid(5)
+        path = "/api/session/%s/rename" % sid
+        self.assertEqual(self.request("POST", path, {"name": "x"})[0], 403)
+        self.assertEqual(self.post(path, {"name": "Still Local"})[0], 200)
+        self.assertEqual(self.request("GET", "/", host="evil.example")[0], 403)
+
+    def test_wrong_token_is_401_and_not_logged(self):
+        secret = "nope-token-value"
+        status, body = self.call("GET", "/api/state", token=secret, extra={"X-Forwarded-For": "203.0.113.8"})
+        self.assertEqual(status, 401)
+        self.assertEqual(body.get("error"), "unauthorized")
+        self.assertNotIn(secret, json.dumps(body))
+        local = self.request("GET", "/api/state", headers={"Authorization": "Bearer " + secret})
+        self.assertEqual(local[0], 401)
+        time.sleep(0.2)
+        log = (self.tmp / "server.log").read_text()
+        self.assertIn("rejected bearer token", log)
+        self.assertNotIn(secret, log)
+        self.assertNotIn(self.TOKEN, log)
+
+    def test_valid_token_allowlist(self):
+        status, state = self.call("GET", "/api/state")
+        self.assertEqual(status, 200)
+        self.assertIn("sessions", state)
+        self.assertEqual(self.call("GET", "/api/usage")[0], 200)
+        self.assertEqual(self.call("GET", "/api/bots")[0], 200)
+        self.assertEqual(self.call("GET", "/api/team")[0], 200)
+        self.assertEqual(self.call("GET", "/api/team/who?task=tests")[0], 200)
+        self.assertEqual(self.call("GET", "/api/petitions")[0], 200)
+        self.assertEqual(self.call("GET", "/api/ledger")[0], 200)
+        self.assertEqual(self.call("GET", "/api/options")[0], 403)
+        self.assertEqual(self.call("GET", "/")[0], 403)
+        sid = fixtures.sid(4)
+        send = self.call("POST", "/api/session/%s/send" % sid, {"text": "hi", "mode": "acceptEdits"})
+        self.assertEqual(send[0], 403)
+        self.assertEqual(send[1].get("why"), "route")
+        self.assertEqual(self.call("POST", "/api/team/ask", {"name": "Nobody", "brief": "hi"})[0], 404)
+        self.assertEqual(self.call("GET", "/api/state", token=self.TOKEN, host="evil.example")[0], 403)
+
+    def test_valid_token_on_localhost_does_not_skip_origin(self):
+        sid = fixtures.sid(5)
+        path = "/api/session/%s/rename" % sid
+        headers = {"Authorization": "Bearer " + self.TOKEN}
+        self.assertEqual(self.request("POST", path, {"name": "nope"}, headers=headers)[0], 403)
+        self.assertEqual(self.post(path, {"name": "Token Local"}, headers=headers)[0], 200)
+
+    def test_funnel_header_requires_token_on_the_phone_host(self):
+        funnel = {"Tailscale-Funnel-Request": "?1", "X-Forwarded-For": "203.0.113.20"}
+        self.assertEqual(self.request("GET", "/api/state", host=self.PHONE, headers=funnel)[0], 401)
+        ok = self.call("GET", "/api/state", host=self.PHONE, extra=funnel)
+        self.assertEqual(ok[0], 200)
+        blocked = self.call("POST", "/api/staff", {"role": "x"}, host=self.PHONE, extra=funnel)
+        self.assertEqual(blocked[0], 403)
+        plain = self.request("GET", "/api/state", host=self.PHONE, headers={"Tailscale-Funnel-Request": "true"})
+        self.assertEqual(plain[0], 200)  # only the exact Tailscale marker counts
+
+    def test_ledger_post_and_audit_origin(self):
+        status, body = self.call("POST", "/api/ledger", {"kind": "chatter", "text": "The watch reports all quiet.", "by": "Guild Hall"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.call("POST", "/api/ledger", {"kind": "seal", "text": "forged"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/ledger", {"kind": "guild", "text": ""})[0], 400)
+        self.call("GET", "/api/ledger")  # its audit line is written as the response finishes
+        entries = self.call("GET", "/api/ledger")[1]["entries"]
+        posted = [e for e in entries if e.get("text") == "The watch reports all quiet."]
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0]["kind"], "chatter")
+        self.assertEqual(posted[0]["by"], "Guild Hall")
+        self.assertEqual(posted[0]["origin"], "grokbot")
+        audits = [e for e in entries if e.get("kind") == "external" and str(e.get("text", "")).startswith("POST /api/ledger")]
+        self.assertTrue(audits)
+        self.assertEqual(audits[0]["origin"], "grokbot")
+        self.assertTrue(any(str(e.get("text", "")).startswith("GET /api/ledger") for e in entries))
+
+    def test_decide_note_and_job_seal(self):
+        status, made = self.call("POST", "/api/petitions", {
+            "by": "Guild Hall", "title": "External petition", "app": "Hall", "plan": "Add a bell.", "summary": "A bell."})
+        self.assertEqual(status, 200, made)
+        pid = made["petition"]["id"]
+        built = self.call("POST", "/api/petitions/%s/decide" % pid, {"decision": "approve", "build": True, "note": "no"})
+        self.assertEqual(built[0], 403)
+        item = [p for p in self.call("GET", "/api/petitions")[1]["petitions"] if p["id"] == pid][0]
+        self.assertEqual(item["status"], "pending")
+        decided = self.call("POST", "/api/petitions/%s/decide" % pid, {"decision": "reject", "note": "not now"})
+        self.assertEqual(decided[0], 200, decided[1])
+        self.assertEqual(self.call("POST", "/api/petitions/%s/build" % pid, {})[0], 403)
+        self.assertEqual(self.call("GET", "/api/projects")[0], 403)  # folders are not on the allowlist
+        # A risky quest reaches /api/job and then stops on the seal. The project id is local-only.
+        local_projects = self.request("GET", "/api/projects")[1]["projects"]
+        project = [p for p in local_projects if p["label"].endswith("webapp")][0]["id"]
+        risky = self.call("POST", "/api/job", {"project": project, "text": "external bypass", "mode": "bypassPermissions"})
+        self.assertEqual(risky[0], 409)
+        self.assertIn("seal", risky[1].get("error", "").lower())
+        quest = self.call("POST", "/api/job", {"project": project, "text": "external pm quest", "mode": "acceptEdits", "pm": True})
+        self.assertEqual(quest[0], 200, quest[1])
+        job = [e for e in self.call("GET", "/api/ledger")[1]["entries"] if e.get("text") == "external pm quest"]
+        self.assertTrue(job)
+        self.assertEqual(job[0]["origin"], "grokbot")
+        self.assertTrue(job[0]["pm"])
+
+    def test_failed_tokens_back_off(self):
+        import server
+        fwd = {"X-Forwarded-For": "198.51.100.23"}
+        for _ in range(server.TokenFailures.MAX_FAILS - 1):
+            self.assertEqual(self.call("GET", "/api/state", token="wrong", extra=fwd)[0], 401)
+        self.assertEqual(self.call("GET", "/api/state", token="wrong", extra=fwd)[0], 429)
+        self.assertEqual(self.call("GET", "/api/state", extra=fwd)[0], 200)  # a good token clears the count
+        self.assertEqual(self.call("GET", "/api/state", token="wrong", extra=fwd)[0], 401)
+
+    def test_cli_sends_token_only_when_remote(self):
+        path = self.app / "tools" / "office"
+        script = (
+            "import importlib.machinery, json\n"
+            "m = importlib.machinery.SourceFileLoader('officecli', %r).load_module()\n"
+            "print(json.dumps(m.token_header()))\n" % str(path)
+        )
+
+        def header(url):
+            env = dict(os.environ, AGENT_OFFICE_URL=url, AGENT_OFFICE_TOKEN="remote-secret")
+            proc = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return json.loads(proc.stdout)
+
+        self.assertEqual(header("http://127.0.0.1:%d" % PORT), {})
+        self.assertEqual(header("http://localhost:7777"), {})
+        self.assertEqual(header("http://100.89.176.76:7777"), {})
+        self.assertEqual(header("https://guild.example.ts.net"), {"Authorization": "Bearer remote-secret"})
+        env = dict(os.environ, HOME=str(self.home), AGENT_OFFICE_URL="http://127.0.0.1:%d" % PORT,
+                   AGENT_OFFICE_TOKEN="nope-token-value")
+        proc = subprocess.run([sys.executable, str(path), "status"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

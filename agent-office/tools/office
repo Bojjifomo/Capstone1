@@ -13,6 +13,9 @@
   office doctor                    check the install
   office install-hook              add the Claude Code Notification hook (exact "needs you")
   office hook                      (used by the hook itself; reads the event on stdin)
+
+  AGENT_OFFICE_URL                 default http://127.0.0.1:7777
+  AGENT_OFFICE_TOKEN               sent as Authorization: Bearer when the URL is not local or tailnet
 """
 import json
 import os
@@ -29,8 +32,30 @@ HERE = Path(__file__).resolve()
 LABEL = "com.bojjifomo.agent-office"
 
 
+def _cgnat(host):
+    """Tailscale's CGNAT range, 100.64.0.0/10. The phone uses this; it is not the public Funnel."""
+    parts = host.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        a, b = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    return a == 100 and 64 <= b <= 127
+
+
+def token_header():
+    """Bearer token for a remote hall. Loopback and tailnet URLs keep today's rules."""
+    token = os.environ.get("AGENT_OFFICE_TOKEN", "").strip()
+    host = (urllib.parse.urlsplit(BASE).hostname or "").strip("[]").lower()
+    if not token or host in ("127.0.0.1", "localhost", "::1") or _cgnat(host):
+        return {}
+    return {"Authorization": "Bearer " + token}
+
+
 def call(path, body=None, timeout=30):
     headers = {"Host": urllib.parse.urlsplit(BASE).netloc}
+    headers.update(token_header())
     data = None
     if body is not None:
         data = json.dumps(body).encode()
@@ -126,7 +151,9 @@ def cmd_result(args):
 
 
 def call_quiet(path):
-    req = urllib.request.Request(BASE + path, headers={"Host": urllib.parse.urlsplit(BASE).netloc})
+    headers = {"Host": urllib.parse.urlsplit(BASE).netloc}
+    headers.update(token_header())
+    req = urllib.request.Request(BASE + path, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as res:
             return json.loads(res.read())
@@ -190,9 +217,11 @@ def cmd_hook(args):
     try:
         event = json.loads(sys.stdin.read() or "{}")
         body = {k: str(event.get(k, "")) for k in ("session_id", "notification_type", "message")}
+        headers = {"Content-Type": "application/json", "X-Agent-Office": "1",
+                   "Origin": BASE, "Host": urllib.parse.urlsplit(BASE).netloc}
+        headers.update(token_header())
         req = urllib.request.Request(BASE + "/api/hook/notify", data=json.dumps(body).encode(), method="POST",
-                                     headers={"Content-Type": "application/json", "X-Agent-Office": "1",
-                                              "Origin": BASE, "Host": urllib.parse.urlsplit(BASE).netloc})
+                                     headers=headers)
         urllib.request.urlopen(req, timeout=2).read()
     except Exception:
         pass
