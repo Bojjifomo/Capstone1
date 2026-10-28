@@ -75,6 +75,11 @@ Hooks.forms.petition = async (form, submitter) => {
     const path = act === "build" ? `/api/petitions/${pid}/decide` : `/api/petitions/${pid}/build`;
     r = await withSeal("bypass:new", isRisky(build.mode), (seal) =>
       api(path, Object.assign({ decision: "approve", build: true, note }, build, seal)));
+    if (r.queued_for_gold) {
+      toast(r.reason || "Queued until the treasury refills.");
+      Hooks.panels.petitions.render($("#sheet-body"));
+      return;
+    }
     UI.run = { id: r.run, sid: r.sid, events: [], text: "Building the approved petition", done: false, v: -1 };
     history.replaceState({ sheet: r.sid }, "");
     openSheet(r.sid, false);

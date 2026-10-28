@@ -101,6 +101,8 @@ Object.assign(Hooks.forms, {
     const brief = form.brief.value.trim();
     if (!m || !brief) return;
     const r = await api("/api/team/ask", { name: m.name, brief });
+    if (r.queued_for_gold) { toast(r.reason || "Queued until the treasury refills."); return; }
+    if (r.briefing) { toast(`${m.name} is writing today's brief.`); return; }
     UI.run = { id: r.run, sid: r.sid, events: [], text: brief, done: false, v: -1 };
     history.replaceState({ sheet: r.sid }, "");
     openSheet(r.sid, false);

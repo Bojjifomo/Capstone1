@@ -51,6 +51,12 @@ function ago(ts) {
   return Math.floor(s / 86400) + "d ago";
 }
 
+function goldLabel(n) {
+  if (n == null || n === "") return "—";
+  const rounded = Math.round(Number(n) * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
 function money(x) {
   if (!x) return "$0";
   return x < 0.01 ? "<$0.01" : "$" + x.toFixed(x < 10 ? 2 : 0);
@@ -155,7 +161,8 @@ function renderHall() {
     `<span class="t-working">⚔ ${count("working")} questing</span>` +
     `<span class="t-needs">! ${count("needs")} await you</span>` +
     `<span class="t-idle">☾ ${count("idle")} resting</span>` +
-    (UI.state.cost_today !== undefined ? `<span class="t-gold">⛁ ${money(UI.state.cost_today)} today</span>` : "");
+    (UI.state.gold ? `<span class="t-gold${UI.state.gold.paused ? " broke" : ""}">⛁ ${goldLabel(UI.state.gold.gold)} gold</span>` : "") +
+    (UI.state.cost_today !== undefined ? `<span class="t-cost">${money(UI.state.cost_today)} today</span>` : "");
   $("#greeting").textContent = `Welcome back, ${UI.state.name || "guildmaster"}.`;
   // each hook on its own, so one failing part can't take the others down
   Hooks.header.forEach((fn) => { try { fn(UI.state); } catch (e) { reportError(e, "header"); } });
@@ -406,9 +413,11 @@ async function postQuest(form) {
   const body = {
     project: form.project.value, text: form.text.value.trim(), mode: form.mode.value, model: form.model.value,
     pm: form.pm ? form.pm.checked : false,
+    override: !!(form.override && form.override.checked),
   };
   if (!body.text) return;
   const r = await withSeal("bypass:new", isRisky(body.mode), (seal) => api("/api/job", Object.assign(body, seal)));
+  if (r.queued_for_gold) { toast(r.reason || "Queued until the treasury refills."); closeSheet(); return; }
   UI.run = { id: r.run, sid: r.sid, events: [], text: body.text, done: false, v: -1 };
   history.replaceState({ sheet: r.sid }, "");
   openSheet(r.sid, false);
