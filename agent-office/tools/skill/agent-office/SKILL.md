@@ -29,7 +29,11 @@ nothing is built until they approve it from the Guild Hall on their phone:
 
 A good plan says: the problem, the change (files and modules it touches), how it will be tested, the risks
 (RPC cost, keys, data that could be wrong) and how to roll it back. When a petition is approved and built, a new
-session gets the plan and opens a pull request; it never merges.
+session gets the plan and opens a pull request; it never merges. A near-duplicate title for the same app is
+refused while one is still open. Pending petitions expire after `petition_expire_days` (default 14).
+
+Quill, in the Counting House, writes a read-only LP brief: `office brief`. That path never runs write tools.
+Do not hand Quill a normal coding errand.
 
 ## Writing a brief
 

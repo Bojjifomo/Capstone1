@@ -101,19 +101,52 @@ Tailscale sends public Funnel requests to the same MagicDNS name as Serve, and m
 
 | | |
 | --- | --- |
-| Read | `GET /api/state`, `/api/petitions`, `/api/team`, `/api/team/who`, `/api/ledger`, `/api/usage`, `/api/bots` |
-| Write | `POST /api/petitions` (new petition), `POST /api/petitions/<id>/decide` (approve or reject, with a note), `POST /api/team/ask`, `POST /api/job` (a new quest, including `"pm": true`), `POST /api/ledger` (`kind` `guild` or `chatter`, `text`, `by`) |
+| Read | `GET /api/state`, `/api/petitions`, `/api/team`, `/api/team/who`, `/api/ledger`, `/api/usage`, `/api/bots`, `/api/orchestrator` (Quill's last brief) |
+| Write | `POST /api/petitions` (new petition), `POST /api/petitions/<id>/decide` (approve or reject, with a note), `POST /api/team/ask` (not Quill), `POST /api/job` (a new quest, including `"pm": true`), `POST /api/ledger` (`kind` `guild` or `chatter`, `text`, `by`) |
 
-Anything else, including session send, hiring, launchd, cleaners, seals, push, and the static page, is 403. `decide` with `"build": true` is 403 as well; building a petition stays on the phone. A risky quest mode still needs a phone seal.
+Anything else, including session send, hiring, launchd, cleaners, seals, push, starting Quill's brief (`POST /api/orchestrator/brief` or `ask` of Quill), and the static page, is 403. `decide` with `"build": true` is 403 as well; building a petition stays on the phone. A risky quest mode still needs a phone seal.
 
 Every accepted token call is a ledger line `kind: external` with `origin` set (default `grokbot`), and that same origin is stamped on the action itself (the quest, the petition, the errand). The town chat has an **External** tab for these lines; `chatter` also shows under Chatter and `guild` under Guild.
 
 A missing or wrong token on a Funnel request or an `external_hosts` name is 401. The failure is written to the server log without the token. After 8 failures from the same client within 10 minutes the answer is 429. Funnel connects from 127.0.0.1 and sets `X-Forwarded-For` to the public client; that address is what the limit counts. A correct token clears the count. A wrong token on localhost is also 401, so a mismatched `AGENT_OFFICE_TOKEN` fails closed. A correct token on localhost does not open the allowlist and does not skip the Origin check.
 
+## Webhooks
+
+`config.json` holds a list. Each entry is a URL and an optional secret. Delivery is a background thread with a short timeout (`webhook_timeout`, default 5 seconds). A failure is one line on stderr and does not affect the page.
+
+```json
+"webhooks": [
+  {"url": "https://example.com/guild", "secret": "choose-one", "header": "X-Guild-Token"}
+]
+```
+
+Leave `header` out to send only the signature. When `secret` is set the body is signed as `X-Guild-Signature: sha256=<hex hmac-sha256 of the raw body>`. If `header` is also set, that header's value is the secret itself. `events` is an optional list; omit it to receive every event.
+
+```json
+{"event": "petition.added", "ts": 1710000000.0, "source": "agent-office", "data": {}}
+```
+
+| Event | When |
+| --- | --- |
+| `petition.added` | A petition was filed. `data` is the petition without the plan |
+| `petition.decided` | Approved, rejected, or expired (`data.decision`) |
+| `petition.closed` | Status became `merged`, `closed`, or `failed` (`data.pr_url` when there is one) |
+| `build.started` | The build quest for an approved petition started |
+| `quest.finished` | A Claude run ended (`sid`, `ok`, `cost`, `origin`) |
+| `familiar.error` | A launchd job showed a new error line |
+
+Pending petitions older than `petition_expire_days` (default 14, `0` turns it off) expire. A new petition whose title is a near-duplicate of an open one for the same app is refused. The hall still keeps at most 200 petitions and drops settled ones first.
+
+After a build quest finishes, a GitHub pull-request URL in its report is stored on the petition. Every `pr_poll_seconds` (default 300, `0` turns it off) the hall asks `gh pr view` when `gh` is on the PATH, otherwise the public GitHub API. `merged` and `closed` update the petition; if GitHub cannot be reached the status stays `building`. A quest that fails before any PR link is `failed`.
+
+## The Counting House
+
+Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
+
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`petitions.json` · `assignments.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 

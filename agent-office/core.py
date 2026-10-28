@@ -7,6 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
+import briefing
 import guard
 import panels
 import personas
@@ -16,6 +17,7 @@ import runner
 import sessions
 import store
 import team
+import webhooks
 
 ACTIVE_WINDOW = 60          # transcript written this recently = working
 IDLE_WINDOW = 2 * 3600      # after this with no process = finished
@@ -62,13 +64,18 @@ class Office:
         self.runner = runner.Runner(cfg, on_finish=self.run_finished)
         self.pusher = push.Pusher(cfg.get("push_subject", push.DEFAULT_SUBJECT))
         self.codes = guard.Codes(self.notify, dev=cfg.get("_dev", False))
+        self.hooks = webhooks.Webhooks(cfg)
+        self.briefing = briefing.Briefing(cfg, on_event=self._on_brief)
         self.team = team.Team(self)
         self.ledger = panels.Ledger()
-        self.petitions = petitions.Petitions()
+        self.petitions = petitions.Petitions(cfg)
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
         self.old = {}           # transcripts older than the scan window, loaded on demand
         self.seen = {}          # sid -> (status, working since) for notifications
+        self.familiar_seen = {}
+        self._pr_busy = False
+        self._pr_next = time.time() + self._pr_interval()
         self.monitor_started = False
 
     # ---- status -------------------------------------------------------
@@ -321,8 +328,101 @@ class Office:
             except Exception:
                 self.runner.put_back(sid, item)
 
+    def emit(self, event, data):
+        try:
+            self.hooks.fire(event, data if isinstance(data, dict) else {"value": data})
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    def _on_brief(self, phase, state):
+        name = state.get("name") or "Quill"
+        if phase == "started":
+            self.ledger.add("guild", "%s set out to write today's brief" % name, by=name)
+        elif phase == "finished":
+            text = " ".join((state.get("text") or state.get("error") or "done").split())
+            self.ledger.add("guild", text[:240] or "the brief is in", by=name)
+
+    def _pr_interval(self):
+        try:
+            return max(0.0, float(self.cfg.get("pr_poll_seconds", 300)))
+        except (TypeError, ValueError):
+            return 300.0
+
     def run_finished(self, run):
         self.scanner.last_scan = 0  # pick up the new transcript lines right away
+        item = None
+        try:
+            snap = run.public()
+            text = (snap.get("final") or "") + "\n" + "\n".join(e.get("t", "") for e in snap.get("events") or [])
+            item = self.petitions.finish_build(run.sid, bool(run.ok), text)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        data = {"sid": run.sid, "ok": bool(run.ok), "cost": run.cost, "origin": run.origin or "",
+                "text": (run.final or "")[:500]}
+        if item:
+            data.update(petition=item.get("id") or "", status=item.get("status") or "", pr_url=item.get("pr_url") or "")
+            if item.get("pr_url") and item.get("status") == "building":
+                self._pr_next = min(self._pr_next, time.time() + 5)
+            if item.get("status") in ("failed", "merged", "closed"):
+                self.ledger.add("guild", "Petition %s is %s" % (item.get("title") or item["id"], item["status"]))
+                self.emit("petition.closed", petitions.public(item))
+        self.emit("quest.finished", data)
+
+    def _expire_petitions(self):
+        try:
+            expired = self.petitions.expire()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return
+        for item in expired:
+            self.ledger.add("guild", "Petition expired: " + item["title"])
+            self.emit("petition.decided", dict(petitions.public(item), decision="expire"))
+
+    def _check_familiars(self):
+        now = time.time()
+        if now < getattr(self, "_fam_next", 0):
+            return
+        self._fam_next = now + 60
+        try:
+            jobs = self.familiars.jobs()
+        except Exception:
+            return
+        for job in jobs:
+            signature = (job.get("exit") or "", job.get("error") or "")
+            if job["id"] not in self.familiar_seen:
+                self.familiar_seen[job["id"]] = signature  # baseline, so a restart is not a new error
+                continue
+            if self.familiar_seen[job["id"]] == signature:
+                continue
+            self.familiar_seen[job["id"]] = signature
+            if not signature[1] and not job.get("failed"):
+                continue
+            self.ledger.add("bot", "familiar error: %s: %s" % (job.get("label") or job["id"], signature[1] or signature[0]))
+            self.emit("familiar.error", {"id": job["id"], "label": job.get("label") or "", "error": signature[1], "exit": signature[0]})
+
+    def _poll_prs(self):
+        try:
+            changed = self.petitions.poll_prs()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            changed = []
+        finally:
+            self._pr_busy = False
+        for item in changed:
+            self.ledger.add("guild", "Petition %s is %s" % (item.get("title") or item["id"], item["status"]))
+            self.emit("petition.closed", petitions.public(item))
+
+    def _check_prs(self):
+        interval = self._pr_interval()
+        if interval <= 0 or self._pr_busy or time.time() < self._pr_next:
+            return
+        self._pr_next = time.time() + interval
+        self._pr_busy = True
+        threading.Thread(target=self._poll_prs, daemon=True, name="pr-poll").start()
 
     def watch(self):
         """Background loop: notice status changes, push them, start queued messages."""
@@ -348,6 +448,9 @@ class Office:
                     self.seen[sid] = (status, since)
                 first = False
                 self.pump()
+                self._expire_petitions()
+                self._check_familiars()
+                self._check_prs()
             except Exception:
                 import traceback
                 traceback.print_exc()

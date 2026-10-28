@@ -6,6 +6,21 @@ function memberById(id) {
   return team.staff.find((m) => m.id === id);
 }
 
+function fillBrief(root, m, report) {
+  const slot = root.querySelector("[data-brief-slot]");
+  if (!slot) return;
+  const running = (report && report.running) || m.status === "working";
+  const text = (report && report.text) || "";
+  const err = report && report.error && !running ? report.error : "";
+  slot.dataset.briefRunning = running ? "1" : "0";
+  slot.innerHTML =
+    `<h3>Today's brief</h3>` +
+    (running ? `<p class="sub">At the books…</p>` : "") +
+    (err ? `<p class="bot-error">${esc(err)}</p>` : "") +
+    (text ? `<pre class="brief-out">${esc(text)}</pre>` : `<p class="sub">No brief yet.</p>`) +
+    `<form id="brief-form" class="form"><button type="submit" class="btn primary wide"${running ? " disabled" : ""}>Write today's brief</button></form>`;
+}
+
 Hooks.panels.staff = {
   title: "Guild member",
   render(body) {
@@ -14,7 +29,17 @@ Hooks.panels.staff = {
     MD.reset();
     $("#sheet-portrait").innerHTML = Sprites.svg(m.seed, m.kind, 44);
     $("#sheet-name").textContent = m.name;
-    $("#sheet-meta").textContent = `${m.title} · ${m.division} · ${m.model || "default model"}`;
+    $("#sheet-meta").textContent = `${m.title} · ${m.division}${m.builtin ? "" : " · " + (m.model || "default model")}`;
+    if (m.builtin) {
+      body.innerHTML = `<section class="panel-sec"><p class="bio">${esc(m.bio)}</p><p><b>Role:</b> ${esc(m.role)}</p>` +
+        `<p class="cli">From a shell on the Mac: <code>office brief</code>. Read-only tools only. Write tools stay off.</p>` +
+        `<div data-brief-slot data-brief-running="${m.status === "working" ? "1" : "0"}"></div></section>`;
+      fillBrief(body, m, { running: m.status === "working", text: m.last || "", error: "" });
+      api("/api/orchestrator").then((report) => {
+        if (UI.mode === "staff" && UI.arg === m.id) fillBrief(body, m, report);
+      }).catch(() => {});
+      return;
+    }
     body.innerHTML = `<section class="panel-sec"><p class="bio">${esc(m.bio)}</p><p><b>Role:</b> ${esc(m.role)}</p>` +
       `<p class="cli">Any session can ask them: <code>office ask ${esc(m.name.includes(" ") ? '"' + m.name + '"' : m.name)} "&lt;brief&gt;"</code></p></section>` +
       (m.last ? `<section class="panel-sec"><h3>Their last answer ${m.sid ? `<button type="button" class="btn" data-sid="${esc(m.sid)}">Open the full quest</button>` : ""}</h3>` +
@@ -24,6 +49,13 @@ Hooks.panels.staff = {
       `<button type="submit" class="btn primary wide">Send the errand</button></form></section>` +
       `<section class="panel-sec"><button type="button" class="btn danger" data-panel-act="dismiss">Dismiss from the guild</button>` +
       `<small class="hint">Their folder in ~/Agents stays as it is.</small></section>`;
+  },
+  refresh(body) {
+    const m = memberById(UI.arg);
+    if (!m || !m.builtin) return;
+    const slot = body.querySelector("[data-brief-slot]");
+    const running = m.status === "working";
+    if (!slot || (slot.dataset.briefRunning === "1") !== running) this.render(body);
   },
 };
 
@@ -57,6 +89,12 @@ Object.assign(Hooks.forms, {
     toast(r.renamed_from ? `${r.renamed_from} was taken, so welcome ${r.staff.name}!` : `Welcome, ${r.staff.name} the ${r.staff.title}!`);
     history.replaceState({ panel: "staff", arg: r.staff.id }, "");
     openPanel("staff", false, r.staff.id);
+  },
+  async "brief-form"() {
+    const m = memberById(UI.arg);
+    await api("/api/orchestrator/brief", {});
+    toast(`${m ? m.name : "Quill"} is writing today's brief.`);
+    if (Hooks.panels.staff) Hooks.panels.staff.render($("#sheet-body"));
   },
   async "errand-form"(form) {
     const m = memberById(UI.arg);

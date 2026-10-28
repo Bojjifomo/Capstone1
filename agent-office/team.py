@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import briefing
 import personas
 import sessions
 import store
@@ -70,13 +71,32 @@ class Team:
     def save(self):
         store.save("staff.json", {"staff": self.staff, "divisions": self.divisions})
 
+    def resident(self):
+        """The orchestrator, stationed in the Counting House. Not stored in staff.json."""
+        name = "Quill"
+        if self.office is not None and getattr(self.office, "briefing", None):
+            name = self.office.briefing.name
+        return {
+            "id": briefing.ORCH_ID, "name": name, "builtin": True,
+            "role": "LP orchestrator, read-only briefs", "title": "Treasurer", "kind": "cleric",
+            "division": "The Counting House", "model": "", "seed": "quill-orchestrator",
+            "folder": "", "instructions": "Runs python3 -m orchestrator brief. Write tools stay off.",
+            "bio": ("%s keeps the Counting House: a read-only brief of wallets, pools and the web showcase. "
+                    "Write tools never run unless you start the orchestrator yourself.") % name,
+        }
+
     def find(self, key):
         key = str(key).strip().lower()
         exact = [s for s in self.staff if s["id"] == key or s["name"].lower() == key]
         if exact:
             return exact[0]
         first = [s for s in self.staff if s["name"].lower().split()[0] == key]
-        return first[0] if len(first) == 1 else None  # "lyra" is ambiguous once there is a Lyra II
+        if len(first) == 1:
+            return first[0]  # "lyra" is ambiguous once there is a Lyra II
+        resident = self.resident()
+        if key in (resident["id"], resident["name"].lower(), resident["name"].lower().split()[0]):
+            return resident
+        return None
 
     def free_name(self, wanted):
         taken = {s["name"].lower() for s in self.staff}
@@ -136,7 +156,7 @@ class Team:
     def dismiss(self, sid):
         with self.lock:
             member = self.find(sid)
-            if not member:
+            if not member or member.get("builtin"):
                 return False
             self.staff.remove(member)  # their folder in ~/Agents stays put
             used = {s["division"] for s in self.staff}
@@ -209,7 +229,27 @@ class Team:
                                                   name=s["name"], title=s["title"], topic=s["role"].lower()))
             entry["persona"]["bio"] = s["bio"] + " " + entry["persona"]["bio"]
             out.append(entry)
-        return {"staff": out, "divisions": list(self.divisions)}
+        out.append(self._resident_entry())
+        divisions = list(self.divisions)
+        if "The Counting House" not in divisions:
+            divisions.append("The Counting House")
+        return {"staff": out, "divisions": divisions}
+
+    def _resident_entry(self):
+        member = self.resident()
+        state = self.office.briefing.public() if getattr(self.office, "briefing", None) else {}
+        running = bool(state.get("running"))
+        status = "working" if running else "idle"
+        note = "writing today's brief" if running else ""
+        text = state.get("text") or ""
+        active = state.get("ended") or time.time()
+        entry = {k: member[k] for k in ("id", "name", "role", "title", "kind", "seed", "division", "bio", "model")}
+        entry.update(status=status, note=note, sid="", active=active, builtin=True,
+                     last=text[-300:], pay={"today": 0.0, "week": 0.0, "month": 0.0},
+                     persona=personas.persona(member["seed"], member["role"], name=member["name"],
+                                              title=member["title"], topic="LP briefs"))
+        entry["persona"]["bio"] = member["bio"] + " " + entry["persona"]["bio"]
+        return entry
 
     def pay_of(self, member):
         total = {"today": 0.0, "week": 0.0, "month": 0.0}
@@ -227,6 +267,11 @@ class Team:
         brief = str(brief).strip()
         if not brief:
             raise ValueError("the brief is empty")
+        if member.get("builtin"):
+            # The text is only a label. The process is always `orchestrator brief`, read-only.
+            result = self.office.briefing.start()
+            result["name"] = member["name"]
+            return result
         Path(member["folder"]).mkdir(parents=True, exist_ok=True)
         result = self.office.new_job(member["folder"], brief, member.get("mode", "acceptEdits"),
                                      model=member.get("model", "sonnet"), helper=True, origin=origin)
