@@ -5,7 +5,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
-FIELDS = ("watts", "cpu_w", "gpu_w", "ane_w", "chip_w")
+PARTS = ("watts", "cpu", "gpu", "ane", "ram", "other")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS minutes (
@@ -26,7 +26,7 @@ def local_midnight(now):
 class Meter:
     def __init__(self, db_path, live_seconds=3600, keep_days=90, max_gap=10.0):
         self.lock = threading.Lock()
-        self.live = deque(maxlen=live_seconds)   # (ts, watts, cpu_w, gpu_w)
+        self.live = deque(maxlen=live_seconds)   # (ts, watts, cpu, gpu, ane, ram, other)
         self.latest = None
         self.max_gap = max_gap                   # longer gaps (sleep, restart) count no energy
         self.keep_days = keep_days
@@ -63,8 +63,11 @@ class Meter:
             b[6] += wh
             b[7] += 1
             self.latest = dict(sample, ts=now)
+            other = sample.get("other_w")
             self.live.append((round(now, 1), round(w, 2), round(sample.get("cpu_w") or 0, 2),
-                              round(sample.get("gpu_w") or 0, 2)))
+                              round(sample.get("gpu_w") or 0, 2), round(sample.get("ane_w") or 0, 3),
+                              round(sample.get("ram_w") or 0, 3),
+                              round(other, 2) if other is not None else None))
             self.error = None
 
     def _flush(self):
@@ -101,6 +104,21 @@ class Meter:
     def live_since(self, since):
         with self.lock:
             return [p for p in self.live if p[0] >= since]
+
+    def window_stats(self, seconds, now=None):
+        """Average per part over the last `seconds`, plus the lowest and highest total."""
+        now = time.time() if now is None else now
+        pts = self.live_since(now - seconds)
+        if not pts:
+            return {"seconds": seconds, "n": 0, "avg": None, "min_w": None, "max_w": None}
+
+        def avg(i):
+            vals = [p[i] for p in pts if p[i] is not None]
+            return round(sum(vals) / len(vals), 3) if vals else None
+
+        parts = dict(zip(PARTS, (avg(i) for i in range(1, 7))))
+        totals = [p[1] for p in pts]
+        return {"seconds": seconds, "n": len(pts), "avg": parts, "min_w": min(totals), "max_w": max(totals)}
 
     def history(self, since, bucket):
         """Average watts per `bucket` seconds since `since`: [(ts, avg_w, max_w, wh)]."""

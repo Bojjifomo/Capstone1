@@ -43,6 +43,24 @@ Catatan: angka dari sensor Mac belum termasuk rugi-rugi adaptor daya internal, j
 biasanya beberapa watt lebih gede. Mau 100% akurat, pake smart plug yang ada power meter-nya.
 Mac mini M-series biasanya idle ~5–8 W, kerja berat 30–60 W (M4 Pro bisa lebih).
 
+## Rincian pemakaian
+
+Kartu **Pemakaian dari mana** misahin total watt jadi:
+
+| Bagian | Artinya |
+| --- | --- |
+| CPU, GPU, ANE, RAM | Langsung dari sensor chip |
+| Lainnya | Total Mac dikurangi bagian di atas: SSD, kipas, port USB / Thunderbolt + apa pun yang dicolok ke Mac, rugi-rugi adaptor |
+
+Tab **Sekarang** (rata-rata beberapa detik), **5 mnt**, dan **1 jam**. Buat ngetes idle: matiin layar, tutup semua
+app, tunggu 5 menit, liat tab 5 mnt (ada angka terendah & tertingginya).
+
+Mac mini dayanya dari kabel power ke tembok, nggak dari USB-C monitor (nggak punya input charging USB-C), jadi
+monitor nggak ikut keitung. Watt monitor cuma bisa diukur pake smart plug / watt meter di kabel monitornya.
+Per aplikasi nggak ada: sensor Mac nggak misahin sampe situ.
+
+Kalau sumbernya `powermetrics`, "Lainnya" nggak ada karena dia cuma ngukur chip.
+
 ## Setting
 
 Bikin `config.json` di sebelah `server.py` (nggak ke-commit), isi yang mau diganti aja:
@@ -75,6 +93,7 @@ Semua `GET`, JSON:
 | --- | --- |
 | `/api/now` | Sampel terakhir (watt total, CPU, GPU, ANE, suhu), status `busy`/`idle`/`offline`, Wh + biaya hari ini, rata-rata 1 jam, proyeksi kWh/bulan |
 | `/api/live?seconds=600` | Titik per detik, maksimal 1 jam terakhir |
+| `/api/window?seconds=300` | Rata-rata per bagian (total, CPU, GPU, ANE, RAM, Lainnya) + watt terendah & tertinggi di rentang itu, 2 detik sampai 1 jam |
 | `/api/history?hours=24` | Rata-rata per menit / 5 menit / jam |
 | `/api/daily?days=14` | kWh, rata-rata, puncak, biaya per hari |
 

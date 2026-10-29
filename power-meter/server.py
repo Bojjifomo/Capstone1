@@ -5,9 +5,11 @@ Standard library only. Binds to 127.0.0.1 and the Tailscale IP, never 0.0.0.0.
 """
 import argparse
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -39,6 +41,7 @@ DEFAULT_CONFIG = {
     "keep_days": 90,
 }
 
+TS_NET = ipaddress.ip_network("100.64.0.0/10")
 TS_PATHS = ["tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale",
             "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
 
@@ -54,7 +57,20 @@ def load_config():
     return cfg
 
 
+def ip_from_ifconfig(text):
+    """First address in Tailscale's 100.64.0.0/10 range in `ifconfig` output."""
+    for m in re.finditer(r"\binet (\d+\.\d+\.\d+\.\d+)", text):
+        try:
+            if ipaddress.ip_address(m.group(1)) in TS_NET:
+                return m.group(1)
+        except ValueError:
+            continue
+    return None
+
+
 def tailscale_ip():
+    """The Mac's Tailscale IPv4. Asks the CLI first; launchd often cannot run it (not on its
+    PATH, or the app binary refuses), so fall back to reading the network interfaces."""
     for ts in TS_PATHS:
         try:
             out = subprocess.run([ts, "ip", "-4"], capture_output=True, text=True, timeout=5)
@@ -62,6 +78,14 @@ def tailscale_ip():
             continue
         ip = out.stdout.strip().splitlines()[0] if out.returncode == 0 and out.stdout.strip() else ""
         if ip.startswith("100."):
+            return ip
+    for cmd in (["/sbin/ifconfig"], ["ifconfig"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        ip = ip_from_ifconfig(out.stdout)
+        if ip:
             return ip
     return None
 
@@ -175,6 +199,9 @@ def make_handler(m, cfg):
             if p == "/api/live":
                 secs = min(3600, max(10, int((q.get("seconds") or ["600"])[0])))
                 return self._send(200, {"points": m.live_since(now - secs)}, extra=extra)
+            if p == "/api/window":
+                secs = min(3600, max(2, int((q.get("seconds") or ["300"])[0])))
+                return self._send(200, m.window_stats(secs, now), extra=extra)
             if p == "/api/history":
                 hours = min(24 * 90, max(1, int((q.get("hours") or ["24"])[0])))
                 bucket = 60 if hours <= 6 else 300 if hours <= 48 else 3600
@@ -233,9 +260,8 @@ def main(argv=None):
 
     threads = []
     for addr in cfg["bind"]:
-        retry = False
+        retry = addr not in ("127.0.0.1", "localhost", "::1")   # a Tailscale IP may not exist yet at login
         if addr == "tailscale":
-            retry = True
             addr = tailscale_ip()
             if not addr:
                 def later(port=cfg["port"]):

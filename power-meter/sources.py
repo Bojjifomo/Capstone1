@@ -28,6 +28,14 @@ def _num(v):
     return f if math.isfinite(f) else None
 
 
+def other_w(system, chip, ram):
+    """Whole-Mac watts minus chip and RAM: SSD, fans, USB/Thunderbolt ports and what is plugged
+    into them, plus power-supply loss. None when the source only knows the chip."""
+    if not system or system <= 0 or chip is None:
+        return None
+    return max(0.0, system - chip - (ram or 0.0))
+
+
 def parse_macmon(line):
     """One `macmon pipe` JSON line -> sample dict (watts), or None for junk."""
     try:
@@ -55,6 +63,7 @@ def parse_macmon(line):
         "gpu_w": gpu,
         "ane_w": ane,
         "ram_w": _num(d.get("ram_power")),
+        "other_w": other_w(system, chip, _num(d.get("ram_power"))),
         "cpu_temp": _num(temp.get("cpu_temp_avg")) if isinstance(temp, dict) else None,
         "cpu_usage": max(usage) if usage else None,
         "gpu_usage": _num(d.get("gpu_usage")),
@@ -81,7 +90,7 @@ def parse_powermetrics(blob):
     if chip is None:
         return None
     return {"watts": chip, "system_w": None, "chip_w": chip, "cpu_w": cpu, "gpu_w": gpu,
-            "ane_w": ane, "ram_w": None, "cpu_temp": None, "cpu_usage": None, "gpu_usage": None}
+            "ane_w": ane, "ram_w": None, "other_w": None, "cpu_temp": None, "cpu_usage": None, "gpu_usage": None}
 
 
 def find_macmon():
@@ -142,7 +151,7 @@ def fake_stream(interval_ms):
         gpu = max(0.0, busy ** 4 * 8 + random.uniform(-0.2, 0.2))
         chip = cpu + gpu
         yield {"watts": chip + 5.2, "system_w": chip + 5.2, "chip_w": chip, "cpu_w": cpu,
-               "gpu_w": gpu, "ane_w": 0.0, "ram_w": 0.3, "cpu_temp": 40 + busy * 30,
+               "gpu_w": gpu, "ane_w": 0.0, "ram_w": 0.3, "other_w": 4.9, "cpu_temp": 40 + busy * 30,
                "cpu_usage": busy, "gpu_usage": busy ** 2}
         time.sleep(interval_ms / 1000.0)
 

@@ -137,6 +137,53 @@
     } catch (e) { /* ignore */ }
   }
 
+  const PARTS = [["cpu", "CPU"], ["gpu", "GPU"], ["ane", "ANE"], ["ram", "RAM"], ["other", "Lainnya"]];
+  let bdSecs = 5;
+
+  async function tickBreakdown() {
+    try {
+      const d = await get("/api/window?seconds=" + bdSecs);
+      const bar = $("bar"), tb = document.querySelector("#bd tbody");
+      bar.textContent = ""; tb.textContent = "";
+      if (!d.avg) { $("idleNote").textContent = "nunggu data…"; return; }
+      const total = d.avg.watts;
+      PARTS.forEach(([k, label]) => {
+        const v = d.avg[k];
+        if (k === "other" && v == null) return;
+        if (v != null && total > 0) {
+          const seg = document.createElement("div");
+          seg.className = "seg " + k;
+          seg.style.width = (v / total * 100) + "%";
+          bar.appendChild(seg);
+        }
+        const tr = document.createElement("tr");
+        const name = document.createElement("td");
+        const dot = document.createElement("span");
+        dot.className = "dot " + k;
+        name.appendChild(dot); name.appendChild(document.createTextNode(label));
+        const w = document.createElement("td");
+        w.textContent = v == null ? "–" : v < 10 ? v.toFixed(2) + " W" : v.toFixed(1) + " W";
+        const pct = document.createElement("td");
+        pct.textContent = v == null || total <= 0 ? "" : Math.round(v / total * 100) + "%";
+        [name, w, pct].forEach((c) => tr.appendChild(c));
+        tb.appendChild(tr);
+      });
+      const span = bdSecs >= 3600 ? "1 jam" : bdSecs >= 300 ? "5 menit" : "beberapa detik";
+      $("idleNote").textContent = "Rata-rata " + span + " terakhir: " + fmtW(total) + " (terendah " + fmtW(d.min_w) +
+        ", tertinggi " + fmtW(d.max_w) + "). " + (d.avg.other == null
+          ? "Sumber cuma ngukur chip, jadi \"Lainnya\" nggak ada."
+          : "Lainnya = SSD, kipas, port + yang dicolok ke Mac, rugi adaptor. Tes idle: matiin layar, tutup semua app, tunggu 5 menit, liat tab 5 mnt.");
+    } catch (e) { /* tickNow already shows the problem */ }
+  }
+
+  $("bdRange").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    bdSecs = +b.dataset.s;
+    document.querySelectorAll("#bdRange button").forEach((x) => x.classList.toggle("on", x === b));
+    tickBreakdown();
+  });
+
   $("range").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
@@ -146,10 +193,11 @@
   });
   window.addEventListener("resize", tickChart);
 
-  tickNow(); tickChart(); tickDays();
+  tickNow(); tickChart(); tickDays(); tickBreakdown();
   setInterval(tickNow, 2000);
+  setInterval(tickBreakdown, 2000);
   setInterval(() => { if (range.startsWith("live")) tickChart(); }, 2000);
   setInterval(() => { if (!range.startsWith("live")) tickChart(); }, 60000);
   setInterval(tickDays, 60000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) { tickNow(); tickChart(); } });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { tickNow(); tickChart(); tickBreakdown(); } });
 })();
