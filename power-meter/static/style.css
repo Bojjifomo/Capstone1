@@ -1,17 +1,20 @@
 :root {
   --bg: #f4f5f7; --card: #ffffff; --ink: #14161a; --muted: #6b7280; --line: #e5e7eb;
   --tot: #2563eb; --cpu: #f59e0b; --gpu: #10b981;
+  --ane: #8b5cf6; --ram: #0891b2; --other: #9ca3af;
   --busy: #dc2626; --idle: #16a34a; --off: #9ca3af;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1115; --card: #181b21; --ink: #f3f4f6; --muted: #9aa1ad; --line: #2a2f38;
     --tot: #60a5fa; --cpu: #fbbf24; --gpu: #34d399;
+    --ane: #a78bfa; --ram: #22d3ee; --other: #6b7280;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0f1115; --card: #181b21; --ink: #f3f4f6; --muted: #9aa1ad; --line: #2a2f38;
   --tot: #60a5fa; --cpu: #fbbf24; --gpu: #34d399;
+  --ane: #a78bfa; --ram: #22d3ee; --other: #6b7280;
 }
 * { box-sizing: border-box; }
 body {
@@ -54,3 +57,10 @@ th, td { text-align: right; padding: 5px 4px; border-bottom: 1px solid var(--lin
 th:first-child, td:first-child { text-align: left; }
 th { color: var(--muted); font-weight: 500; }
 footer { font-size: 12px; text-align: center; margin-top: 12px; }
+.bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 4px 0 10px; }
+.seg { min-width: 2px; }
+.seg.cpu { background: var(--cpu); } .seg.gpu { background: var(--gpu); } .seg.ane { background: var(--ane); }
+.seg.ram { background: var(--ram); } .seg.other { background: var(--other); }
+.dot.ane { background: var(--ane); } .dot.ram { background: var(--ram); } .dot.other { background: var(--other); }
+#bd td:first-child { text-align: left; }
+.note { font-size: 12px; margin: 10px 0 0; }

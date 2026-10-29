@@ -199,6 +199,9 @@ def make_handler(m, cfg):
             if p == "/api/live":
                 secs = min(3600, max(10, int((q.get("seconds") or ["600"])[0])))
                 return self._send(200, {"points": m.live_since(now - secs)}, extra=extra)
+            if p == "/api/window":
+                secs = min(3600, max(2, int((q.get("seconds") or ["300"])[0])))
+                return self._send(200, m.window_stats(secs, now), extra=extra)
             if p == "/api/history":
                 hours = min(24 * 90, max(1, int((q.get("hours") or ["24"])[0])))
                 bucket = 60 if hours <= 6 else 300 if hours <= 48 else 3600
