@@ -157,6 +157,29 @@ class Team:
                 "- Work only inside the folders the brief names.\n") % (
             m["name"], m["title"], m["name"], m["role"], m["instructions"] or "(none yet)")
 
+    def set_model(self, key, model, by="bojjifomo"):
+        """Move a specialist to haiku, sonnet or opus. Opus seats are limited; only bojjifomo changes the CEO's."""
+        if model not in ("haiku", "sonnet", "opus"):
+            raise ValueError("pick haiku, sonnet or opus")
+        with self.lock:
+            member = self.find(key)
+            if not member:
+                raise LookupError("no teammate called %r" % key)
+            if member.get("builtin"):
+                raise ValueError("%s is not a Claude Code session" % member["name"])
+            chain = getattr(self.office, "chain", None)
+            if chain and chain.roles.get("ceo") == member["id"] and by != "bojjifomo":
+                raise PermissionError("only bojjifomo changes the CEO's model")
+            old = member.get("model") or "default"
+            if model == "opus" and old != "opus":
+                seats = chain.settings["opus_seats"] if chain else 2
+                used = sum(1 for s in self.staff if s.get("model") == "opus")
+                if used >= seats:
+                    raise RuntimeError("the %d Opus seats are taken; free one first" % seats)
+            member["model"] = model
+            self.save()
+        return member, old
+
     def dismiss(self, sid):
         with self.lock:
             member = self.find(sid)

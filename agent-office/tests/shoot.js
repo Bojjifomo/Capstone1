@@ -171,6 +171,25 @@ const SCENES = {
     await page.screenshot({ path: out("interns") });
     await closeSheet(page);
   },
+  async usage(page) {
+    await page.evaluate(async () => {
+      const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body || {}) }).then((r) => r.json());
+      await post("/api/staff", { name: "Lyra", role: "LP ops monitor (devops)", instructions: "Watch the LP tools.", division: "The Watchtower", model: "opus" });
+      await post("/api/chain/recruit/ceo");
+      await post("/api/chain/recruit/ops");
+    });
+    await wait(page, 500);
+    await page.click(".toolbar [data-open=report]");
+    await wait(page, 1500);
+    await page.screenshot({ path: out("top") });
+    await page.evaluate(() => document.querySelector("#sheet-body").scrollTo(0, 700));
+    await wait(page, 300);
+    await page.screenshot({ path: out("spenders") });
+    await page.evaluate(() => document.querySelector("#sheet-body").scrollTo(0, 99999));
+    await wait(page, 300);
+    await page.screenshot({ path: out("ceo") });
+    await closeSheet(page);
+  },
   async life(page) {
     await page.evaluate(async () => {
       const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) }).then((r) => r.json());

@@ -4,7 +4,7 @@
 
 const CHAIN_LEVEL = { warden: "their warden", ops: "the Operations Manager", ceo: "the CEO", you: "you" };
 const CHAIN_RUNG = {
-  ceo: ["👑", "CEO", "Steps in when the Operations Manager fails, gets stuck, or cannot fix an incident."],
+  ceo: ["👑", "CEO", "Steps in when the Operations Manager fails or cannot fix an incident, and keeps the purse: picks Haiku, Sonnet or Opus for each person."],
   ops: ["⚔️", "Operations Manager", "The orchestrator: makes rounds over every intern and sends the right person."],
   innovator: ["✒️", "Innovator", "Reviews the interns and their incidents, then files petitions for you."],
 };
@@ -40,13 +40,15 @@ function rungHTML(role, p, staff) {
       (down ? ` <span class="tag t-down">down</span>` : r.running ? ` <span class="tag t-work">on a round</span>` : "")
     : `<i>vacant</i>`;
   const action = role === "innovator" ? "Review now" : role === "ceo" ? "Summon now" : "Run a round now";
+  const budget = role === "ceo" && p.name
+    ? `<button type="button" class="btn" data-panel-act="chain-round" data-kind="budget">Budget review now</button>` : "";
   return `<div class="rung r-${role}${down ? " down" : ""}"><span class="rung-icon" aria-hidden="true">${icon}</span>` +
     `<div class="rung-body"><p class="rung-title">${esc(title)} · ${who}</p><p class="sub">${esc(what)}</p>` +
     (p.name ? `<p class="sub">${esc(roundLine(r))}</p>` +
       (r.summary ? `<details><summary>Their last report</summary><div class="md">${MD.render(r.summary)}</div></details>` : "") : "") +
     `<div class="btn-row">` +
     (p.name ? `<button type="button" class="btn" data-panel-act="chain-round" data-kind="${role}">${action}</button>` +
-      (r.sid ? `<button type="button" class="btn" data-sid="${esc(r.sid)}">Open the round</button>` : "")
+      budget + (r.sid ? `<button type="button" class="btn" data-sid="${esc(r.sid)}">Open the round</button>` : "")
       : `<button type="button" class="btn primary" data-panel-act="chain-recruit" data-role="${role}">Recruit one</button>`) +
     `</div><form class="form inline" data-form="chain-appoint" data-role="${role}"><select name="staff" aria-label="Appoint ${esc(title)}">` +
     staffOptions(staff, p.staff, p.name ? "Nobody (leave vacant)" : "Appoint someone already in the guild…") +
@@ -108,6 +110,8 @@ function settingsHTML(s, dispatched) {
     `<div class="two">${n("check_minutes", "Check every (min)", 1, 240)}${n("fail_after", "Failed checks before an incident", 1, 10)}</div>` +
     `<div class="two">${n("ops_every_hours", "Ops round every (h)", 1, 72)}${n("innovator_every_days", "Innovator review every (days)", 1, 60)}</div>` +
     `<div class="two">${n("stuck_minutes", "A round is stuck after (min)", 15, 600)}${n("max_auto_per_day", "Automatic dispatches per day", 0, 100)}</div>` +
+    `<div class="two">${n("review_hours", "CEO budget review every (h, 0 = off)", 0, 168)}${n("guard_pct", "Ration at % of daily budget", 10, 100)}</div>` +
+    `<div class="two">${n("opus_seats", "Opus seats", 0, 20)}<span></span></div>` +
     `<p class="sub">Today: ${esc((dispatched && dispatched.n) || 0)} automatic dispatches.</p>` +
     `<button type="submit" class="btn primary wide">Save</button></form>`;
 }
@@ -153,7 +157,7 @@ Object.assign(Hooks.forms, {
   },
   async "chain-settings-form"(form) {
     const body = { auto: form.auto.checked };
-    ["check_minutes", "fail_after", "ops_every_hours", "innovator_every_days", "stuck_minutes", "max_auto_per_day"]
+    ["check_minutes", "fail_after", "ops_every_hours", "innovator_every_days", "stuck_minutes", "max_auto_per_day", "review_hours", "guard_pct", "opus_seats"]
       .forEach((k) => { body[k] = form[k].value; });
     await api("/api/chain/settings", body);
     toast(body.auto ? "Autopilot is on." : "Autopilot is off.");

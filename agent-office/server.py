@@ -26,6 +26,7 @@ import core  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
+import report  # noqa: E402
 import runner  # noqa: E402
 import store  # noqa: E402
 import team  # noqa: E402
@@ -458,6 +459,36 @@ def api_usage(req, m):
     return panels.usage(APP.office)
 
 
+@route("GET", "/api/usage/report")
+def api_usage_report(req, m):
+    try:
+        days = int((req.query.get("days") or ["7"])[0])
+    except ValueError:
+        raise HttpError(400, "days must be a number")
+    data = report.build(APP.office, days)
+    data["text"] = report.text(data)
+    data["guard"] = APP.office.chain.guard_view()
+    return data
+
+
+@route("POST", "/api/team/model")
+def api_team_model(req, m):
+    """Move a specialist between haiku, sonnet and opus. `by` names who asked (the office CLI sends its folder)."""
+    by = text_field(req.body, "by", 40) or "bojjifomo"
+    try:
+        member, old = APP.office.team.set_model(text_field(req.body, "name", 80), text_field(req.body, "model", 12), by=by)
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+    except PermissionError as e:
+        raise HttpError(403, str(e))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+    APP.office.ledger.add("guild", "%s moved %s from %s to %s" % (by, member["name"], old, member["model"]), by=by)
+    return {"name": member["name"], "model": member["model"], "was": old}
+
+
 @route("GET", "/api/bots")
 def api_bots(req, m):
     return {"jobs": APP.office.familiars.jobs(), "mac": sys.platform == "darwin"}
@@ -593,7 +624,7 @@ def api_chain_recruit(req, m):
     return {"staff": {k: member[k] for k in ("id", "name", "title")}}
 
 
-@route("POST", r"/api/chain/round/(?P<kind>ops|innovator|ceo)")
+@route("POST", r"/api/chain/round/(?P<kind>ops|innovator|ceo|budget)")
 def api_chain_round(req, m):
     return chain_call(APP.office.chain.start_round, m.group("kind"))
 

@@ -38,6 +38,7 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 | The guild | Recruited specialists in `~/Agents/<name>`, grouped into division wings; `office team / who / ask / result` |
 | Chain of command | ⚜️ Chain: your programs as **interns** with health checks, a **warden** for each, the **Innovator**, the **Operations Manager** (orchestrator) and the **CEO** as its backup. Broken interns climb warden → ops → CEO → your phone. See [Chain of command](#chain-of-command) |
 | Petitions | Update proposals from the guild (`office propose`): read the plan, then Approve & build (a quest that ends in a PR, never a merge), Approve for later, or Reject with a note |
+| Usage | 📊 Usage: where the gold goes by person, kind of work (you / chain / guild), model and project, with savings ideas priced from the same tokens and one-tap model switches. See [Usage control](#usage-control) |
 | Treasury | Tokens and estimated cost per day, model and session |
 | Familiars | Your launchd jobs: running, last run, last error, Run now |
 | Vault | Free space, the biggest folders, six fixed cleaners (each needs a phone seal) |
@@ -164,6 +165,26 @@ office check "RH Wallet Finder"       # check one intern now (exit 1 when down)
 office incident 0fa7a4 resolve "re-ran the sync"
 office round ops|innovator|ceo        # start a round now
 ```
+
+## Usage control
+
+📊 **Usage** reads the transcripts (tokens at API list prices, so an estimate) and shows: today / 7 days / a month at this rate,
+the split between *Your own sessions*, *Guild errands* and *Chain*, the split by Opus / Sonnet / Haiku, the biggest spenders with a
+model switch each, spend by project, and **ideas** with the saving worked out from the same tokens ("$6 on Opus; the same tokens on
+Sonnet cost about $3"). `office usage [days]` prints the same report.
+
+The **CEO keeps the purse**. Every `review_hours` (default 24, `0` turns it off) the CEO gets that report and the model guide
+(Haiku for checks, lookups and summaries; Sonnet for everyday coding, rounds and petitions; Opus for hard design and tricky bugs),
+and may move people with `office model <name> <haiku|sonnet|opus>`: at most 3 changes a review, written to the guild log, never their
+own model. *Budget review now* in ⚜️ Chain or 📊 Usage runs one on demand.
+
+Guard rails, all enforced by the server and not only asked for in a brief:
+
+* **Opus seats** (`opus_seats`, default 2): a move to Opus is refused while all seats are taken.
+* Only bojjifomo (the phone) can change the CEO's model.
+* **Rationing**: with `daily_budget_usd` set, at `guard_pct` of it (default 80%) the automatic rounds and reviews stop and a push says
+  so. Incidents still get through until the treasury is empty, which already holds back new quests.
+* Token callers cannot read the report or change models.
 
 ## Webhooks
 

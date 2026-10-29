@@ -30,9 +30,13 @@ DEFAULTS = {
     "innovator_every_days": 7,    # the innovator's review
     "stuck_minutes": 90,          # a round still running after this counts as failed
     "max_auto_per_day": 12,       # automatic dispatches (incidents and rounds) per day
+    "review_hours": 24,           # the CEO's budget review (0 = off)
+    "guard_pct": 80,              # at this share of the daily budget, automatic rounds stop
+    "opus_seats": 2,              # how many specialists may run on Opus at once
 }
 LIMITS = {"check_minutes": (1, 240), "fail_after": (1, 10), "ops_every_hours": (1, 72),
-          "innovator_every_days": (1, 60), "stuck_minutes": (15, 600), "max_auto_per_day": (0, 100)}
+          "innovator_every_days": (1, 60), "stuck_minutes": (15, 600), "max_auto_per_day": (0, 100),
+          "review_hours": (0, 168), "guard_pct": (10, 100), "opus_seats": (0, 20)}
 MODE = "auto"  # Claude Code's guarded auto mode: no prompts, risky actions still blocked
 
 # What `office chain` / the panel use to recruit a missing role.
@@ -103,6 +107,24 @@ What failed: {reasons}
 {history}
 Take over: fix it yourself or send someone better suited (`{cli} team`, `{cli} ask <name> "<brief>"`).
 When it is healthy, `{cli} check {iid_intern}` confirms it.
+
+{rules}"""
+
+BUDGET_BRIEF = """You are the CEO of bojjifomo's guild, and you keep the purse. Time for the budget review ({when}).
+
+Usage report (estimated from transcripts at API list prices):
+{report}
+
+Which model for which work:
+{guide}
+
+Do this:
+1. Read the ideas above. Change a model only where the numbers back it:
+   `{cli} model <name> <haiku|sonnet|opus>`. At most 3 changes. Never change your own model. Do not put a warden who
+   changes code below sonnet. Opus seats are limited, so free one before you give one.
+2. Chain upkeep (rounds, reviews) is bojjifomo's setting, not yours: suggest it, do not work around it.
+3. Do not stop or skip work that is needed. The aim is the same results for less.
+4. End with a short report: what you changed and why, the expected saving per week, and what bojjifomo could cut.
 
 {rules}"""
 
@@ -533,7 +555,7 @@ class Chain:
 
     def start_round(self, kind, takeover="", automatic=False):
         """kind: ops, innovator, or ceo (a takeover or acting-ops round)."""
-        role = "ops" if kind == "ops" else ("innovator" if kind == "innovator" else "ceo")
+        role = "ops" if kind == "ops" else ("innovator" if kind == "innovator" else "ceo")  # budget is the CEO's
         who = self.holder(role)
         if not who:
             raise LookupError("nobody is appointed as %s" % ROLE_NAMES[role])
@@ -547,7 +569,12 @@ class Chain:
             raise RuntimeError("the treasury is empty")
         when = now_text()
         dirs = sorted({i["project"] for i in self.interns if os.path.isdir(i["project"])})
-        if kind == "innovator":
+        if kind == "budget":
+            import report
+            data = report.build(self.office, 7)
+            brief = BUDGET_BRIEF.format(when=when, report=report.text(data), guide=report.MODEL_GUIDE, cli=self.cli,
+                                        rules=RULES.format(cli=self.cli))
+        elif kind == "innovator":
             month = time.time() - 30 * 86400
             recent = [x for x in self.incidents if x["opened"] >= month]
             incidents = "\n".join("- %s %s: %s (%s)" % (now_text(x["opened"]), x["name"], "; ".join(x["reasons"])[:160],
@@ -568,9 +595,29 @@ class Chain:
             if automatic:
                 self._count_dispatch()
             self.save()
-        self.office.ledger.add("guild", "%s set out on the %s round" % (who["name"], ROLE_NAMES[role] if kind != "ops" else "operations"),
+        self.office.ledger.add("guild", "%s set out on the %s round" % (who["name"], {"ops": "operations", "budget": "budget review"}.get(kind, ROLE_NAMES[role])),
                                by=who["name"], sid=result["sid"])
         return {"who": who["name"], "sid": result["sid"], "run": result.get("run")}
+
+    def guarded(self):
+        """True once today's spend reaches guard_pct of the daily budget: only incidents keep moving."""
+        try:
+            gold = self.office.economy.snapshot()
+        except Exception:
+            return False
+        if not gold.get("budget"):
+            return False
+        used = gold.get("spent", 0) / gold["budget"] * 100
+        on = used >= self.settings["guard_pct"]
+        with self.lock:
+            day = self._today()
+            if on and self.dispatched.get("guard_day") != day:
+                self.dispatched["guard_day"] = day
+                self.save()
+                self.office.notify("The guild is rationing", "%d%% of today's budget is spent. Rounds and reviews wait until "
+                                   "tomorrow; incidents still get through." % used, tag="chain-guard", url="/#usage")
+                self.office.ledger.add("guild", "Rationing: %d%% of today's budget is spent, rounds wait" % used, by="Chain")
+        return on
 
     def _ceo_takeover(self, why):
         ceo = self.holder("ceo")
@@ -622,7 +669,7 @@ class Chain:
 
             threading.Thread(target=run, daemon=True, name="chain-check").start()
         self._unstick(now)
-        if not self.settings["auto"]:
+        if not self.settings["auto"] or self.guarded():
             return
         ops = self.rounds.get("ops") or {}
         if ops.get("running") and now - ops.get("started", 0) > self.settings["stuck_minutes"] * 60 and not ops.get("stuck"):
@@ -645,6 +692,16 @@ class Chain:
                 except Exception as e:
                     with self.lock:
                         self.rounds[due_kind] = dict(r, started=now, error=str(e)[:200])
+                        self.save()
+        hours = self.settings["review_hours"]
+        if hours and self.holder("ceo"):
+            r = self.rounds.get("budget") or {}
+            if not r.get("running") and now - r.get("started", 0) >= hours * 3600:
+                try:
+                    self.start_round("budget", automatic=True)
+                except Exception as e:
+                    with self.lock:
+                        self.rounds["budget"] = dict(r, started=now, error=str(e)[:200])
                         self.save()
         if self.holder("innovator"):
             r = self.rounds.get("innovator") or {}
@@ -761,6 +818,8 @@ class Chain:
                     "kind": m["kind"] if m else "", "round": {k: r.get(k) for k in ("running", "started", "ended", "ok", "summary", "error", "sid", "takeover")},
                 }
             people["ops"]["down"] = self.ops_down()
+            review = self.rounds.get("budget") or {}
+            people["ceo"]["review"] = {k: review.get(k) for k in ("running", "started", "ended", "ok", "summary", "error", "sid")}
             interns = []
             for i in self.interns:
                 w = self.member(i.get("warden"))
@@ -772,8 +831,14 @@ class Chain:
                 "incidents": [self.public_incident(x) for x in reversed(self.incidents[-30:])],
                 "open": sum(1 for x in self.incidents if x["status"] != "resolved"),
                 "needs_you": sum(1 for x in self.incidents if x["status"] == "needs-you"),
-                "dispatched": self.dispatched,
+                "dispatched": self.dispatched, "guard": self.guard_view(),
             }
+
+    def guard_view(self):
+        gold = self.office.economy.snapshot()
+        used = (gold.get("spent", 0) / gold["budget"] * 100) if gold.get("budget") else None
+        return {"metered": bool(gold.get("budget")), "used": None if used is None else round(used, 1),
+                "pct": self.settings["guard_pct"], "on": bool(used is not None and used >= self.settings["guard_pct"])}
 
     def badge(self):
         with self.lock:

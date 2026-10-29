@@ -559,6 +559,7 @@ function openFromHash() {
   if (m) { history.replaceState(null, "", "/"); openSheet(m[1]); }
   const p = location.hash.match(/^#p=([0-9a-f]{8})$/);
   if (p) { history.replaceState(null, "", "/"); openPanel("petitions", true, p[1]); }
+  if (location.hash === "#usage") { history.replaceState(null, "", "/"); openPanel("report", true); }
   if (location.hash === "#chain") { history.replaceState(null, "", "/"); openPanel("chain", true); }
 }
 window.addEventListener("hashchange", openFromHash);
