@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import briefing
+import chain
 import economy
 import guard
 import panels
@@ -79,6 +80,7 @@ class Office:
         self.weather = weather.Weather()
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
+        self.chain = chain.Chain(self, cli=str(Path(__file__).resolve().parent / "tools" / "office"))
         self.old = {}           # transcripts older than the scan window, loaded on demand
         self.seen = {}          # sid -> (status, working since) for notifications
         self.familiar_seen = {}
@@ -308,7 +310,7 @@ class Office:
         raise Refused("unknown project folder")
 
     def new_job(self, pid, text, mode, model="", code_id="", code="", system="", helper=False, origin="phone",
-                external=False, override=False, from_queue=False):
+                external=False, override=False, from_queue=False, add_dirs=()):
         text = str(text).strip()
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write the first message (up to %d characters)" % runner.MAX_TEXT)
@@ -317,7 +319,7 @@ class Office:
             self.check_mode(mode, "bypass:new", code_id, code)
             held = self.economy.consider(external, override, "job", text[:80], {
                 "project": pid, "text": text, "mode": mode, "model": model, "system": system,
-                "helper": bool(helper), "origin": origin,
+                "helper": bool(helper), "origin": origin, "add_dirs": list(add_dirs or ()),
             })
             if held:
                 if held.get("blocked"):
@@ -325,7 +327,7 @@ class Office:
                 return held
         sid = str(uuid.uuid4())
         run = self.runner.start(sid, path, text, mode, new=True, model=model, system=system,
-                                origin=origin, helper=helper)
+                                origin=origin, helper=helper, add_dirs=add_dirs)
         if system:
             self.raids.begin(sid, text)
         return {"run": run.id, "sid": sid}
@@ -341,7 +343,7 @@ class Office:
         return self.new_job(payload.get("project") or "", payload.get("text") or "", payload.get("mode") or "acceptEdits",
                             model=payload.get("model") or "", system=payload.get("system") or "",
                             helper=bool(payload.get("helper")), origin=payload.get("origin") or "queue",
-                            from_queue=True)
+                            from_queue=True, add_dirs=payload.get("add_dirs") or ())
 
     def pump(self):
         """Start queued messages for sessions that have gone quiet."""
@@ -419,6 +421,11 @@ class Office:
             import traceback
             traceback.print_exc()
         self.emit("quest.finished", data)
+        try:
+            self.chain.on_run(run)
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     def _expire_petitions(self):
         try:
@@ -526,6 +533,7 @@ class Office:
                     import traceback
                     traceback.print_exc()
                 self._check_weather()
+                self.chain.tick()
             except Exception:
                 import traceback
                 traceback.print_exc()

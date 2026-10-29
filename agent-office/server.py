@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import chain  # noqa: E402
 import core  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
@@ -218,6 +219,7 @@ def api_state(req, m):
         "gold": APP.office.economy.snapshot(),
         "raid": APP.office.raids.public(),
         "weather": APP.office.weather.public(),
+        "chain": APP.office.chain.badge(),
     }
 
 
@@ -542,6 +544,115 @@ def api_progress(req, m):
         rows.append(view)
     rows.sort(key=lambda row: -row["xp"])
     return {"adventurers": rows[:40]}
+
+
+# ---- the chain of command: interns, wardens, innovator, operations manager, CEO ----
+
+CHAIN_ID = r"(?P<cid>[0-9a-f]{6,8})"
+
+
+def chain_call(fn, *args, **kw):
+    try:
+        return fn(*args, **kw)
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+
+
+@route("GET", "/api/chain")
+def api_chain(req, m):
+    staff = [{"id": s["id"], "name": s["name"], "title": s["title"]} for s in APP.office.team.staff]
+    return dict(APP.office.chain.public(), staff=staff)
+
+
+@route("GET", "/api/chain/situation")
+def api_chain_situation(req, m):
+    return {"text": APP.office.chain.situation()}
+
+
+@route("POST", "/api/chain/settings")
+def api_chain_settings(req, m):
+    return {"settings": APP.office.chain.configure(req.body)}
+
+
+@route("POST", r"/api/chain/appoint/(?P<role>ceo|ops|innovator)")
+def api_chain_appoint(req, m):
+    chain_call(APP.office.chain.appoint, m.group("role"), text_field(req.body, "staff", 20))
+    APP.office.ledger.add("guild", "Appointed a new %s" % chain.ROLE_NAMES[m.group("role")], by="bojjifomo")
+    return {"ok": True}
+
+
+@route("POST", r"/api/chain/recruit/(?P<role>ceo|ops|innovator)")
+def api_chain_recruit(req, m):
+    member = chain_call(APP.office.chain.recruit, m.group("role"))
+    APP.office.ledger.add("hire", "%s the %s, appointed %s" % (member["name"], member["title"],
+                                                              chain.ROLE_NAMES[m.group("role")]))
+    return {"staff": {k: member[k] for k in ("id", "name", "title")}}
+
+
+@route("POST", r"/api/chain/round/(?P<kind>ops|innovator|ceo)")
+def api_chain_round(req, m):
+    return chain_call(APP.office.chain.start_round, m.group("kind"))
+
+
+@route("POST", "/api/chain/interns")
+def api_chain_intern_add(req, m):
+    b = req.body
+    project = APP.office.project_path(text_field(b, "project", 40)) if text_field(b, "project", 40) else ""
+    label = ""
+    if text_field(b, "familiar", 20):
+        job = next((j for j in APP.office.familiars.jobs() if j["id"] == text_field(b, "familiar", 20)), None)
+        if not job:
+            raise HttpError(404, "no such launchd job")
+        label = job["label"]
+    try:
+        hours = float(b.get("fresh_hours") or 24)
+    except (TypeError, ValueError):
+        raise HttpError(400, "fresh_hours must be a number")
+    item = chain_call(APP.office.chain.add_intern, text_field(b, "name", 80), project, launchd=label,
+                      url=text_field(b, "url", 400), fresh=text_field(b, "fresh", 300), fresh_hours=hours,
+                      warden=text_field(b, "warden", 20))
+    APP.office.ledger.add("guild", "%s joined the guild as an intern" % item["name"], by="bojjifomo")
+    threading.Thread(target=lambda: APP.office.chain.check_now(item["id"]), daemon=True).start()
+    return {"intern": item}
+
+
+@route("POST", "/api/chain/interns/" + CHAIN_ID + "/check")
+def api_chain_check(req, m):
+    return chain_call(APP.office.chain.check_now, m.group("cid"))
+
+
+@route("POST", "/api/chain/check/(?P<name>[^/]{1,80})")
+def api_chain_check_name(req, m):
+    """For `office check <intern>`: by id or by name."""
+    from urllib.parse import unquote
+    return chain_call(APP.office.chain.check_now, unquote(m.group("name")))
+
+
+@route("POST", "/api/chain/interns/" + CHAIN_ID + "/warden")
+def api_chain_warden(req, m):
+    item = chain_call(APP.office.chain.update_intern, m.group("cid"), warden=text_field(req.body, "staff", 20))
+    return {"intern": item}
+
+
+@route("POST", "/api/chain/interns/" + CHAIN_ID + "/remove")
+def api_chain_intern_remove(req, m):
+    return {"removed": APP.office.chain.remove_intern(m.group("cid"))}
+
+
+@route("POST", "/api/chain/incidents/" + CHAIN_ID + "/escalate")
+def api_chain_escalate(req, m):
+    return chain_call(APP.office.chain.escalate, m.group("cid"), note=text_field(req.body, "note", 300))
+
+
+@route("POST", "/api/chain/incidents/" + CHAIN_ID + "/resolve")
+def api_chain_resolve(req, m):
+    inc = chain_call(APP.office.chain.resolve, m.group("cid"), text_field(req.body, "note", 300),
+                     by=text_field(req.body, "by", 40) or "bojjifomo")
+    return {"incident": APP.office.chain.public_incident(inc)}
 
 
 @route("GET", "/api/orchestrator")

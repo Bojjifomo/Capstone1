@@ -146,7 +146,7 @@ class Runner:
             self.helpers.add(sid)
             store.save("helpers.json", sorted(self.helpers)[-500:])
 
-    def start(self, sid, cwd, text, mode, new=False, model="", system="", origin="phone", helper=False):
+    def start(self, sid, cwd, text, mode, new=False, model="", system="", origin="phone", helper=False, add_dirs=()):
         claude = find_claude(self.cfg)
         if not claude:
             raise RuntimeError("claude was not found; set claude_bin in config.json")
@@ -163,6 +163,9 @@ class Runner:
             argv += ["--model", MODELS[model]]
         if system:
             argv += ["--append-system-prompt", system]
+        for extra in add_dirs or ():
+            if extra and os.path.isdir(extra):
+                argv += ["--add-dir", extra]
         run = Run(sid, cwd, text, mode, origin, helper)
         if helper:
             self.mark_helper(sid)
