@@ -15,7 +15,9 @@
   office check <intern>            check one intern's health right now
   office incident <id> resolve "<note>"     close an incident you verified
   office incident <id> escalate ["<note>"]  hand an incident to the next rung (warden, ops, CEO, you)
-  office round ops|innovator|ceo   start a round now
+  office round ops|innovator|ceo|budget    start a round now (budget = the CEO's usage review)
+  office usage [days]              where the gold goes: by person, kind, model, project, plus savings ideas
+  office model <name> <haiku|sonnet|opus>  move a teammate to another model (Opus seats are limited)
   office doctor                    check the install
   office install-hook              add the Claude Code Notification hook (exact "needs you")
   office hook                      (used by the hook itself; reads the event on stdin)
@@ -333,15 +335,28 @@ def cmd_incident(args):
 
 
 def cmd_round(args):
-    if not args or args[0] not in ("ops", "innovator", "ceo"):
-        sys.exit("usage: office round ops|innovator|ceo")
+    if not args or args[0] not in ("ops", "innovator", "ceo", "budget"):
+        sys.exit("usage: office round ops|innovator|ceo|budget")
     r = call("/api/chain/round/" + args[0], {})
     print("%s set out. Session %s" % (r["who"], r["sid"]))
 
 
+def cmd_usage(args):
+    days = args[0] if args else "7"
+    print(call("/api/usage/report?days=" + urllib.parse.quote(days))["text"])
+
+
+def cmd_model(args):
+    if len(args) != 2:
+        sys.exit("usage: office model <name> <haiku|sonnet|opus>")
+    by = os.environ.get("AGENT_OFFICE_NAME") or Path.cwd().name
+    r = call("/api/team/model", {"name": args[0], "model": args[1], "by": by})
+    print("%s: %s -> %s" % (r["name"], r["was"], r["model"]))
+
+
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
             "propose": cmd_propose, "petitions": cmd_petitions, "brief": cmd_brief,
-            "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round,
+            "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "model": cmd_model,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":

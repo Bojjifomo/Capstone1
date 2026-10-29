@@ -51,6 +51,16 @@ round), use:
 Fix on a branch with a pull request, never merge to main, never touch secrets or wallets. Confirm with
 `office check` before you say it is fixed.
 
+## Usage and models
+
+```sh
+~/Projects/agent-office/tools/office usage [days]                    # who spends what, and ideas for spending less
+~/Projects/agent-office/tools/office model <name> <haiku|sonnet|opus> # the CEO's lever; Opus seats are limited
+```
+
+Haiku is for checks, lookups and summaries, Sonnet for everyday coding, Opus for hard design and tricky bugs.
+Change a model only where `office usage` backs it, and never your own.
+
 ## Writing a brief
 
 Teammates cannot see your conversation. Every brief must stand on its own:

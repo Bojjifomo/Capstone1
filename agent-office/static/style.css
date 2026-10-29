@@ -730,3 +730,22 @@ button.chip { cursor: pointer; font-family: var(--sans); }
 .attempts li { margin: 3px 0; overflow-wrap: anywhere; }
 .btn.small { font-size: 12px; padding: 2px 8px; min-height: 0; }
 .toolbar .badge.alert { background: #c0392b; color: #fff; }
+
+/* ---- usage dashboard ---- */
+.seg-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: rgba(107, 68, 35, .12); margin: 6px 0; }
+.seg-bar .seg { display: block; height: 100%; }
+.s-you, .s-opus { background: #c0842b; }
+.s-chain, .s-sonnet { background: #4a6fa5; }
+.s-guild, .s-haiku { background: #4f9d69; }
+.s-other { background: #9a8f7a; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; color: var(--ink-soft); }
+.legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+.spender, .idea { border: 1px solid var(--parch-edge); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fffaf0; }
+.spender header, .idea header { display: flex; gap: 8px; align-items: center; }
+.spender header b, .idea header b { flex: 1; min-width: 0; font: 700 14.5px/1.3 var(--serif); overflow-wrap: anywhere; }
+.spender .sub, .idea p { margin: 3px 0; overflow-wrap: anywhere; }
+.idea p { font-size: 13px; }
+.idea.i-likely { border-left: 3px solid #4f9d69; }
+.idea.i-try { border-left: 3px solid #c0842b; }
+.spender .form.inline { margin-top: 0; }
+.spender .form.inline select { max-width: 120px; }

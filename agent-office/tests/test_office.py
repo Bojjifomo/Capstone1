@@ -869,5 +869,55 @@ class ChainRoutes(ServerCase):
         self.assertIn("chain", self.request("GET", "/api/state")[1])
 
 
+class UsageControl(ServerCase):
+    """The usage dashboard and the model switches the CEO uses."""
+
+    def test_report_and_models(self):
+        status, r = self.request("GET", "/api/usage/report?days=7")
+        self.assertEqual(status, 200)
+        for key in ("total", "kinds", "actors", "models", "projects", "ideas", "seats", "text", "guard"):
+            self.assertIn(key, r)
+        self.assertEqual(self.request("GET", "/api/usage/report?days=x")[0], 400)
+        self.assertIn("Opus seats", r["text"])
+
+        name = self.post("/api/staff", {"name": "Thrift", "role": "Python backend engineer", "instructions": "x",
+                                        "model": "opus"})[1]["staff"]["name"]
+        status, m = self.post("/api/team/model", {"name": name, "model": "haiku", "by": "aurelian"})
+        self.assertEqual((status, m["was"], m["model"]), (200, "opus", "haiku"))
+        self.assertEqual(self.post("/api/team/model", {"name": name, "model": "gpt"})[0], 400)
+        self.assertEqual(self.post("/api/team/model", {"name": "Nobody", "model": "haiku"})[0], 404)
+        self.assertEqual(self.post("/api/team/model", {"name": "Quill", "model": "haiku"})[0], 400)
+        ceo = self.post("/api/chain/recruit/ceo", {})[1]["staff"]
+        self.assertEqual(self.post("/api/team/model", {"name": ceo["name"], "model": "haiku", "by": "aurelian"})[0], 403)
+        self.assertEqual(self.post("/api/team/model", {"name": ceo["name"], "model": "sonnet"})[0], 200)
+        self.assertEqual(self.post("/api/chain/settings", {"opus_seats": 0})[0], 200)
+        self.assertEqual(self.post("/api/team/model", {"name": name, "model": "opus"})[0], 409)
+
+        status, rnd = self.post("/api/chain/round/budget", {})
+        self.assertEqual(status, 200, rnd)
+        for _ in range(60):
+            review = self.request("GET", "/api/chain")[1]["people"]["ceo"]["review"]
+            if review["ok"] is not None:
+                break
+            time.sleep(0.2)
+        self.assertTrue(review["ok"], review)
+        self.assertIn("budget review", review["summary"])
+
+        env = dict(os.environ, AGENT_OFFICE_URL="http://127.0.0.1:%d" % PORT, AGENT_OFFICE_NAME="aurelian")
+        office = str(self.app / "tools" / "office")
+        out = subprocess.run([sys.executable, office, "usage"], capture_output=True, text=True, env=env, timeout=20)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Last 7 days", out.stdout)
+        out = subprocess.run([sys.executable, office, "model", name, "sonnet"], capture_output=True, text=True, env=env, timeout=20)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("haiku -> sonnet", out.stdout)
+
+        external = {"Authorization": "Bearer test-token-not-a-secret"}
+        for path in ("/api/usage/report",):
+            self.assertEqual(self.request("GET", path, headers=external, host="guild.example.ts.net")[0], 403)
+        self.assertEqual(self.request("POST", "/api/team/model", {"name": name, "model": "opus"}, headers=external,
+                                      host="guild.example.ts.net")[0], 403)
+
+
 if __name__ == "__main__":
     unittest.main()
