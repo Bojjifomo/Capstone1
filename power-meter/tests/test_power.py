@@ -54,6 +54,21 @@ class Parsers(unittest.TestCase):
         self.assertIsNone(sources.parse_powermetrics(b"\0"))
 
 
+class Network(unittest.TestCase):
+    IFCONFIG = (
+        "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n"
+        "en0: flags=8863<UP> mtu 1500\n\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255\n"
+        "utun4: flags=8051<UP,POINTOPOINT> mtu 1280\n\tinet 100.127.45.100 --> 100.127.45.100 netmask 0xffffffff\n"
+    )
+
+    def test_ip_from_ifconfig(self):
+        self.assertEqual(server.ip_from_ifconfig(self.IFCONFIG), "100.127.45.100")
+
+    def test_ifconfig_ignores_non_tailscale_100(self):
+        self.assertIsNone(server.ip_from_ifconfig("\tinet 100.200.1.1 netmask 0xff\n\tinet 10.0.0.2 netmask 0xff"))
+        self.assertIsNone(server.ip_from_ifconfig(""))
+
+
 class MeterTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
