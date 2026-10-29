@@ -149,6 +149,28 @@ const SCENES = {
     await page.click("#town-back");
     await wait(page, 500);
   },
+  async chain(page) {
+    await page.evaluate(async () => {
+      const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body || {}) }).then((r) => r.json());
+      const lyra = await post("/api/staff", { name: "Lyra", role: "LP ops monitor (devops)", instructions: "Watch the LP tools.", division: "The Watchtower" });
+      await post("/api/chain/recruit/ceo");
+      await post("/api/chain/recruit/ops");
+      await post("/api/chain/recruit/innovator");
+      const projects = (await (await fetch("/api/projects")).json()).projects;
+      const web = projects.find((p) => p.label.endsWith("webapp")) || projects[0];
+      await post("/api/chain/settings", { fail_after: 1 });
+      await post("/api/chain/interns", { name: "RH Wallet Finder", project: web.id, fresh: "data/wallets.db", fresh_hours: 6, warden: lyra.staff.id });
+      await post("/api/chain/interns", { name: "LP website", project: projects[0].id, fresh: "README.md", fresh_hours: 720, warden: lyra.staff.id });
+    });
+    await wait(page, 2500);
+    await page.click("#chain-btn");
+    await wait(page, 1500);
+    await page.screenshot({ path: out("ladder") });
+    await page.evaluate(() => document.querySelector("#sheet-body").scrollTo(0, document.querySelector(".intern").offsetTop - 20));
+    await wait(page, 300);
+    await page.screenshot({ path: out("interns") });
+    await closeSheet(page);
+  },
   async life(page) {
     await page.evaluate(async () => {
       const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) }).then((r) => r.json());

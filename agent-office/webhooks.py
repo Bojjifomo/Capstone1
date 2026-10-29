@@ -30,6 +30,10 @@ Events:
     build.started      an approved petition's build quest started (sid, petition id)
     quest.finished     a claude run ended (sid, ok, cost, origin, and petition fields)
     familiar.error     a launchd job grew a new error line
+    incident.opened    an intern (one of your programs) failed its health checks
+    incident.escalated someone up the chain took an incident (data.who, data.level; "you" means your phone)
+    incident.resolved  the intern is healthy again
+    ops.down           the operations manager failed or got stuck; the CEO takes over
 
 Delivery uses a daemon thread and a short timeout. Failures are one stderr line
 (the URL without its query string) and never raise into the caller.
@@ -53,6 +57,10 @@ EVENTS = (
     "build.started",
     "quest.finished",
     "familiar.error",
+    "incident.opened",
+    "incident.escalated",
+    "incident.resolved",
+    "ops.down",
 )
 HEADER_RE = re.compile(r"^[A-Za-z0-9-]{1,40}$")
 DEFAULT_TIMEOUT = 5.0

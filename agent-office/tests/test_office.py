@@ -819,5 +819,55 @@ class ExternalAccess(ServerCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
+class ChainRoutes(ServerCase):
+    """The chain of command over HTTP and from the office CLI."""
+
+    def test_chain(self):
+        from urllib.parse import quote
+        status, c = self.request("GET", "/api/chain")
+        self.assertEqual(status, 200)
+        self.assertEqual(c["interns"], [])
+        self.assertEqual(self.post("/api/chain/settings", {"auto": False, "check_minutes": 9999})[1]["settings"],
+                         dict(c["settings"], auto=False, check_minutes=240))
+        project = next(p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp"))
+        bad = self.post("/api/chain/interns", {"name": "Web", "project": project["id"], "fresh": "../../x"})
+        self.assertEqual(bad[0], 400)
+        status, r = self.post("/api/chain/interns", {"name": "Web App", "project": project["id"],
+                                                     "fresh": "data/missing.db", "fresh_hours": 2})
+        self.assertEqual(status, 200, r)
+        check = self.post("/api/chain/check/" + quote("web app", safe=""), {})[1]
+        self.assertFalse(check["ok"])
+        self.assertIn("missing", check["reasons"][0])
+
+        status, r = self.post("/api/chain/recruit/ops", {})
+        self.assertEqual(status, 200, r)
+        self.assertEqual(r["staff"]["title"], "Marshal of the Guild")
+        roster = self.request("GET", "/api/team")[1]["staff"]
+        self.assertIn("Operations Manager", next(s for s in roster if s["id"] == r["staff"]["id"])["chain"])
+        self.assertEqual(self.post("/api/chain/interns/%s/warden" % self.request("GET", "/api/chain")[1]["interns"][0]["id"],
+                                   {"staff": r["staff"]["id"]})[0], 200)
+
+        status, rnd = self.post("/api/chain/round/ops", {})
+        self.assertEqual(status, 200, rnd)
+        for _ in range(60):
+            ops = self.request("GET", "/api/chain")[1]["people"]["ops"]
+            if ops["round"]["ok"] is not None:
+                break
+            time.sleep(0.2)
+        self.assertTrue(ops["round"]["ok"], ops)
+        self.assertIn("mode=auto", ops["round"]["summary"])
+        self.assertIn("Web App", ops["round"]["summary"], "the situation report is in the brief")
+
+        env = dict(os.environ, AGENT_OFFICE_URL="http://127.0.0.1:%d" % PORT)
+        out = subprocess.run([sys.executable, str(self.app / "tools" / "office"), "chain"], capture_output=True,
+                             text=True, env=env, timeout=20)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Web App [DOWN", out.stdout)
+
+        external = {"Authorization": "Bearer test-token-not-a-secret"}
+        self.assertEqual(self.request("GET", "/api/chain", headers=external, host="guild.example.ts.net")[0], 403)
+        self.assertIn("chain", self.request("GET", "/api/state")[1])
+
+
 if __name__ == "__main__":
     unittest.main()

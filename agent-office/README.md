@@ -29,13 +29,14 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 
 | Part | What it does |
 | --- | --- |
-| The town | An HD-2D pixel town (drawn in code, no assets): the Guild Hall on the plaza holds your lead sessions, each division is its own building. Agents write at desks, read by the fire, sleep in bed, and walk the road with a scroll when they carry an errand. Day and night follow the clock; tap a building to go inside, tap someone to open them. `☰ List` switches to the plain list |
+| The town | An HD-2D pixel town (drawn in code, no assets): the Guild Hall on the plaza holds your lead sessions, each division is its own building. Agents write at desks, read by the fire, sleep in bed, and walk the road with a scroll when they carry an errand. Day and night follow the clock; tap a building to go inside, tap someone to open them. Under the map, the guild chat (All / Guild / System / Chatter) |
 | Life in town | Every agent has a fantasy persona (name, kin and calling, age, quirk, home town, bio, motto). Idle agents walk to **the Tavern** for a break and back to their desk when work starts; they chatter in speech bubbles ("Who broke main?" / "Not me!"). Sessions can be moved into a division's building. Tapping a building shows its roster |
 | Profile card | Top of every sheet: persona plus Started as, Division, Project, Branch, Model, Pay today / 7 days / 30 days, Last activity, Last tool, Folder. **✨ Summarize with Haiku** and **✨ Suggest replies** run one-shot Haiku calls (no tools, nothing saved) |
 | The hall | Sessions from `~/.claude/projects` and `ps`: questing (working), awaiting your word (a real question, AskUserQuestion, plan approval or a permission prompt), resting, returned, archived |
 | Sheet | Recent conversation as light markdown with copy buttons, a message box, a queue (Send now / Remove), Stop |
 | Post a quest | New session in a known project folder, a permission mode, a model, optional party leader (project manager) mode |
 | The guild | Recruited specialists in `~/Agents/<name>`, grouped into division wings; `office team / who / ask / result` |
+| Chain of command | ⚜️ Chain: your programs as **interns** with health checks, a **warden** for each, the **Innovator**, the **Operations Manager** (orchestrator) and the **CEO** as its backup. Broken interns climb warden → ops → CEO → your phone. See [Chain of command](#chain-of-command) |
 | Petitions | Update proposals from the guild (`office propose`): read the plan, then Approve & build (a quest that ends in a PR, never a merge), Approve for later, or Reject with a note |
 | Treasury | Tokens and estimated cost per day, model and session |
 | Familiars | Your launchd jobs: running, last run, last error, Run now |
@@ -110,6 +111,60 @@ Every accepted token call is a ledger line `kind: external` with `origin` set (d
 
 A missing or wrong token on a Funnel request or an `external_hosts` name is 401. The failure is written to the server log without the token. After 8 failures from the same client within 10 minutes the answer is 429. Funnel connects from 127.0.0.1 and sets `X-Forwarded-For` to the public client; that address is what the limit counts. A correct token clears the count. A wrong token on localhost is also 401, so a mismatched `AGENT_OFFICE_TOKEN` fails closed. A correct token on localhost does not open the allowlist and does not skip the Origin check.
 
+## Chain of command
+
+```
+ 🛡️ Guildmaster (you)      approves petitions and seals; gets what nobody below could fix
+ 👑 CEO (Opus)             backup: takes over when the Operations Manager fails, gets stuck or cannot fix an incident
+ ⚔️ Operations Manager     the orchestrator: a round every few hours over every intern, sends the right person
+ ✒️ Innovator              reviews interns and incidents every week, files petitions (you decide)
+ 🗝️ Wardens                one per intern: diagnose and fix their program
+ 🌱 Interns                your programs, each with fixed health checks
+```
+
+**Interns.** Add one in ⚜️ Chain → *Take on an intern*: a name, the program's folder (picked from your project
+folders), and at least one check. The checks are fixed code, never shell text:
+
+| Check | Healthy when |
+| --- | --- |
+| launchd job | it is loaded and its last exit was 0 (picked from your Familiars) |
+| Health URL | a GET answers below 400 within 8 seconds |
+| Fresh file | the file inside the program's folder changed within the hours you set |
+
+Interns are checked every `check_minutes` (default 5). After `fail_after` failed checks in a row (default 2) an
+incident opens and climbs the ladder:
+
+1. **Warden**: gets a brief with the folder, the checks, what failed. When their run ends the intern is checked again.
+2. Still down: the **Operations Manager**, with what the warden tried. Skipped when ops is down.
+3. Still down: the **CEO**.
+4. Still down: **you**, by push ("… is down and needs your word"), with the last report.
+
+An intern that recovers on its own closes its incident. *Send up the chain* moves it one rung by hand, *Mark fixed*
+closes it. Agents use `office check <intern>` to confirm a fix and `office incident <id> resolve "<note>"`.
+
+**Rounds.** The Operations Manager makes a round every `ops_every_hours` (default 6) with a situation report
+(interns, open incidents, petitions waiting, treasury, launchd errors, the last guild log lines). If a round ends
+with an error, or runs longer than `stuck_minutes` (default 90, it is then stopped), ops counts as **down**: you get
+a push and the CEO takes over that round and is told to get ops working again. With no Operations Manager
+appointed, the CEO makes the rounds. The Innovator reviews every `innovator_every_days` (default 7) and files at
+most three petitions.
+
+**Safety.** Chain runs use Claude Code's `auto` permission mode (guarded, no prompts) with `--add-dir` for the
+intern folders. Every brief says: changes on a branch with a pull request, never merge to main, never force-push,
+never delete data or touch secrets or wallets. `max_auto_per_day` (default 12) caps automatic dispatches; past it
+incidents come to you. An empty treasury also sends incidents to you instead of anyone else. Bypassing permissions
+still needs a seal. Token callers cannot reach any chain route. *Autopilot* off keeps the checks but nobody moves
+until you press a button.
+
+State lives in `chain.json`. Webhook events: `incident.opened`, `incident.escalated`, `incident.resolved`, `ops.down`.
+
+```sh
+office chain                          # situation report: interns, health, open incidents
+office check "RH Wallet Finder"       # check one intern now (exit 1 when down)
+office incident 0fa7a4 resolve "re-ran the sync"
+office round ops|innovator|ceo        # start a round now
+```
+
 ## Webhooks
 
 `config.json` holds a list. Each entry is a URL and an optional secret. Delivery is a background thread with a short timeout (`webhook_timeout`, default 5 seconds). A failure is one line on stderr and does not affect the page.
@@ -134,6 +189,8 @@ Leave `header` out to send only the signature. When `secret` is set the body is 
 | `build.started` | The build quest for an approved petition started |
 | `quest.finished` | A Claude run ended (`sid`, `ok`, `cost`, `origin`) |
 | `familiar.error` | A launchd job showed a new error line |
+| `incident.opened` / `incident.escalated` / `incident.resolved` | An intern failed its checks, someone up the chain took it (`data.who`; `you` is your phone), it is healthy again |
+| `ops.down` | The Operations Manager failed or got stuck; the CEO takes over |
 
 Pending petitions older than `petition_expire_days` (default 14, `0` turns it off) expire. A new petition whose title is a near-duplicate of an open one for the same app is refused. The hall still keeps at most 200 petitions and drops settled ones first.
 
@@ -168,12 +225,12 @@ Quill the Treasurer is always on the roster, stationed in the Counting House (br
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`petitions.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `chain.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 
 ```sh
 sh tests/run_copy.sh                         # throwaway copy on :7790 with a fake $HOME and a fake claude
-python3 -m unittest discover -s tests        # 56 tests: parsing, status rules, security, runs, team, panels, external token
+python3 -m unittest discover -s tests        # parsing, status rules, security, runs, team, panels, external token, chain of command
 node tests/shoot.js stage1,stage2,stage4     # phone-width screenshots into docs/screens/
 ```

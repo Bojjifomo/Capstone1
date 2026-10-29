@@ -35,6 +35,22 @@ refused while one is still open. Pending petitions expire after `petition_expire
 Quill, in the Counting House, writes a read-only LP brief: `office brief`. That path never runs write tools.
 Do not hand Quill a normal coding errand.
 
+## The chain of command
+
+bojjifomo's programs are **interns**, each looked after by a **warden**. The **Operations Manager** makes rounds,
+the **CEO** is the backup, the **Innovator** files petitions. If your brief came from the chain (an incident or a
+round), use:
+
+```sh
+~/Projects/agent-office/tools/office chain                     # every intern, its health, open incidents
+~/Projects/agent-office/tools/office check "<intern>"          # check one now; exit 1 while it is down
+~/Projects/agent-office/tools/office incident <id> resolve "<what fixed it>"
+~/Projects/agent-office/tools/office incident <id> escalate "<why it needs someone higher>"
+```
+
+Fix on a branch with a pull request, never merge to main, never touch secrets or wallets. Confirm with
+`office check` before you say it is fixed.
+
 ## Writing a brief
 
 Teammates cannot see your conversation. Every brief must stand on its own:

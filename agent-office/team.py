@@ -14,6 +14,9 @@ import store
 
 # role keywords -> (job title, character class, division)
 TITLES = [
+    (("ceo", "chief", "executive", "regent"), "Regent of the Guild", "knight", "The Keep"),
+    (("operations", "orchestrator", "marshal"), "Marshal of the Guild", "cleric", "The War Room"),
+    (("innovator", "innovation", "product"), "Seer of New Roads", "ranger", "The War Room"),
     (("security", "pentest", "appsec", "audit"), "Sentinel of the Wards", "knight", "The Watchtower"),
     (("qa", "test", "tester", "review", "reviewer"), "Warden of Trials", "knight", "The Watchtower"),
     (("devops", "ops", "infra", "sre", "deploy", "ci"), "Keeper of the Forge-fires", "cleric", "The Watchtower"),
@@ -231,6 +234,8 @@ class Team:
             entry["persona"]["bio"] = s["bio"] + " " + entry["persona"]["bio"]
             entry["progress"] = self.office.progress.public(s["id"])
             entry["persona"]["title"] = progress.titled(entry["persona"]["title"], entry["progress"]["rank"])
+            chain = getattr(self.office, "chain", None)
+            entry["chain"] = chain.role_of(s["id"]) if chain else ""
             out.append(entry)
         out.append(self._resident_entry())
         divisions = list(self.divisions)
@@ -265,7 +270,7 @@ class Team:
                         total[k] += v
         return {k: round(v, 4) for k, v in total.items()}
 
-    def ask(self, key, brief, origin="office-ask", from_queue=False):
+    def ask(self, key, brief, origin="office-ask", from_queue=False, mode=None, add_dirs=()):
         member = self.find(key)
         if not member:
             raise LookupError("no teammate called %r; try `office team`" % key)
@@ -285,9 +290,9 @@ class Team:
             result["name"] = member["name"]
             return result
         Path(member["folder"]).mkdir(parents=True, exist_ok=True)
-        result = self.office.new_job(member["folder"], brief, member.get("mode", "acceptEdits"),
+        result = self.office.new_job(member["folder"], brief, mode or member.get("mode", "acceptEdits"),
                                      model=member.get("model", "sonnet"), helper=True, origin=origin,
-                                     from_queue=from_queue)
+                                     from_queue=from_queue, add_dirs=add_dirs)
         if result.get("queued_for_gold"):
             result["name"] = member["name"]
             return result
