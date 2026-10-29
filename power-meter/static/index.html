@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Watt Mac">
+<title>Watt Mac mini</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Mac mini</h1>
+    <span id="state" class="pill">…</span>
+  </header>
+
+  <section class="hero">
+    <div class="big"><span id="watts">–</span><small>W</small></div>
+    <div id="sub" class="muted">nunggu data…</div>
+    <div class="parts">
+      <div><span class="dot cpu"></span>CPU <b id="cpu">–</b></div>
+      <div><span class="dot gpu"></span>GPU <b id="gpu">–</b></div>
+      <div>ANE <b id="ane">–</b></div>
+      <div>Suhu <b id="temp">–</b></div>
+    </div>
+  </section>
+
+  <section class="tiles">
+    <div class="tile"><span>Hari ini</span><b id="today">–</b><em id="todayCost"></em></div>
+    <div class="tile"><span>Rata-rata 1 jam</span><b id="avg">–</b><em id="proj"></em></div>
+  </section>
+
+  <section class="card">
+    <div class="tabs" id="range">
+      <button data-r="live600" class="on">10 mnt</button>
+      <button data-r="live3600">1 jam</button>
+      <button data-r="h24">24 jam</button>
+      <button data-r="h168">7 hari</button>
+    </div>
+    <canvas id="chart" height="220"></canvas>
+    <div class="legend"><span><span class="dot tot"></span>Total</span><span><span class="dot cpu"></span>CPU</span><span><span class="dot gpu"></span>GPU</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Per hari</h2>
+    <table id="days"><thead><tr><th>Tanggal</th><th>kWh</th><th>Rata²</th><th>Puncak</th><th>Biaya</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <footer class="muted" id="foot"></footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
