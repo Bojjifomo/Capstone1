@@ -3,3 +3,6 @@
 __pycache__/
 *.pyc
 watch.log
+power-meter/config.json
+power-meter/*.db
+power-meter/logs/
