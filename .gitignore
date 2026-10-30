@@ -8,3 +8,4 @@ power-meter/*.db
 power-meter/logs/
 lp_call_bot/state.json
 lp_call_bot/bot.log
+lp_call_bot/heartbeat

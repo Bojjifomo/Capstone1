@@ -332,6 +332,43 @@ class ChainCase(unittest.TestCase):
                 self.assertIn(needle, t["instructions"], "%s is missing %r" % (t["key"], needle))
         self.assertEqual([t["model"] for t in roster.TEMPLATES if t["key"] in ("scout", "architect")], ["haiku", "opus"])
 
+    def test_known_programs_are_found_and_only_healthy_ones_added(self):
+        repo = self.tmp / "Capstone1"
+        (repo / "lp_call_bot").mkdir(parents=True)
+        (repo / "lp_call_bot" / "heartbeat").write_text("")
+        (repo / "power-meter").mkdir()
+        (repo / "rh_wallet_finder" / "data").mkdir(parents=True)
+        self.office.projects = lambda: [{"id": "p1", "path": str(repo), "label": "~/Capstone1"}]
+        self.office.jobs = [{"id": "j1", "label": "com.bojjifomo.lp-call-bot", "loaded": True, "failed": False,
+                             "exit": "0", "error": ""}]
+        known = {k["name"]: k for k in self.c.known_interns()}
+        self.assertEqual(set(known), {"LP Call Bot", "RH Wallet Finder", "RH Smart LP Finder", "Power Meter"})
+        bot = known["LP Call Bot"]
+        self.assertEqual((bot["launchd"], bot["familiar"], bot["fresh"], bot["fresh_hours"]),
+                         ("com.bojjifomo.lp-call-bot", "j1", "lp_call_bot/heartbeat", 0.25))
+        self.assertEqual(bot["warden"], "aaaa0001", "Lyra guards the bot")
+        self.assertEqual(known["Power Meter"]["launchd"], "", "a launchd job that is not installed is left out")
+        self.assertEqual(known["Power Meter"]["warden"], "", "Thorne is not in the guild yet")
+        done = {d["name"]: d["status"] for d in self.c.setup_interns()}
+        self.assertTrue(done["LP Call Bot"].startswith("added"))
+        self.assertIn("wallets.db is missing", done["RH Wallet Finder"])
+        self.assertIn("did not answer", done["Power Meter"])
+        self.assertEqual([i["name"] for i in self.c.interns], ["Wallet Finder", "LP Call Bot"])
+        self.assertEqual(self.c.intern("lp call bot")["warden"], "aaaa0001")
+        old = time.time() - 3600
+        os.utime(repo / "lp_call_bot" / "heartbeat", (old, old))
+        self.assertIn("heartbeat is 1.0 h old", self.c.check_now("LP Call Bot")["reasons"][0])
+        self.assertEqual(self.c.setup_interns()[0]["status"], "already an intern")
+
+    def test_lyra_knows_the_call_bot_rules(self):
+        import roster
+        lyra = roster.WARDENS["lyra"]["instructions"]
+        for needle in ("Never send anything through Telegram", "state.json", "lp-call-bot", "unittest discover -s lp_call_bot/tests"):
+            self.assertIn(needle, lyra)
+        self.assertIn("Butuh kamu", roster.PRESETS["ops"]["instructions"])
+        self.assertIn("How you choose the fix", roster.PRESETS["ceo"]["instructions"])
+        self.assertIn("com.bojjifomo.power-meter", roster.WARDENS["thorne"]["instructions"])
+
     def test_state_survives_a_restart(self):
         self.open_incident()
         again = chain.Chain(self.office)

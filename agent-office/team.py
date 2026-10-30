@@ -186,6 +186,37 @@ class Team:
             self.save()
         return member, old
 
+    def update(self, key, role, instructions, division=""):
+        role = " ".join(str(role).split())
+        instructions = str(instructions).strip()
+        division = " ".join(str(division).split())
+        if not role:
+            raise ValueError("give them a role")
+        if len(role) > 80:
+            raise ValueError("keep the role to 80 characters; the details belong in the instructions")
+        if len(instructions) > 8000:
+            raise ValueError("instructions are limited to 8000 characters")
+        if len(division) > 40:
+            raise ValueError("keep the division name to 40 characters")
+        with self.lock:
+            member = self.find(key)
+            if not member:
+                raise LookupError("no teammate called %r" % key)
+            if member.get("builtin"):
+                raise ValueError("%s is built in and cannot be edited" % member["name"])
+            member["role"] = role
+            member["instructions"] = instructions
+            if division:
+                member["division"] = division
+                if division not in self.divisions:
+                    self.divisions.append(division)
+            Path(member["folder"]).mkdir(parents=True, exist_ok=True)
+            (Path(member["folder"]) / "CLAUDE.md").write_text(self.brief_file(member), encoding="utf-8")
+            used = {s["division"] for s in self.staff}
+            self.divisions = [d for d in self.divisions if d in used]
+            self.save()
+            return member
+
     def dismiss(self, sid):
         with self.lock:
             member = self.find(sid)

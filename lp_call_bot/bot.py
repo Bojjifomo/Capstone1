@@ -90,12 +90,13 @@ class Telegram:
 
 
 class Bot:
-    def __init__(self, tg, store, owners, channels, default_range="-65"):
+    def __init__(self, tg, store, owners, channels, default_range="-65", heartbeat=None):
         self.tg = tg
         self.store = store
         self.owners = set(owners)
         self.channels = channels
         self.default_range = default_range
+        self.heartbeat = Path(heartbeat) if heartbeat else None
 
     # kirim
     def reply(self, chat_id, text):
@@ -198,22 +199,36 @@ class Bot:
             positions = [self.store.set_status(c, "open") for c in known]
             self.blast_and_report(chat_id, calls.render_reentry(positions))
 
+    def beat(self):
+        """Sentuh file heartbeat tiap kali Telegram berhasil dihubungi. Agent Office ngecek umurnya."""
+        if not self.heartbeat:
+            return
+        try:
+            self.heartbeat.touch()
+        except OSError as e:
+            print("heartbeat gagal:", repr(e), flush=True)
+
+    def poll_once(self):
+        res = self.tg.call("getUpdates", http_timeout=60, timeout=50, offset=self.store.offset,
+                           allowed_updates=["message"])
+        if not res.get("ok"):
+            print("getUpdates gagal:", res, flush=True)
+            time.sleep(5)
+            return False
+        self.beat()
+        for update in res["result"]:
+            self.store.offset = update["update_id"] + 1
+            if "message" in update:
+                try:
+                    self.handle(update["message"])
+                except Exception as e:  # satu pesan error jangan bikin bot mati
+                    print("error:", repr(e), flush=True)
+        return True
+
     def run(self):
         print(f"LP Call Bot jalan. Owner: {sorted(self.owners)}  Channel: {self.channels}", flush=True)
         while True:
-            res = self.tg.call("getUpdates", http_timeout=60, timeout=50, offset=self.store.offset,
-                               allowed_updates=["message"])
-            if not res.get("ok"):
-                print("getUpdates gagal:", res, flush=True)
-                time.sleep(5)
-                continue
-            for update in res["result"]:
-                self.store.offset = update["update_id"] + 1
-                if "message" in update:
-                    try:
-                        self.handle(update["message"])
-                    except Exception as e:  # satu pesan error jangan bikin bot mati
-                        print("error:", repr(e), flush=True)
+            self.poll_once()
 
 
 def main():
@@ -230,6 +245,7 @@ def main():
         owners,
         id_list(os.environ.get("CHANNEL_IDS", "")),
         os.environ.get("DEFAULT_RANGE", "-65"),
+        heartbeat=os.environ.get("HEARTBEAT_FILE", HERE / "heartbeat"),
     )
     bot.run()
 

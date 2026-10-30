@@ -132,11 +132,29 @@ the guild with that name is kept exactly as is. Each person's written role (miss
 | Aurelian | CEO | Opus | The Keep | Takes incidents ops could not fix and ops' missed rounds; keeps the purse (budget review) |
 | Bram | Operations Manager | Sonnet | The War Room | Rounds over every intern: check, send the warden, escalate, close what he verified |
 | Orin | Innovator | Sonnet | The War Room | Weekly review, at most 3 well-argued petitions |
-| Lyra | Warden | Sonnet | The Watchtower | RH Wallet Finder, RH Smart LP Finder, LP website: restarts, syncs, snapshots, RPC quota, a `RUNBOOK.md` of past fixes |
+| Lyra | Warden | Sonnet | The Watchtower | RH Wallet Finder, RH Smart LP Finder, LP website, LP Call Bot (never sends to Telegram): restarts, syncs, snapshots, RPC quota, a `RUNBOOK.md` of past fixes |
 | Thorne | Warden and reviewer | Sonnet | The Watchtower | Agent Office and Power Meter; reviews every agent pull request (never merges) |
 
 They report to bojjifomo in short casual Indonesian, and all of them carry the same limits: branch plus pull request, no merging
 or force-pushing, no deleting data, no secrets, no wallets, two tries and then say so.
+
+Each person's text also covers their actual work: a map of every program and how it runs, the Operations Manager's daily
+checklist and report shape (*Sehat / Dikerjakan / Masih terbuka / Butuh kamu*), the CEO's table for choosing a fix, the
+innovator's sources for petitions, and strict rules for the LP Call Bot (no Telegram messages, no touching `state.json` or `.env`,
+offline tests only). Open anyone in the guild to **edit their role, division and instructions**; *Load the latest standard text*
+brings in this version for a standing-team member who joined before it. Saving rewrites their `CLAUDE.md`.
+
+**Known programs.** `office setup` (and *Add every known program that is healthy now* in ⚜️ Chain) finds these in your project
+folders and adds the ones whose checks pass right now. A program that is down is skipped with what to do first:
+
+| Program | Checks | Warden |
+| --- | --- | --- |
+| LP Call Bot | `lp_call_bot/heartbeat` younger than 15 min (the bot touches it on every successful Telegram poll), launchd `com.bojjifomo.lp-call-bot` when installed | Lyra |
+| RH Wallet Finder | `rh_wallet_finder/data/wallets.db` younger than 6 h | Lyra |
+| RH Smart LP Finder | `http://127.0.0.1:8787/` answers | Lyra |
+| Power Meter | `http://127.0.0.1:7788/` answers, launchd `com.bojjifomo.power-meter` when installed | Thorne |
+
+The *Take on an intern* form offers the same list to fill itself in.
 
 **Interns.** Add one in ⚜️ Chain → *Take on an intern*: a name, the program's folder (picked from your project
 folders), and at least one check. The checks are fixed code, never shell text:

@@ -47,8 +47,10 @@ Hooks.panels.staff = {
       `<section class="panel-sec"><h3>Send them an errand</h3><form id="errand-form" class="form">` +
       `<textarea name="brief" rows="4" required placeholder="A self-contained brief: goal, paths, what done looks like."></textarea>` +
       `<button type="submit" class="btn primary wide">Send the errand</button></form></section>` +
+      `<section class="panel-sec" data-edit-slot><h3>Role and instructions</h3><p class="sub">Loading…</p></section>` +
       `<section class="panel-sec"><button type="button" class="btn danger" data-panel-act="dismiss">Dismiss from the guild</button>` +
       `<small class="hint">Their folder in ~/Agents stays as it is.</small></section>`;
+    fillStaffEdit(body, m.id).catch(() => {});
   },
   refresh(body) {
     const m = memberById(UI.arg);
@@ -58,6 +60,26 @@ Hooks.panels.staff = {
     if (!slot || (slot.dataset.briefRunning === "1") !== running) this.render(body);
   },
 };
+
+// The edit form loads the full text on demand; /api/state never carries instructions.
+let staffStanding = null;
+async function fillStaffEdit(body, id) {
+  const slot = body.querySelector("[data-edit-slot]");
+  if (!slot) return;
+  const [{ staff: s }, tpl] = await Promise.all([api(`/api/staff/${id}`), staffStanding ? Promise.resolve(staffStanding) : api("/api/team/templates")]);
+  staffStanding = tpl;
+  if (UI.mode !== "staff" || UI.arg !== id) return;
+  const standard = tpl.standing[s.name.toLowerCase().replace(/ [ivx]+$/, "")];
+  slot.innerHTML = `<h3>Role and instructions</h3>` +
+    `<details${s.instructions ? "" : " open"}><summary>Edit what ${esc(s.name)} does (${esc(s.instructions.length)} characters)</summary>` +
+    `<form id="staff-edit-form" class="form" data-id="${esc(s.id)}">` +
+    `<label>Role <small>(a short title, up to 80 characters)</small><input type="text" name="role" maxlength="80" required value="${esc(s.role)}"></label>` +
+    `<label>Division<input type="text" name="division" maxlength="40" value="${esc(s.division)}"></label>` +
+    `<label>Instructions <small>(this becomes their CLAUDE.md; up to 8000 characters)</small>` +
+    `<textarea name="instructions" rows="16" maxlength="8000">${esc(s.instructions)}</textarea></label>` +
+    (standard ? `<button type="button" class="btn" data-panel-act="staff-standard" data-name="${esc(standard.name.toLowerCase())}">Load the latest standard text for ${esc(standard.name)}</button>` : "") +
+    `<button type="submit" class="btn primary wide">Save</button></form></details>`;
+}
 
 const HIRE_GROUPS = ["Build", "Guard", "Research", "Words", "Plan"];
 let hireTemplates = [];
@@ -119,6 +141,13 @@ Hooks.jobExtras = () =>
   `<label class="check"><input type="checkbox" name="pm"><span>Party leader mode<small>The lead splits the quest, hands pieces to the guild and to subagents (Haiku for lookups, Sonnet for coding, Opus for hard problems), then reports who did what.</small></span></label>`;
 
 Object.assign(Hooks.forms, {
+  async "staff-edit-form"(form) {
+    const r = await api(`/api/staff/${form.dataset.id}/update`, {
+      role: form.role.value, division: form.division.value, instructions: form.instructions.value,
+    });
+    toast(`${r.staff.name}'s role and instructions are saved.`);
+    await poll();
+  },
   async "hire-form"(form) {
     const r = await api("/api/staff", {
       name: form.name.value, role: form.role.value, instructions: form.instructions.value,
@@ -151,6 +180,16 @@ Object.assign(Hooks.forms, {
 });
 
 Object.assign(Hooks.panelActions, {
+  "staff-standard"(btn) {
+    const p = staffStanding && staffStanding.standing[btn.dataset.name];
+    const form = $("#staff-edit-form");
+    if (!p || !form) return false;
+    form.role.value = p.role;
+    form.division.value = p.division;
+    form.instructions.value = p.instructions;
+    toast("Loaded. Read it over, then Save.");
+    return false;
+  },
   async dismiss() {
     const m = memberById(UI.arg);
     if (!m || !confirm(`Dismiss ${m.name} from the guild?`)) return false;

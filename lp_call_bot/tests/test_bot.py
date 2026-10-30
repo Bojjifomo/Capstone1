@@ -116,6 +116,19 @@ class BotTest(unittest.TestCase):
         self.assertNotIn(FAN, self.store.subscribers())
         self.assertIn("1 gagal", self.tg.to(OWNER)[-1])
 
+    def test_heartbeat_only_when_telegram_answers(self):
+        beat = Path(self.tmp.name) / "heartbeat"
+        self.bot.heartbeat = beat
+        self.tg.call = lambda method, **kw: {"ok": False, "description": "offline"}
+        self.assertFalse(self.bot.poll_once())
+        self.assertFalse(beat.exists(), "no heartbeat while Telegram is unreachable")
+        self.tg.call = lambda method, **kw: {"ok": True, "result": [
+            {"update_id": 7, "message": msg(OWNER, f"{CA} hydx 2.5% -65")}]}
+        self.assertTrue(self.bot.poll_once())
+        self.assertTrue(beat.exists())
+        self.assertEqual(self.store.offset, 8)
+        self.assertEqual(self.store.get("hydx")["ca"], CA)
+
     def test_state_persists(self):
         self.bot.handle(msg(OWNER, f"{CA} hydx 2.5% -65"))
         again = Store(self.store.path)

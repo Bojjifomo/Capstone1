@@ -216,6 +216,54 @@ class Chain:
             done.append({"role": "Warden", "name": member["name"], "status": "recruited"})
         return done
 
+    def known_interns(self):
+        """The programs in roster.KNOWN_INTERNS that exist in one of bojjifomo's project folders."""
+        try:
+            projects = self.office.projects()
+        except Exception:
+            projects = []
+        try:
+            labels = {j["label"]: j["id"] for j in self.office.familiars.jobs()}
+        except Exception:
+            labels = {}
+        out = []
+        for k in roster.KNOWN_INTERNS:
+            project = next((p for p in projects if os.path.isdir(os.path.join(p["path"], k["folder"]))), None)
+            if not project:
+                continue
+            warden = self.office.team.find(k["warden"])
+            out.append({
+                "name": k["name"], "project": project["id"], "project_path": project["path"],
+                "project_label": project["label"], "url": k.get("url", ""), "fresh": k.get("fresh", ""),
+                "fresh_hours": k.get("fresh_hours", 24),
+                "launchd": k.get("launchd", "") if k.get("launchd") in labels else "",
+                "familiar": labels.get(k.get("launchd", ""), ""),
+                "warden": warden["id"] if warden and not warden.get("builtin") else "", "warden_name": k["warden"],
+                "hint": k.get("hint", ""), "added": bool(self.intern(k["name"])),
+            })
+        return out
+
+    def setup_interns(self):
+        """Add every known program that is healthy right now. The rest are listed with what to do first."""
+        done = []
+        for k in self.known_interns():
+            if k["added"]:
+                done.append({"name": k["name"], "status": "already an intern"})
+                continue
+            probe = {"id": "probe-" + secrets.token_hex(3), "name": k["name"], "project": k["project_path"],
+                     "launchd": k["launchd"], "url": k["url"], "fresh": k["fresh"], "fresh_hours": k["fresh_hours"]}
+            result = self.check(probe)
+            with self.lock:
+                self.health.pop(probe["id"], None)
+            if not result["ok"]:
+                done.append({"name": k["name"], "status": "skipped: " + "; ".join(result["reasons"]) + ". " + k["hint"]})
+                continue
+            item = self.add_intern(k["name"], k["project_path"], launchd=k["launchd"], url=k["url"], fresh=k["fresh"],
+                                   fresh_hours=k["fresh_hours"], warden=k["warden"])
+            self.check_now(item["id"])
+            done.append({"name": k["name"], "status": "added, warden %s" % (k["warden_name"] if k["warden"] else "none yet")})
+        return done
+
     def role_of(self, staff_id):
         names = [ROLE_NAMES[r] for r in ROLES if self.roles.get(r) == staff_id]
         guarded = [i["name"] for i in self.interns if i.get("warden") == staff_id]

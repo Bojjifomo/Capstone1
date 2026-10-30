@@ -88,15 +88,22 @@ function internHTML(i, staff) {
     `<button type="button" class="btn danger" data-panel-act="chain-remove" data-id="${esc(i.id)}">Remove</button></div></article>`;
 }
 
-function addInternHTML(projects, jobs, staff) {
+let chainKnown = [];
+
+function addInternHTML(projects, jobs, staff, known) {
+  chainKnown = known || [];
+  const fresh = chainKnown.filter((k) => !k.added);
   return `<form id="chain-intern-form" class="form">` +
+    (fresh.length ? `<label>Start from a known program<select id="chain-known"><option value="">Something else (fill it in below)</option>` +
+      fresh.map((k) => `<option value="${esc(k.name)}">${esc(k.name)}</option>`).join("") + `</select>` +
+      `<small id="chain-known-hint">Fills in the folder, checks and warden.</small></label>` : "") +
     `<label>Name<input type="text" name="name" maxlength="60" required placeholder="e.g. RH Wallet Finder"></label>` +
     `<label>Program folder<select name="project" required>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("")}</select></label>` +
     `<label>launchd job <small>(optional: healthy while it is loaded and its last exit was 0)</small><select name="familiar"><option value="">None</option>` +
     jobs.filter((j) => !j.ours).map((j) => `<option value="${esc(j.id)}">${esc(j.label)}</option>`).join("") + `</select></label>` +
     `<label>Health URL <small>(optional: must answer below 400)</small><input type="url" name="url" maxlength="300" placeholder="http://127.0.0.1:8787/"></label>` +
     `<div class="two"><label>Fresh file <small>(optional, inside the folder)</small><input type="text" name="fresh" maxlength="200" placeholder="data/wallets.db"></label>` +
-    `<label>Max age (hours)<input type="number" name="fresh_hours" min="0.1" max="720" step="0.1" value="24"></label></div>` +
+    `<label>Max age (hours)<input type="number" name="fresh_hours" min="0.1" max="720" step="any" value="24"></label></div>` +
     `<label>Warden<select name="warden">${staffOptions(staff, "", "No warden yet")}</select></label>` +
     `<button type="submit" class="btn primary wide">Take them on as an intern</button></form>`;
 }
@@ -121,7 +128,8 @@ Hooks.panels.chain = {
   subtitle: "Your programs are interns. Wardens keep them, the Operations Manager oversees, the CEO is the backup, you have the last word.",
   icon: '<span class="panel-icon">⚜️</span>',
   async render(body) {
-    const [c, { projects }, bots] = await Promise.all([api("/api/chain"), api("/api/projects"), api("/api/bots").catch(() => ({ jobs: [] }))]);
+    const [c, { projects }, bots, kn] = await Promise.all([api("/api/chain"), api("/api/projects"),
+      api("/api/bots").catch(() => ({ jobs: [] })), api("/api/chain/known").catch(() => ({ known: [] }))]);
     MD.reset();
     const wardens = {};
     c.interns.forEach((i) => { if (i.warden_name) (wardens[i.warden_name] = wardens[i.warden_name] || []).push(i.name); });
@@ -139,8 +147,11 @@ Hooks.panels.chain = {
       `<p class="sub">${Object.keys(wardens).length ? Object.entries(wardens).map(([w, list]) => `${esc(w)}: ${list.map(esc).join(", ")}`).join("<br>") : "Nobody guards an intern yet. Pick a warden on each intern below."}</p></div></div>` +
       `<div class="rung r-intern"><span class="rung-icon" aria-hidden="true">🌱</span><div class="rung-body"><p class="rung-title">Interns · ${esc(c.interns.length)}</p>` +
       `<p class="sub">Each program you run. Checked every ${esc(c.settings.check_minutes)} min.</p></div></div></section>` +
-      `<section class="panel-sec"><h3>Interns</h3>${c.interns.length ? c.interns.map((i) => internHTML(i, c.staff)).join("") : '<p class="loading">No interns yet. Add your first program below.</p>'}</section>` +
-      `<section class="panel-sec"><h3>Take on an intern</h3>${addInternHTML(projects, bots.jobs || [], c.staff)}</section>` +
+      `<section class="panel-sec"><h3>Interns</h3>` +
+      (kn.known.some((k) => !k.added) ? `<p><button type="button" class="btn" data-panel-act="chain-known-all">Add every known program that is healthy now</button>` +
+        `<small class="hint">${esc(kn.known.filter((k) => !k.added).map((k) => k.name).join(", "))}. A program that is down right now is skipped, with what to do first.</small></p>` : "") +
+      `${c.interns.length ? c.interns.map((i) => internHTML(i, c.staff)).join("") : '<p class="loading">No interns yet. Add your first program below.</p>'}</section>` +
+      `<section class="panel-sec"><h3>Take on an intern</h3>${addInternHTML(projects, bots.jobs || [], c.staff, kn.known)}</section>` +
       `<section class="panel-sec"><h3>Autopilot</h3>${settingsHTML(c.settings, c.dispatched)}</section>` +
       (settled.length ? `<section class="panel-sec"><h3>Recently fixed</h3>${settled.map((x) =>
         `<p class="sub"><b>${esc(x.name)}</b> · ${esc(ago(x.resolved || x.opened))} · ${esc(x.resolved_by || "")}${x.note ? ": " + esc(x.note) : ""}</p>`).join("")}</section>` : "");
@@ -179,10 +190,18 @@ Object.assign(Hooks.forms, {
 });
 
 Object.assign(Hooks.panelActions, {
+  async "chain-known-all"() {
+    const r = await api("/api/chain/interns/known", {});
+    const added = r.interns.filter((d) => d.status.startsWith("added")).map((d) => d.name);
+    const skipped = r.interns.filter((d) => d.status.startsWith("skipped"));
+    toast((added.length ? `Added ${added.join(", ")}.` : "Nothing new added.") + (skipped.length ? ` Skipped ${skipped.map((d) => d.name).join(", ")}: see the guild log.` : ""));
+  },
   async "chain-team"() {
     const r = await api("/api/chain/team", {});
     const names = r.team.filter((d) => d.status.startsWith("recruited")).map((d) => d.name);
-    toast(names.length ? names.join(", ") + " joined the guild." : "Everyone is already here.");
+    const added = (r.interns || []).filter((d) => d.status.startsWith("added")).map((d) => d.name);
+    toast((names.length ? names.join(", ") + " joined the guild." : "Everyone is already here.") +
+      (added.length ? ` New interns: ${added.join(", ")}.` : ""));
     poll();
   },
   async "chain-recruit"(btn) {
@@ -211,4 +230,20 @@ Object.assign(Hooks.panelActions, {
     await api(`/api/chain/interns/${btn.dataset.id}/remove`, {});
     toast("Removed.");
   },
+});
+
+document.addEventListener("change", (ev) => {
+  if (ev.target.id !== "chain-known") return;
+  const form = ev.target.form;
+  const k = chainKnown.find((x) => x.name === ev.target.value);
+  const hint = $("#chain-known-hint");
+  if (!k) { if (hint) hint.textContent = "Fills in the folder, checks and warden."; return; }
+  form.name.value = k.name;
+  form.project.value = k.project;
+  form.familiar.value = k.familiar || "";
+  form.url.value = k.url || "";
+  form.fresh.value = k.fresh || "";
+  form.fresh_hours.value = k.fresh_hours || 24;
+  form.warden.value = k.warden || "";
+  if (hint) hint.textContent = (k.warden ? `Warden: ${k.warden_name}. ` : `Recruit ${k.warden_name} to be its warden. `) + (k.hint || "");
 });
