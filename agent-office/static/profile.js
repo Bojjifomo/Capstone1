@@ -22,7 +22,7 @@ function divisionPicker(d) {
   if (d.staff) return esc(d.staff.division);
   const known = new Set(DIVISIONS.concat(((UI.state && UI.state.team) || {}).divisions || []));
   if (d.division) known.add(d.division);
-  return `<select class="pf-division" data-sid="${esc(d.id)}" aria-label="Division">` +
+  return `<select class="pf-division" data-session="${esc(d.id)}" aria-label="Division">` +
     `<option value="">Guild Hall</option>` +
     [...known].map((x) => `<option${x === d.division ? " selected" : ""}>${esc(x)}</option>`).join("") + `</select>`;
 }
@@ -33,8 +33,9 @@ function modelPicker(d) {
   const staffModel = d.staff && memberById(d.staff.id) ? memberById(d.staff.id).model : "";
   const current = d.staff ? staffModel : d.model_pref;
   const keep = d.staff ? "" : `<option value="">Same as now${d.model ? " (" + esc(d.model) + ")" : ""}</option>`;
-  return `<select class="pf-model" data-sid="${esc(d.id)}"${d.staff ? ` data-staff="${esc(d.staff.name)}"` : ""} aria-label="Model">` + keep +
-    ["opus", "sonnet", "haiku"].map((m) => `<option value="${m}"${m === current ? " selected" : ""}>${MODEL_NAMES[m]}</option>`).join("") +
+  return `<select class="pf-model" data-session="${esc(d.id)}"${d.staff ? ` data-member="${esc(d.staff.name)}"` : ""} aria-label="Model">` + keep +
+    ["opus", "sonnet", "haiku"].filter((m) => !UI.options || UI.options.models.includes(m) || m === current)
+      .map((m) => `<option value="${m}"${m === current ? " selected" : ""}>${MODEL_NAMES[m]}</option>`).join("") +
     `</select>` + (d.model && (d.staff || d.model_pref) ? `<small class="pf-now">now: ${esc(d.model)}</small>` : "");
 }
 
@@ -107,14 +108,14 @@ document.addEventListener("change", async (ev) => {
   const pick = ev.target.closest(".pf-model");
   if (!pick) return;
   try {
-    if (pick.dataset.staff) {
-      const r = await api("/api/team/model", { name: pick.dataset.staff, model: pick.value });
+    if (pick.dataset.member) {
+      const r = await api("/api/team/model", { name: pick.dataset.member, model: pick.value });
       toast(`${r.name} now works on ${MODEL_NAMES[r.model] || r.model}.`);
       await poll();
     } else {
-      await api(`/api/session/${pick.dataset.sid}/model`, { model: pick.value });
+      await api(`/api/session/${pick.dataset.session}/model`, { model: pick.value });
       toast(pick.value ? `Your next message from here runs on ${MODEL_NAMES[pick.value]}. In a terminal, type /model there.` : "Back to the model it already uses.");
-      if (UI.open === pick.dataset.sid) loadDetail(false);
+      if (UI.open === pick.dataset.session) loadDetail(false);
     }
   } catch (e) { toast(e.message); }
 });
@@ -123,7 +124,7 @@ document.addEventListener("change", async (ev) => {
   const sel = ev.target.closest(".pf-division");
   if (!sel) return;
   try {
-    await api(`/api/session/${sel.dataset.sid}/division`, { division: sel.value });
+    await api(`/api/session/${sel.dataset.session}/division`, { division: sel.value });
     toast(sel.value ? `Moved to ${sel.value}.` : "Back in the Guild Hall.");
     poll();
   } catch (e) { toast(e.message); }

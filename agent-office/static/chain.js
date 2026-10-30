@@ -119,6 +119,10 @@ function settingsHTML(s, dispatched) {
     `<div class="two">${n("stuck_minutes", "A round is stuck after (min)", 15, 600)}${n("max_auto_per_day", "Automatic dispatches per day", 0, 100)}</div>` +
     `<div class="two">${n("review_hours", "CEO budget review every (h, 0 = off)", 0, 168)}${n("guard_pct", "Ration at % of daily budget", 10, 100)}</div>` +
     `<div class="two">${n("opus_seats", "Opus seats", 0, 20)}<span></span></div>` +
+    `<fieldset class="models-offered"><legend>Models offered</legend>` +
+    ["haiku", "sonnet", "opus"].map((m) => `<label class="check"><input type="checkbox" name="model-${m}"${(s.allowed_models || []).includes(m) ? " checked" : ""}>` +
+      `<span>${m[0].toUpperCase() + m.slice(1)}</span></label>`).join("") +
+    `<small class="hint">Only these show in every picker, and the server refuses the others. People already on a model that is switched off keep it until you change them.</small></fieldset>` +
     `<p class="sub">Today: ${esc((dispatched && dispatched.n) || 0)} automatic dispatches.</p>` +
     `<button type="submit" class="btn primary wide">Save</button></form>`;
 }
@@ -170,10 +174,13 @@ Object.assign(Hooks.forms, {
     Hooks.panels.chain.render($("#sheet-body"));
   },
   async "chain-settings-form"(form) {
-    const body = { auto: form.auto.checked };
+    const body = { auto: form.auto.checked, allowed_models: ["haiku", "sonnet", "opus"].filter((m) => form["model-" + m].checked) };
+    if (!body.allowed_models.length) { toast("Keep at least one model."); return; }
     ["check_minutes", "fail_after", "ops_every_hours", "innovator_every_days", "stuck_minutes", "max_auto_per_day", "review_hours", "guard_pct", "opus_seats"]
       .forEach((k) => { body[k] = form[k].value; });
     await api("/api/chain/settings", body);
+    UI.options = null;   // the pickers read the offered models from here
+    await getOptions();
     toast(body.auto ? "Autopilot is on." : "Autopilot is off.");
     Hooks.panels.chain.render($("#sheet-body"));
   },

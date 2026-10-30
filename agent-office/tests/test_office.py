@@ -957,6 +957,46 @@ class UsageControl(ServerCase):
                                       host="guild.example.ts.net")[0], 403)
 
 
+class OfferedModels(ServerCase):
+    """Limiting the models offered, and dismissing people who hold a seat."""
+
+    def test_models_offered_and_dismissal(self):
+        self.assertEqual(self.request("GET", "/api/options")[1]["models"], ["", "opus", "sonnet", "haiku"])
+        self.assertEqual(self.post("/api/chain/settings", {"allowed_models": []})[0], 400)
+        self.assertEqual(self.post("/api/chain/settings", {"allowed_models": ["sonnet", "haiku"]})[0], 200)
+        self.assertEqual(self.request("GET", "/api/options")[1]["models"], ["", "sonnet", "haiku"])
+        self.assertEqual(self.request("GET", "/api/team/templates")[1]["models"], ["haiku", "sonnet"])
+        arch = next(t for t in self.request("GET", "/api/team/templates")[1]["templates"] if t["key"] == "architect")
+        self.assertEqual(arch["model"], "sonnet", "an Opus template falls back to an offered model")
+
+        refused = self.post("/api/staff", {"name": "Opusy", "role": "Architect", "instructions": "x", "model": "opus"})
+        self.assertEqual(refused[0], 400)
+        self.assertIn("not offered", refused[1]["error"])
+        who = self.post("/api/staff", {"name": "Offered", "role": "Writer", "instructions": "x", "model": "haiku"})[1]["staff"]
+        self.assertEqual(self.post("/api/team/model", {"name": who["name"], "model": "opus"})[0], 400)
+        self.assertEqual(self.post("/api/team/model", {"name": who["name"], "model": "sonnet"})[0], 200)
+        sid = fixtures.sid(2)
+        self.assertEqual(self.post("/api/session/%s/model" % sid, {"model": "opus"})[0], 409)
+        self.assertEqual(self.post("/api/session/%s/send" % sid, {"text": "hi", "mode": "acceptEdits", "model": "opus"})[0], 409)
+        self.assertEqual(self.post("/api/job", {"project": "x", "text": "hi", "mode": "acceptEdits", "model": "opus"})[0], 409)
+
+        team = self.post("/api/chain/team", {})
+        self.assertEqual(team[0], 200, team[1])
+        ceo = next(m for m in self.request("GET", "/api/team")[1]["staff"] if m["name"] == "Aurelian")
+        self.assertEqual(ceo["model"], "sonnet", "the CEO is recruited on an offered model")
+        self.assertEqual(self.post("/api/chain/settings", {"allowed_models": ["haiku", "sonnet", "opus"]})[0], 200)
+
+        seated = self.post("/api/staff/%s/dismiss" % ceo["id"], {})
+        self.assertEqual(seated[0], 409, "the CEO holds a seat")
+        self.assertIn("CEO", seated[1]["error"])
+        done = self.post("/api/staff/%s/dismiss" % ceo["id"], {"force": True})
+        self.assertEqual((done[0], done[1]["dismissed"], done[1]["seat"]), (200, True, "CEO"))
+        self.assertEqual(self.request("GET", "/api/chain")[1]["people"]["ceo"]["name"], "", "the seat is vacant now")
+        plain = self.post("/api/staff/%s/dismiss" % who["id"], {})
+        self.assertEqual((plain[0], plain[1]["dismissed"]), (200, True), "someone without a seat needs no force")
+        self.assertEqual(self.post("/api/staff/00000000/dismiss", {})[0], 404)
+
+
 class ChatOrders(ServerCase):
     """Orders typed in the guild chat, @names, and the per-quest model."""
 
