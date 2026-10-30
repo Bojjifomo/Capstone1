@@ -32,7 +32,7 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
 
 | Yang kebaca di chain | Yang nyampe ke follower |
 | --- | --- |
-| Lu mint posisi (NFT baru masuk wallet) | 🟢 OPEN LP: CA koin, simbol, fee pool, range % (kedalaman ladder), batas harga + jumlah rung |
+| Lu mint posisi (NFT baru masuk wallet) | 🟢 OPEN LP: CA koin, simbol, fee pool, range % (dari tick posisi vs harga pool) |
 | Lu close posisi (NFT di-burn) | 🔴 CLOSE LP: CA + nama koin |
 
 * **Nggak ada logika reentry di auto call.** Reentry = CLOSE lalu OPEN lagi, jadi dua pesan biasa.
@@ -41,9 +41,6 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
   harga koin, dibulatin ke kelipatan `AUTO_RANGE_STEP` (5). Tool LP nyetel tick per rung pakai tick spacing, jadi
   -70 yang lu ketik jadi -71.3% di chain; dibulatin balik jadi -70. `AUTO_RANGE_STEP=1` = angka persis.
   Nggak tergantung harga pool, jadi nggak geser walau harga gerak.
-* **Harga:** batas harga ladder dalam USDG per koin (atas → bawah) plus jumlah rung, misalnya
-  `Harga: $0.002317 → $0.0006640, 5 rung`. Follower yang set min/max price ini dapet range yang sama persis
-  dengan lu, walau bukanya jam yang beda (persen doang dihitung dari harga mereka pas buka).
 * **Ladder:** satu posisi lu biasanya beberapa NFT sekaligus dalam satu transaksi. Bot gabungin jadi **satu** call
   per transaksi dan pool, dengan range dari rung paling atas sampai paling bawah.
 * Cuma open yang **single sided USDG** yang di-blast. Open dua sisi atau di pool tanpa USDG dilewatin dan lu dikabarin

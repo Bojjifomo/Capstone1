@@ -94,8 +94,6 @@ class FakeChain:
             return "0x" + C.word(1 << 96) + C.word(self.ticks["0x" + arg[:64]]) + C.word(0) + C.word(FEE)
         if sel == C.SEL_SYMBOL:
             return abi_string("HYDX")
-        if sel == C.SEL_DECIMALS:
-            return "0x" + C.word(6 if tx["to"] == RH.USDG else 18)
         raise AssertionError(tx)
 
     def get_logs(self, flt, start, end, chunk, progress=None):
@@ -142,14 +140,6 @@ class PureTest(unittest.TestCase):
                          ["-65", "-65", "-65", "-70", "-60"])  # hydx, grift, boomer, forever, rebate
         self.assertEqual(W.fmt_step(-71.3, 1), "-71")
 
-    def test_price_and_format(self):
-        # USDG 6 desimal, koin 18: tick 0 = 1e12 USDG per koin (raw), makanya tick koin murah sangat negatif
-        self.assertAlmostEqual(W.coin_price(0, True, 18, 6), 1e12)
-        self.assertAlmostEqual(W.coin_price(-276324, True, 18, 6), 1.0, places=3)
-        self.assertAlmostEqual(W.coin_price(276324, False, 18, 6), 1.0, places=3)  # dibalik kalau USDG token0
-        self.assertEqual([W.fmt_price(x) for x in (0.0000353, 0.0025346, 1.2345, 1234.5)],
-                         ["0.00003530", "0.002535", "1.234", "1234"])  # 1234.5 -> 1234 (bankers rounding)
-
     def test_single_sided_has_small_slack(self):
         self.assertTrue(W.single_sided_usdg(0, 10000, 10000, True))
         self.assertTrue(W.single_sided_usdg(0, 10050, 10000, True))   # harga gerak dikit
@@ -186,11 +176,7 @@ class WatcherTest(unittest.TestCase):
         self.chain.logs += mint([7], tx, 1010) + [modify(1010, 5, POOL, lower_tick(-65), 10000, 5_000_000, 7, tx)]
         evs = self.w.poll()
         self.assertEqual(actions(evs), [("open", "hydx")])
-        pos = evs[0]["pos"]
-        self.assertEqual({k: pos[k] for k in ("coin", "ca", "fee", "range", "rungs")},
-                         {"coin": "hydx", "ca": W.checksum(COIN), "fee": "2.5", "range": ["-65"], "rungs": 1})
-        hi, lo = float(pos["price_hi"]), float(pos["price_lo"])
-        self.assertAlmostEqual(lo / hi, 0.35, places=2)  # -65%: batas bawah 35% dari batas atas
+        self.assertEqual(evs[0]["pos"], {"coin": "hydx", "ca": W.checksum(COIN), "fee": "2.5", "range": ["-65"]})
         self.assertEqual(self.w.poll(), [])  # nggak dobel
 
         self.chain.head += 50
@@ -330,10 +316,6 @@ class AutoCallTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.bot = B.Bot(self.tg, self.store, [OWNER], [])
         self.pos = {"coin": "hydx", "ca": W.checksum(COIN), "fee": "2.5", "range": ["-65"]}
-
-    def test_open_message_has_price_bounds_for_mirroring(self):
-        self.bot.auto_call({"action": "open", "pos": dict(self.pos, price_hi="0.002412", price_lo="0.0006921", rungs=5)})
-        self.assertIn("Harga: <b>$0.002412 → $0.0006921</b>, 5 rung", self.tg.to(FAN)[-1])
 
     def test_open_and_close_are_blasted(self):
         self.bot.auto_call({"action": "open", "pos": dict(self.pos)})

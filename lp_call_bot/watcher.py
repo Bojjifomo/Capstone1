@@ -9,8 +9,7 @@ Dicek di 72 jam wallet asli: 35 dari 35 close ikut nge-burn NFT, jadi nggak perl
 Dari pool dapet: CA koin (sisi yang bukan USDG), simbol, fee pool. Range = kedalaman ladder dari ujung atas
 sampai ujung bawahnya, dalam % harga koin, dibulatin ke kelipatan `range_step` (5): tool LP lu nyetel tick per
 rung dengan tick spacing, jadi -70 yang lu ketik jadi -71.3% di chain. Nggak tergantung harga pool, jadi nggak
-geser walau harga gerak antara mint dan poll. Plus batas harga ladder (USDG per koin, atas -> bawah): itu yang
-bikin range follower sama persis dengan lu walau mereka buka di jam yang beda.
+geser walau harga gerak antara mint dan poll.
 
 Satu "posisi" lu biasanya ladder: beberapa NFT (rung) sekaligus dalam satu transaksi di pool yang sama. Jadi
 call-nya digabung per (transaksi, pool): satu OPEN dengan range dari rung teratas sampai terbawah, satu CLOSE.
@@ -35,7 +34,7 @@ CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena
 BLOCKS_PER_MINUTE = 600    # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
 TICK_SLACK = 100           # ~1%: harga bisa gerak dikit antara block mint dan poll
-STATE_VERSION = 4          # naik kalau bentuk state berubah: watcher mulai dari "sekarang" lagi
+STATE_VERSION = 3          # naik kalau bentuk state berubah: watcher mulai dari "sekarang" lagi
 
 
 # ---- helper murni ----------------------------------------------------------
@@ -63,19 +62,6 @@ def ladder_depth(tl, tu):
 def single_sided_usdg(tl, tu, tick, usdg_is_token1):
     """Posisi cuma megang USDG: seluruh range ada di bawah harga koin (toleransi TICK_SLACK)."""
     return tu <= tick + TICK_SLACK if usdg_is_token1 else tick - TICK_SLACK < tl
-
-
-def coin_price(tick, usdg_is_token1, dec_coin, dec_usdg):
-    """Harga koin dalam USDG di sebuah tick."""
-    return math.pow(1.0001, tick if usdg_is_token1 else -tick) * 10 ** (dec_coin - dec_usdg)
-
-
-def fmt_price(x):
-    """4 angka penting, tanpa notasi e: 0.00003530, 0.002535, 1.234, 1234."""
-    if x <= 0:
-        return "0"
-    decimals = max(0, 3 - math.floor(math.log10(x)))
-    return f"{x:.{decimals}f}"
 
 
 def fmt_step(x, step=5):
@@ -200,13 +186,11 @@ class Watcher:
         slot = self._slot0(pool, block)
         if not all(single_sided_usdg(tl, tu, slot["tick"], info["usdg_token1"]) for _, tl, tu in rungs):
             return [{"action": "skip", "text": f"Posisi {label} ({info['coin'].upper()}) bukan single sided USDG, nggak di-blast."}]
-        tl, tu = min(r[1] for r in rungs), max(r[2] for r in rungs)
-        prices = sorted(coin_price(t, info["usdg_token1"], info["dec_coin"], info["dec_usdg"]) for t in (tl, tu))
+        depth = ladder_depth(min(r[1] for r in rungs), max(r[2] for r in rungs))
         fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
         return [{"action": "open", "token_ids": ids, "tx": tx,
                  "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee),
-                         "range": [fmt_step(ladder_depth(tl, tu), self.range_step)],
-                         "price_hi": fmt_price(prices[1]), "price_lo": fmt_price(prices[0]), "rungs": len(rungs)}}]
+                         "range": [fmt_step(depth, self.range_step)]}}]
 
     # baca chain
     def _pool(self, pool):
@@ -224,14 +208,10 @@ class Watcher:
             sym = C.decode_string(self.calls.call(
                 "eth_call", [{"to": coin, "data": C.cd_simple(C.SEL_SYMBOL)}, "latest"]))
             info.update(coin=sym.strip().lower().replace(" ", "-") or coin[2:8],
-                        ca=checksum(coin), usdg_token1=(c1 == RH.USDG),
-                        dec_coin=self._decimals(coin), dec_usdg=self._decimals(RH.USDG))
+                        ca=checksum(coin), usdg_token1=(c1 == RH.USDG))
         with self.store.lock:
             pools[pool] = info
         return info
-
-    def _decimals(self, token):
-        return int(self.calls.call("eth_call", [{"to": token, "data": C.cd_simple(C.SEL_DECIMALS)}, "latest"]), 16)
 
     def _slot0(self, pool, block):
         for tag in (hex(block), "latest"):  # RPC tanpa arsip nolak block lama
