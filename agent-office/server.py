@@ -273,7 +273,8 @@ def text_field(body, key, limit=200):
 
 @route("GET", "/api/options")
 def api_options(req, m):
-    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES), "models": list(runner.MODELS),
+    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES),
+            "models": [m for m in runner.MODELS if not m or m in APP.office.chain.allowed()],
             "default_mode": APP.cfg.get("default_mode", "acceptEdits"), "claude": bool(runner.find_claude(APP.cfg))}
 
 
@@ -448,7 +449,10 @@ def api_team_templates(req, m):
     """Complete starting points for the Recruit form: role, division, model and full instructions."""
     standing = {p["name"].lower(): {k: p[k] for k in ("name", "role", "division", "model", "instructions")}
                 for p in list(roster.PRESETS.values()) + list(roster.WARDENS.values())}
-    return {"templates": roster.TEMPLATES, "standing": standing,
+    pick = APP.office.chain.pick_model
+    templates = [dict(t, model=pick(t["model"])) for t in roster.TEMPLATES]
+    standing = {k: dict(v, model=pick(v["model"])) for k, v in standing.items()}
+    return {"templates": templates, "standing": standing, "models": APP.office.chain.allowed(),
             "divisions": sorted({t["division"] for t in roster.TEMPLATES} | set(APP.office.team.divisions))}
 
 
@@ -494,10 +498,16 @@ def api_staff_update(req, m):
 @route("POST", "/api/staff/" + STAFF + "/dismiss")
 def api_dismiss(req, m):
     member = APP.office.team.find(m.group("staff"))
+    if not member:
+        raise HttpError(404, "no such guild member")
+    seat = APP.office.chain.role_of(member["id"]) if not member.get("builtin") else ""
+    if seat and not req.body.get("force"):
+        raise HttpError(409, "%s is %s. Send force to dismiss them anyway; the seat becomes vacant." % (member["name"], seat))
     done = APP.office.team.dismiss(m.group("staff"))
     if done:
+        APP.office.chain.forget(member["id"])
         APP.office.ledger.add("dismiss", member["name"])
-    return {"dismissed": done}
+    return {"dismissed": done, "seat": seat}
 
 
 @route("POST", "/api/team/ask")
@@ -673,7 +683,7 @@ def api_chain_situation(req, m):
 
 @route("POST", "/api/chain/settings")
 def api_chain_settings(req, m):
-    return {"settings": APP.office.chain.configure(req.body)}
+    return {"settings": chain_call(APP.office.chain.configure, req.body)}
 
 
 @route("POST", r"/api/chain/appoint/(?P<role>ceo|ops|innovator)")

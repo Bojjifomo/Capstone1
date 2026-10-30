@@ -150,6 +150,7 @@ const Town = (() => {
     const staff = team.staff.map((m) => ({
       id: m.id, staff: m.id, sid: m.sid, name: m.name, label: m.name, title: m.title, seed: m.seed, kind: m.kind,
       status: m.status, note: m.note, act: activity(m, now, night), home: "d:" + m.division, specialist: true,
+      builtin: !!m.builtin, seat: m.chain || "",
     }));
     const everyone = leads.concat(staff);
     const divisions = [];
@@ -1095,6 +1096,7 @@ const Town = (() => {
   const ORDER = { needs: 0, work: 1, read: 2, sleep: 3 };
   const FILTERS = [["all", "All"], ["needs", "Awaits you"], ["work", "Working"], ["rest", "Resting"]];
   let townFilter = "all";
+  let townEdit = false;
 
   function everyone(homes) {
     const seen = new Set();
@@ -1111,16 +1113,23 @@ const Town = (() => {
     const shown = list.filter(match);
     el.roster.hidden = false;
     el.roster.innerHTML = `<header><b>Everyone in town</b><small>${list.length} ${list.length === 1 ? "person" : "people"}` +
-      ` · tap someone to open them</small></header>` +
+      ` · ${townEdit ? "tap ✕ to remove someone" : "tap someone to open them"}</small>` +
+      `<button type="button" class="chip-btn roster-edit${townEdit ? " on" : ""}" data-town-edit>${townEdit ? "Done" : "✎ Remove"}</button></header>` +
       `<div class="roster-filters" role="tablist">` + FILTERS.map(([f, label]) =>
         `<button type="button" class="chip-btn${f === townFilter ? " on" : ""}${f === "needs" && count("needs") ? " needs" : ""}" data-town-filter="${f}">` +
         `${esc(label)} <b>${count(f)}</b></button>`).join("") + `</div>` +
-      (shown.length ? shown.map((p) =>
-        `<button type="button" class="roster-row a-${esc(p.act)}" ${p.staff ? `data-staff="${esc(p.staff)}"` : `data-sid="${esc(p.sid)}"`}>` +
-        `${Sprites.svg(p.seed, p.kind, 22)}<span><b>${esc(p.label || p.name)}</b>` +
-        `<small>${esc(p.title || "")}${p.title ? " · " : ""}${esc(p.specialist ? "Specialist" : p.name)}</small>` +
-        `<small class="where">📍 ${esc(p.where)}${p.where !== p.homeName ? " (from " + esc(p.homeName) + ")" : ""}</small></span>` +
-        `<em>${esc(DOING[p.act] || "")}</em></button>`).join("")
+      (shown.length ? shown.map((p) => {
+        const row = `<button type="button" class="roster-row a-${esc(p.act)}" ${p.staff ? `data-staff="${esc(p.staff)}"` : `data-sid="${esc(p.sid)}"`}>` +
+          `${Sprites.svg(p.seed, p.kind, 22)}<span><b>${esc(p.label || p.name)}</b>` +
+          `<small>${esc(p.title || "")}${p.title ? " · " : ""}${esc(p.specialist ? "Specialist" : p.name)}</small>` +
+          `<small class="where">📍 ${esc(p.where)}${p.where !== p.homeName ? " (from " + esc(p.homeName) + ")" : ""}</small></span>` +
+          `<em>${esc(DOING[p.act] || "")}</em></button>`;
+        if (!townEdit || p.builtin) return row;
+        // not data-sid / data-staff: those open the person, and this button must not
+        const who = p.staff ? `data-remove-staff="${esc(p.staff)}"` : `data-remove-session="${esc(p.sid)}"`;
+        return `<div class="roster-wrap">${row}<button type="button" class="roster-x" ${who} data-name="${esc(p.label || p.name)}" ` +
+          `aria-label="Remove ${esc(p.label || p.name)}">✕</button></div>`;
+      }).join("")
         : `<p class="sub">${townFilter === "needs" ? "Nobody is waiting on you." : "Nobody here right now."}</p>`);
   }
 
@@ -1276,11 +1285,34 @@ const Town = (() => {
     el.sub = document.getElementById("town-sub");
     el.back = document.getElementById("town-back");
     el.roster = document.getElementById("town-roster");
-    el.roster.addEventListener("click", (ev) => {
+    el.roster.addEventListener("click", async (ev) => {
       const f = ev.target.closest("[data-town-filter]");
-      if (!f) return;
-      townFilter = f.dataset.townFilter;
-      if (T.view === "town") everyone(homesNow());
+      if (f) {
+        townFilter = f.dataset.townFilter;
+        if (T.view === "town") everyone(homesNow());
+        return;
+      }
+      if (ev.target.closest("[data-town-edit]")) {
+        townEdit = !townEdit;
+        if (T.view === "town") everyone(homesNow());
+        return;
+      }
+      const x = ev.target.closest("[data-remove-staff], [data-remove-session]");
+      if (!x) return;
+      const name = x.dataset.name;
+      try {
+        if (x.dataset.removeStaff) {
+          const m = ((T.state && T.state.team && T.state.team.staff) || []).find((s) => s.id === x.dataset.removeStaff);
+          if (!confirm(m ? dismissQuestion(m) : `Dismiss ${name} from the guild?`)) return;
+          await api(`/api/staff/${x.dataset.removeStaff}/dismiss`, { force: true });
+          toast(`${name} has left the guild.`);
+        } else {
+          if (!confirm(`Archive ${name}'s quest?\n\nThey leave the town. You can bring them back from The archives.`)) return;
+          await api(`/api/session/${x.dataset.removeSession}/archive`, { archived: true });
+          toast(`${name} was archived.`);
+        }
+        await poll();
+      } catch (e) { toast(e.message); }
     });
     T.built = true;
     el.back.addEventListener("click", () => leave(false));

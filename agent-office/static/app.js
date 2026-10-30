@@ -539,6 +539,9 @@ async function guarded(btn, fn) {
 }
 
 document.addEventListener("click", async (ev) => {
+  // A click on a dropdown or field belongs to the control itself. Letting it reach the data-sid / data-staff
+  // handlers below reopened the sheet, which rebuilt it and closed the dropdown before it showed.
+  if (ev.target.closest("select, option, input, textarea")) return;
   const copyBtn = ev.target.closest(".copy");
   if (copyBtn) {
     const ok = await MD.copy(MD.copyText(copyBtn.dataset.copy) || "");

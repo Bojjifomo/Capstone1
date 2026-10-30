@@ -34,7 +34,9 @@ DEFAULTS = {
     "review_hours": 24,           # the CEO's budget review (0 = off)
     "guard_pct": 80,              # at this share of the daily budget, automatic rounds stop
     "opus_seats": 2,              # how many specialists may run on Opus at once
+    "allowed_models": ["haiku", "sonnet", "opus"],   # the models offered everywhere; at least one
 }
+MODEL_CHOICES = ("haiku", "sonnet", "opus")
 LIMITS = {"check_minutes": (1, 240), "fail_after": (1, 10), "ops_every_hours": (1, 72),
           "innovator_every_days": (1, 60), "stuck_minutes": (15, 600), "max_auto_per_day": (0, 100),
           "review_hours": (0, 168), "guard_pct": (10, 100), "opus_seats": (0, 20)}
@@ -146,6 +148,28 @@ class Chain:
         self._next_check = 0
         self._checking = False
 
+    def forget(self, staff_id):
+        """Someone left the guild: free their seat and their intern."""
+        with self.lock:
+            for role in [r for r, sid in self.roles.items() if sid == staff_id]:
+                self.roles.pop(role)
+            for intern in self.interns:
+                if intern.get("warden") == staff_id:
+                    intern["warden"] = ""
+            self.save()
+
+    def allowed(self):
+        """The models offered in every picker and accepted by the server. Never empty."""
+        got = [m for m in MODEL_CHOICES if m in (self.settings.get("allowed_models") or [])]
+        return got or list(MODEL_CHOICES)
+
+    def pick_model(self, wanted):
+        """The wanted model if it is offered, else the nearest one that is (Sonnet first, then Haiku, then Opus)."""
+        allowed = self.allowed()
+        if wanted in allowed:
+            return wanted
+        return next(m for m in ("sonnet", "haiku", "opus") if m in allowed)
+
     def save(self):
         with self.lock:
             store.save("chain.json", {
@@ -183,7 +207,7 @@ class Chain:
             member = existing
         else:
             member, _ = self.office.team.hire(preset["name"], preset["role"], preset["instructions"],
-                                              preset["division"], preset["model"])
+                                              preset["division"], self.pick_model(preset["model"]))
         self.appoint(role, member["id"])
         return member
 
@@ -209,7 +233,7 @@ class Chain:
                 continue
             try:
                 member, _ = self.office.team.hire(preset["name"], preset["role"], preset["instructions"],
-                                                  preset["division"], preset["model"])
+                                                  preset["division"], self.pick_model(preset["model"]))
             except RuntimeError as e:
                 done.append({"role": "Warden", "name": preset["name"], "status": "not recruited: %s" % e})
                 continue
@@ -836,6 +860,11 @@ class Chain:
             for key, value in changes.items():
                 if key == "auto":
                     self.settings["auto"] = bool(value)
+                elif key == "allowed_models":
+                    picked = [m for m in MODEL_CHOICES if isinstance(value, (list, tuple)) and m in value]
+                    if not picked:
+                        raise ValueError("keep at least one model")
+                    self.settings["allowed_models"] = picked
                 elif key in LIMITS:
                     self.settings[key] = clamp(key, value)
             self._next_check = 0

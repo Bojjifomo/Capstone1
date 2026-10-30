@@ -253,9 +253,15 @@ class Office:
                 self.ledger.add("seal", "wrong or expired seal for " + purpose)
             raise Refused("this needs a fresh guild seal from your phone", needs_code=purpose)
 
+    def check_offered(self, model):
+        allowed = self.chain.allowed()
+        if model and model in runner.MODELS and model not in allowed:
+            raise Refused("%s is not offered right now. Offered: %s" % (model, ", ".join(allowed)))
+
     def set_model_pref(self, sid, model):
         if model not in runner.MODELS:
             raise Refused("pick opus, sonnet, haiku, or leave it as it is")
+        self.check_offered(model)
         with self.lock:
             if model:
                 self.model_prefs[sid] = model
@@ -264,7 +270,9 @@ class Office:
             store.save("models.json", self.model_prefs)
 
     def send(self, sid, text, mode, model="", code_id="", code="", now_please=False):
-        model = model or self.model_prefs.get(sid, "")
+        self.check_offered(model)
+        pref = self.model_prefs.get(sid, "")
+        model = model or (pref if pref in self.chain.allowed() else "")   # a saved choice that is no longer offered is ignored
         text = str(text).strip()
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write a message (up to %d characters)" % runner.MAX_TEXT)
@@ -326,6 +334,7 @@ class Office:
     def new_job(self, pid, text, mode, model="", code_id="", code="", system="", helper=False, origin="phone",
                 external=False, override=False, from_queue=False, add_dirs=()):
         text = str(text).strip()
+        self.check_offered(model)
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write the first message (up to %d characters)" % runner.MAX_TEXT)
         path = pid if helper else self.project_path(pid)

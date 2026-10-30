@@ -81,6 +81,11 @@ async function fillStaffEdit(body, id) {
     `<button type="submit" class="btn primary wide">Save</button></form></details>`;
 }
 
+function dismissQuestion(m) {
+  return `Dismiss ${m.name} from the guild?` + (m.chain ? `\n\n${m.name} is ${m.chain}. That seat becomes vacant.` : "") +
+    "\n\nTheir folder in ~/Agents stays as it is.";
+}
+
 const HIRE_GROUPS = ["Build", "Guard", "Research", "Words", "Plan"];
 let hireTemplates = [];
 
@@ -89,7 +94,7 @@ Hooks.panels.hire = {
   subtitle: "Start from a template or write your own. They get a folder in ~/Agents, a title and a seat in a division.",
   icon: '<span class="panel-icon">🛡️</span>',
   async render(body) {
-    const [team, tpl, chain] = await Promise.all([api("/api/team"), api("/api/team/templates"), api("/api/chain").catch(() => null)]);
+    const [team, tpl, chain, o] = await Promise.all([api("/api/team"), api("/api/team/templates"), api("/api/chain").catch(() => null), getOptions()]);
     hireTemplates = tpl.templates;
     const divisions = [...new Set([...tpl.divisions, ...team.known_divisions])].sort();
     const seats = chain ? chain.settings.opus_seats : 2;
@@ -105,7 +110,7 @@ Hooks.panels.hire = {
       divisions.map((d) => `<option>${esc(d)}</option>`).join("") + `</select>` +
       `<input type="text" name="newdivision" maxlength="40" placeholder="…or name a new division"></label>` +
       `<label>Model <small>Haiku: checks, lookups, summaries. Sonnet: everyday work. Opus: hard design and bugs (${used} of ${esc(seats)} seats in use).</small>` +
-      `<select name="model">${options(["sonnet", "opus", "haiku"], W.models, "sonnet")}</select></label>` +
+      `<select name="model">${options(["sonnet", "opus", "haiku"].filter((m) => (o.models || []).includes(m)), W.models, tpl.models.includes("sonnet") ? "sonnet" : tpl.models[0])}</select></label>` +
       `<label>Instructions <small id="hire-count">0 / 8000</small>` +
       `<textarea name="instructions" rows="14" maxlength="8000" placeholder="Their mission, what they know, the steps they follow, what good looks like, what they never do, and how they report. A template fills this in."></textarea></label>` +
       `<button type="submit" class="btn primary wide">Welcome them to the guild</button></form>`;
@@ -192,8 +197,8 @@ Object.assign(Hooks.panelActions, {
   },
   async dismiss() {
     const m = memberById(UI.arg);
-    if (!m || !confirm(`Dismiss ${m.name} from the guild?`)) return false;
-    await api(`/api/staff/${m.id}/dismiss`, {});
+    if (!m || !confirm(dismissQuestion(m))) return false;
+    await api(`/api/staff/${m.id}/dismiss`, { force: true });
     toast(`${m.name} has left the guild.`);
     closeSheet();
     return false;

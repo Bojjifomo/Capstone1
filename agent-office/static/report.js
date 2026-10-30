@@ -20,7 +20,8 @@ function modelForm(a) {
   const current = ["haiku", "sonnet", "opus"].includes(a.model) ? a.model : "";
   return `<form class="form inline" data-form="report-model" data-name="${esc(a.name)}">` +
     `<select name="model" aria-label="Model for ${esc(a.name)}">` +
-    ["haiku", "sonnet", "opus"].map((m) => `<option value="${m}"${m === current ? " selected" : ""}>${FAMILY_NAME[m]}</option>`).join("") +
+    ["haiku", "sonnet", "opus"].filter((m) => !UI.options || UI.options.models.includes(m) || m === current)
+      .map((m) => `<option value="${m}"${m === current ? " selected" : ""}>${FAMILY_NAME[m]}</option>`).join("") +
     (current ? "" : `<option value="" selected>Default</option>`) +
     `</select><button type="submit" class="btn small">Set</button></form>`;
 }

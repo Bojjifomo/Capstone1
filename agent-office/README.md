@@ -137,8 +137,19 @@ ledger; a risky permission mode cannot be used from the chat.
 apply). For a quest it sets the model for messages sent to it from the Guild Hall or the chat; a session you have open in a
 terminal keeps its own `/model`.
 
+**Removing people.** *✎ Remove* above the list shows a ✕ on each row. A quest is archived (it leaves the town and can be brought back
+from The archives); a guild member is dismissed (their folder in `~/Agents` stays). Someone who holds a chain seat (CEO, Operations
+Manager, Innovator) or guards an intern is named in the question, and their seat becomes vacant. The server refuses to dismiss
+them without `force`.
+
+**Models offered.** ⚜️ Chain → Autopilot → *Models offered* switches Haiku, Sonnet and Opus on or off (at least one stays on). Only
+the offered models show in the pickers and the Recruit form, and the server refuses the others for hiring, model changes, quests
+and errands. Templates and the standing team fall back to an offered model (Sonnet first). Someone already on a model that is
+switched off keeps it until you change them.
+
 A sheet is rebuilt on every poll, so while you are using a dropdown or text field inside it the rebuild is held and catches up when you let go.
-Without that, a phone's picker would be destroyed under the finger while a quest is working.
+A click on a dropdown or field is also kept away from the page's tap-to-open handlers, which used to reopen the sheet and close
+the dropdown before it showed.
 
 ## Chain of command
 

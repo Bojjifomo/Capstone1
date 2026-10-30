@@ -121,6 +121,7 @@ class Team:
             raise ValueError("give the recruit a role")
         if model not in ("", "opus", "sonnet", "haiku"):
             raise ValueError("unknown model")
+        self._offered(model)
         with self.lock:
             if model == "opus":
                 self._take_opus_seat()
@@ -159,6 +160,11 @@ class Team:
                 "- Work only inside the folders the brief names.\n") % (
             m["name"], m["title"], m["name"], m["role"], m["instructions"] or "(none yet)")
 
+    def _offered(self, model):
+        chain = getattr(self.office, "chain", None)
+        if model and chain and model not in chain.allowed():
+            raise ValueError("%s is not offered right now. Offered: %s" % (model, ", ".join(chain.allowed())))
+
     def _take_opus_seat(self):
         """Raise when every Opus seat is taken. Call with self.lock held."""
         chain = getattr(self.office, "chain", None)
@@ -170,6 +176,7 @@ class Team:
         """Move a specialist to haiku, sonnet or opus. Opus seats are limited; only bojjifomo changes the CEO's."""
         if model not in ("haiku", "sonnet", "opus"):
             raise ValueError("pick haiku, sonnet or opus")
+        self._offered(model)
         with self.lock:
             member = self.find(key)
             if not member:
