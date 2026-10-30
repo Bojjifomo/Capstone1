@@ -71,13 +71,17 @@ def _ca_line(ca):
 
 
 def render_open(pos):
-    return "\n".join([
+    lines = [
         f"🟢 <b>OPEN LP — {html.escape(pos['coin'].upper())}</b>",
         "",
         _ca_line(pos["ca"]),
         f"Pool: <b>{pos['fee']}%</b>",
         f"Range: <b>{fmt_range(pos['range'])}</b> (single sided USDG)",
-    ])
+    ]
+    if pos.get("price_hi"):  # auto call: batas harga persis, biar follower bisa mirror kapan pun bukanya
+        rungs = f", {pos['rungs']} rung" if pos.get("rungs") else ""
+        lines.append(f"Harga: <b>${pos['price_hi']} → ${pos['price_lo']}</b>{rungs}")
+    return "\n".join(lines)
 
 
 def render_close(positions):

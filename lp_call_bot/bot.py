@@ -258,7 +258,8 @@ class Bot:
             return
         pos = ev["pos"]
         if ev["action"] == "open":
-            text = calls.render_open(self.store.open_position(pos))
+            self.store.open_position(pos)
+            text = calls.render_open(pos)  # pos lengkap (batas harga, rung), store cuma nyimpen inti
         else:
             known = self.store.get(pos["coin"])
             text = calls.render_close([self.store.set_status(pos["coin"], "closed") if known else pos])
