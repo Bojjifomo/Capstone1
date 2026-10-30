@@ -38,9 +38,13 @@ ke channel + semua follower:
 
 * **CA** = token di pool yang bukan USDG. **Range** = batas bawah posisi dalam % dari harga koin pas dibuka
   (-65 = 65% di bawah harga). Batas atas nggak ditulis kalau nempel harga; kalau nggak nempel, jadi dua angka (`-60 -65`).
+* **Ladder:** satu posisi lu biasanya beberapa NFT sekaligus dalam satu transaksi. Bot gabungin jadi **satu** call
+  per transaksi, dengan range dari rung paling atas sampai paling bawah. Close + open di transaksi yang sama,
+  pool sama, tick atau range sama = satu 🔁 REENTRY (bukan dua pesan).
 * Cuma posisi **single sided USDG** yang di-blast. Posisi dua sisi, atau di pool tanpa USDG, dilewatin dan
   lu dikabarin lewat DM. Nambah / ngurangin liquidity sebagian nggak dianggap call.
-* Call manual (ketik) tetep jalan barengan. Cek status: `/auto`.
+* Call manual (ketik) tetep jalan barengan. Cek status: `/auto` (nunjukin kapan terakhir sehat atau error terakhir). Kalau watcher error 3x
+  berturut-turut, bot ngabarin lewat DM. Owner harus pernah `/start` bot dari akun sendiri biar DM bisa masuk.
 
 Setup, di `lp_call_bot/.env`:
 

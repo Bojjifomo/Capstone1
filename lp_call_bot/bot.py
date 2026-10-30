@@ -2,6 +2,7 @@
 
 Jalanin: python3 lp_call_bot/bot.py   (config di lp_call_bot/.env, lihat .env.example)
 """
+import html
 import json
 import os
 import sys
@@ -56,11 +57,6 @@ def load_env(path):
 
 def id_list(value):
     return [int(v) if v.strip().lstrip("-").isdigit() else v.strip() for v in value.split(",") if v.strip()]
-
-
-def same_range(a, b, tolerance=1):
-    """Range % dari dua open dianggap sama kalau selisihnya <= 1 (tick spacing bikin angka geser dikit)."""
-    return len(a) == len(b) and all(abs(float(x) - float(y)) <= tolerance for x, y in zip(a, b))
 
 
 def build_watcher(store):
@@ -125,6 +121,9 @@ class Bot:
         self.watcher = watcher
         self.watch_seconds = watch_seconds
         self.dry_run = dry_run
+        self.watch_ok = None
+        self.watch_err = None
+        self.watch_fails = 0
 
     # kirim
     def reply(self, chat_id, text):
@@ -232,7 +231,9 @@ class Bot:
     # auto call dari wallet
     def notify_owners(self, text):
         for owner in self.owners:
-            self.tg.send(owner, text)
+            ok, code = self.tg.send(owner, text)
+            if not ok:
+                print(f"DM ke owner {owner} gagal (kode {code}). Owner sudah /start bot ini dari akun sendiri?", flush=True)
 
     def auto_status(self):
         if not self.watcher:
@@ -241,7 +242,12 @@ class Bot:
         wallets = "\n".join(f"<code>{w}</code>" for w in st["wallets"])
         mode = "DRY RUN (cuma ke lu)" if self.dry_run else "LIVE (ke follower)"
         return (f"🤖 Auto call nyala: {mode}\n{wallets}\nBlock terakhir dibaca: {st['cursor']}\n"
-                f"Posisi kebuka: {st['open']}")
+                f"NFT posisi kebuka: {st['open']}\n" + self.watch_health())
+
+    def watch_health(self):
+        if self.watch_ok:
+            return f"Terakhir sehat: {int(time.time() - self.watch_ok)} detik lalu"
+        return "Belum pernah berhasil baca chain" + (f"\nError terakhir: <code>{html.escape(self.watch_err)}</code>" if self.watch_err else "")
 
     def auto_call(self, ev):
         """Satu call dari watcher: sama kayak lu ketik sendiri, tapi dari transaksi wallet."""
@@ -250,14 +256,18 @@ class Bot:
             return
         pos = ev["pos"]
         known = self.store.get(pos["coin"])
-        if ev["action"] == "open":
+        if ev["action"] == "reentry":
+            text = calls.render_reentry([self.store.open_position(pos)])
+        elif ev["action"] == "open":
             if known and known["status"] == "closed" and known["ca"].lower() == pos["ca"].lower() \
-                    and same_range(known["range"], pos["range"]):
+                    and calls.same_range(known["range"], pos["range"]):
                 text = calls.render_reentry([self.store.set_status(pos["coin"], "open")])
             else:
                 text = calls.render_open(self.store.open_position(pos))
         else:
-            closed = self.store.set_status(pos["coin"], "closed") if known else pos
+            if "range" in pos and not known:  # simpen fee + range, biar open berikutnya dikenali sebagai reentry
+                self.store.open_position(pos)
+            closed = self.store.set_status(pos["coin"], "closed") if self.store.get(pos["coin"]) else pos
             text = calls.render_close([closed])
         if self.dry_run:
             self.notify_owners("🧪 DRY RUN, nggak dikirim ke follower:\n\n" + text)
@@ -268,14 +278,21 @@ class Bot:
 
     def watch_once(self):
         for ev in self.watcher.poll():
+            print("auto call:", ev["action"], ev.get("pos", ev.get("text")), flush=True)
             self.auto_call(ev)
+        self.watch_ok = time.time()
+        self.watch_fails = 0
 
     def watch_loop(self):
         while True:
             try:
                 self.watch_once()
             except Exception as e:  # RPC lagi bermasalah: coba lagi nanti, bot Telegram tetep jalan
-                print("watcher error:", repr(e), flush=True)
+                self.watch_fails += 1
+                self.watch_err = repr(e)
+                print("watcher error:", self.watch_err, flush=True)
+                if self.watch_fails == 3:  # sekali aja, biar lu tau tanpa liat terminal
+                    self.notify_owners(f"⚠️ Auto call error 3x berturut-turut, call belum kebaca:\n<code>{html.escape(self.watch_err)}</code>")
             time.sleep(self.watch_seconds)
 
     def beat(self):
