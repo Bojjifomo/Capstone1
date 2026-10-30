@@ -6,8 +6,10 @@ Yang diliat (pakai decoder punya rh_wallet_finder):
   - PositionManager Transfer dari wallet lu ke 0x0  = posisi ditutup (burn) -> CLOSE
   - dari receipt transaksi itu: ModifyLiquidity NFT-nya, buat pool + tick.
 Dicek di 72 jam wallet asli: 35 dari 35 close ikut nge-burn NFT, jadi nggak perlu tau posisi lama.
-Dari pool dapet: CA koin (sisi yang bukan USDG), simbol, fee pool. Range dihitung dari tick posisi dibanding
-harga pool pas dibuka, dalam % harga koin (single sided USDG: -65 = batas bawah 65% di bawah harga).
+Dari pool dapet: CA koin (sisi yang bukan USDG), simbol, fee pool. Range = kedalaman ladder dari ujung atas
+sampai ujung bawahnya, dalam % harga koin, dibulatin ke kelipatan `range_step` (5): tool LP lu nyetel tick per
+rung dengan tick spacing, jadi -70 yang lu ketik jadi -71.3% di chain. Nggak tergantung harga pool, jadi nggak
+geser walau harga gerak antara mint dan poll.
 
 Satu "posisi" lu biasanya ladder: beberapa NFT (rung) sekaligus dalam satu transaksi di pool yang sama. Jadi
 call-nya digabung per (transaksi, pool): satu OPEN dengan range dari rung teratas sampai terbawah, satu CLOSE.
@@ -31,8 +33,6 @@ PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena reorg
 BLOCKS_PER_MINUTE = 600    # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
-NEAR_ZERO = 1.5            # batas atas range segini dekat harga = nggak usah ditulis
-TICK_SLACK = 100           # ~1%: harga bisa gerak dikit antara block mint dan poll
 STATE_VERSION = 3          # naik kalau bentuk state berubah: watcher mulai dari "sekarang" lagi
 
 
@@ -53,25 +53,14 @@ def _price_pct(ticks):
     return (math.pow(1.0001, ticks) - 1) * 100
 
 
-def range_pcts(tl, tu, tick, usdg_is_token1):
-    """(batas bawah, batas atas) harga koin dalam % dari harga sekarang."""
-    if usdg_is_token1:  # koin = token0, harga koin = 1.0001^tick USDG
-        return _price_pct(tl - tick), _price_pct(tu - tick)
-    return _price_pct(tick - tu), _price_pct(tick - tl)  # koin = token1, harga dibalik
+def ladder_depth(tl, tu):
+    """Kedalaman range [tl, tu] dalam % harga koin, dari ujung atas ke ujung bawah (sama buat dua urutan token)."""
+    return _price_pct(-(tu - tl))
 
 
-def single_sided_usdg(tl, tu, tick, usdg_is_token1):
-    """Posisi cuma megang USDG: seluruh range ada di bawah harga koin (toleransi TICK_SLACK)."""
-    return tu <= tick + TICK_SLACK if usdg_is_token1 else tick - TICK_SLACK < tl
-
-
-def fmt_pct(x):
-    return str(round(x))
-
-
-def range_label(lo, up):
-    """['-65'] normalnya; dua angka ['-60', '-65'] kalau batas atas nggak nempel harga."""
-    return [fmt_pct(lo)] if abs(up) <= NEAR_ZERO else [fmt_pct(up), fmt_pct(lo)]
+def fmt_step(x, step=5):
+    """-71.3 -> '-70' (step 5); step 1 = angka persis dibulatin."""
+    return str(int(step * round(x / step)))
 
 
 def _pad(addr):
@@ -87,12 +76,13 @@ class Watcher:
     Poll pertama cuma nyatet block sekarang. Kalau bot mati lebih lama dari `catchup_minutes`, aktivitas yang
     lebih lama dari itu dilewatin (daripada ngirim call basi ke follower) dan owner dikabarin."""
 
-    def __init__(self, logs_rpc, calls_rpc, wallets, store, catchup_minutes=30, chunk=20000):
+    def __init__(self, logs_rpc, calls_rpc, wallets, store, catchup_minutes=30, range_step=5, chunk=20000):
         self.rpc = logs_rpc
         self.calls = calls_rpc
         self.wallets = [w.lower() for w in wallets]
         self.store = store
         self.catchup_blocks = int(catchup_minutes * BLOCKS_PER_MINUTE)
+        self.range_step = range_step
         self.chunk = chunk
         with store.lock:
             st = store.data.setdefault("watch", {})
@@ -187,14 +177,12 @@ class Watcher:
         label = f"#{ids[0]}" + (f" (+{len(ids) - 1} lainnya)" if len(ids) > 1 else "")
         if "coin" not in info:
             return [{"action": "skip", "text": f"Posisi {label} dibuka di pool tanpa USDG, nggak di-blast."}]
-        slot = self._slot0(pool, block)
-        if not all(single_sided_usdg(tl, tu, slot["tick"], info["usdg_token1"]) for _, tl, tu in rungs):
-            return [{"action": "skip", "text": f"Posisi {label} ({info['coin'].upper()}) bukan single sided USDG, nggak di-blast."}]
-        pcts = [range_pcts(tl, tu, slot["tick"], info["usdg_token1"]) for _, tl, tu in rungs]
-        lo, up = min(p[0] for p in pcts), max(p[1] for p in pcts)
-        fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
+        # Harga pool sengaja nggak dipakai: call = salinan posisi yang lu buka, di mana pun harganya sekarang.
+        depth = ladder_depth(min(r[1] for r in rungs), max(r[2] for r in rungs))
+        fee = self._slot0(pool, block)["lp_fee"] if info["dynamic"] else info["fee"]
         return [{"action": "open", "token_ids": ids, "tx": tx,
-                 "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee), "range": range_label(lo, up)}}]
+                 "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee),
+                         "range": [fmt_step(depth, self.range_step)]}}]
 
     # baca chain
     def _pool(self, pool):

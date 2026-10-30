@@ -133,21 +133,12 @@ class PureTest(unittest.TestCase):
         self.assertEqual([W.fmt_fee(f) for f in (25000, 48800, 3000, 50000, 10000)],
                          ["2.5", "4.88", "0.3", "5", "1"])
 
-    def test_range_both_orientations(self):
-        lo, up = W.range_pcts(lower_tick(-65), 10000, 10000, True)
-        self.assertEqual((W.fmt_pct(lo), W.fmt_pct(up)), ("-65", "0"))
-        lo, up = W.range_pcts(-10000, -lower_tick(-65), -10000, False)  # koin = token1: harga dibalik
-        self.assertEqual(W.fmt_pct(lo), "-65")
-        self.assertEqual(W.range_label(-60.4, -1.2), ["-60"])
-        self.assertEqual(W.range_label(-65.2, -60.1), ["-60", "-65"])
-
-    def test_single_sided_has_small_slack(self):
-        self.assertTrue(W.single_sided_usdg(0, 10000, 10000, True))
-        self.assertTrue(W.single_sided_usdg(0, 10050, 10000, True))   # harga gerak dikit
-        self.assertFalse(W.single_sided_usdg(0, 12000, 10000, True))  # koinnya ikut masuk
-        self.assertTrue(W.single_sided_usdg(10000, 12000, 9950, False))
-        self.assertFalse(W.single_sided_usdg(8000, 12000, 10000, False))
-
+    def test_ladder_depth_and_rounding(self):
+        self.assertAlmostEqual(W.ladder_depth(10000 - 5 * 2100, 10000), -65.0, places=1)
+        self.assertAlmostEqual(W.ladder_depth(337000, 349500), -71.35, places=1)  # FOREVER asli: "-70"
+        self.assertEqual([W.fmt_step(x) for x in (-63.2, -66.7, -65.0, -71.3, -59.3)],
+                         ["-65", "-65", "-65", "-70", "-60"])  # hydx, grift, boomer, forever, rebate
+        self.assertEqual(W.fmt_step(-71.3, 1), "-71")
 
 class WatcherTest(unittest.TestCase):
     def make(self, usdg_token1=True, archive=True, catchup_minutes=30):
@@ -213,6 +204,15 @@ class WatcherTest(unittest.TestCase):
         self.assertEqual(actions(evs), [("close", "hydx"), ("open", "hydx")])
         self.assertEqual(evs[1]["token_ids"], new)
 
+    def test_range_ignores_price_move_between_mint_and_poll(self):
+        """Persis FOREVER jam 14.38: harga udah naik ~5% di atas ladder, call tetep -70."""
+        self.start(usdg_token1=False)
+        self.chain.ticks[POOL] = 336490
+        ids, tx = [1, 2, 3, 4, 5], tx_hash(2)
+        rungs = [modify(1010, 10 + i, POOL, 337000 + i * 2500, 339500 + i * 2500, 5_000_000, t, tx) for i, t in enumerate(ids)]
+        self.chain.logs += mint(ids, tx, 1010) + rungs
+        self.assertEqual(self.w.poll()[0]["pos"]["range"], ["-70"])
+
     def test_usdg_is_token0(self):
         self.start(usdg_token1=False)
         self.chain.ticks[POOL] = -10000  # koin = token1: posisi di atas tick, tu = batas bawah harga koin
@@ -220,12 +220,21 @@ class WatcherTest(unittest.TestCase):
         self.chain.logs += mint([7], tx, 1010) + [modify(1010, 5, POOL, -9960, -lower_tick(-65), 5_000_000, 7, tx)]
         self.assertEqual(self.w.poll()[0]["pos"]["range"], ["-65"])
 
-    def test_two_sided_and_non_usdg_opens_are_skipped(self):
+    def test_open_is_copied_wherever_the_price_is(self):
+        """Harga udah masuk ke ladder (atau jauh di atasnya): call tetep salinan posisi, nggak di-skip."""
         self.start()
-        tx, tx2 = tx_hash(2), tx_hash(3)
-        self.chain.logs += mint([8], tx, 1010) + [modify(1010, 5, POOL, lower_tick(-65), 12000, 5_000_000, 8, tx)]
-        self.chain.logs += mint([9], tx2, 1011) + [modify(1011, 5, POOL2, lower_tick(-65), 10000, 5_000_000, 9, tx2)]
-        self.assertEqual([e["action"] for e in self.w.poll()], ["skip", "skip"])
+        tx = tx_hash(2)
+        self.chain.ticks[POOL] = 10000 - 3000  # harga turun masuk rung kedua
+        self.chain.logs += mint([1, 2, 3, 4, 5], tx, 1010) + ladder([1, 2, 3, 4, 5], tx, 1010)
+        evs = self.w.poll()
+        self.assertEqual(actions(evs), [("open", "hydx")])
+        self.assertEqual(evs[0]["pos"]["range"], ["-65"])
+
+    def test_non_usdg_open_is_skipped(self):
+        self.start()
+        tx = tx_hash(3)
+        self.chain.logs += mint([9], tx, 1011) + [modify(1011, 5, POOL2, lower_tick(-65), 10000, 5_000_000, 9, tx)]
+        self.assertEqual([e["action"] for e in self.w.poll()], ["skip"])
 
     def test_non_usdg_close_is_silent(self):
         self.start()
@@ -330,6 +339,27 @@ class AutoCallTest(unittest.TestCase):
     def test_close_of_unknown_coin_still_blasted(self):
         self.bot.auto_call({"action": "close", "pos": {"coin": "worm", "ca": self.pos["ca"]}})
         self.assertIn("CLOSE LP — WORM", self.tg.to(FAN)[-1])
+
+    def test_hourly_recap(self):
+        self.bot.recap_seconds = 3600
+        self.assertFalse(self.bot.maybe_recap(now=1000))  # baru nyala: cuma mulai ngitung
+        self.bot.auto_call({"action": "open", "pos": dict(self.pos)})
+        self.bot.auto_call({"action": "open", "pos": dict(self.pos, coin="worm", range=["-60"])})
+        self.bot.auto_call({"action": "close", "pos": {"coin": "worm", "ca": self.pos["ca"]}})
+        self.assertFalse(self.bot.maybe_recap(now=1000 + 1800))  # belum sejam
+        self.assertTrue(self.bot.maybe_recap(now=1000 + 3600))
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("Rekap posisi LP yang masih kebuka (1)", text)
+        self.assertIn("HYDX", text)
+        self.assertNotIn("WORM", text)  # udah close
+        self.assertFalse(self.bot.maybe_recap(now=1000 + 3700))  # nggak dobel
+
+    def test_recap_skipped_when_nothing_open(self):
+        self.bot.recap_seconds = 3600
+        self.bot.maybe_recap(now=0)
+        sent = len(self.tg.sent)
+        self.assertFalse(self.bot.maybe_recap(now=3600))
+        self.assertEqual(len(self.tg.sent), sent)
 
     def test_dry_run_only_tells_owner(self):
         self.bot.dry_run = True

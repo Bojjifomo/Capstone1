@@ -103,11 +103,11 @@ def render_reentry(positions):
     return "\n\n".join(blocks)
 
 
-def render_list(positions):
+def render_list(positions, title="LP kebuka"):
     opened = [p for p in positions if p["status"] == "open"]
     if not opened:
         return "Lagi nggak ada LP yang kebuka."
-    lines = [f"📋 <b>LP kebuka ({len(opened)})</b>", ""]
+    lines = [f"📋 <b>{title} ({len(opened)})</b>", ""]
     for pos in opened:
         lines.append(
             f"• <b>{html.escape(pos['coin'].upper())}</b> {pos['fee']}% {fmt_range(pos['range'])}\n"

@@ -35,6 +35,7 @@ Reentry (range &amp; fee sama kayak open terakhir):
 Command:
 /posisi: LP yang lagi kebuka
 /auto: status auto call dari wallet
+/rekap: kirim rekap posisi kebuka sekarang
 /stats: jumlah penerima
 /blast &lt;teks&gt;: kirim pesan bebas
 /hapus &lt;koin&gt;: hapus koin dari daftar (salah ketik)"""
@@ -74,7 +75,8 @@ def build_watcher(store):
         print(f"RPC_URL kosong, pakai RPC publik {watcher.PUBLIC_RPC}", flush=True)
     logs_rpc, calls_rpc = watcher.R.make_rpcs(cfg)
     return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
-                           catchup_minutes=float(os.environ.get("AUTO_CATCHUP_MINUTES", "30")))
+                           catchup_minutes=float(os.environ.get("AUTO_CATCHUP_MINUTES", "30")),
+                           range_step=int(os.environ.get("AUTO_RANGE_STEP", "5")))
 
 
 class Telegram:
@@ -112,7 +114,7 @@ class Telegram:
 
 class Bot:
     def __init__(self, tg, store, owners, channels, default_range="-65", heartbeat=None,
-                 watcher=None, watch_seconds=15, dry_run=False):
+                 watcher=None, watch_seconds=15, dry_run=False, recap_minutes=60):
         self.tg = tg
         self.store = store
         self.owners = set(owners)
@@ -125,6 +127,7 @@ class Bot:
         self.watch_ok = None
         self.watch_err = None
         self.watch_fails = 0
+        self.recap_seconds = recap_minutes * 60
 
     # kirim
     def reply(self, chat_id, text):
@@ -178,6 +181,9 @@ class Bot:
             self.reply(chat_id, HELP_OWNER.format(default_range=self.default_range))
         elif cmd == "/auto":
             self.reply(chat_id, self.auto_status())
+        elif cmd == "/rekap":
+            if not self.send_recap():
+                self.reply(chat_id, "Lagi nggak ada LP yang kebuka, nggak ada yang di-blast.")
         elif cmd == "/stats":
             self.reply(chat_id, f"Subscriber: {len(self.store.subscribers())}\nChannel: {len(self.channels)}")
         elif cmd == "/blast":
@@ -287,6 +293,41 @@ class Bot:
                     self.notify_owners(f"⚠️ Auto call error 3x berturut-turut, call belum kebaca:\n<code>{html.escape(self.watch_err)}</code>")
             time.sleep(self.watch_seconds)
 
+    # rekap per jam
+    def send_recap(self):
+        """Blast daftar posisi yang masih kebuka (tanpa nilai). False kalau nggak ada yang kebuka."""
+        if not any(p["status"] == "open" for p in self.store.positions()):
+            return False
+        text = calls.render_list(self.store.positions(), title="Rekap posisi LP yang masih kebuka")
+        if self.dry_run:
+            self.notify_owners("🧪 DRY RUN, nggak dikirim ke follower:\n\n" + text)
+        else:
+            self.blast(text)
+        return True
+
+    def maybe_recap(self, now=None):
+        """Rekap kalau udah lewat `recap_minutes` sejak rekap terakhir (dicatet di state, aman walau restart)."""
+        now = now or time.time()
+        with self.store.lock:
+            last = self.store.data.get("last_recap")
+            if last is None:  # baru nyala: jangan langsung blast, mulai ngitung dari sekarang
+                self.store.data["last_recap"] = now
+                self.store.save()
+                return False
+            if now - last < self.recap_seconds:
+                return False
+            self.store.data["last_recap"] = now
+            self.store.save()
+        return self.send_recap()
+
+    def recap_loop(self):
+        while True:
+            try:
+                self.maybe_recap()
+            except Exception as e:
+                print("rekap error:", repr(e), flush=True)
+            time.sleep(30)
+
     def beat(self):
         """Sentuh file heartbeat tiap kali Telegram berhasil dihubungi. Agent Office ngecek umurnya."""
         if not self.heartbeat:
@@ -318,6 +359,9 @@ class Bot:
         if self.watcher:
             print(f"Auto call nyala: {self.watcher.wallets}" + ("  (DRY RUN)" if self.dry_run else ""), flush=True)
             threading.Thread(target=self.watch_loop, daemon=True).start()
+        if self.recap_seconds > 0:
+            print(f"Rekap posisi tiap {self.recap_seconds // 60:.0f} menit", flush=True)
+            threading.Thread(target=self.recap_loop, daemon=True).start()
         while True:
             self.poll_once()
 
@@ -341,6 +385,7 @@ def main():
         watcher=build_watcher(store),
         watch_seconds=float(os.environ.get("AUTO_POLL_SECONDS", "15")),
         dry_run=os.environ.get("AUTO_DRY_RUN", "0") == "1",
+        recap_minutes=float(os.environ.get("RECAP_MINUTES", "60")),
     )
     bot.run()
 
