@@ -112,6 +112,31 @@ Every accepted token call is a ledger line `kind: external` with `origin` set (d
 
 A missing or wrong token on a Funnel request or an `external_hosts` name is 401. The failure is written to the server log without the token. After 8 failures from the same client within 10 minutes the answer is 429. Funnel connects from 127.0.0.1 and sets `X-Forwarded-For` to the public client; that address is what the limit counts. A correct token clears the count. A wrong token on localhost is also 401, so a mismatched `AGENT_OFFICE_TOKEN` fails closed. A correct token on localhost does not open the allowlist and does not skip the Origin check.
 
+## Giving orders from the town
+
+**Everyone in town.** Under the map, a list of every adventurer with where they are (📍 building, or the Tavern and where
+they came from) and what they are doing. Filters: All, Awaits you, Working, Resting. Tap a row to open them. No need to walk
+into each building to find someone.
+
+**Orders in the guild chat.** Type under the chat log:
+
+| You type | What happens |
+| --- | --- |
+| `cek semua program, ada yang mati?` | Goes to the Operations Manager (the CEO if that seat is empty), who does it or hands it out |
+| `@Lyra restart bot-nya` | An errand for that guild member |
+| `@Clover lanjut, commit` | Your next message to that quest (same as typing in its sheet) |
+| `/check LP Call Bot` | Checks one program now, answer in the chat |
+| `/round ops` · `/round budget` | Starts a round now |
+| `/status` · `/help` | The situation report · the list of commands |
+
+Typing `@` shows who you can address, people waiting on you first. Your order and their final answer appear on the **Orders**
+tab (and under All). An order that comes from the chat runs like any other errand: same permissions, same treasury, same
+ledger; a risky permission mode cannot be used from the chat.
+
+**Model per quest.** The profile card's *Model* row is a picker. For a guild member it changes their model (Opus seats still
+apply). For a quest it sets the model for messages sent to it from the Guild Hall or the chat; a session you have open in a
+terminal keeps its own `/model`.
+
 ## Chain of command
 
 ```
@@ -279,7 +304,7 @@ Quill the Treasurer is always on the roster, stationed in the Counting House (br
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`petitions.json` · `chain.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `chain.json` · `models.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 

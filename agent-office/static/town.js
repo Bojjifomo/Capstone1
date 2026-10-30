@@ -1091,6 +1091,39 @@ const Town = (() => {
         `<em>${esc(DOING[p.act] || "")}</em></button>`).join("") : `<p class="sub">Nobody here right now.</p>`);
   }
 
+  // ---- everyone in town, under the map, so nobody has to be found building by building ----
+  const ORDER = { needs: 0, work: 1, read: 2, sleep: 3 };
+  const FILTERS = [["all", "All"], ["needs", "Awaits you"], ["work", "Working"], ["rest", "Resting"]];
+  let townFilter = "all";
+
+  function everyone(homes) {
+    const seen = new Set();
+    const list = [];
+    const nameOf = (id) => (homes.find((h) => h.id === id) || { name: "Guild Hall" }).name;
+    homes.forEach((h) => h.people.forEach((p) => {
+      if (seen.has(p.id)) return;
+      seen.add(p.id);
+      list.push(Object.assign({}, p, { where: p.act === "read" ? "The Tavern" : nameOf(p.home), homeName: nameOf(p.home) }));
+    }));
+    list.sort((a, b) => (ORDER[a.act] ?? 9) - (ORDER[b.act] ?? 9) || String(a.label || a.name).localeCompare(String(b.label || b.name)));
+    const match = (p) => townFilter === "all" || (townFilter === "rest" ? (p.act === "read" || p.act === "sleep") : p.act === townFilter);
+    const count = (f) => list.filter((p) => f === "all" || (f === "rest" ? (p.act === "read" || p.act === "sleep") : p.act === f)).length;
+    const shown = list.filter(match);
+    el.roster.hidden = false;
+    el.roster.innerHTML = `<header><b>Everyone in town</b><small>${list.length} ${list.length === 1 ? "person" : "people"}` +
+      ` · tap someone to open them</small></header>` +
+      `<div class="roster-filters" role="tablist">` + FILTERS.map(([f, label]) =>
+        `<button type="button" class="chip-btn${f === townFilter ? " on" : ""}${f === "needs" && count("needs") ? " needs" : ""}" data-town-filter="${f}">` +
+        `${esc(label)} <b>${count(f)}</b></button>`).join("") + `</div>` +
+      (shown.length ? shown.map((p) =>
+        `<button type="button" class="roster-row a-${esc(p.act)}" ${p.staff ? `data-staff="${esc(p.staff)}"` : `data-sid="${esc(p.sid)}"`}>` +
+        `${Sprites.svg(p.seed, p.kind, 22)}<span><b>${esc(p.label || p.name)}</b>` +
+        `<small>${esc(p.title || "")}${p.title ? " · " : ""}${esc(p.specialist ? "Specialist" : p.name)}</small>` +
+        `<small class="where">📍 ${esc(p.where)}${p.where !== p.homeName ? " (from " + esc(p.homeName) + ")" : ""}</small></span>` +
+        `<em>${esc(DOING[p.act] || "")}</em></button>`).join("")
+        : `<p class="sub">${townFilter === "needs" ? "Nobody is waiting on you." : "Nobody here right now."}</p>`);
+  }
+
   function townHits() {
     const L = T.layout;
     el.hits.textContent = "";
@@ -1170,7 +1203,7 @@ const Town = (() => {
       const sky = skyName();
       el.sub.textContent = (day.night ? "Night in Jakarta" : day.name + " in Jakarta") + (sky === "rain" ? " · rain" : sky === "cloudy" ? " · cloudy" : "");
       el.back.hidden = true;
-      el.roster.hidden = true;
+      everyone(homes);
     } else {
       const home = homes.find((h) => h.id === T.room) || homes[0];
       T.room = home.id;
@@ -1243,6 +1276,12 @@ const Town = (() => {
     el.sub = document.getElementById("town-sub");
     el.back = document.getElementById("town-back");
     el.roster = document.getElementById("town-roster");
+    el.roster.addEventListener("click", (ev) => {
+      const f = ev.target.closest("[data-town-filter]");
+      if (!f) return;
+      townFilter = f.dataset.townFilter;
+      if (T.view === "town") everyone(homesNow());
+    });
     T.built = true;
     el.back.addEventListener("click", () => leave(false));
     el.hits.addEventListener("click", (ev) => {

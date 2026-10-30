@@ -27,13 +27,24 @@ function divisionPicker(d) {
     [...known].map((x) => `<option${x === d.division ? " selected" : ""}>${esc(x)}</option>`).join("") + `</select>`;
 }
 
+const MODEL_NAMES = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
+
+function modelPicker(d) {
+  const staffModel = d.staff && memberById(d.staff.id) ? memberById(d.staff.id).model : "";
+  const current = d.staff ? staffModel : d.model_pref;
+  const keep = d.staff ? "" : `<option value="">Same as now${d.model ? " (" + esc(d.model) + ")" : ""}</option>`;
+  return `<select class="pf-model" data-sid="${esc(d.id)}"${d.staff ? ` data-staff="${esc(d.staff.name)}"` : ""} aria-label="Model">` + keep +
+    ["opus", "sonnet", "haiku"].map((m) => `<option value="${m}"${m === current ? " selected" : ""}>${MODEL_NAMES[m]}</option>`).join("") +
+    `</select>` + (d.model && (d.staff || d.model_pref) ? `<small class="pf-now">now: ${esc(d.model)}</small>` : "");
+}
+
 Hooks.sheetTop = (d) => {
   if (!d.persona) return "";
   const pay = d.pay || {};
   const summary = PROFILE.summaries[d.id];
   const rows = [
     ["Quest", d.name], ["Started as", d.started_as], ["Division", divisionPicker(d), true], ["Project", d.project],
-    ["Branch", d.branch], ["Model", d.model], ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)],
+    ["Branch", d.branch], ["Model", modelPicker(d), true], ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)],
     ["Pay 30 days", money(pay.month)], ["Last activity", ago(d.active)], ["Last tool", d.last_tool], ["Folder", d.folder],
   ];
   const last = d.messages && [...d.messages].reverse().find((m) => m.role === "assistant" && m.text);
@@ -91,6 +102,21 @@ Object.assign(ACTIONS, {
 document.addEventListener("toggle", (ev) => {
   if (ev.target.classList && ev.target.classList.contains("profile")) PROFILE.open = ev.target.open;
 }, true);
+
+document.addEventListener("change", async (ev) => {
+  const pick = ev.target.closest(".pf-model");
+  if (!pick) return;
+  try {
+    if (pick.dataset.staff) {
+      const r = await api("/api/team/model", { name: pick.dataset.staff, model: pick.value });
+      toast(`${r.name} now works on ${MODEL_NAMES[r.model] || r.model}.`);
+      await poll();
+    } else {
+      await api(`/api/session/${pick.dataset.sid}/model`, { model: pick.value });
+      toast(pick.value ? `Your next message from here runs on ${MODEL_NAMES[pick.value]}. In a terminal, type /model there.` : "Back to the model it already uses.");
+    }
+  } catch (e) { toast(e.message); }
+});
 
 document.addEventListener("change", async (ev) => {
   const sel = ev.target.closest(".pf-division");

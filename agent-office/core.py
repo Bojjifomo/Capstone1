@@ -64,6 +64,8 @@ class Office:
         self.names = store.load("names.json", {})
         self.archived = store.load("archived.json", {})
         self.assigned = store.load("assignments.json", {})  # sid -> division
+        self.model_prefs = store.load("models.json", {})    # sid -> model for messages sent from here
+        self.chat_runs = {}                                 # sid -> who, for runs started from the guild chat
         self.flags = {}  # sid -> (ts, message), from the Notification hook; memory only
         self.agents_dir = str(Path(cfg.get("agents_dir", "~/Agents")).expanduser())
         self.runner = runner.Runner(cfg, on_finish=self.run_finished)
@@ -152,6 +154,7 @@ class Office:
         if self.team:
             info["staff"] = self.team.staff_for_session(t)
         info["division"] = self.assigned.get(t.id, "")
+        info["model_pref"] = self.model_prefs.get(t.id, "")
         info["pay"] = t.pay()
         info["last_tool"] = t.last_tool
         info["started_as"] = STARTED_AS.get(t.started_as, t.started_as or "Terminal")
@@ -250,7 +253,18 @@ class Office:
                 self.ledger.add("seal", "wrong or expired seal for " + purpose)
             raise Refused("this needs a fresh guild seal from your phone", needs_code=purpose)
 
+    def set_model_pref(self, sid, model):
+        if model not in runner.MODELS:
+            raise Refused("pick opus, sonnet, haiku, or leave it as it is")
+        with self.lock:
+            if model:
+                self.model_prefs[sid] = model
+            else:
+                self.model_prefs.pop(sid, None)
+            store.save("models.json", self.model_prefs)
+
     def send(self, sid, text, mode, model="", code_id="", code="", now_please=False):
+        model = model or self.model_prefs.get(sid, "")
         text = str(text).strip()
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write a message (up to %d characters)" % runner.MAX_TEXT)
@@ -421,6 +435,10 @@ class Office:
             import traceback
             traceback.print_exc()
         self.emit("quest.finished", data)
+        who = self.chat_runs.pop(run.sid, None)
+        if who:
+            reply = " ".join((run.final or "").split())[:400] or ("done" if run.ok else "stopped without an answer")
+            self.ledger.add("reply", reply, by=who, sid=run.sid, ok=bool(run.ok))
         try:
             self.chain.on_run(run)
         except Exception:

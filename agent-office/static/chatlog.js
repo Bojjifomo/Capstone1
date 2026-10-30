@@ -46,6 +46,10 @@ const ChatLog = (() => {
     }
   }
 
+  let names = [];
+  let namesAt = 0;
+  let waitingUntil = 0;   // after an order, read the ledger on every poll so the answer shows up quickly
+
   const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Seal", hire: "Guild", dismiss: "Guild", errand: "Errand", bot: "Familiar", clean: "Vault", guild: "Guild Hall", chatter: "Guild Hall", external: "External" };
   const LEDGER_VERB = { queue: "queued: ", job: "posted a quest: ", hire: "welcomed ", dismiss: "dismissed ", errand: "sent ", bot: "", clean: "" };
 
@@ -56,6 +60,10 @@ const ChatLog = (() => {
     }
     const who = e.by || e.origin || LEDGER_WHO[e.kind] || e.kind;
     const text = (LEDGER_VERB[e.kind] || "") + e.text;
+    if (e.kind === "order" || e.kind === "reply") {
+      add("orders", who, e.text, e.sid, e.ts);
+      return;
+    }
     const ch = e.kind === "chatter" ? "say" : "guild";
     add(ch, who, text, e.sid, e.ts, e.origin ? "external" : "");
   }
@@ -87,7 +95,7 @@ const ChatLog = (() => {
       waiting.forEach((s) => add("system", nameOf(s), "awaits your word" + (s.note ? ": " + s.note : "."), s.id));
       primed = true;
       loadLedger();
-    } else if (++polls % 4 === 0) {
+    } else if (++polls % 4 === 0 || Date.now() < waitingUntil) {
       loadLedger();
     }
   }
@@ -105,6 +113,78 @@ const ChatLog = (() => {
     const line = ev.target.closest && ev.target.closest(".chat-line[data-sid]");
     if (line && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); openSheet(line.dataset.sid); }
   });
+
+  // ---- giving orders from the chat ----------------------------------------------------
+  async function loadNames(force) {
+    if (!force && Date.now() - namesAt < 30000) return names;
+    try { names = (await api("/api/chat/names")).names; namesAt = Date.now(); } catch (e) { /* suggestions are optional */ }
+    return names;
+  }
+
+  async function suggest(input) {
+    const box = $("#chat-names");
+    const m = input.value.match(/^@([^\s]*)$/);
+    if (!m) { box.hidden = true; return; }
+    const q = m[1].toLowerCase();
+    const list = (await loadNames()).filter((n) => n.name.toLowerCase().startsWith(q)).slice(0, 8);
+    box.hidden = !list.length;
+    box.innerHTML = list.map((n) =>
+      `<button type="button" class="chip-btn${n.needs ? " needs" : ""}" data-chat-name="${esc(n.name)}">@${esc(n.name)}` +
+      `<small>${esc(n.kind === "staff" ? n.title : (n.needs ? "awaits you" : "quest"))}</small></button>`).join("");
+  }
+
+  document.addEventListener("input", (ev) => {
+    if (ev.target.closest && ev.target.closest("#chat-form")) suggest(ev.target);
+  });
+  document.addEventListener("focusin", (ev) => {
+    if (ev.target.closest && ev.target.closest("#chat-form")) {
+      document.body.classList.add("chatting");   // the Post-a-quest button would cover the input
+      loadNames(true);
+      suggest(ev.target);
+    }
+  });
+  document.addEventListener("focusout", (ev) => {
+    if (ev.target.closest && ev.target.closest("#chat-form")) setTimeout(() => {
+      if (!document.activeElement || !document.activeElement.closest("#chat-form")) document.body.classList.remove("chatting");
+    }, 200);
+  });
+  document.addEventListener("click", (ev) => {
+    const pick = ev.target.closest("[data-chat-name]");
+    if (!pick) return;
+    const input = $("#chat-form input");
+    input.value = "@" + pick.dataset.chatName + " ";
+    $("#chat-names").hidden = true;
+    input.focus();
+  });
+  document.addEventListener("submit", async (ev) => {
+    if (ev.target.id !== "chat-form") return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    const input = ev.target.text;
+    const btn = ev.target.querySelector("[type=submit]");
+    const text = input.value.trim();
+    if (!text || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const r = await api("/api/chat", { text });
+      input.value = "";
+      $("#chat-names").hidden = true;
+      if (r.reply) {
+        add("orders", "bojjifomo", text, null, null, "", { local: true });
+        add("orders", r.by || "Guild", r.reply, null, null, "", { local: true });
+      } else {
+        await loadLedger();   // your order, as the guild wrote it down
+        waitingUntil = Date.now() + 10 * 60 * 1000;
+        add("orders", "Guild", r.held ? `${r.to} will start when the treasury refills.`
+          : `${r.to} ${r.queued ? "is busy; your message is queued" : "is on it"}. The answer lands here.`, r.sid, null, "", { local: true });
+      }
+    } catch (e) {
+      add("orders", "bojjifomo", text, null, null, "", { local: true });
+      add("orders", "Guild", e.message, null, null, "", { local: true });
+    } finally {
+      btn.disabled = false;
+    }
+  }, true);
 
   Hooks.header.push(onState);
   render();
