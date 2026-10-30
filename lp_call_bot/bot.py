@@ -74,7 +74,8 @@ def build_watcher(store):
         print(f"RPC_URL kosong, pakai RPC publik {watcher.PUBLIC_RPC}", flush=True)
     logs_rpc, calls_rpc = watcher.R.make_rpcs(cfg)
     return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
-                           catchup_minutes=float(os.environ.get("AUTO_CATCHUP_MINUTES", "30")))
+                           catchup_minutes=float(os.environ.get("AUTO_CATCHUP_MINUTES", "30")),
+                           range_step=int(os.environ.get("AUTO_RANGE_STEP", "5")))
 
 
 class Telegram:

@@ -133,13 +133,12 @@ class PureTest(unittest.TestCase):
         self.assertEqual([W.fmt_fee(f) for f in (25000, 48800, 3000, 50000, 10000)],
                          ["2.5", "4.88", "0.3", "5", "1"])
 
-    def test_range_both_orientations(self):
-        lo, up = W.range_pcts(lower_tick(-65), 10000, 10000, True)
-        self.assertEqual((W.fmt_pct(lo), W.fmt_pct(up)), ("-65", "0"))
-        lo, up = W.range_pcts(-10000, -lower_tick(-65), -10000, False)  # koin = token1: harga dibalik
-        self.assertEqual(W.fmt_pct(lo), "-65")
-        self.assertEqual(W.range_label(-60.4, -1.2), ["-60"])
-        self.assertEqual(W.range_label(-65.2, -60.1), ["-60", "-65"])
+    def test_ladder_depth_and_rounding(self):
+        self.assertAlmostEqual(W.ladder_depth(10000 - 5 * 2100, 10000), -65.0, places=1)
+        self.assertAlmostEqual(W.ladder_depth(337000, 349500), -71.35, places=1)  # FOREVER asli: "-70"
+        self.assertEqual([W.fmt_step(x) for x in (-63.2, -66.7, -65.0, -71.3, -59.3)],
+                         ["-65", "-65", "-65", "-70", "-60"])  # hydx, grift, boomer, forever, rebate
+        self.assertEqual(W.fmt_step(-71.3, 1), "-71")
 
     def test_single_sided_has_small_slack(self):
         self.assertTrue(W.single_sided_usdg(0, 10000, 10000, True))
@@ -212,6 +211,15 @@ class WatcherTest(unittest.TestCase):
         evs = self.w.poll()
         self.assertEqual(actions(evs), [("close", "hydx"), ("open", "hydx")])
         self.assertEqual(evs[1]["token_ids"], new)
+
+    def test_range_ignores_price_move_between_mint_and_poll(self):
+        """Persis FOREVER jam 14.38: harga udah naik ~5% di atas ladder, call tetep -70."""
+        self.start(usdg_token1=False)
+        self.chain.ticks[POOL] = 336490
+        ids, tx = [1, 2, 3, 4, 5], tx_hash(2)
+        rungs = [modify(1010, 10 + i, POOL, 337000 + i * 2500, 339500 + i * 2500, 5_000_000, t, tx) for i, t in enumerate(ids)]
+        self.chain.logs += mint(ids, tx, 1010) + rungs
+        self.assertEqual(self.w.poll()[0]["pos"]["range"], ["-70"])
 
     def test_usdg_is_token0(self):
         self.start(usdg_token1=False)

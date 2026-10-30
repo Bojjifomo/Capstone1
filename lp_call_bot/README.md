@@ -37,8 +37,10 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
 
 * **Nggak ada logika reentry di auto call.** Reentry = CLOSE lalu OPEN lagi, jadi dua pesan biasa.
   (Command ketik `reentry <koin>` di DM bot tetep ada.)
-* **CA** = token di pool yang bukan USDG. **Range** = batas bawah posisi dalam % dari harga koin pas dibuka
-  (-65 = 65% di bawah harga). Batas atas nggak ditulis kalau nempel harga; kalau nggak nempel, jadi dua angka (`-60 -65`).
+* **CA** = token di pool yang bukan USDG. **Range** = kedalaman ladder dari ujung atas ke ujung bawahnya, dalam %
+  harga koin, dibulatin ke kelipatan `AUTO_RANGE_STEP` (5). Tool LP nyetel tick per rung pakai tick spacing, jadi
+  -70 yang lu ketik jadi -71.3% di chain; dibulatin balik jadi -70. `AUTO_RANGE_STEP=1` = angka persis.
+  Nggak tergantung harga pool, jadi nggak geser walau harga gerak.
 * **Ladder:** satu posisi lu biasanya beberapa NFT sekaligus dalam satu transaksi. Bot gabungin jadi **satu** call
   per transaksi dan pool, dengan range dari rung paling atas sampai paling bawah.
 * Cuma open yang **single sided USDG** yang di-blast. Open dua sisi atau di pool tanpa USDG dilewatin dan lu dikabarin
