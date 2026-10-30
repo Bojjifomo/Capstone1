@@ -74,7 +74,7 @@ def build_watcher(store):
         print(f"RPC_URL kosong, pakai RPC publik {watcher.PUBLIC_RPC}", flush=True)
     logs_rpc, calls_rpc = watcher.R.make_rpcs(cfg)
     return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
-                           backfill_hours=float(os.environ.get("AUTO_BACKFILL_HOURS", "72")))
+                           catchup_minutes=float(os.environ.get("AUTO_CATCHUP_MINUTES", "30")))
 
 
 class Telegram:
@@ -242,11 +242,8 @@ class Bot:
         st = self.watcher.status()
         wallets = "\n".join(f"<code>{w}</code>" for w in st["wallets"])
         mode = "DRY RUN (cuma ke lu)" if self.dry_run else "LIVE (ke follower)"
-        if st["cursor"] is None:
-            return (f"🤖 Auto call nyala: {mode}, tapi masih baca mundur sekali di awal ({st['progress'] or 'mulai'}).\n"
-                    "Jangan restart bot dulu. Belum ada call yang kebaca sampai ini selesai.\n" + self.watch_health())
         return (f"🤖 Auto call nyala: {mode}\n{wallets}\nBlock terakhir dibaca: {st['cursor']}\n"
-                f"NFT posisi kebuka: {st['open']}\n" + self.watch_health())
+                + self.watch_health())
 
     def watch_health(self):
         if self.watch_ok:
@@ -259,20 +256,11 @@ class Bot:
             self.notify_owners("ℹ️ " + ev["text"])
             return
         pos = ev["pos"]
-        known = self.store.get(pos["coin"])
-        if ev["action"] == "reentry":
-            text = calls.render_reentry([self.store.open_position(pos)])
-        elif ev["action"] == "open":
-            if known and known["status"] == "closed" and known["ca"].lower() == pos["ca"].lower() \
-                    and calls.same_range(known["range"], pos["range"]):
-                text = calls.render_reentry([self.store.set_status(pos["coin"], "open")])
-            else:
-                text = calls.render_open(self.store.open_position(pos))
+        if ev["action"] == "open":
+            text = calls.render_open(self.store.open_position(pos))
         else:
-            if "range" in pos and not known:  # simpen fee + range, biar open berikutnya dikenali sebagai reentry
-                self.store.open_position(pos)
-            closed = self.store.set_status(pos["coin"], "closed") if self.store.get(pos["coin"]) else pos
-            text = calls.render_close([closed])
+            known = self.store.get(pos["coin"])
+            text = calls.render_close([self.store.set_status(pos["coin"], "closed") if known else pos])
         if self.dry_run:
             self.notify_owners("🧪 DRY RUN, nggak dikirim ke follower:\n\n" + text)
             return

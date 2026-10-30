@@ -1,19 +1,20 @@
 """Auto call: baca transaksi wallet lu di Uniswap V4 (Robinhood Chain), bikin call OPEN / CLOSE sendiri.
 
-Yang diliat dari chain (pakai decoder punya rh_wallet_finder):
-  - PositionManager Transfer ke / dari wallet lu: posisi (NFT) dimint / diburn / dikirim.
-  - PoolManager ModifyLiquidity punya posisi itu: liquidity naik dari 0 = OPEN, balik ke 0 = CLOSE.
-Dari pool-nya dapet: CA koin (sisi yang bukan USDG), simbol, fee pool. Range dihitung dari tick posisi
-dibanding harga pool pas dibuka, dalam % harga koin (single sided USDG: -65 = batas bawah 65% di bawah harga).
+Real time, nggak ada baca-mundur: tiap poll cuma baca block baru sejak poll sebelumnya.
+Yang diliat (pakai decoder punya rh_wallet_finder):
+  - PositionManager Transfer dari 0x0 ke wallet lu  = posisi dibuka (mint)  -> OPEN
+  - PositionManager Transfer dari wallet lu ke 0x0  = posisi ditutup (burn) -> CLOSE
+  - dari receipt transaksi itu: ModifyLiquidity NFT-nya, buat pool + tick.
+Dicek di 72 jam wallet asli: 35 dari 35 close ikut nge-burn NFT, jadi nggak perlu tau posisi lama.
+Dari pool dapet: CA koin (sisi yang bukan USDG), simbol, fee pool. Range dihitung dari tick posisi dibanding
+harga pool pas dibuka, dalam % harga koin (single sided USDG: -65 = batas bawah 65% di bawah harga).
 
 Satu "posisi" lu biasanya ladder: beberapa NFT (rung) sekaligus dalam satu transaksi di pool yang sama. Jadi
 call-nya digabung per (transaksi, pool): satu OPEN dengan range dari rung teratas sampai terbawah, satu CLOSE.
-Close + open di transaksi yang sama, pool sama, range sama = satu REENTRY. Catatan: pas burn, NFT diburn dulu
-baru liquidity-nya ditarik, jadi NFT yang diburn tetap dilacak sampai liquidity-nya habis.
+Reentry = CLOSE lalu OPEN lagi (dua pesan), nggak ada logika khusus.
 
-Pure di luar RPC, jadi bisa dites offline: lihat tests/test_watcher.py.
+Dites offline: lihat tests/test_watcher.py.
 """
-import copy
 import math
 import sys
 import time
@@ -21,7 +22,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rh_wallet_finder"))
 
-import calls as CALLS  # noqa: E402
 import chain as C  # noqa: E402
 import config as RH  # noqa: E402
 import rpc as R  # noqa: E402
@@ -29,10 +29,11 @@ from keccak import keccak256  # noqa: E402
 
 PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena reorg
-BLOCKS_PER_HOUR = 36_000   # Robinhood Chain ~0.1 detik per block
+BLOCKS_PER_MINUTE = 600    # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
 NEAR_ZERO = 1.5            # batas atas range segini dekat harga = nggak usah ditulis
-STATE_VERSION = 2          # naik kalau bentuk state berubah: watcher mulai dari awal (backfill diam-diam lagi)
+TICK_SLACK = 100           # ~1%: harga bisa gerak dikit antara block mint dan poll
+STATE_VERSION = 3          # naik kalau bentuk state berubah: watcher mulai dari "sekarang" lagi
 
 
 # ---- helper murni ----------------------------------------------------------
@@ -60,8 +61,8 @@ def range_pcts(tl, tu, tick, usdg_is_token1):
 
 
 def single_sided_usdg(tl, tu, tick, usdg_is_token1):
-    """Posisi cuma megang USDG: seluruh range ada di bawah harga koin."""
-    return tu <= tick if usdg_is_token1 else tick < tl
+    """Posisi cuma megang USDG: seluruh range ada di bawah harga koin (toleransi TICK_SLACK)."""
+    return tu <= tick + TICK_SLACK if usdg_is_token1 else tick - TICK_SLACK < tl
 
 
 def fmt_pct(x):
@@ -80,27 +81,24 @@ def _pad(addr):
 # ---- watcher ---------------------------------------------------------------
 class Watcher:
     """poll() -> call baru sejak poll sebelumnya:
-        {"action": "open",    "pos": {coin, ca, fee, range}, "token_ids", "tx"}
-        {"action": "reentry", "pos": {coin, ca, fee, range}, "token_ids", "tx"}   (close + open sama, satu transaksi)
-        {"action": "close",   "pos": {coin, ca[, fee, range]}, "token_ids", "tx"}
-        {"action": "skip",    "text": alasan}    (posisi yang nggak layak di-blast, buat dikabarin ke owner)
-    Poll pertama (belum ada cursor) cuma belajar: scan mundur `backfill_hours` tanpa ngirim apa-apa,
-    jadi posisi yang udah kebuka dari sebelum bot nyala tetep ketangkep pas ditutup."""
+        {"action": "open",  "pos": {coin, ca, fee, range}, "token_ids", "tx"}
+        {"action": "close", "pos": {coin, ca},             "token_ids", "tx"}
+        {"action": "skip",  "text": alasan}    (buat dikabarin ke owner, nggak di-blast)
+    Poll pertama cuma nyatet block sekarang. Kalau bot mati lebih lama dari `catchup_minutes`, aktivitas yang
+    lebih lama dari itu dilewatin (daripada ngirim call basi ke follower) dan owner dikabarin."""
 
-    def __init__(self, logs_rpc, calls_rpc, wallets, store, backfill_hours=72, chunk=20000):
+    def __init__(self, logs_rpc, calls_rpc, wallets, store, catchup_minutes=30, chunk=20000):
         self.rpc = logs_rpc
         self.calls = calls_rpc
         self.wallets = [w.lower() for w in wallets]
         self.store = store
-        self.backfill_blocks = int(backfill_hours * BLOCKS_PER_HOUR)
+        self.catchup_blocks = int(catchup_minutes * BLOCKS_PER_MINUTE)
         self.chunk = chunk
-        self.progress = ""
-        self._progress_at = 0.0
         with store.lock:
             st = store.data.setdefault("watch", {})
             if st.get("wallets") != self.wallets or st.get("v") != STATE_VERSION:  # ganti wallet / versi = dari awal
                 st.clear()
-                st.update(v=STATE_VERSION, wallets=self.wallets, cursor=None, tokens={}, pools={})
+                st.update(v=STATE_VERSION, wallets=self.wallets, cursor=None, pools={})
                 store.save()
 
     @property
@@ -108,82 +106,28 @@ class Watcher:
         return self.store.data["watch"]
 
     def status(self):
-        st = self.state
-        live = [t for t in st["tokens"].values() if t["liq"] > 0]
-        return {"wallets": self.wallets, "cursor": st["cursor"], "open": len(live), "progress": self.progress}
-
-    def _on_progress(self, done, total, n):
-        self.progress = f"{done:,}/{total:,} block"
-        if time.time() - self._progress_at > 10:
-            self._progress_at = time.time()
-            print(f"  baca mundur: {self.progress}", flush=True)
+        return {"wallets": self.wallets, "cursor": self.state["cursor"]}
 
     def poll(self):
         head = int(self.calls.call("eth_blockNumber", []), 16) - CONFIRMATIONS
-        silent = self.state["cursor"] is None
-        start = max(0, head - self.backfill_blocks) if silent else self.state["cursor"] + 1
-        if head < start:
-            return []
-        tokens, out = (self._backfill(start, head), []) if silent else self._scan(start, head)
+        cursor = self.state["cursor"]
+        out = []
+        if cursor is not None and head > cursor:
+            start = cursor + 1
+            if head - cursor > self.catchup_blocks:
+                start = head - self.catchup_blocks + 1
+                out.append({"action": "skip", "text": "Bot sempat mati lebih dari "
+                            f"{self.catchup_blocks // BLOCKS_PER_MINUTE} menit: aktivitas wallet sebelum itu dilewatin, "
+                            "nggak di-blast."})
+            out += self._scan(start, head)
         with self.store.lock:
-            self.state["tokens"] = tokens
-            self.state["cursor"] = head
+            self.state["cursor"] = max(head, cursor or 0)
             self.store.save()
         return out
 
-    def _backfill(self, start, end):
-        """Posisi yang masih kebuka dari sebelum bot nyala, tanpa scan seluruh chain.
-
-        Cuma baca NFT yang masuk / keluar wallet (log difilter alamat wallet), ambil transaksi mint-nya buat
-        pool + tick, terus tanya StateView berapa liquidity posisi itu sekarang."""
+    def _scan(self, start, end):
         pads = [_pad(w) for w in self.wallets]
         transfers, seen = [], set()
-        for topics in ([C.TRANSFER, pads, None], [C.TRANSFER, None, pads]):
-            logs, self.chunk = self.rpc.get_logs(
-                {"address": [RH.POSITION_MANAGER], "topics": topics}, start, end, self.chunk, self._on_progress)
-            for lg in logs:
-                if len(lg["topics"]) != 4:
-                    continue
-                d = C.decode_nft_transfer(lg)
-                if (d["block"], d["log_index"]) not in seen:
-                    seen.add((d["block"], d["log_index"]))
-                    transfers.append(d)
-        owned, mint_tx = set(), {}
-        for d in sorted(transfers, key=lambda d: (d["block"], d["log_index"])):
-            tid = str(d["token_id"])
-            if d["to"] in self.wallets:
-                owned.add(tid)
-                if d["from"] == RH.ZERO:
-                    mint_tx[tid] = d["tx"]
-            elif d["from"] in self.wallets:
-                owned.discard(tid)  # diburn atau dikirim keluar
-        by_tx = {}
-        for tid in owned & set(mint_tx):
-            by_tx.setdefault(mint_tx[tid], set()).add(tid)
-        tokens = {}
-        for tx, tids in by_tx.items():
-            receipt = self.calls.call("eth_getTransactionReceipt", [tx]) or {"logs": []}
-            for lg in receipt["logs"]:
-                if lg["address"].lower() != RH.POOL_MANAGER or not lg["topics"] or lg["topics"][0] != C.MODIFY_LIQUIDITY:
-                    continue
-                d = C.decode_modify(lg)
-                tid = str(d["salt"])
-                if d["sender"] != RH.POSITION_MANAGER or tid not in tids or tid in tokens:
-                    continue
-                info = C.decode_position_info(self.calls.call("eth_call", [
-                    {"to": RH.STATE_VIEW,
-                     "data": C.cd_position_info(d["pool"], RH.POSITION_MANAGER, d["tl"], d["tu"], d["salt"])},
-                    "latest"]))
-                if info["liq"] > 0:
-                    tokens[tid] = {"liq": info["liq"], "blast": None, "pool": d["pool"],
-                                   "tl": d["tl"], "tu": d["tu"], "block": d["block"]}
-        return tokens
-
-    # scan
-    def _scan(self, start, end):
-        tokens = copy.deepcopy(self.state["tokens"])
-        evs, seen = [], set()
-        pads = [_pad(w) for w in self.wallets]
         for topics in ([C.TRANSFER, pads, None], [C.TRANSFER, None, pads]):
             logs, self.chunk = self.rpc.get_logs(
                 {"address": [RH.POSITION_MANAGER], "topics": topics}, start, end, self.chunk)
@@ -193,150 +137,64 @@ class Watcher:
                 d = C.decode_nft_transfer(lg)
                 if (d["block"], d["log_index"]) not in seen:
                     seen.add((d["block"], d["log_index"]))
-                    evs.append((d["block"], d["log_index"], "transfer", d))
+                    transfers.append(d)
 
-        ids = set(tokens) | {str(e[3]["token_id"]) for e in evs if e[3]["to"] in self.wallets}
-        if ids:
-            logs, self.chunk = self.rpc.get_logs(
-                {"address": [RH.POOL_MANAGER], "topics": [C.MODIFY_LIQUIDITY, None, _pad(RH.POSITION_MANAGER)]},
-                start, end, self.chunk)
-            for lg in logs:
-                d = C.decode_modify(lg)
-                if str(d["salt"]) in ids:
-                    evs.append((d["block"], d["log_index"], "modify", d))
-
-        groups, index = [], {}
-        for _, _, kind, d in sorted(evs, key=lambda e: (e[0], e[1])):
-            if kind == "transfer":
-                self._on_transfer(tokens, d)
-            else:
-                self._on_modify(tokens, d, groups, index)
-
-        out = self._announce(groups, tokens)
-        for tid in [k for k, t in tokens.items() if t.get("burned") and t["liq"] <= 0]:
-            del tokens[tid]  # diburn dan liquidity-nya udah habis: selesai
-        return tokens, out
-
-    def _on_transfer(self, tokens, d):
-        tid = str(d["token_id"])
-        if d["to"] in self.wallets:
-            tokens.setdefault(tid, {"liq": 0, "blast": None})
-        elif d["from"] in self.wallets and tid in tokens:
-            if d["to"] == RH.ZERO:
-                tokens[tid]["burned"] = True  # liquidity-nya ditarik SETELAH burn: tetap dilacak
-            else:
-                del tokens[tid]  # dikirim ke wallet lain
-
-    def _on_modify(self, tokens, d, groups, index):
-        t = tokens.get(str(d["salt"]))
-        if t is None:
-            return
-        before = t["liq"]
-        t["liq"] = before + d["delta"]
-        t.update(pool=d["pool"], tl=d["tl"], tu=d["tu"])
-        if before <= 0 < t["liq"]:
-            kind = "open"
-            t.update(block=d["block"], blast=None)
-            t.pop("pos", None)
-        elif before > 0 >= t["liq"]:
-            kind = "close"
-        else:
-            return
-        key = (kind, d["tx"], d["pool"])
-        if key not in index:
-            index[key] = {"kind": kind, "tx": d["tx"], "pool": d["pool"], "block": d["block"],
-                          "li": d["log_index"], "ids": []}
-            groups.append(index[key])
-        index[key]["ids"].append(str(d["salt"]))
-
-    # call
-    def _announce(self, groups, tokens):
+        txs = {}  # tx -> {"block", "li", "mint": {id}, "burn": {id}}
+        for d in sorted(transfers, key=lambda d: (d["block"], d["log_index"])):
+            kind = ("mint" if d["from"] == RH.ZERO and d["to"] in self.wallets
+                    else "burn" if d["to"] == RH.ZERO and d["from"] in self.wallets else None)
+            if kind:
+                t = txs.setdefault(d["tx"], {"block": d["block"], "li": d["log_index"], "mint": set(), "burn": set()})
+                t[kind].add(d["token_id"])
         out = []
-        pending = sorted(groups, key=lambda g: (g["block"], g["kind"] != "close", g["li"]))
-        used = set()
-        for g in pending:
-            if id(g) in used:
-                continue
-            if g["kind"] == "close":
-                mate = next((o for o in pending if o["kind"] == "open" and o["tx"] == g["tx"]
-                             and o["pool"] == g["pool"] and id(o) not in used), None)
-                out += self._close(g, tokens, mate, used)
-            else:
-                out += self._open(g, tokens)
+        for tx, t in sorted(txs.items(), key=lambda kv: (kv[1]["block"], kv[1]["li"])):
+            out += self._tx(tx, t)
         return out
 
-    def _ladder(self, info, ids, tokens):
-        """Gabungan rung: ((lo, up), tick-set)."""
-        los, ups = [], []
-        for tid in ids:
-            t = tokens[tid]
-            lo, up = range_pcts(t["tl"], t["tu"], t["tick"], info["usdg_token1"])
-            los.append(lo)
-            ups.append(up)
-        return min(los), max(ups)
+    def _tx(self, tx, t):
+        """Satu transaksi: CLOSE per pool (NFT diburn) dulu, baru OPEN per pool (NFT dimint)."""
+        receipt = self.calls.call("eth_getTransactionReceipt", [tx])
+        if not receipt:
+            raise RuntimeError(f"receipt {tx} belum ada")
+        closes, opens = {}, {}  # pool -> [(token_id, tl, tu)]
+        for lg in receipt["logs"]:
+            if lg["address"].lower() != RH.POOL_MANAGER or not lg["topics"] or lg["topics"][0] != C.MODIFY_LIQUIDITY:
+                continue
+            d = C.decode_modify(lg)
+            if d["sender"] != RH.POSITION_MANAGER:
+                continue
+            if d["delta"] < 0 and d["salt"] in t["burn"]:
+                closes.setdefault(d["pool"], []).append((d["salt"], d["tl"], d["tu"]))
+            elif d["delta"] > 0 and d["salt"] in t["mint"]:
+                opens.setdefault(d["pool"], []).append((d["salt"], d["tl"], d["tu"]))
+        out = []
+        for pool, rungs in closes.items():
+            out += self._close(tx, pool, rungs)
+        for pool, rungs in opens.items():
+            out += self._open(tx, pool, t["block"], rungs)
+        return out
 
-    def _open(self, g, tokens):
-        """-> [event] ; event open, atau skip kalau posisinya nggak layak."""
-        ids = g["ids"]
-        info = self._pool(g["pool"])
-        name = info.get("coin", "?").upper()
+    def _close(self, tx, pool, rungs):
+        info = self._pool(pool)
+        if "coin" not in info:
+            return []  # pool tanpa USDG: bukan strategi lu
+        return [{"action": "close", "token_ids": [r[0] for r in rungs], "tx": tx,
+                 "pos": {"coin": info["coin"], "ca": info["ca"]}}]
+
+    def _open(self, tx, pool, block, rungs):
+        ids = [r[0] for r in rungs]
+        info = self._pool(pool)
         label = f"#{ids[0]}" + (f" (+{len(ids) - 1} lainnya)" if len(ids) > 1 else "")
-        for tid in ids:
-            tokens[tid]["blast"] = False
         if "coin" not in info:
             return [{"action": "skip", "text": f"Posisi {label} dibuka di pool tanpa USDG, nggak di-blast."}]
-        slot = self._slot0(g["pool"], g["block"])
-        for tid in ids:
-            tokens[tid]["tick"] = slot["tick"]
-        if not all(single_sided_usdg(tokens[t]["tl"], tokens[t]["tu"], slot["tick"], info["usdg_token1"]) for t in ids):
-            return [{"action": "skip", "text": f"Posisi {label} ({name}) bukan single sided USDG, nggak di-blast."}]
-        lo, up = self._ladder(info, ids, tokens)
+        slot = self._slot0(pool, block)
+        if not all(single_sided_usdg(tl, tu, slot["tick"], info["usdg_token1"]) for _, tl, tu in rungs):
+            return [{"action": "skip", "text": f"Posisi {label} ({info['coin'].upper()}) bukan single sided USDG, nggak di-blast."}]
+        pcts = [range_pcts(tl, tu, slot["tick"], info["usdg_token1"]) for _, tl, tu in rungs]
+        lo, up = min(p[0] for p in pcts), max(p[1] for p in pcts)
         fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
-        pos = {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee), "range": range_label(lo, up)}
-        for tid in ids:
-            tokens[tid].update(blast=True, pos=pos)
-        return [{"action": "open", "token_ids": ids, "tx": g["tx"], "pos": pos}]
-
-    def _close(self, g, tokens, mate, used):
-        ids = g["ids"]
-        info = self._pool(g["pool"])
-        used.add(id(g))
-        live = [t for t in ids if tokens[t].get("blast") is not False]
-        if "coin" not in info or not live:
-            if not mate:
-                return []
-            used.add(id(mate))
-            return self._open(mate, tokens)
-        old = next((tokens[t]["pos"] for t in live if tokens[t].get("pos")), None) or self._old_pos(info, g, live, tokens)
-        close_ev = {"action": "close", "token_ids": live, "tx": g["tx"],
-                    "pos": old or {"coin": info["coin"], "ca": info["ca"]}}
-        for t in live:
-            tokens[t]["blast"] = False
-        if not mate:
-            return [close_ev]
-        used.add(id(mate))
-        evs = self._open(mate, tokens)
-        new = evs[0]
-        ticks = lambda ids: sorted((tokens[t]["tl"], tokens[t]["tu"]) for t in ids)  # noqa: E731
-        same = ticks(live) == ticks(mate["ids"]) or bool(old and calls_same(old, new["pos"]))
-        if new["action"] == "open" and same:
-            return [dict(new, action="reentry")]
-        return [close_ev] + evs
-
-    def _old_pos(self, info, g, ids, tokens):
-        """Fee + range posisi yang kebuka dari sebelum bot nyala: harga pool pas dibuka (butuh RPC arsip)."""
-        t0 = tokens[ids[0]]
-        if not t0.get("block"):
-            return None
-        try:
-            slot = self._slot0(g["pool"], t0["block"], exact=True)
-        except (R.RPCError, RuntimeError):
-            return None
-        for tid in ids:
-            tokens[tid]["tick"] = slot["tick"]
-        lo, up = self._ladder(info, ids, tokens)
-        fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
-        return {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee), "range": range_label(lo, up)}
+        return [{"action": "open", "token_ids": ids, "tx": tx,
+                 "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee), "range": range_label(lo, up)}}]
 
     # baca chain
     def _pool(self, pool):
@@ -359,8 +217,8 @@ class Watcher:
             pools[pool] = info
         return info
 
-    def _slot0(self, pool, block, exact=False):
-        for tag in (hex(block),) if exact else (hex(block), "latest"):  # RPC tanpa arsip nolak block lama
+    def _slot0(self, pool, block):
+        for tag in (hex(block), "latest"):  # RPC tanpa arsip nolak block lama
             try:
                 slot = C.decode_slot0(self.calls.call(
                     "eth_call", [{"to": RH.STATE_VIEW, "data": C.cd_slot0(pool)}, tag]))
@@ -369,7 +227,3 @@ class Watcher:
             if slot:
                 return slot
         raise RuntimeError(f"slot0 pool {pool} nggak kebaca")
-
-
-def calls_same(old, new):
-    return old["ca"].lower() == new["ca"].lower() and CALLS.same_range(old["range"], new["range"])
