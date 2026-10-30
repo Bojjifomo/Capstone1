@@ -16,6 +16,7 @@ Pure di luar RPC, jadi bisa dites offline: lihat tests/test_watcher.py.
 import copy
 import math
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rh_wallet_finder"))
@@ -26,6 +27,7 @@ import config as RH  # noqa: E402
 import rpc as R  # noqa: E402
 from keccak import keccak256  # noqa: E402
 
+PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena reorg
 BLOCKS_PER_HOUR = 36_000   # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
@@ -92,6 +94,8 @@ class Watcher:
         self.store = store
         self.backfill_blocks = int(backfill_hours * BLOCKS_PER_HOUR)
         self.chunk = chunk
+        self.progress = ""
+        self._progress_at = 0.0
         with store.lock:
             st = store.data.setdefault("watch", {})
             if st.get("wallets") != self.wallets or st.get("v") != STATE_VERSION:  # ganti wallet / versi = dari awal
@@ -106,7 +110,13 @@ class Watcher:
     def status(self):
         st = self.state
         live = [t for t in st["tokens"].values() if t["liq"] > 0]
-        return {"wallets": self.wallets, "cursor": st["cursor"], "open": len(live)}
+        return {"wallets": self.wallets, "cursor": st["cursor"], "open": len(live), "progress": self.progress}
+
+    def _on_progress(self, done, total, n):
+        self.progress = f"{done:,}/{total:,} block"
+        if time.time() - self._progress_at > 10:
+            self._progress_at = time.time()
+            print(f"  baca mundur: {self.progress}", flush=True)
 
     def poll(self):
         head = int(self.calls.call("eth_blockNumber", []), 16) - CONFIRMATIONS
@@ -114,15 +124,63 @@ class Watcher:
         start = max(0, head - self.backfill_blocks) if silent else self.state["cursor"] + 1
         if head < start:
             return []
-        tokens, out = self._scan(start, head, silent)
+        tokens, out = (self._backfill(start, head), []) if silent else self._scan(start, head)
         with self.store.lock:
             self.state["tokens"] = tokens
             self.state["cursor"] = head
             self.store.save()
         return out
 
+    def _backfill(self, start, end):
+        """Posisi yang masih kebuka dari sebelum bot nyala, tanpa scan seluruh chain.
+
+        Cuma baca NFT yang masuk / keluar wallet (log difilter alamat wallet), ambil transaksi mint-nya buat
+        pool + tick, terus tanya StateView berapa liquidity posisi itu sekarang."""
+        pads = [_pad(w) for w in self.wallets]
+        transfers, seen = [], set()
+        for topics in ([C.TRANSFER, pads, None], [C.TRANSFER, None, pads]):
+            logs, self.chunk = self.rpc.get_logs(
+                {"address": [RH.POSITION_MANAGER], "topics": topics}, start, end, self.chunk, self._on_progress)
+            for lg in logs:
+                if len(lg["topics"]) != 4:
+                    continue
+                d = C.decode_nft_transfer(lg)
+                if (d["block"], d["log_index"]) not in seen:
+                    seen.add((d["block"], d["log_index"]))
+                    transfers.append(d)
+        owned, mint_tx = set(), {}
+        for d in sorted(transfers, key=lambda d: (d["block"], d["log_index"])):
+            tid = str(d["token_id"])
+            if d["to"] in self.wallets:
+                owned.add(tid)
+                if d["from"] == RH.ZERO:
+                    mint_tx[tid] = d["tx"]
+            elif d["from"] in self.wallets:
+                owned.discard(tid)  # diburn atau dikirim keluar
+        by_tx = {}
+        for tid in owned & set(mint_tx):
+            by_tx.setdefault(mint_tx[tid], set()).add(tid)
+        tokens = {}
+        for tx, tids in by_tx.items():
+            receipt = self.calls.call("eth_getTransactionReceipt", [tx]) or {"logs": []}
+            for lg in receipt["logs"]:
+                if lg["address"].lower() != RH.POOL_MANAGER or not lg["topics"] or lg["topics"][0] != C.MODIFY_LIQUIDITY:
+                    continue
+                d = C.decode_modify(lg)
+                tid = str(d["salt"])
+                if d["sender"] != RH.POSITION_MANAGER or tid not in tids or tid in tokens:
+                    continue
+                info = C.decode_position_info(self.calls.call("eth_call", [
+                    {"to": RH.STATE_VIEW,
+                     "data": C.cd_position_info(d["pool"], RH.POSITION_MANAGER, d["tl"], d["tu"], d["salt"])},
+                    "latest"]))
+                if info["liq"] > 0:
+                    tokens[tid] = {"liq": info["liq"], "blast": None, "pool": d["pool"],
+                                   "tl": d["tl"], "tu": d["tu"], "block": d["block"]}
+        return tokens
+
     # scan
-    def _scan(self, start, end, silent):
+    def _scan(self, start, end):
         tokens = copy.deepcopy(self.state["tokens"])
         evs, seen = [], set()
         pads = [_pad(w) for w in self.wallets]
@@ -154,7 +212,7 @@ class Watcher:
             else:
                 self._on_modify(tokens, d, groups, index)
 
-        out = [] if silent else self._announce(groups, tokens)
+        out = self._announce(groups, tokens)
         for tid in [k for k, t in tokens.items() if t.get("burned") and t["liq"] <= 0]:
             del tokens[tid]  # diburn dan liquidity-nya udah habis: selesai
         return tokens, out

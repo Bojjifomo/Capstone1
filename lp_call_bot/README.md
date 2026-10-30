@@ -50,12 +50,12 @@ Setup, di `lp_call_bot/.env`:
 
 ```
 WALLET_ADDRESSES=0x...          # alamat publik wallet lu (BUKAN private key), boleh lebih dari satu
-RPC_URL=...                     # link RPC Robinhood Chain, atau cukup API key Alchemy
+CALL_RPC_URL=...                # opsional: API key Alchemy. RPC_URL boleh kosong (otomatis RPC publik)
 AUTO_DRY_RUN=1                  # tes dulu: call otomatis cuma dikirim ke lu
 ```
 
 Kalau `rh_wallet_finder/.env` udah ada RPC-nya, itu kepake otomatis. Pertama nyala, bot baca mundur
-`AUTO_BACKFILL_HOURS` (72 jam) **tanpa ngirim apa-apa**, biar posisi yang udah kebuka dari sebelum bot nyala
+`AUTO_BACKFILL_HOURS` (72 jam, ±30 detik, jangan restart sebelum selesai: `/auto` nunjukin progresnya) **tanpa ngirim apa-apa**, biar posisi yang udah kebuka dari sebelum bot nyala
 tetep ketangkep pas lu tutup. Pas udah yakin hasilnya bener, ganti `AUTO_DRY_RUN=0` terus restart bot.
 
 ## Setup

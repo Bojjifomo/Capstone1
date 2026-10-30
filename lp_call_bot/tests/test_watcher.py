@@ -71,6 +71,9 @@ class FakeChain:
     def call(self, method, params):
         if method == "eth_blockNumber":
             return hex(self.head + W.CONFIRMATIONS)
+        if method == "eth_getTransactionReceipt":
+            return {"logs": [lg for lg in self.logs
+                             if lg["transactionHash"] == params[0] and int(lg["blockNumber"], 16) <= self.head]}
         assert method == "eth_call"
         tx = params[0]
         sel, arg = tx["data"][2:10], tx["data"][10:]
@@ -82,6 +85,16 @@ class FakeChain:
                 raise W.R.RPCError("missing trie node")
             tick = self.ticks["0x" + arg[:64]]
             return "0x" + C.word(1 << 96) + C.word(tick) + C.word(0) + C.word(FEE)
+        if tx["to"] == RH.STATE_VIEW and sel == C.SEL_POSITION_INFO:
+            w = C.words("0x" + arg)
+            pool, tl, tu, salt = "0x" + w[0], C.signed(w[2]), C.signed(w[3]), int(w[4], 16)
+            liq = 0
+            for lg in self.logs:
+                if lg["address"] == RH.POOL_MANAGER and lg["topics"][1] == pool and int(lg["blockNumber"], 16) <= self.head:
+                    d = C.decode_modify(lg)
+                    if (d["tl"], d["tu"], d["salt"]) == (tl, tu, salt):
+                        liq += d["delta"]
+            return "0x" + C.word(liq) + C.word(0) + C.word(0)
         if sel == C.SEL_SYMBOL:
             return abi_string("HYDX")
         raise AssertionError(tx)
@@ -195,6 +208,26 @@ class WatcherTest(unittest.TestCase):
         self.chain.logs.append(modify(100_030, 1, POOL, lower_tick(-65), 10000, -5_000_000, 7))
         evs = w.poll()
         self.assertEqual([(e["action"], e["pos"]["coin"]) for e in evs], [("close", "hydx")])
+
+    def test_backfill_ignores_closed_burned_and_sent_positions(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.chain = FakeChain()
+        self.chain.head = 100_000
+        t1, t2, t3, t4 = ("0x" + c * 32 for c in ("a1", "a2", "a3", "a4"))
+        tl = lower_tick(-65)
+        self.chain.logs += [  # 11 masih kebuka; 12 ditarik tanpa burn; 13 diburn; 14 dikirim ke wallet lain
+            transfer(99_900, 1, RH.ZERO, WALLET, 11, t1), modify(99_900, 2, POOL, tl, 10000, 5_000_000, 11, t1),
+            transfer(99_910, 1, RH.ZERO, WALLET, 12, t2), modify(99_910, 2, POOL, tl, 10000, 5_000_000, 12, t2),
+            modify(99_950, 1, POOL, tl, 10000, -5_000_000, 12, t4),
+            transfer(99_920, 1, RH.ZERO, WALLET, 13, t3), modify(99_920, 2, POOL, tl, 10000, 5_000_000, 13, t3),
+            transfer(99_960, 1, WALLET, RH.ZERO, 13, t4),
+            transfer(99_930, 1, RH.ZERO, WALLET, 14, t4), modify(99_930, 2, POOL, tl, 10000, 5_000_000, 14, t4),
+            transfer(99_970, 2, WALLET, OTHER, 14, t4)]
+        w = W.Watcher(self.chain, self.chain, [WALLET], Store(Path(self.tmp.name) / "s.json"), backfill_hours=1)
+        self.assertEqual(w.poll(), [])
+        self.assertEqual(sorted(w.state["tokens"]), ["11"])
+        self.assertEqual(w.state["tokens"]["11"]["block"], 99_900)
 
     def test_state_survives_restart_and_wallet_change_resets(self):
         self.make()
