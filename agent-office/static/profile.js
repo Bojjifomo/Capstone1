@@ -114,6 +114,7 @@ document.addEventListener("change", async (ev) => {
     } else {
       await api(`/api/session/${pick.dataset.sid}/model`, { model: pick.value });
       toast(pick.value ? `Your next message from here runs on ${MODEL_NAMES[pick.value]}. In a terminal, type /model there.` : "Back to the model it already uses.");
+      if (UI.open === pick.dataset.sid) loadDetail(false);
     }
   } catch (e) { toast(e.message); }
 });
