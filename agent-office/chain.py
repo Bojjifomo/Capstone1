@@ -17,6 +17,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import roster
 import store
 
 ROLES = ("ceo", "ops", "innovator")
@@ -39,45 +40,7 @@ LIMITS = {"check_minutes": (1, 240), "fail_after": (1, 10), "ops_every_hours": (
           "review_hours": (0, 168), "guard_pct": (10, 100), "opus_seats": (0, 20)}
 MODE = "auto"  # Claude Code's guarded auto mode: no prompts, risky actions still blocked
 
-# What `office chain` / the panel use to recruit a missing role.
-PRESETS = {
-    "ceo": {
-        "name": "Aurelian", "role": "CEO of the guild (chief executive, backup for the operations manager)",
-        "division": "The Keep", "model": "opus",
-        "instructions": (
-            "You are the CEO of bojjifomo's guild. You are called only when the Operations Manager failed, "
-            "is stuck, or could not fix an incident.\n"
-            "1. Restore service first: find out why the program is down, restart its launchd job, re-run a sync, "
-            "fix the code on a new branch and open a pull request.\n"
-            "2. Then make sure the Operations Manager can work again, and say what went wrong with them.\n"
-            "3. Delegate with `office ask <name> \"<brief>\"` when a warden is the better fit.\n"
-            "Never: merge to main, force-push, delete data, read or print secrets (.env, keys), move funds, "
-            "or change wallets. If you cannot fix it, write exactly what bojjifomo has to do, step by step."),
-    },
-    "ops": {
-        "name": "Bram", "role": "Operations manager (orchestrator) who oversees every program and the guild",
-        "division": "The War Room", "model": "sonnet",
-        "instructions": (
-            "You are the Operations Manager of bojjifomo's guild (the orchestrator). Every program is an intern "
-            "with a warden who looks after it. On each round you read the situation report, decide what needs "
-            "action and send the right person:\n"
-            "- `office ask <warden> \"<self-contained brief>\" --no-wait` for fixes and checks,\n"
-            "- `office propose ...` for improvements that need bojjifomo's approval,\n"
-            "- `office incident <id> resolve \"<note>\"` once you verified a fix yourself.\n"
-            "Fix small things yourself only when no warden fits. Code changes go on a branch with a pull "
-            "request; never merge to main, force-push, delete data or touch secrets. End every round with a "
-            "short ops report: what is healthy, what you did, what is still open."),
-    },
-    "innovator": {
-        "name": "Orin", "role": "Product innovator and planner who files update petitions",
-        "division": "The War Room", "model": "sonnet",
-        "instructions": (
-            "You are the guild's innovator. Study the programs (the interns), their incident history and the "
-            "guild log, then file the few improvements that matter most as petitions with `office propose`. "
-            "Each petition needs a clear problem, the change file by file, how to test it and the risk. "
-            "Check `office petitions` first so you never repeat one. You never build; bojjifomo decides."),
-    },
-}
+PRESETS = roster.PRESETS   # who gets recruited into each role; the text lives in roster.py
 
 RULES = """Rules for every guild run:
 - Work in the folders named here. Read what you need, change only what the fix needs.
@@ -213,16 +176,37 @@ class Chain:
             self.save()
 
     def recruit(self, role):
-        """Hire the preset for a role (or reuse a member with that name) and appoint them."""
+        """Appoint the preset for a role. A guild member with that name is reused, never overwritten."""
         preset = PRESETS[role]
         existing = self.office.team.find(preset["name"])
-        if role == "innovator" and existing and not existing.get("builtin"):
+        if existing and not existing.get("builtin"):
             member = existing
         else:
             member, _ = self.office.team.hire(preset["name"], preset["role"], preset["instructions"],
                                               preset["division"], preset["model"])
         self.appoint(role, member["id"])
         return member
+
+    def recruit_team(self):
+        """The standing team: CEO, operations manager, innovator and two wardens. Fills only what is missing."""
+        done = []
+        for role in roster.ORDER:
+            if self.holder(role):
+                done.append({"role": ROLE_NAMES[role], "name": self.holder(role)["name"], "status": "already appointed"})
+                continue
+            existing = self.office.team.find(PRESETS[role]["name"])
+            member = self.recruit(role)
+            done.append({"role": ROLE_NAMES[role], "name": member["name"],
+                         "status": "appointed (already in the guild)" if existing else "recruited"})
+        for key, preset in roster.WARDENS.items():
+            existing = self.office.team.find(preset["name"])
+            if existing and not existing.get("builtin"):
+                done.append({"role": "Warden", "name": existing["name"], "status": "already in the guild"})
+                continue
+            member, _ = self.office.team.hire(preset["name"], preset["role"], preset["instructions"],
+                                              preset["division"], preset["model"])
+            done.append({"role": "Warden", "name": member["name"], "status": "recruited"})
+        return done
 
     def role_of(self, staff_id):
         names = [ROLE_NAMES[r] for r in ROLES if self.roles.get(r) == staff_id]

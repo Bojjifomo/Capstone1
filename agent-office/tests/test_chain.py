@@ -287,6 +287,35 @@ class ChainCase(unittest.TestCase):
         self.assertEqual(self.c.holder("ceo")["id"], member["id"])
         self.assertIn("Warden of Wallet Finder", self.c.role_of("aaaa0001"))
 
+    def test_standing_team_is_recruited_once_and_never_overwritten(self):
+        import roster
+        c = chain.Chain(self.office, cli="office")
+        done = c.recruit_team()
+        by_name = {d["name"]: d for d in done}
+        self.assertEqual(set(by_name), {"Aurelian", "Bram", "Orin", "Lyra", "Thorne"})
+        self.assertEqual(by_name["Orin"]["status"], "appointed (already in the guild)")  # the stub already has Orin
+        self.assertEqual(by_name["Lyra"]["status"], "already in the guild")
+        self.assertEqual(by_name["Thorne"]["status"], "recruited")
+        self.assertEqual(c.holder("ceo")["name"], "Aurelian")
+        self.assertEqual(c.holder("innovator")["name"], "Orin")
+        before = len(self.office.team.staff)
+        again = c.recruit_team()
+        self.assertEqual(len(self.office.team.staff), before, "a second run recruits nobody")
+        self.assertTrue(all(d["status"].startswith("already") for d in again))
+
+    def test_every_role_text_names_its_tools_limits_and_language(self):
+        import roster
+        people = list(roster.PRESETS.values()) + list(roster.WARDENS.values())
+        self.assertEqual(len(people), 5)
+        for p in people:
+            text = p["instructions"]
+            for needle in ("Never", "force-push", "secrets", "Indonesian", "office check", "report"):
+                self.assertIn(needle, text, "%s is missing %r" % (p["name"], needle))
+            self.assertIn(p["model"], ("haiku", "sonnet", "opus"))
+        self.assertEqual(roster.PRESETS["ceo"]["model"], "opus")
+        self.assertIn("RUNBOOK.md", roster.WARDENS["lyra"]["instructions"])
+        self.assertIn("never merge", roster.WARDENS["thorne"]["instructions"].replace("you never merge", "never merge"))
+
     def test_state_survives_a_restart(self):
         self.open_incident()
         again = chain.Chain(self.office)

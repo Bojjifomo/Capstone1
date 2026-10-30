@@ -128,6 +128,9 @@ Hooks.panels.chain = {
     const settled = c.incidents.filter((x) => x.status === "resolved").slice(0, 8);
     body.innerHTML =
       `<section class="panel-sec chain-ladder"><h3>The ladder</h3>` +
+      (["ceo", "ops", "innovator"].some((r) => !c.people[r].name)
+        ? `<p><button type="button" class="btn primary wide" data-panel-act="chain-team">Recruit the standing team</button>` +
+          `<small class="hint">CEO, Operations Manager, Innovator and two wardens (Lyra, Thorne), each with their own written role. Anyone already in the guild is kept as is.</small></p>` : "") +
       `<div class="rung r-you"><span class="rung-icon" aria-hidden="true">🛡️</span><div class="rung-body">` +
       `<p class="rung-title">Guildmaster · <b>bojjifomo</b></p><p class="sub">You approve petitions and seals. What nobody below could fix comes to your phone.</p>` +
       (c.needs_you ? `<p><span class="tag t-down">${esc(c.needs_you)} incident${c.needs_you > 1 ? "s" : ""} need you</span></p>` : "") + `</div></div>` +
@@ -176,6 +179,12 @@ Object.assign(Hooks.forms, {
 });
 
 Object.assign(Hooks.panelActions, {
+  async "chain-team"() {
+    const r = await api("/api/chain/team", {});
+    const names = r.team.filter((d) => d.status.startsWith("recruited")).map((d) => d.name);
+    toast(names.length ? names.join(", ") + " joined the guild." : "Everyone is already here.");
+    poll();
+  },
   async "chain-recruit"(btn) {
     const r = await api(`/api/chain/recruit/${btn.dataset.role}`, {});
     toast(`Welcome, ${r.staff.name} the ${r.staff.title}!`);

@@ -624,6 +624,16 @@ def api_chain_recruit(req, m):
     return {"staff": {k: member[k] for k in ("id", "name", "title")}}
 
 
+@route("POST", "/api/chain/team")
+def api_chain_team(req, m):
+    """Recruit the standing team (CEO, ops, innovator, two wardens). Only what is missing."""
+    done = chain_call(APP.office.chain.recruit_team)
+    new = [d for d in done if d["status"].startswith(("recruited", "appointed"))]
+    if new:
+        APP.office.ledger.add("hire", "Standing team set up: " + ", ".join("%s (%s)" % (d["name"], d["role"]) for d in new))
+    return {"team": done}
+
+
 @route("POST", r"/api/chain/round/(?P<kind>ops|innovator|ceo|budget)")
 def api_chain_round(req, m):
     return chain_call(APP.office.chain.start_round, m.group("kind"))
