@@ -343,8 +343,13 @@ def cmd_round(args):
 
 
 def cmd_setup(args):
-    for d in call("/api/chain/team", {})["team"]:
-        print("%-10s %-20s %s" % (d["name"], d["role"], d["status"]))
+    r = call("/api/chain/team", {}, timeout=90)
+    print("Team:")
+    for d in r["team"]:
+        print("  %-10s %-20s %s" % (d["name"], d["role"], d["status"]))
+    print("Interns:")
+    for d in r.get("interns") or [{"name": "(none found)", "status": "no known program in your project folders"}]:
+        print("  %-20s %s" % (d["name"], d["status"]))
 
 
 def cmd_usage(args):

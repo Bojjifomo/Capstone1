@@ -134,7 +134,8 @@ WARDENS = {
             "- **RH Smart LP Finder** (a folder next to the repo, `localhost:8787`): per-pool LP ranking that Wallet "
             "Finder reads read-only.\n"
             "- **LP website** (`rh_wallet_finder/web/`, on Vercel): a read-only page filled by a snapshot that the Mac "
-            "uploads (`publish.py`).\n\n"
+            "uploads (`publish.py`).\n"
+            "- **LP Call Bot** (`lp_call_bot/`): blasts bojjifomo's LP calls to Telegram followers. See the special rules below.\n\n"
             "## When a program is down\n\n"
             "1. Read your brief for what failed. Run `office check \"<intern>\"` to see it yourself.\n"
             "2. Look in order: is the launchd job loaded (`launchctl list | grep <label>`)? What do its logs say? "
@@ -178,6 +179,101 @@ WARDENS = {
 }
 
 ORDER = ("ceo", "ops", "innovator")
+
+# ---- what each person needs to know about the actual work -----------------------------------------------
+
+PROGRAMS = (
+    "## bojjifomo's programs (the interns)\n\n"
+    "| Program | Where | Runs as | Healthy when |\n"
+    "| --- | --- | --- | --- |\n"
+    "| RH Wallet Finder | `rh_wallet_finder/` | Streamlit app + sync worker, SQLite `data/wallets.db` | the database was synced recently |\n"
+    "| RH Smart LP Finder | folder next to the repo | local web app on `127.0.0.1:8787` | the page answers |\n"
+    "| LP website | `rh_wallet_finder/web/` on Vercel | snapshot uploaded by `publish.py` | the live snapshot is fresh |\n"
+    "| LP Call Bot | `lp_call_bot/` | launchd `com.bojjifomo.lp-call-bot`, Telegram long polling | `lp_call_bot/heartbeat` changed in the last 15 minutes |\n"
+    "| Power Meter | `power-meter/` (installed in `~/Projects/power-meter`) | launchd `com.bojjifomo.power-meter`, port 7788 | the page answers |\n"
+    "| Agent Office | `agent-office/` (installed in `~/Projects/agent-office`) | launchd `com.bojjifomo.agent-office`, port 7777 | the Guild Hall answers |\n\n"
+    "The repo is `Capstone1`; each program's README says how to run and test it. Read it before you touch the program.\n")
+
+CALL_BOT = (
+    "## LP Call Bot: handle with care, it talks to real followers\n\n"
+    "The bot takes LP calls bojjifomo types in a Telegram DM (open, close, reentry) and blasts them to a channel and "
+    "every subscriber. A wrong message reaches real people and cannot be taken back.\n\n"
+    "- **Never send anything through Telegram.** No `/blast`, no test call, no `sendMessage`, no running `bot.py` by hand "
+    "to \"see if it works\". Two copies polling at once also steal each other's messages.\n"
+    "- Test only with the offline tests: `python3 -m unittest discover -s lp_call_bot/tests`.\n"
+    "- `lp_call_bot/state.json` holds the open positions and the subscriber list. Never edit, move or delete it.\n"
+    "- `lp_call_bot/.env` holds the bot token. Never read it out, print it or copy it.\n"
+    "- Down means the heartbeat is stale. Look in this order: `launchctl list | grep lp-call-bot`, the end of "
+    "`lp_call_bot/bot.log` (\"getUpdates gagal\" = network or token problem; \"409 Conflict\" = a second copy is running), "
+    "then `pgrep -fl lp_call_bot/bot.py`.\n"
+    "- Fix by restarting it: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.lp-call-bot`. If it is not installed in "
+    "launchd yet, tell bojjifomo to run `sh lp_call_bot/install.sh`; do not start it with nohup yourself.\n"
+    "- A token problem (401 Unauthorized) or a call format change is bojjifomo's decision: stop and report.\n")
+
+POWER_METER = (
+    "## Power Meter\n\n"
+    "- Installed copy: `~/Projects/power-meter`, launchd `com.bojjifomo.power-meter`, page on `http://127.0.0.1:7788`, "
+    "log `~/Projects/power-meter/logs/server.log`.\n"
+    "- Reads the Mac's power sensors with `macmon` (Homebrew). If readings stop, check `which macmon` and the log before "
+    "anything else. `powermetrics` needs root: never add sudo rules yourself, that is bojjifomo's call.\n"
+    "- Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.power-meter`. Code changes go in `power-meter/` in the "
+    "repo, with a pull request; bojjifomo re-runs `sh power-meter/tools/install.sh` after merging.\n")
+
+AGENT_OFFICE = (
+    "## Agent Office (the Guild Hall itself)\n\n"
+    "- Never restart the live Guild Hall while sessions are running. Test changes on a copy: `sh tests/run_copy.sh` "
+    "(port 7790, fake home, fake claude) and `python3 -m unittest discover -s tests`.\n"
+    "- Its security rules are not negotiable: bind only to 127.0.0.1 and the Tailscale IP, Host allowlist, "
+    "`X-Agent-Office` header plus a matching Origin on every POST, ids instead of paths, no `shell=True`, every piece "
+    "of transcript text escaped.\n")
+
+OPS_EXTRA = (
+    "## Your daily checklist (every round)\n\n"
+    "1. Interns: anything down, stale or unchecked? (`office chain`)\n"
+    "2. Open incidents: is someone on each one, and for how long?\n"
+    "3. Pull requests from the guild waiting for review: ask Thorne to review the ones nobody has looked at.\n"
+    "4. Petitions waiting for bojjifomo: mention how many and the oldest; never decide them.\n"
+    "5. Treasury: today's spend against the budget (`office usage`). If it looks heavy, say who is spending.\n"
+    "6. Familiars (launchd jobs) with errors that are not interns yet: name them, suggest adding them.\n\n"
+    "## Your report, every round, in this shape\n\n"
+    "```\n"
+    "Sehat: <program-program yang aman>\n"
+    "Dikerjakan: <siapa ngapain, termasuk yang kamu kirim>\n"
+    "Masih terbuka: <insiden / PR / petisi yang belum beres>\n"
+    "Butuh kamu: <keputusan atau langkah yang harus bojjifomo lakukan, kalau ada>\n"
+    "```\n")
+
+CEO_EXTRA = (
+    "## How you choose the fix\n\n"
+    "| What you find | What you do |\n"
+    "| --- | --- |\n"
+    "| The process died, the code is fine | Restart its launchd job, confirm with `office check` |\n"
+    "| Data stopped updating (sync, snapshot) | Re-run the job once; if it fails again, read why before a second try |\n"
+    "| A bug in the code | Fix on a branch, pull request, ask Thorne to review it |\n"
+    "| A key, token, plan, quota or money decision | Stop. Write bojjifomo exactly what to decide and the options |\n"
+    "| The Operations Manager keeps failing | Read their last runs, say why, propose the fix (model, instructions, schedule) |\n")
+
+ORIN_EXTRA = (
+    "## Where good petitions come from\n\n"
+    "- **Repeats:** the same incident twice in a month means something should prevent it (a health check, a retry, an alert).\n"
+    "- **LP tools:** better rankings, faster syncs, fewer RPC calls, clearer numbers on the website.\n"
+    "- **LP Call Bot:** safer calls (a preview before the blast, a typo guard), stats for bojjifomo. Never anything that "
+    "sends more messages to followers by itself.\n"
+    "- **Cost:** work that could run on a cheaper model, rounds that could run less often (`office usage`).\n"
+    "- **The guild:** a missing check, a missing warden, a step bojjifomo keeps doing by hand.\n")
+
+
+def _insert(text, block):
+    """Put a block just before the shared tools section, so the job comes before the rules."""
+    return text.replace(TOOLS, block + "\n" + TOOLS, 1)
+
+
+PRESETS["ceo"]["instructions"] = _insert(PRESETS["ceo"]["instructions"], CEO_EXTRA + "\n" + PROGRAMS + "\n" + CALL_BOT)
+PRESETS["ops"]["instructions"] = _insert(PRESETS["ops"]["instructions"], OPS_EXTRA + "\n" + PROGRAMS + "\n" + CALL_BOT)
+PRESETS["innovator"]["instructions"] = _insert(PRESETS["innovator"]["instructions"], ORIN_EXTRA + "\n" + PROGRAMS)
+WARDENS["lyra"]["instructions"] = _insert(WARDENS["lyra"]["instructions"], CALL_BOT)
+WARDENS["lyra"]["role"] = "Warden of the LP tools: Wallet Finder, Smart LP Finder, LP site, LP Call Bot"
+WARDENS["thorne"]["instructions"] = _insert(WARDENS["thorne"]["instructions"], POWER_METER + "\n" + AGENT_OFFICE)
 
 
 # ---- templates for the Recruit form: a complete starting point for any new specialist -------------------
@@ -373,4 +469,20 @@ TEMPLATES = [
            ["Reserve this seat for work that needs it: if a simpler teammate can do it, say so and hand it over.",
             "Decisions are written down with their reasons.",
             "You design and review; the builders build."])),
+]
+
+
+# ---- programs the guild knows how to watch: offered in the Chain panel and added by `office setup` -------
+
+KNOWN_INTERNS = [
+    {"name": "LP Call Bot", "folder": "lp_call_bot", "fresh": "lp_call_bot/heartbeat", "fresh_hours": 0.25,
+     "launchd": "com.bojjifomo.lp-call-bot", "warden": "Lyra",
+     "hint": "Install it in launchd first: sh lp_call_bot/install.sh (it writes the heartbeat)."},
+    {"name": "RH Wallet Finder", "folder": "rh_wallet_finder", "fresh": "rh_wallet_finder/data/wallets.db",
+     "fresh_hours": 6, "warden": "Lyra", "hint": "Run a first sync so data/wallets.db exists."},
+    {"name": "RH Smart LP Finder", "folder": "rh_wallet_finder", "url": "http://127.0.0.1:8787/", "warden": "Lyra",
+     "hint": "Start RH Smart LP Finder so localhost:8787 answers."},
+    {"name": "Power Meter", "folder": "power-meter", "url": "http://127.0.0.1:7788/",
+     "launchd": "com.bojjifomo.power-meter", "warden": "Thorne",
+     "hint": "Install it: sh power-meter/tools/install.sh."},
 ]

@@ -39,11 +39,19 @@ Bot harus nyala terus biar call langsung kekirim (Mac mini / VPS). Pakai long po
 jadi nggak butuh domain atau port kebuka. State (posisi + subscriber) disimpen di
 `lp_call_bot/state.json`.
 
-Jalan di background di Mac pakai `nohup`:
+Jalan terus di Mac lewat launchd (disarankan: nyala sendiri tiap login, restart sendiri kalau mati):
 
 ```sh
-nohup python3 lp_call_bot/bot.py >> lp_call_bot/bot.log 2>&1 &
+sh lp_call_bot/install.sh              # pasang / update  (label: com.bojjifomo.lp-call-bot)
+sh lp_call_bot/install.sh uninstall    # copot
+launchctl kickstart -k gui/$(id -u)/com.bojjifomo.lp-call-bot   # restart
 ```
+
+Kalau sebelumnya jalan pakai `nohup`, matiin dulu (`pkill -f lp_call_bot/bot.py`) biar nggak dobel.
+
+Tiap kali Telegram berhasil dihubungi (kira-kira tiap 50 detik), bot nyentuh file `lp_call_bot/heartbeat`.
+Agent Office (⚜️ Chain) ngecek umur file itu: kalau lebih dari 15 menit nggak diperbarui, bot dianggap mati
+dan warden-nya (Lyra) dikirim buat ngecek.
 
 ## Test
 

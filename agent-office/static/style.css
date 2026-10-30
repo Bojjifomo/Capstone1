@@ -384,7 +384,7 @@ button { font: inherit; color: inherit; }
 }
 .fab:active { transform: translateY(1px); }
 body.sheet-open .fab { display: none; }
-.say textarea, .form textarea, .form select, .say select, .form input[type=text] {
+.say textarea, .form textarea, .form select, .say select, .form input[type=text], .form input[type=url], .form input[type=number] {
   width: 100%; font: 16px/1.4 var(--sans); color: var(--ink); background: #fffaf0;
   border: 1px solid var(--parch-edge); border-radius: 8px; padding: 8px 10px;
 }

@@ -839,8 +839,14 @@ class ChainRoutes(ServerCase):
         self.assertFalse(check["ok"])
         self.assertIn("missing", check["reasons"][0])
 
+        bot = self.home / "Projects" / "webapp" / "lp_call_bot"
+        bot.mkdir(parents=True, exist_ok=True)
+        (bot / "heartbeat").write_text("")
+        known = self.request("GET", "/api/chain/known")[1]["known"]
+        self.assertIn("LP Call Bot", [k["name"] for k in known])
         status, team = self.post("/api/chain/team", {})
         self.assertEqual(status, 200, team)
+        self.assertTrue(next(d for d in team["interns"] if d["name"] == "LP Call Bot")["status"].startswith("added"))
         got = {d["name"]: d["status"] for d in team["team"]}
         self.assertEqual(got["Aurelian"], "recruited")
         self.assertEqual(got["Thorne"], "recruited")
@@ -900,7 +906,20 @@ class UsageControl(ServerCase):
         self.assertEqual(self.post("/api/chain/settings", {"opus_seats": 0})[0], 200)
         self.assertEqual(self.post("/api/team/model", {"name": name, "model": "opus"})[0], 409)
 
+        hired_id = self.post("/api/staff", {"name": "Editme", "role": "Writer", "instructions": "old"})[1]["staff"]["id"]
+        one = self.request("GET", "/api/staff/" + hired_id)[1]["staff"]
+        self.assertEqual(one["instructions"], "old")
+        ok = self.post("/api/staff/%s/update" % hired_id, {"role": "Technical writer", "division": "The Scriptorium",
+                                                            "instructions": "Write short READMEs."})
+        self.assertEqual(ok[0], 200, ok[1])
+        folder = next(s for s in self.request("GET", "/api/team")[1]["staff"] if s["id"] == hired_id)
+        self.assertEqual(folder["role"], "Technical writer")
+        claude_md = (self.home / "Agents" / "editme" / "CLAUDE.md").read_text()
+        self.assertIn("Write short READMEs.", claude_md)
+        self.assertEqual(self.post("/api/staff/%s/update" % hired_id, {"role": "x" * 81, "instructions": "y"})[0], 400)
+        self.assertEqual(self.request("GET", "/api/staff/00000000")[0], 404)
         templates = self.request("GET", "/api/team/templates")[1]
+        self.assertIn("lyra", templates["standing"])
         self.assertGreaterEqual(len(templates["templates"]), 10)
         pick = next(t for t in templates["templates"] if t["key"] == "qa")
         hired = self.post("/api/staff", {"name": "", "role": pick["role"], "instructions": pick["instructions"],

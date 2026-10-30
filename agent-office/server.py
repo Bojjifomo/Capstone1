@@ -415,8 +415,10 @@ def api_team_who(req, m):
 @route("GET", "/api/team/templates")
 def api_team_templates(req, m):
     """Complete starting points for the Recruit form: role, division, model and full instructions."""
-    return {"templates": roster.TEMPLATES, "divisions": sorted({t["division"] for t in roster.TEMPLATES} | set(
-        APP.office.team.divisions))}
+    standing = {p["name"].lower(): {k: p[k] for k in ("name", "role", "division", "model", "instructions")}
+                for p in list(roster.PRESETS.values()) + list(roster.WARDENS.values())}
+    return {"templates": roster.TEMPLATES, "standing": standing,
+            "divisions": sorted({t["division"] for t in roster.TEMPLATES} | set(APP.office.team.divisions))}
 
 
 @route("POST", "/api/staff")
@@ -432,6 +434,30 @@ def api_hire(req, m):
         raise HttpError(409, str(e))
     APP.office.ledger.add("hire", "%s the %s" % (member["name"], member["title"]))
     return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio")}, "renamed_from": renamed}
+
+
+@route("GET", "/api/staff/" + STAFF)
+def api_staff_one(req, m):
+    member = APP.office.team.find(m.group("staff"))
+    if not member or member.get("builtin"):
+        raise HttpError(404, "no such guild member")
+    return {"staff": {k: member.get(k, "") for k in ("id", "name", "role", "title", "division", "model", "instructions")}}
+
+
+@route("POST", "/api/staff/" + STAFF + "/update")
+def api_staff_update(req, m):
+    """Edit a specialist's role, division and instructions; their CLAUDE.md is rewritten."""
+    b = req.body
+    try:
+        member = APP.office.team.update(m.group("staff"), role=text_field(b, "role", 200),
+                                        instructions=text_field(b, "instructions", 8001),
+                                        division=text_field(b, "division", 80))
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    APP.office.ledger.add("guild", "Updated %s's role and instructions" % member["name"], by="bojjifomo")
+    return {"staff": {k: member[k] for k in ("id", "name", "role", "title", "division")}}
 
 
 @route("POST", "/api/staff/" + STAFF + "/dismiss")
@@ -636,12 +662,30 @@ def api_chain_recruit(req, m):
 
 @route("POST", "/api/chain/team")
 def api_chain_team(req, m):
-    """Recruit the standing team (CEO, ops, innovator, two wardens). Only what is missing."""
+    """Recruit the standing team (CEO, ops, innovator, two wardens) and add the known programs that are healthy."""
     done = chain_call(APP.office.chain.recruit_team)
     new = [d for d in done if d["status"].startswith(("recruited", "appointed"))]
     if new:
         APP.office.ledger.add("hire", "Standing team set up: " + ", ".join("%s (%s)" % (d["name"], d["role"]) for d in new))
-    return {"team": done}
+    interns = chain_call(APP.office.chain.setup_interns)
+    added = [d["name"] for d in interns if d["status"].startswith("added")]
+    if added:
+        APP.office.ledger.add("guild", "New interns: " + ", ".join(added), by="bojjifomo")
+    return {"team": done, "interns": interns}
+
+
+@route("POST", "/api/chain/interns/known")
+def api_chain_known_add(req, m):
+    interns = chain_call(APP.office.chain.setup_interns)
+    for d in interns:
+        if not d["status"].startswith("already"):
+            APP.office.ledger.add("guild", "%s: %s" % (d["name"], d["status"]), by="Chain")
+    return {"interns": interns}
+
+
+@route("GET", "/api/chain/known")
+def api_chain_known(req, m):
+    return {"known": APP.office.chain.known_interns()}
 
 
 @route("POST", r"/api/chain/round/(?P<kind>ops|innovator|ceo|budget)")
