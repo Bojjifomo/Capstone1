@@ -26,6 +26,7 @@ import core  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
+import orders  # noqa: E402
 import report  # noqa: E402
 import roster  # noqa: E402
 import runner  # noqa: E402
@@ -285,6 +286,36 @@ def api_send(req, m):
                              code=text_field(b, "code"), now_please=bool(b.get("now")))
     APP.office.ledger.add("queue" if "queued" in result else "send", text_field(b, "text"), sid=sid, mode=text_field(b, "mode"))
     return result
+
+
+@route("POST", "/api/session/" + SID + "/model")
+def api_session_model(req, m):
+    """The model for messages sent to this quest from here. A session open in a terminal keeps its own /model."""
+    APP.office.set_model_pref(m.group("sid"), text_field(req.body, "model", 12))
+    return {"ok": True}
+
+
+@route("POST", "/api/chat")
+def api_chat(req, m):
+    """A line typed in the guild chat: an order to someone, or a slash command."""
+    try:
+        return orders.handle(APP.office, text_field(req.body, "text", 4001),
+                             default_mode=APP.cfg.get("default_mode", "acceptEdits"))
+    except orders.OrderError as e:
+        raise HttpError(409, str(e))
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+
+
+@route("GET", "/api/chat/names")
+def api_chat_names(req, m):
+    """Who can be addressed with @ in the chat: guild members first, then open quests."""
+    names = [{"name": s["name"], "kind": "staff", "title": s["title"]} for s in APP.office.team.staff]
+    for s in APP.office.all_sessions():
+        if s["status"] in ("needs", "working", "idle") and not s.get("helper") and not s.get("staff"):
+            names.append({"name": (s.get("persona") or {}).get("name", s["name"]).split(" ")[0], "kind": "quest",
+                          "title": s["name"], "needs": s["status"] == "needs"})
+    return {"names": names}
 
 
 @route("POST", "/api/session/" + SID + "/queue/" + QID + "/now")

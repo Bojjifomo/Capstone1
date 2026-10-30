@@ -957,5 +957,60 @@ class UsageControl(ServerCase):
                                       host="guild.example.ts.net")[0], 403)
 
 
+class ChatOrders(ServerCase):
+    """Orders typed in the guild chat, @names, and the per-quest model."""
+
+    def wait_reply(self, who):
+        for _ in range(80):
+            lines = self.request("GET", "/api/ledger")[1]["entries"]
+            hit = [e for e in lines if e["kind"] == "reply" and e.get("by") == who]
+            if hit:
+                return hit[0]
+            time.sleep(0.2)
+        self.fail("no reply from %s" % who)
+
+    def test_chat(self):
+        status, r = self.post("/api/chat", {"text": "/help"})
+        self.assertEqual(status, 200)
+        self.assertIn("@Name", r["reply"])
+        self.assertIn("Interns", self.post("/api/chat", {"text": "/status"})[1]["reply"])
+        self.assertEqual(self.post("/api/chat", {"text": "/dance"})[0], 409)
+        nobody = self.post("/api/chat", {"text": "cek semua program"})
+        self.assertEqual(nobody[0], 409, "no Operations Manager yet")
+        self.assertIn("Operations Manager", nobody[1]["error"])
+
+        self.post("/api/chain/recruit/ops", {})
+        status, r = self.post("/api/chat", {"text": "cek semua program ya"})
+        self.assertEqual((status, r["to"]), (200, "Bram"), r)
+        reply = self.wait_reply("Bram")
+        self.assertIn("guild chat", reply["text"], "ops got the order inside a brief")
+        orders = [e for e in self.request("GET", "/api/ledger")[1]["entries"] if e["kind"] == "order"]
+        self.assertIn("→ Bram: cek semua program ya", [e["text"] for e in orders])
+
+        status, r = self.post("/api/chat", {"text": "@bram: tolong cek wallet finder"})
+        self.assertEqual((status, r["to"]), (200, "Bram"), r)
+        self.wait_reply("Bram")
+
+        names = self.request("GET", "/api/chat/names")[1]["names"]
+        self.assertIn("Bram", [n["name"] for n in names])
+        quest = next(n for n in names if n["kind"] == "quest")
+        status, r = self.post("/api/chat", {"text": "@%s lanjut ya" % quest["name"]})
+        self.assertEqual(status, 200, r)
+        self.assertEqual(r["to"], quest["name"])
+        self.assertEqual(self.post("/api/chat", {"text": "@Nobodyhere halo"})[0], 409)
+
+        external = {"Authorization": "Bearer test-token-not-a-secret"}
+        self.assertEqual(self.request("POST", "/api/chat", {"text": "/help"}, headers=external,
+                                      host="guild.example.ts.net")[0], 403)
+
+    def test_quest_model(self):
+        sid = fixtures.sid(2)
+        self.assertEqual(self.post("/api/session/%s/model" % sid, {"model": "haiku"})[0], 200)
+        self.assertEqual(self.request("GET", "/api/session/" + sid)[1]["model_pref"], "haiku")
+        self.assertEqual(self.post("/api/session/%s/model" % sid, {"model": "gpt"})[0], 409)
+        self.assertEqual(self.post("/api/session/%s/model" % sid, {"model": ""})[0], 200)
+        self.assertEqual(self.request("GET", "/api/session/" + sid)[1]["model_pref"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

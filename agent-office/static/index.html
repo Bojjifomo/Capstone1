@@ -58,9 +58,15 @@
       <div id="town-roster" class="roster" hidden></div>
       <section id="chatlog" class="chatlog" aria-label="Guild chat">
         <div class="chat-tabs" role="tablist">
-          <button type="button" class="on" data-ch="all">All</button><button type="button" data-ch="guild">Guild</button><button type="button" data-ch="system">System</button><button type="button" data-ch="say">Chatter</button><button type="button" data-ch="external">External</button>
+          <button type="button" class="on" data-ch="all">All</button><button type="button" data-ch="guild">Guild</button><button type="button" data-ch="system">System</button><button type="button" data-ch="say">Chatter</button><button type="button" data-ch="external">External</button><button type="button" data-ch="orders">Orders</button>
         </div>
         <div id="chat-lines" class="chat-lines" role="log" aria-live="off"></div>
+        <div id="chat-names" class="chat-names" hidden></div>
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <input type="text" name="text" maxlength="4000" enterkeyhint="send" aria-label="Order for the guild"
+                 placeholder="Perintah ke guild… (@nama buat satu orang, /help)">
+          <button type="submit" class="btn primary">Send</button>
+        </form>
       </section>
     </section>
     <div id="notice-board" class="notice-board" hidden>
