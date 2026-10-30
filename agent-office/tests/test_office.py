@@ -839,6 +839,13 @@ class ChainRoutes(ServerCase):
         self.assertFalse(check["ok"])
         self.assertIn("missing", check["reasons"][0])
 
+        status, team = self.post("/api/chain/team", {})
+        self.assertEqual(status, 200, team)
+        got = {d["name"]: d["status"] for d in team["team"]}
+        self.assertEqual(got["Aurelian"], "recruited")
+        self.assertEqual(got["Thorne"], "recruited")
+        self.assertTrue(all(s.startswith("already") for s in
+                            {d["name"]: d["status"] for d in self.post("/api/chain/team", {})[1]["team"]}.values()))
         status, r = self.post("/api/chain/recruit/ops", {})
         self.assertEqual(status, 200, r)
         self.assertEqual(r["staff"]["title"], "Marshal of the Guild")
@@ -892,6 +899,18 @@ class UsageControl(ServerCase):
         self.assertEqual(self.post("/api/team/model", {"name": ceo["name"], "model": "sonnet"})[0], 200)
         self.assertEqual(self.post("/api/chain/settings", {"opus_seats": 0})[0], 200)
         self.assertEqual(self.post("/api/team/model", {"name": name, "model": "opus"})[0], 409)
+
+        templates = self.request("GET", "/api/team/templates")[1]
+        self.assertGreaterEqual(len(templates["templates"]), 10)
+        pick = next(t for t in templates["templates"] if t["key"] == "qa")
+        hired = self.post("/api/staff", {"name": "", "role": pick["role"], "instructions": pick["instructions"],
+                                         "division": pick["division"], "model": pick["model"]})
+        self.assertEqual(hired[0], 200, hired[1])
+        self.assertEqual(hired[1]["staff"]["division"], "The Watchtower")
+        roster_now = {s["name"]: s for s in self.request("GET", "/api/team")[1]["staff"]}
+        self.assertEqual(roster_now[hired[1]["staff"]["name"]]["role"], pick["role"], "the role is not cut short")
+        self.assertEqual(self.post("/api/staff", {"name": "Seatless", "role": "Architect", "instructions": "x",
+                                                  "model": "opus"})[0], 409, "no Opus seat is free")
 
         status, rnd = self.post("/api/chain/round/budget", {})
         self.assertEqual(status, 200, rnd)

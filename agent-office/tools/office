@@ -16,6 +16,7 @@
   office incident <id> resolve "<note>"     close an incident you verified
   office incident <id> escalate ["<note>"]  hand an incident to the next rung (warden, ops, CEO, you)
   office round ops|innovator|ceo|budget    start a round now (budget = the CEO's usage review)
+  office setup                     recruit the standing team: CEO, operations manager, innovator and two wardens
   office usage [days]              where the gold goes: by person, kind, model, project, plus savings ideas
   office model <name> <haiku|sonnet|opus>  move a teammate to another model (Opus seats are limited)
   office doctor                    check the install
@@ -341,6 +342,11 @@ def cmd_round(args):
     print("%s set out. Session %s" % (r["who"], r["sid"]))
 
 
+def cmd_setup(args):
+    for d in call("/api/chain/team", {})["team"]:
+        print("%-10s %-20s %s" % (d["name"], d["role"], d["status"]))
+
+
 def cmd_usage(args):
     days = args[0] if args else "7"
     print(call("/api/usage/report?days=" + urllib.parse.quote(days))["text"])
@@ -356,7 +362,7 @@ def cmd_model(args):
 
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
             "propose": cmd_propose, "petitions": cmd_petitions, "brief": cmd_brief,
-            "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "model": cmd_model,
+            "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "setup": cmd_setup, "model": cmd_model,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":

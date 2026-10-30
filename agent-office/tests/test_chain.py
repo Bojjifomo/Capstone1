@@ -287,6 +287,51 @@ class ChainCase(unittest.TestCase):
         self.assertEqual(self.c.holder("ceo")["id"], member["id"])
         self.assertIn("Warden of Wallet Finder", self.c.role_of("aaaa0001"))
 
+    def test_standing_team_is_recruited_once_and_never_overwritten(self):
+        import roster
+        c = chain.Chain(self.office, cli="office")
+        done = c.recruit_team()
+        by_name = {d["name"]: d for d in done}
+        self.assertEqual(set(by_name), {"Aurelian", "Bram", "Orin", "Lyra", "Thorne"})
+        self.assertEqual(by_name["Orin"]["status"], "appointed (already in the guild)")  # the stub already has Orin
+        self.assertEqual(by_name["Lyra"]["status"], "already in the guild")
+        self.assertEqual(by_name["Thorne"]["status"], "recruited")
+        self.assertEqual(c.holder("ceo")["name"], "Aurelian")
+        self.assertEqual(c.holder("innovator")["name"], "Orin")
+        before = len(self.office.team.staff)
+        again = c.recruit_team()
+        self.assertEqual(len(self.office.team.staff), before, "a second run recruits nobody")
+        self.assertTrue(all(d["status"].startswith("already") for d in again))
+
+    def test_every_role_text_names_its_tools_limits_and_language(self):
+        import roster
+        people = list(roster.PRESETS.values()) + list(roster.WARDENS.values())
+        self.assertEqual(len(people), 5)
+        for p in people:
+            text = p["instructions"]
+            for needle in ("Never", "force-push", "secrets", "Indonesian", "office check", "report"):
+                self.assertIn(needle, text, "%s is missing %r" % (p["name"], needle))
+            self.assertIn(p["model"], ("haiku", "sonnet", "opus"))
+        self.assertEqual(roster.PRESETS["ceo"]["model"], "opus")
+        self.assertIn("RUNBOOK.md", roster.WARDENS["lyra"]["instructions"])
+        self.assertIn("never merge", roster.WARDENS["thorne"]["instructions"].replace("you never merge", "never merge"))
+
+    def test_every_role_fits_the_hire_form_without_being_cut(self):
+        import roster
+        everyone = list(roster.PRESETS.values()) + list(roster.WARDENS.values()) + roster.TEMPLATES
+        for p in everyone:
+            self.assertLessEqual(len(p["role"]), 80, "%s: the hire form cuts roles at 80 characters" % p["name"] or p.get("key"))
+            self.assertLessEqual(len(p["instructions"]), 8000, p.get("key") or p["name"])
+        keys = [t["key"] for t in roster.TEMPLATES]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertGreaterEqual(len(roster.TEMPLATES), 10)
+        for t in roster.TEMPLATES:
+            self.assertIn(t["model"], ("haiku", "sonnet", "opus"))
+            self.assertIn(t["group"], ("Build", "Guard", "Research", "Words", "Plan"))
+            for needle in ("## What you know", "## Your steps", "## Your quality bar", "## Never", "Indonesian", "report"):
+                self.assertIn(needle, t["instructions"], "%s is missing %r" % (t["key"], needle))
+        self.assertEqual([t["model"] for t in roster.TEMPLATES if t["key"] in ("scout", "architect")], ["haiku", "opus"])
+
     def test_state_survives_a_restart(self):
         self.open_incident()
         again = chain.Chain(self.office)

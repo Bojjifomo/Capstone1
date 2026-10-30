@@ -27,6 +27,7 @@ import haiku  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
 import report  # noqa: E402
+import roster  # noqa: E402
 import runner  # noqa: E402
 import store  # noqa: E402
 import team  # noqa: E402
@@ -411,6 +412,13 @@ def api_team_who(req, m):
     return {"ranking": APP.office.team.rank(task)}
 
 
+@route("GET", "/api/team/templates")
+def api_team_templates(req, m):
+    """Complete starting points for the Recruit form: role, division, model and full instructions."""
+    return {"templates": roster.TEMPLATES, "divisions": sorted({t["division"] for t in roster.TEMPLATES} | set(
+        APP.office.team.divisions))}
+
+
 @route("POST", "/api/staff")
 def api_hire(req, m):
     b = req.body
@@ -420,6 +428,8 @@ def api_hire(req, m):
                                                text_field(b, "model") or "sonnet")
     except ValueError as e:
         raise HttpError(400, str(e))
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
     APP.office.ledger.add("hire", "%s the %s" % (member["name"], member["title"]))
     return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio")}, "renamed_from": renamed}
 
@@ -622,6 +632,16 @@ def api_chain_recruit(req, m):
     APP.office.ledger.add("hire", "%s the %s, appointed %s" % (member["name"], member["title"],
                                                               chain.ROLE_NAMES[m.group("role")]))
     return {"staff": {k: member[k] for k in ("id", "name", "title")}}
+
+
+@route("POST", "/api/chain/team")
+def api_chain_team(req, m):
+    """Recruit the standing team (CEO, ops, innovator, two wardens). Only what is missing."""
+    done = chain_call(APP.office.chain.recruit_team)
+    new = [d for d in done if d["status"].startswith(("recruited", "appointed"))]
+    if new:
+        APP.office.ledger.add("hire", "Standing team set up: " + ", ".join("%s (%s)" % (d["name"], d["role"]) for d in new))
+    return {"team": done}
 
 
 @route("POST", r"/api/chain/round/(?P<kind>ops|innovator|ceo|budget)")

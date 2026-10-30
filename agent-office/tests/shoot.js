@@ -190,6 +190,18 @@ const SCENES = {
     await page.screenshot({ path: out("ceo") });
     await closeSheet(page);
   },
+  async hire(page) {
+    await page.click("[data-open=hire]").catch(async () => { await page.evaluate(() => openPanel("hire", true)); });
+    await wait(page, 900);
+    await page.screenshot({ path: out("blank") });
+    await page.selectOption("#hire-template", "security");
+    await wait(page, 300);
+    await page.screenshot({ path: out("template") });
+    await page.evaluate(() => document.querySelector("#sheet-body").scrollTo(0, 9999));
+    await wait(page, 300);
+    await page.screenshot({ path: out("instructions") });
+    await closeSheet(page);
+  },
   async life(page) {
     await page.evaluate(async () => {
       const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) }).then((r) => r.json());

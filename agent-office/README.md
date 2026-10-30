@@ -123,6 +123,21 @@ A missing or wrong token on a Funnel request or an `external_hosts` name is 401.
  🌱 Interns                your programs, each with fixed health checks
 ```
 
+**The standing team.** ⚜️ Chain → *Recruit the standing team* (or `office setup`) recruits whoever is missing. Anyone already in
+the guild with that name is kept exactly as is. Each person's written role (mission, steps, limits, how they report) is in
+`roster.py` and becomes their `CLAUDE.md`:
+
+| Person | Seat | Model | Division | What they do |
+| --- | --- | --- | --- | --- |
+| Aurelian | CEO | Opus | The Keep | Takes incidents ops could not fix and ops' missed rounds; keeps the purse (budget review) |
+| Bram | Operations Manager | Sonnet | The War Room | Rounds over every intern: check, send the warden, escalate, close what he verified |
+| Orin | Innovator | Sonnet | The War Room | Weekly review, at most 3 well-argued petitions |
+| Lyra | Warden | Sonnet | The Watchtower | RH Wallet Finder, RH Smart LP Finder, LP website: restarts, syncs, snapshots, RPC quota, a `RUNBOOK.md` of past fixes |
+| Thorne | Warden and reviewer | Sonnet | The Watchtower | Agent Office and Power Meter; reviews every agent pull request (never merges) |
+
+They report to bojjifomo in short casual Indonesian, and all of them carry the same limits: branch plus pull request, no merging
+or force-pushing, no deleting data, no secrets, no wallets, two tries and then say so.
+
 **Interns.** Add one in ⚜️ Chain → *Take on an intern*: a name, the program's folder (picked from your project
 folders), and at least one check. The checks are fixed code, never shell text:
 

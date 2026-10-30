@@ -749,3 +749,9 @@ button.chip { cursor: pointer; font-family: var(--sans); }
 .idea.i-try { border-left: 3px solid #c0842b; }
 .spender .form.inline { margin-top: 0; }
 .spender .form.inline select { max-width: 120px; }
+
+/* ---- recruit form ---- */
+#hire-form textarea { font: 12.5px/1.45 var(--mono); min-height: 240px; }
+#hire-form label small { overflow-wrap: anywhere; }
+#hire-summary { color: var(--ink-soft); }
+#hire-form optgroup { font-style: normal; }
