@@ -26,15 +26,15 @@ def pad(a):
     return "0x" + "0" * 24 + a.lower().removeprefix("0x")
 
 
-def transfer(block, li, frm, to, tid):
+def transfer(block, li, frm, to, tid, tx=TX):
     return {"address": RH.POSITION_MANAGER, "blockNumber": hex(block), "logIndex": hex(li),
-            "transactionHash": TX, "data": "0x",
+            "transactionHash": tx, "data": "0x",
             "topics": [C.TRANSFER, pad(frm), pad(to), "0x" + format(tid, "064x")]}
 
 
-def modify(block, li, pool, tl, tu, delta, salt):
+def modify(block, li, pool, tl, tu, delta, salt, tx=TX):
     return {"address": RH.POOL_MANAGER, "blockNumber": hex(block), "logIndex": hex(li),
-            "transactionHash": TX, "topics": [C.MODIFY_LIQUIDITY, pool, pad(RH.POSITION_MANAGER)],
+            "transactionHash": tx, "topics": [C.MODIFY_LIQUIDITY, pool, pad(RH.POSITION_MANAGER)],
             "data": "0x" + C.word(tl) + C.word(tu) + C.word(delta) + C.word(salt)}
 
 
@@ -58,7 +58,8 @@ def abi_string(s):
 class FakeChain:
     """Cukup mirip RPC asli buat watcher: logs terfilter, poolKeys, slot0, symbol."""
 
-    def __init__(self, usdg_token1=True):
+    def __init__(self, usdg_token1=True, archive=True):
+        self.archive = archive  # False: RPC publik, cuma tau harga "latest"
         self.head = 1000
         self.logs = []
         self.ticks = {POOL: 10000, POOL2: 10000}
@@ -77,6 +78,8 @@ class FakeChain:
             c0, c1, fee = self.keys[arg[:50]]
             return "0x" + C.addr_word(c0) + C.addr_word(c1) + C.word(fee) + C.word(60) + C.addr_word(RH.ZERO)
         if tx["to"] == RH.STATE_VIEW and sel == C.SEL_GET_SLOT0:
+            if not self.archive and params[1] != "latest":
+                raise W.R.RPCError("missing trie node")
             tick = self.ticks["0x" + arg[:64]]
             return "0x" + C.word(1 << 96) + C.word(tick) + C.word(0) + C.word(FEE)
         if sel == C.SEL_SYMBOL:
@@ -133,6 +136,7 @@ class WatcherTest(unittest.TestCase):
         evs = self.w.poll()
         self.assertEqual([e["action"] for e in evs], ["open"])
         self.assertEqual(evs[0]["pos"], {"coin": "hydx", "ca": W.checksum(COIN), "fee": "2.5", "range": ["-65"]})
+        self.assertEqual(evs[0]["token_ids"], ["7"])
 
         self.chain.head += 50
         self.chain.logs.append(modify(1070, 3, POOL, lower_tick(-65), 10000, -5_000_000, 7))
@@ -201,6 +205,122 @@ class WatcherTest(unittest.TestCase):
         other = W.Watcher(self.chain, self.chain, [OTHER], Store(self.store.path), backfill_hours=1)
         self.assertEqual((other.status()["open"], other.status()["cursor"]), (0, None))
 
+    # ---- ladder: satu posisi = 5 NFT dalam satu transaksi ----
+    def ladder(self, ids, block, tx, delta=5_000_000, pool=POOL, top=10000, step=2100):
+        """Rung dari harga turun: [top-step, top], [top-2*step, top-step], ..."""
+        logs = []
+        for i, tid in enumerate(ids):
+            tu, tl = top - i * step, top - (i + 1) * step
+            logs.append(modify(block, 10 + i, pool, tl, tu, delta, tid, tx))
+        return logs
+
+    def test_ladder_is_one_call_with_overall_range(self):
+        self.make()
+        tx = "0x" + "a1" * 32
+        ids = [101, 102, 103, 104, 105]
+        self.chain.logs += [transfer(1010, i, RH.ZERO, WALLET, t, tx) for i, t in enumerate(ids)]
+        self.chain.logs += self.ladder(ids, 1010, tx, step=2100)  # 5 x 2100 tick = ~ -65%
+        evs = self.w.poll()
+        self.assertEqual([e["action"] for e in evs], ["open"])
+        self.assertEqual(evs[0]["pos"]["range"], ["-65"])  # bawah rung terakhir, atas nempel harga
+        self.assertEqual(len(evs[0]["token_ids"]), 5)
+
+        self.chain.head += 50
+        close_tx = "0x" + "b2" * 32
+        self.chain.logs += [modify(1070, 10 + i, POOL, 10000 - (i + 1) * 2100, 10000 - i * 2100, -5_000_000, t, close_tx)
+                            for i, t in enumerate(ids)]
+        evs = self.w.poll()
+        self.assertEqual([(e["action"], e["pos"]["coin"]) for e in evs], [("close", "hydx")])
+        self.assertEqual(evs[0]["pos"]["range"], ["-65"])  # close bawa fee + range, buat reentry berikutnya
+
+    def test_burn_before_liquidity_removal_still_closes(self):
+        """V4 burn: NFT diburn dulu, baru liquidity-nya ditarik (urutan log kebalik)."""
+        self.make()
+        self.open_pos()
+        self.w.poll()
+        self.chain.head += 50
+        tx = "0x" + "c3" * 32
+        self.chain.logs += [transfer(1070, 1, WALLET, RH.ZERO, 7, tx),
+                            modify(1070, 2, POOL, lower_tick(-65), 10000, -5_000_000, 7, tx)]
+        evs = self.w.poll()
+        self.assertEqual([(e["action"], e["pos"]["coin"]) for e in evs], [("close", "hydx")])
+        self.assertEqual(self.w.status()["open"], 0)
+        self.assertEqual(self.w.state["tokens"], {})  # udah selesai: nggak dilacak lagi
+
+    def test_close_and_open_in_one_tx_is_one_reentry(self):
+        """Persis kejadian di chain: 5 NFT lama diburn + 5 NFT baru di tick yang sama, satu transaksi."""
+        self.make()
+        old, new = [201, 202, 203], [301, 302, 303]
+        tx = "0x" + "a1" * 32
+        self.chain.logs += [transfer(1010, i, RH.ZERO, WALLET, t, tx) for i, t in enumerate(old)]
+        self.chain.logs += self.ladder(old, 1010, tx)
+        self.assertEqual([e["action"] for e in self.w.poll()], ["open"])
+
+        self.chain.head += 50
+        rtx = "0x" + "d4" * 32
+        self.chain.logs += [transfer(1070, i, WALLET, RH.ZERO, t, rtx) for i, t in enumerate(old)]
+        self.chain.logs += [transfer(1070, 3 + i, RH.ZERO, WALLET, t, rtx) for i, t in enumerate(new)]
+        self.chain.logs += [modify(1070, 10 + i, POOL, 10000 - (i + 1) * 2100, 10000 - i * 2100, -5_000_000, t, rtx)
+                            for i, t in enumerate(old)]
+        self.chain.logs += self.ladder(new, 1070, rtx)
+        evs = self.w.poll()
+        self.assertEqual([e["action"] for e in evs], ["reentry"])
+        self.assertEqual(evs[0]["pos"]["coin"], "hydx")
+        self.assertEqual(sorted(self.w.state["tokens"]), ["301", "302", "303"])
+
+    def test_reentry_of_position_from_before_bot_started(self):
+        """Posisi lama dikenal cuma lewat backfill diam-diam: range lamanya diambil dari harga pas dibuka."""
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.chain = FakeChain()
+        self.chain.head = 100_000
+        tx = "0x" + "a1" * 32
+        old, new = [201, 202], [301, 302]
+        self.chain.logs += [transfer(99_990, i, RH.ZERO, WALLET, t, tx) for i, t in enumerate(old)]
+        self.chain.logs += self.ladder(old, 99_990, tx)
+        w = W.Watcher(self.chain, self.chain, [WALLET], Store(Path(self.tmp.name) / "s.json"), backfill_hours=1)
+        self.assertEqual(w.poll(), [])
+        self.chain.head += 50
+        rtx = "0x" + "d4" * 32
+        self.chain.logs += [transfer(100_030, i, WALLET, RH.ZERO, t, rtx) for i, t in enumerate(old)]
+        self.chain.logs += [transfer(100_030, 3 + i, RH.ZERO, WALLET, t, rtx) for i, t in enumerate(new)]
+        self.chain.logs += [modify(100_030, 10 + i, POOL, 10000 - (i + 1) * 2100, 10000 - i * 2100, -5_000_000, t, rtx)
+                            for i, t in enumerate(old)]
+        self.chain.logs += self.ladder(new, 100_030, rtx)
+        self.assertEqual([e["action"] for e in w.poll()], ["reentry"])
+
+    def test_reentry_on_rpc_without_archive_uses_same_ticks(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.chain = FakeChain(archive=False)
+        self.chain.head = 100_000
+        tx = "0x" + "a1" * 32
+        old, new = [201, 202], [301, 302]
+        self.chain.logs += [transfer(99_990, i, RH.ZERO, WALLET, t, tx) for i, t in enumerate(old)]
+        self.chain.logs += self.ladder(old, 99_990, tx)
+        w = W.Watcher(self.chain, self.chain, [WALLET], Store(Path(self.tmp.name) / "s.json"), backfill_hours=1)
+        w.poll()
+        self.chain.head += 50
+        rtx = "0x" + "d4" * 32
+        self.chain.logs += [transfer(100_030, i, WALLET, RH.ZERO, t, rtx) for i, t in enumerate(old)]
+        self.chain.logs += [transfer(100_030, 3 + i, RH.ZERO, WALLET, t, rtx) for i, t in enumerate(new)]
+        self.chain.logs += [modify(100_030, 10 + i, POOL, 10000 - (i + 1) * 2100, 10000 - i * 2100, -5_000_000, t, rtx)
+                            for i, t in enumerate(old)]
+        self.chain.logs += self.ladder(new, 100_030, rtx)
+        self.assertEqual([e["action"] for e in w.poll()], ["reentry"])
+
+    def test_reentry_with_different_range_is_close_then_open(self):
+        self.make()
+        tx = "0x" + "a1" * 32
+        self.chain.logs += [transfer(1010, 0, RH.ZERO, WALLET, 201, tx)] + self.ladder([201], 1010, tx, step=2100)
+        self.w.poll()
+        self.chain.head += 50
+        rtx = "0x" + "d4" * 32
+        self.chain.logs += [transfer(1070, 0, WALLET, RH.ZERO, 201, rtx), transfer(1070, 1, RH.ZERO, WALLET, 301, rtx),
+                            modify(1070, 10, POOL, 10000 - 2100, 10000, -5_000_000, 201, rtx)]
+        self.chain.logs += self.ladder([301], 1070, rtx, step=4000)  # range lebih lebar
+        self.assertEqual([e["action"] for e in self.w.poll()], ["close", "open"])
+
 
 class FakeTelegram:
     def __init__(self):
@@ -255,6 +375,15 @@ class AutoCallTest(unittest.TestCase):
     def test_close_of_unknown_coin_still_blasted(self):
         self.bot.auto_call({"action": "close", "pos": {"coin": "worm", "ca": self.pos["ca"]}})
         self.assertIn("CLOSE LP — WORM", self.tg.to(FAN)[-1])
+
+    def test_reentry_event_and_close_remembers_range(self):
+        self.bot.auto_call({"action": "close", "pos": dict(self.pos)})  # close pertama bawa fee + range
+        self.assertEqual(self.store.get("hydx")["status"], "closed")
+        self.assertEqual(self.store.get("hydx")["range"], ["-65"])
+        self.bot.auto_call({"action": "open", "pos": dict(self.pos, range=["-64"])})
+        self.assertIn("REENTRY — HYDX", self.tg.to(FAN)[-1])
+        self.bot.auto_call({"action": "reentry", "pos": dict(self.pos)})
+        self.assertEqual(self.tg.to(FAN)[-1].count("REENTRY"), 1)
 
     def test_dry_run_only_tells_owner(self):
         self.bot.dry_run = True

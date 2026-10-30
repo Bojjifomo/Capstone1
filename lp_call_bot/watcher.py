@@ -6,6 +6,11 @@ Yang diliat dari chain (pakai decoder punya rh_wallet_finder):
 Dari pool-nya dapet: CA koin (sisi yang bukan USDG), simbol, fee pool. Range dihitung dari tick posisi
 dibanding harga pool pas dibuka, dalam % harga koin (single sided USDG: -65 = batas bawah 65% di bawah harga).
 
+Satu "posisi" lu biasanya ladder: beberapa NFT (rung) sekaligus dalam satu transaksi di pool yang sama. Jadi
+call-nya digabung per (transaksi, pool): satu OPEN dengan range dari rung teratas sampai terbawah, satu CLOSE.
+Close + open di transaksi yang sama, pool sama, range sama = satu REENTRY. Catatan: pas burn, NFT diburn dulu
+baru liquidity-nya ditarik, jadi NFT yang diburn tetap dilacak sampai liquidity-nya habis.
+
 Pure di luar RPC, jadi bisa dites offline: lihat tests/test_watcher.py.
 """
 import copy
@@ -15,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rh_wallet_finder"))
 
+import calls as CALLS  # noqa: E402
 import chain as C  # noqa: E402
 import config as RH  # noqa: E402
 import rpc as R  # noqa: E402
@@ -24,6 +30,7 @@ CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena
 BLOCKS_PER_HOUR = 36_000   # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
 NEAR_ZERO = 1.5            # batas atas range segini dekat harga = nggak usah ditulis
+STATE_VERSION = 2          # naik kalau bentuk state berubah: watcher mulai dari awal (backfill diam-diam lagi)
 
 
 # ---- helper murni ----------------------------------------------------------
@@ -71,9 +78,10 @@ def _pad(addr):
 # ---- watcher ---------------------------------------------------------------
 class Watcher:
     """poll() -> call baru sejak poll sebelumnya:
-        {"action": "open",  "pos": {coin, ca, fee, range}, "token_id", "tx"}
-        {"action": "close", "pos": {coin, ca},             "token_id", "tx"}
-        {"action": "skip",  "text": alasan}    (posisi yang nggak layak di-blast, buat dikabarin ke owner)
+        {"action": "open",    "pos": {coin, ca, fee, range}, "token_ids", "tx"}
+        {"action": "reentry", "pos": {coin, ca, fee, range}, "token_ids", "tx"}   (close + open sama, satu transaksi)
+        {"action": "close",   "pos": {coin, ca[, fee, range]}, "token_ids", "tx"}
+        {"action": "skip",    "text": alasan}    (posisi yang nggak layak di-blast, buat dikabarin ke owner)
     Poll pertama (belum ada cursor) cuma belajar: scan mundur `backfill_hours` tanpa ngirim apa-apa,
     jadi posisi yang udah kebuka dari sebelum bot nyala tetep ketangkep pas ditutup."""
 
@@ -86,9 +94,9 @@ class Watcher:
         self.chunk = chunk
         with store.lock:
             st = store.data.setdefault("watch", {})
-            if st.get("wallets") != self.wallets:  # ganti wallet = mulai dari awal
+            if st.get("wallets") != self.wallets or st.get("v") != STATE_VERSION:  # ganti wallet / versi = dari awal
                 st.clear()
-                st.update(wallets=self.wallets, cursor=None, tokens={}, pools={})
+                st.update(v=STATE_VERSION, wallets=self.wallets, cursor=None, tokens={}, pools={})
                 store.save()
 
     @property
@@ -139,24 +147,29 @@ class Watcher:
                 if str(d["salt"]) in ids:
                     evs.append((d["block"], d["log_index"], "modify", d))
 
-        out = []
-        for block, _, kind, d in sorted(evs, key=lambda e: (e[0], e[1])):
+        groups, index = [], {}
+        for _, _, kind, d in sorted(evs, key=lambda e: (e[0], e[1])):
             if kind == "transfer":
-                self._on_transfer(tokens, d, out)
+                self._on_transfer(tokens, d)
             else:
-                self._on_modify(tokens, d, block, silent, out)
+                self._on_modify(tokens, d, groups, index)
+
+        out = [] if silent else self._announce(groups, tokens)
+        for tid in [k for k, t in tokens.items() if t.get("burned") and t["liq"] <= 0]:
+            del tokens[tid]  # diburn dan liquidity-nya udah habis: selesai
         return tokens, out
 
-    def _on_transfer(self, tokens, d, out):
+    def _on_transfer(self, tokens, d):
         tid = str(d["token_id"])
         if d["to"] in self.wallets:
             tokens.setdefault(tid, {"liq": 0, "blast": None})
-        elif d["from"] in self.wallets and tid in tokens:  # diburn atau dikirim ke wallet lain
-            t = tokens.pop(tid)
-            if t.get("blast") and t["liq"] > 0 and d["to"] == RH.ZERO:
-                self._announce_close(t, d, out)
+        elif d["from"] in self.wallets and tid in tokens:
+            if d["to"] == RH.ZERO:
+                tokens[tid]["burned"] = True  # liquidity-nya ditarik SETELAH burn: tetap dilacak
+            else:
+                del tokens[tid]  # dikirim ke wallet lain
 
-    def _on_modify(self, tokens, d, block, silent, out):
+    def _on_modify(self, tokens, d, groups, index):
         t = tokens.get(str(d["salt"]))
         if t is None:
             return
@@ -164,41 +177,108 @@ class Watcher:
         t["liq"] = before + d["delta"]
         t.update(pool=d["pool"], tl=d["tl"], tu=d["tu"])
         if before <= 0 < t["liq"]:
-            if silent:
-                t["blast"] = None  # belum tau layak atau nggak: dicek pas ditutup
-            else:
-                self._announce_open(t, d, block, out)
+            kind = "open"
+            t.update(block=d["block"], blast=None)
+            t.pop("pos", None)
         elif before > 0 >= t["liq"]:
-            self._announce_close(t, d, out)
+            kind = "close"
+        else:
+            return
+        key = (kind, d["tx"], d["pool"])
+        if key not in index:
+            index[key] = {"kind": kind, "tx": d["tx"], "pool": d["pool"], "block": d["block"],
+                          "li": d["log_index"], "ids": []}
+            groups.append(index[key])
+        index[key]["ids"].append(str(d["salt"]))
 
     # call
-    def _announce_open(self, t, d, block, out):
-        tid = d["salt"]
-        info = self._pool(d["pool"])
-        t["blast"] = False
-        if "coin" not in info:
-            out.append({"action": "skip", "text": f"Posisi #{tid} dibuka di pool tanpa USDG, nggak di-blast."})
-            return
-        slot = self._slot0(d["pool"], block)
-        if not single_sided_usdg(d["tl"], d["tu"], slot["tick"], info["usdg_token1"]):
-            out.append({"action": "skip", "text": f"Posisi #{tid} ({info['coin'].upper()}) bukan single sided USDG, nggak di-blast."})
-            return
-        lo, up = range_pcts(d["tl"], d["tu"], slot["tick"], info["usdg_token1"])
-        fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
-        t["blast"] = True
-        out.append({"action": "open", "token_id": tid, "tx": d["tx"],
-                    "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee),
-                            "range": range_label(lo, up)}})
+    def _announce(self, groups, tokens):
+        out = []
+        pending = sorted(groups, key=lambda g: (g["block"], g["kind"] != "close", g["li"]))
+        used = set()
+        for g in pending:
+            if id(g) in used:
+                continue
+            if g["kind"] == "close":
+                mate = next((o for o in pending if o["kind"] == "open" and o["tx"] == g["tx"]
+                             and o["pool"] == g["pool"] and id(o) not in used), None)
+                out += self._close(g, tokens, mate, used)
+            else:
+                out += self._open(g, tokens)
+        return out
 
-    def _announce_close(self, t, d, out):
-        if t.get("blast") is False:
-            return
-        t["blast"] = False
-        info = self._pool(t["pool"])
+    def _ladder(self, info, ids, tokens):
+        """Gabungan rung: ((lo, up), tick-set)."""
+        los, ups = [], []
+        for tid in ids:
+            t = tokens[tid]
+            lo, up = range_pcts(t["tl"], t["tu"], t["tick"], info["usdg_token1"])
+            los.append(lo)
+            ups.append(up)
+        return min(los), max(ups)
+
+    def _open(self, g, tokens):
+        """-> [event] ; event open, atau skip kalau posisinya nggak layak."""
+        ids = g["ids"]
+        info = self._pool(g["pool"])
+        name = info.get("coin", "?").upper()
+        label = f"#{ids[0]}" + (f" (+{len(ids) - 1} lainnya)" if len(ids) > 1 else "")
+        for tid in ids:
+            tokens[tid]["blast"] = False
         if "coin" not in info:
-            return
-        out.append({"action": "close", "token_id": d.get("salt", d.get("token_id")), "tx": d["tx"],
-                    "pos": {"coin": info["coin"], "ca": info["ca"]}})
+            return [{"action": "skip", "text": f"Posisi {label} dibuka di pool tanpa USDG, nggak di-blast."}]
+        slot = self._slot0(g["pool"], g["block"])
+        for tid in ids:
+            tokens[tid]["tick"] = slot["tick"]
+        if not all(single_sided_usdg(tokens[t]["tl"], tokens[t]["tu"], slot["tick"], info["usdg_token1"]) for t in ids):
+            return [{"action": "skip", "text": f"Posisi {label} ({name}) bukan single sided USDG, nggak di-blast."}]
+        lo, up = self._ladder(info, ids, tokens)
+        fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
+        pos = {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee), "range": range_label(lo, up)}
+        for tid in ids:
+            tokens[tid].update(blast=True, pos=pos)
+        return [{"action": "open", "token_ids": ids, "tx": g["tx"], "pos": pos}]
+
+    def _close(self, g, tokens, mate, used):
+        ids = g["ids"]
+        info = self._pool(g["pool"])
+        used.add(id(g))
+        live = [t for t in ids if tokens[t].get("blast") is not False]
+        if "coin" not in info or not live:
+            if not mate:
+                return []
+            used.add(id(mate))
+            return self._open(mate, tokens)
+        old = next((tokens[t]["pos"] for t in live if tokens[t].get("pos")), None) or self._old_pos(info, g, live, tokens)
+        close_ev = {"action": "close", "token_ids": live, "tx": g["tx"],
+                    "pos": old or {"coin": info["coin"], "ca": info["ca"]}}
+        for t in live:
+            tokens[t]["blast"] = False
+        if not mate:
+            return [close_ev]
+        used.add(id(mate))
+        evs = self._open(mate, tokens)
+        new = evs[0]
+        ticks = lambda ids: sorted((tokens[t]["tl"], tokens[t]["tu"]) for t in ids)  # noqa: E731
+        same = ticks(live) == ticks(mate["ids"]) or bool(old and calls_same(old, new["pos"]))
+        if new["action"] == "open" and same:
+            return [dict(new, action="reentry")]
+        return [close_ev] + evs
+
+    def _old_pos(self, info, g, ids, tokens):
+        """Fee + range posisi yang kebuka dari sebelum bot nyala: harga pool pas dibuka (butuh RPC arsip)."""
+        t0 = tokens[ids[0]]
+        if not t0.get("block"):
+            return None
+        try:
+            slot = self._slot0(g["pool"], t0["block"], exact=True)
+        except (R.RPCError, RuntimeError):
+            return None
+        for tid in ids:
+            tokens[tid]["tick"] = slot["tick"]
+        lo, up = self._ladder(info, ids, tokens)
+        fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
+        return {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee), "range": range_label(lo, up)}
 
     # baca chain
     def _pool(self, pool):
@@ -221,8 +301,8 @@ class Watcher:
             pools[pool] = info
         return info
 
-    def _slot0(self, pool, block):
-        for tag in (hex(block), "latest"):  # RPC tanpa arsip nolak block lama
+    def _slot0(self, pool, block, exact=False):
+        for tag in (hex(block),) if exact else (hex(block), "latest"):  # RPC tanpa arsip nolak block lama
             try:
                 slot = C.decode_slot0(self.calls.call(
                     "eth_call", [{"to": RH.STATE_VIEW, "data": C.cd_slot0(pool)}, tag]))
@@ -231,3 +311,7 @@ class Watcher:
             if slot:
                 return slot
         raise RuntimeError(f"slot0 pool {pool} nggak kebaca")
+
+
+def calls_same(old, new):
+    return old["ca"].lower() == new["ca"].lower() and CALLS.same_range(old["range"], new["range"])
