@@ -5,6 +5,7 @@ Jalanin: python3 lp_call_bot/bot.py   (config di lp_call_bot/.env, lihat .env.ex
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +33,7 @@ Reentry (range &amp; fee sama kayak open terakhir):
 
 Command:
 /posisi: LP yang lagi kebuka
+/auto: status auto call dari wallet
 /stats: jumlah penerima
 /blast &lt;teks&gt;: kirim pesan bebas
 /hapus &lt;koin&gt;: hapus koin dari daftar (salah ketik)"""
@@ -54,6 +56,28 @@ def load_env(path):
 
 def id_list(value):
     return [int(v) if v.strip().lstrip("-").isdigit() else v.strip() for v in value.split(",") if v.strip()]
+
+
+def same_range(a, b, tolerance=1):
+    """Range % dari dua open dianggap sama kalau selisihnya <= 1 (tick spacing bikin angka geser dikit)."""
+    return len(a) == len(b) and all(abs(float(x) - float(y)) <= tolerance for x, y in zip(a, b))
+
+
+def build_watcher(store):
+    """Auto call dari wallet, atau None kalau WALLET_ADDRESSES belum diisi."""
+    wallets = [w.strip().lower() for w in os.environ.get("WALLET_ADDRESSES", "").split(",") if w.strip()]
+    if not wallets:
+        return None
+    bad = [w for w in wallets if not (w.startswith("0x") and len(w) == 42)]
+    if bad:
+        sys.exit(f"WALLET_ADDRESSES salah (harus 0x + 40 karakter): {bad}")
+    import watcher
+    cfg = watcher.RH.load_env()
+    if not cfg["RPC_URL"]:
+        sys.exit("WALLET_ADDRESSES udah diisi tapi RPC_URL kosong. Isi RPC_URL di .env (atau API key Alchemy).")
+    logs_rpc, calls_rpc = watcher.R.make_rpcs(cfg)
+    return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
+                           backfill_hours=float(os.environ.get("AUTO_BACKFILL_HOURS", "72")))
 
 
 class Telegram:
@@ -90,13 +114,17 @@ class Telegram:
 
 
 class Bot:
-    def __init__(self, tg, store, owners, channels, default_range="-65", heartbeat=None):
+    def __init__(self, tg, store, owners, channels, default_range="-65", heartbeat=None,
+                 watcher=None, watch_seconds=15, dry_run=False):
         self.tg = tg
         self.store = store
         self.owners = set(owners)
         self.channels = channels
         self.default_range = default_range
         self.heartbeat = Path(heartbeat) if heartbeat else None
+        self.watcher = watcher
+        self.watch_seconds = watch_seconds
+        self.dry_run = dry_run
 
     # kirim
     def reply(self, chat_id, text):
@@ -148,6 +176,8 @@ class Bot:
             self.reply(chat_id, HELP_FOLLOWER)
         elif cmd == "/help":
             self.reply(chat_id, HELP_OWNER.format(default_range=self.default_range))
+        elif cmd == "/auto":
+            self.reply(chat_id, self.auto_status())
         elif cmd == "/stats":
             self.reply(chat_id, f"Subscriber: {len(self.store.subscribers())}\nChannel: {len(self.channels)}")
         elif cmd == "/blast":
@@ -199,6 +229,55 @@ class Bot:
             positions = [self.store.set_status(c, "open") for c in known]
             self.blast_and_report(chat_id, calls.render_reentry(positions))
 
+    # auto call dari wallet
+    def notify_owners(self, text):
+        for owner in self.owners:
+            self.tg.send(owner, text)
+
+    def auto_status(self):
+        if not self.watcher:
+            return "Auto call mati: WALLET_ADDRESSES / RPC_URL belum diisi di .env."
+        st = self.watcher.status()
+        wallets = "\n".join(f"<code>{w}</code>" for w in st["wallets"])
+        mode = "DRY RUN (cuma ke lu)" if self.dry_run else "LIVE (ke follower)"
+        return (f"🤖 Auto call nyala: {mode}\n{wallets}\nBlock terakhir dibaca: {st['cursor']}\n"
+                f"Posisi kebuka: {st['open']}")
+
+    def auto_call(self, ev):
+        """Satu call dari watcher: sama kayak lu ketik sendiri, tapi dari transaksi wallet."""
+        if ev["action"] == "skip":
+            self.notify_owners("ℹ️ " + ev["text"])
+            return
+        pos = ev["pos"]
+        known = self.store.get(pos["coin"])
+        if ev["action"] == "open":
+            if known and known["status"] == "closed" and known["ca"].lower() == pos["ca"].lower() \
+                    and same_range(known["range"], pos["range"]):
+                text = calls.render_reentry([self.store.set_status(pos["coin"], "open")])
+            else:
+                text = calls.render_open(self.store.open_position(pos))
+        else:
+            closed = self.store.set_status(pos["coin"], "closed") if known else pos
+            text = calls.render_close([closed])
+        if self.dry_run:
+            self.notify_owners("🧪 DRY RUN, nggak dikirim ke follower:\n\n" + text)
+            return
+        sent, failed = self.blast(text)
+        self.notify_owners(f"🤖 Auto call terkirim ke {sent} penerima" + (f", {failed} gagal" if failed else "")
+                           + ":\n\n" + text)
+
+    def watch_once(self):
+        for ev in self.watcher.poll():
+            self.auto_call(ev)
+
+    def watch_loop(self):
+        while True:
+            try:
+                self.watch_once()
+            except Exception as e:  # RPC lagi bermasalah: coba lagi nanti, bot Telegram tetep jalan
+                print("watcher error:", repr(e), flush=True)
+            time.sleep(self.watch_seconds)
+
     def beat(self):
         """Sentuh file heartbeat tiap kali Telegram berhasil dihubungi. Agent Office ngecek umurnya."""
         if not self.heartbeat:
@@ -227,6 +306,9 @@ class Bot:
 
     def run(self):
         print(f"LP Call Bot jalan. Owner: {sorted(self.owners)}  Channel: {self.channels}", flush=True)
+        if self.watcher:
+            print(f"Auto call nyala: {self.watcher.wallets}" + ("  (DRY RUN)" if self.dry_run else ""), flush=True)
+            threading.Thread(target=self.watch_loop, daemon=True).start()
         while True:
             self.poll_once()
 
@@ -239,13 +321,17 @@ def main():
     owners = id_list(os.environ.get("OWNER_IDS", ""))
     if not owners:
         print("⚠️ OWNER_IDS kosong: kirim /id ke bot buat liat user ID lu, terus isi di .env.")
+    store = Store(os.environ.get("STATE_FILE", HERE / "state.json"))
     bot = Bot(
         Telegram(token),
-        Store(os.environ.get("STATE_FILE", HERE / "state.json")),
+        store,
         owners,
         id_list(os.environ.get("CHANNEL_IDS", "")),
         os.environ.get("DEFAULT_RANGE", "-65"),
         heartbeat=os.environ.get("HEARTBEAT_FILE", HERE / "heartbeat"),
+        watcher=build_watcher(store),
+        watch_seconds=float(os.environ.get("AUTO_POLL_SECONDS", "15")),
+        dry_run=os.environ.get("AUTO_DRY_RUN", "0") == "1",
     )
     bot.run()
 

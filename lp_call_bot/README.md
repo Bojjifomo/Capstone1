@@ -25,6 +25,35 @@ Command owner: `/posisi` (LP yang kebuka), `/stats`, `/blast <teks bebas>`,
 `/hapus <koin>`, `/help`.
 Command follower: `/start` (langganan), `/stop`, `/posisi`.
 
+## Auto call dari wallet (tanpa ngetik)
+
+Bot baca transaksi wallet lu di Uniswap V4 (Robinhood Chain) tiap 15 detik dan ngirim call sendiri,
+ke channel + semua follower:
+
+| Yang kebaca di chain | Yang nyampe ke follower |
+| --- | --- |
+| Lu mint posisi, liquidity naik dari 0 | 🟢 OPEN LP: CA koin, simbol, fee pool, range % (dari tick posisi vs harga pool) |
+| Posisi sama dibuka lagi, koin + range sama (selisih ≤ 1%) | 🔁 REENTRY |
+| Liquidity balik ke 0 (atau NFT diburn) | 🔴 CLOSE LP |
+
+* **CA** = token di pool yang bukan USDG. **Range** = batas bawah posisi dalam % dari harga koin pas dibuka
+  (-65 = 65% di bawah harga). Batas atas nggak ditulis kalau nempel harga; kalau nggak nempel, jadi dua angka (`-60 -65`).
+* Cuma posisi **single sided USDG** yang di-blast. Posisi dua sisi, atau di pool tanpa USDG, dilewatin dan
+  lu dikabarin lewat DM. Nambah / ngurangin liquidity sebagian nggak dianggap call.
+* Call manual (ketik) tetep jalan barengan. Cek status: `/auto`.
+
+Setup, di `lp_call_bot/.env`:
+
+```
+WALLET_ADDRESSES=0x...          # alamat publik wallet lu (BUKAN private key), boleh lebih dari satu
+RPC_URL=...                     # link RPC Robinhood Chain, atau cukup API key Alchemy
+AUTO_DRY_RUN=1                  # tes dulu: call otomatis cuma dikirim ke lu
+```
+
+Kalau `rh_wallet_finder/.env` udah ada RPC-nya, itu kepake otomatis. Pertama nyala, bot baca mundur
+`AUTO_BACKFILL_HOURS` (72 jam) **tanpa ngirim apa-apa**, biar posisi yang udah kebuka dari sebelum bot nyala
+tetep ketangkep pas lu tutup. Pas udah yakin hasilnya bener, ganti `AUTO_DRY_RUN=0` terus restart bot.
+
 ## Setup
 
 1. Chat [@BotFather](https://t.me/BotFather) → `/newbot` → simpan token-nya.
