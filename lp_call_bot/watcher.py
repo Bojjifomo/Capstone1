@@ -33,7 +33,6 @@ PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena reorg
 BLOCKS_PER_MINUTE = 600    # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
-TICK_SLACK = 100           # ~1%: harga bisa gerak dikit antara block mint dan poll
 STATE_VERSION = 3          # naik kalau bentuk state berubah: watcher mulai dari "sekarang" lagi
 
 
@@ -57,11 +56,6 @@ def _price_pct(ticks):
 def ladder_depth(tl, tu):
     """Kedalaman range [tl, tu] dalam % harga koin, dari ujung atas ke ujung bawah (sama buat dua urutan token)."""
     return _price_pct(-(tu - tl))
-
-
-def single_sided_usdg(tl, tu, tick, usdg_is_token1):
-    """Posisi cuma megang USDG: seluruh range ada di bawah harga koin (toleransi TICK_SLACK)."""
-    return tu <= tick + TICK_SLACK if usdg_is_token1 else tick - TICK_SLACK < tl
 
 
 def fmt_step(x, step=5):
@@ -183,11 +177,9 @@ class Watcher:
         label = f"#{ids[0]}" + (f" (+{len(ids) - 1} lainnya)" if len(ids) > 1 else "")
         if "coin" not in info:
             return [{"action": "skip", "text": f"Posisi {label} dibuka di pool tanpa USDG, nggak di-blast."}]
-        slot = self._slot0(pool, block)
-        if not all(single_sided_usdg(tl, tu, slot["tick"], info["usdg_token1"]) for _, tl, tu in rungs):
-            return [{"action": "skip", "text": f"Posisi {label} ({info['coin'].upper()}) bukan single sided USDG, nggak di-blast."}]
+        # Harga pool sengaja nggak dipakai: call = salinan posisi yang lu buka, di mana pun harganya sekarang.
         depth = ladder_depth(min(r[1] for r in rungs), max(r[2] for r in rungs))
-        fee = slot["lp_fee"] if info["dynamic"] else info["fee"]
+        fee = self._slot0(pool, block)["lp_fee"] if info["dynamic"] else info["fee"]
         return [{"action": "open", "token_ids": ids, "tx": tx,
                  "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee),
                          "range": [fmt_step(depth, self.range_step)]}}]

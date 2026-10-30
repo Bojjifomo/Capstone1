@@ -21,8 +21,13 @@ Huruf besar/kecil bebas. Koin yang belum pernah di-open nggak bakal di-blast pas
 `close`/`reentry` (biar salah ketik nggak nyampe ke follower); bot ngasih tau koin mana
 yang dilewatin. Tiap blast, bot bales "✅ Terkirim ke N penerima".
 
-Command owner: `/posisi` (LP yang kebuka), `/stats`, `/blast <teks bebas>`,
+Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/stats`, `/blast <teks bebas>`,
 `/hapus <koin>`, `/help`.
+
+**Rekap per jam:** tiap `RECAP_MINUTES` (60) bot nge-blast daftar posisi yang masih kebuka (koin, pool %, range, CA,
+tanpa nilai), biar follower yang ketinggalan call tetep tau. Isinya dari call yang dikirim bot (auto atau ketik):
+posisi yang dibuka sebelum bot nyala nggak ada di situ. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
+= mati.
 Command follower: `/start` (langganan), `/stop`, `/posisi`.
 
 ## Auto call dari wallet (tanpa ngetik)
@@ -43,8 +48,9 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
   Nggak tergantung harga pool, jadi nggak geser walau harga gerak.
 * **Ladder:** satu posisi lu biasanya beberapa NFT sekaligus dalam satu transaksi. Bot gabungin jadi **satu** call
   per transaksi dan pool, dengan range dari rung paling atas sampai paling bawah.
-* Cuma open yang **single sided USDG** yang di-blast. Open dua sisi atau di pool tanpa USDG dilewatin dan lu dikabarin
-  lewat DM. Nambah / ngurangin liquidity di NFT yang udah ada nggak dianggap call.
+* Call = salinan posisi yang lu buka. Harga pool sekarang nggak dipakai sama sekali, jadi posisi tetep di-blast walau
+  harga belum masuk range atau udah di dalam ladder. Cuma open di pool tanpa USDG yang dilewatin (lu dikabarin
+  lewat DM). Nambah / ngurangin liquidity di NFT yang udah ada nggak dianggap call.
 * Close dikenali dari NFT yang di-burn. Di 72 jam wallet asli, 35 dari 35 close ikut burn. Kalau lu pernah nutup
   posisi tanpa burn, itu nggak kebaca.
 * Bot mati lebih dari `AUTO_CATCHUP_MINUTES` (30)? Aktivitas yang lebih lama dari itu dilewatin (daripada ngirim call
