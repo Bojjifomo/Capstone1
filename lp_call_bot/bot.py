@@ -70,7 +70,8 @@ def build_watcher(store):
     import watcher
     cfg = watcher.RH.load_env()
     if not cfg["RPC_URL"]:
-        sys.exit("WALLET_ADDRESSES udah diisi tapi RPC_URL kosong. Isi RPC_URL di .env (atau API key Alchemy).")
+        cfg["RPC_URL"] = watcher.PUBLIC_RPC  # RPC publik kuat buat baca log; key Alchemy cukup di CALL_RPC_URL
+        print(f"RPC_URL kosong, pakai RPC publik {watcher.PUBLIC_RPC}", flush=True)
     logs_rpc, calls_rpc = watcher.R.make_rpcs(cfg)
     return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
                            backfill_hours=float(os.environ.get("AUTO_BACKFILL_HOURS", "72")))
@@ -241,6 +242,9 @@ class Bot:
         st = self.watcher.status()
         wallets = "\n".join(f"<code>{w}</code>" for w in st["wallets"])
         mode = "DRY RUN (cuma ke lu)" if self.dry_run else "LIVE (ke follower)"
+        if st["cursor"] is None:
+            return (f"🤖 Auto call nyala: {mode}, tapi masih baca mundur sekali di awal ({st['progress'] or 'mulai'}).\n"
+                    "Jangan restart bot dulu. Belum ada call yang kebaca sampai ini selesai.\n" + self.watch_health())
         return (f"🤖 Auto call nyala: {mode}\n{wallets}\nBlock terakhir dibaca: {st['cursor']}\n"
                 f"NFT posisi kebuka: {st['open']}\n" + self.watch_health())
 
