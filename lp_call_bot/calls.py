@@ -62,11 +62,6 @@ def parse(text, default_range="-65"):
     return None
 
 
-def same_range(a, b, tolerance=1):
-    """Range % dari dua open dianggap sama kalau selisihnya <= 1 (tick spacing bikin angka geser dikit)."""
-    return len(a) == len(b) and all(abs(float(x) - float(y)) <= tolerance for x, y in zip(a, b))
-
-
 def fmt_range(ranges):
     return " / ".join(f"{r}%" for r in ranges)
 

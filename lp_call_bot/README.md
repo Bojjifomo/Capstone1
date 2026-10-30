@@ -27,36 +27,40 @@ Command follower: `/start` (langganan), `/stop`, `/posisi`.
 
 ## Auto call dari wallet (tanpa ngetik)
 
-Bot baca transaksi wallet lu di Uniswap V4 (Robinhood Chain) tiap 15 detik dan ngirim call sendiri,
-ke channel + semua follower:
+Bot baca transaksi wallet lu di Uniswap V4 (Robinhood Chain) **real time** (tiap 15 detik, cuma block baru, nggak
+ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
 
 | Yang kebaca di chain | Yang nyampe ke follower |
 | --- | --- |
-| Lu mint posisi, liquidity naik dari 0 | 🟢 OPEN LP: CA koin, simbol, fee pool, range % (dari tick posisi vs harga pool) |
-| Posisi sama dibuka lagi, koin + range sama (selisih ≤ 1%) | 🔁 REENTRY |
-| Liquidity balik ke 0 (atau NFT diburn) | 🔴 CLOSE LP |
+| Lu mint posisi (NFT baru masuk wallet) | 🟢 OPEN LP: CA koin, simbol, fee pool, range % (dari tick posisi vs harga pool) |
+| Lu close posisi (NFT di-burn) | 🔴 CLOSE LP: CA + nama koin |
 
+* **Nggak ada logika reentry di auto call.** Reentry = CLOSE lalu OPEN lagi, jadi dua pesan biasa.
+  (Command ketik `reentry <koin>` di DM bot tetep ada.)
 * **CA** = token di pool yang bukan USDG. **Range** = batas bawah posisi dalam % dari harga koin pas dibuka
   (-65 = 65% di bawah harga). Batas atas nggak ditulis kalau nempel harga; kalau nggak nempel, jadi dua angka (`-60 -65`).
 * **Ladder:** satu posisi lu biasanya beberapa NFT sekaligus dalam satu transaksi. Bot gabungin jadi **satu** call
-  per transaksi, dengan range dari rung paling atas sampai paling bawah. Close + open di transaksi yang sama,
-  pool sama, tick atau range sama = satu 🔁 REENTRY (bukan dua pesan).
-* Cuma posisi **single sided USDG** yang di-blast. Posisi dua sisi, atau di pool tanpa USDG, dilewatin dan
-  lu dikabarin lewat DM. Nambah / ngurangin liquidity sebagian nggak dianggap call.
-* Call manual (ketik) tetep jalan barengan. Cek status: `/auto` (nunjukin kapan terakhir sehat atau error terakhir). Kalau watcher error 3x
-  berturut-turut, bot ngabarin lewat DM. Owner harus pernah `/start` bot dari akun sendiri biar DM bisa masuk.
+  per transaksi dan pool, dengan range dari rung paling atas sampai paling bawah.
+* Cuma open yang **single sided USDG** yang di-blast. Open dua sisi atau di pool tanpa USDG dilewatin dan lu dikabarin
+  lewat DM. Nambah / ngurangin liquidity di NFT yang udah ada nggak dianggap call.
+* Close dikenali dari NFT yang di-burn. Di 72 jam wallet asli, 35 dari 35 close ikut burn. Kalau lu pernah nutup
+  posisi tanpa burn, itu nggak kebaca.
+* Bot mati lebih dari `AUTO_CATCHUP_MINUTES` (30)? Aktivitas yang lebih lama dari itu dilewatin (daripada ngirim call
+  basi ke follower) dan lu dikabarin. Yang lebih baru dari itu tetep dikirim begitu bot nyala lagi.
+* Call manual (ketik) tetep jalan barengan. Cek status: `/auto` (block terakhir dibaca, kapan terakhir sehat, error
+  terakhir). Kalau watcher error 3x berturut-turut, bot ngabarin lewat DM. Owner harus pernah `/start` bot dari
+  akun sendiri biar DM bisa masuk.
 
 Setup, di `lp_call_bot/.env`:
 
 ```
 WALLET_ADDRESSES=0x...          # alamat publik wallet lu (BUKAN private key), boleh lebih dari satu
-CALL_RPC_URL=...                # opsional: API key Alchemy. RPC_URL boleh kosong (otomatis RPC publik)
 AUTO_DRY_RUN=1                  # tes dulu: call otomatis cuma dikirim ke lu
 ```
 
-Kalau `rh_wallet_finder/.env` udah ada RPC-nya, itu kepake otomatis. Pertama nyala, bot baca mundur
-`AUTO_BACKFILL_HOURS` (72 jam, ±30 detik, jangan restart sebelum selesai: `/auto` nunjukin progresnya) **tanpa ngirim apa-apa**, biar posisi yang udah kebuka dari sebelum bot nyala
-tetep ketangkep pas lu tutup. Pas udah yakin hasilnya bener, ganti `AUTO_DRY_RUN=0` terus restart bot.
+RPC: `RPC_URL` boleh kosong (otomatis RPC publik Robinhood). `CALL_RPC_URL` opsional (API key Alchemy); tambahin
+`CALL_SPLIT=rpc1` biar Alchemy cuma jadi cadangan. Pas pertama nyala bot cuma nyatet "sekarang" dan mulai dari situ.
+Pas udah yakin hasilnya bener, ganti `AUTO_DRY_RUN=0` terus restart bot.
 
 ## Setup
 
