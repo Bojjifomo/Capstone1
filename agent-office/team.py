@@ -122,6 +122,8 @@ class Team:
         if model not in ("", "opus", "sonnet", "haiku"):
             raise ValueError("unknown model")
         with self.lock:
+            if model == "opus":
+                self._take_opus_seat()
             final = self.free_name(name)
             title, kind, default_division = title_for(role)
             division = " ".join(str(division).split())[:40] or default_division
@@ -157,6 +159,13 @@ class Team:
                 "- Work only inside the folders the brief names.\n") % (
             m["name"], m["title"], m["name"], m["role"], m["instructions"] or "(none yet)")
 
+    def _take_opus_seat(self):
+        """Raise when every Opus seat is taken. Call with self.lock held."""
+        chain = getattr(self.office, "chain", None)
+        seats = chain.settings["opus_seats"] if chain else 2
+        if sum(1 for s in self.staff if s.get("model") == "opus") >= seats:
+            raise RuntimeError("the %d Opus seats are taken; free one first" % seats)
+
     def set_model(self, key, model, by="bojjifomo"):
         """Move a specialist to haiku, sonnet or opus. Opus seats are limited; only bojjifomo changes the CEO's."""
         if model not in ("haiku", "sonnet", "opus"):
@@ -172,10 +181,7 @@ class Team:
                 raise PermissionError("only bojjifomo changes the CEO's model")
             old = member.get("model") or "default"
             if model == "opus" and old != "opus":
-                seats = chain.settings["opus_seats"] if chain else 2
-                used = sum(1 for s in self.staff if s.get("model") == "opus")
-                if used >= seats:
-                    raise RuntimeError("the %d Opus seats are taken; free one first" % seats)
+                self._take_opus_seat()
             member["model"] = model
             self.save()
         return member, old

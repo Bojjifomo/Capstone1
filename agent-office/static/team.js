@@ -59,22 +59,61 @@ Hooks.panels.staff = {
   },
 };
 
+const HIRE_GROUPS = ["Build", "Guard", "Research", "Words", "Plan"];
+let hireTemplates = [];
+
 Hooks.panels.hire = {
   title: "Recruit a specialist",
-  subtitle: "They get a folder in ~/Agents, a title and a seat in a division.",
+  subtitle: "Start from a template or write your own. They get a folder in ~/Agents, a title and a seat in a division.",
   icon: '<span class="panel-icon">🛡️</span>',
   async render(body) {
-    const team = await api("/api/team");
+    const [team, tpl, chain] = await Promise.all([api("/api/team"), api("/api/team/templates"), api("/api/chain").catch(() => null)]);
+    hireTemplates = tpl.templates;
+    const divisions = [...new Set([...tpl.divisions, ...team.known_divisions])].sort();
+    const seats = chain ? chain.settings.opus_seats : 2;
+    const used = team.staff.filter((m) => m.model === "opus").length;
     body.innerHTML = `<form id="hire-form" class="form">` +
+      `<label>Start from a template<select name="template" id="hire-template"><option value="">Blank: I will write it myself</option>` +
+      HIRE_GROUPS.map((g) => `<optgroup label="${esc(g)}">` + hireTemplates.filter((t) => t.group === g).map((t) =>
+        `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join("") + `</optgroup>`).join("") + `</select>` +
+      `<small id="hire-summary">Fills in the role, division, model and a full set of instructions. Change anything you like.</small></label>` +
       `<label>Name <small>(left blank or taken? I'll pick a free one)</small><input type="text" name="name" maxlength="40" placeholder="e.g. Lyra"></label>` +
-      `<label>Role<input type="text" name="role" maxlength="80" required placeholder="e.g. Python backend engineer, DeFi researcher"></label>` +
-      `<label>Instructions<textarea name="instructions" rows="5" maxlength="8000" placeholder="How they should work, what they know, what to avoid."></textarea></label>` +
+      `<label>Role <small>(a short title, up to 80 characters)</small><input type="text" name="role" maxlength="80" required placeholder="e.g. Python backend engineer, DeFi researcher"></label>` +
       `<label>Division<select name="division"><option value="">Pick from the role</option>` +
-      team.known_divisions.map((d) => `<option>${esc(d)}</option>`).join("") + `</select></label>` +
-      `<label>Model<select name="model">${options(["sonnet", "opus", "haiku"], W.models, "sonnet")}</select></label>` +
+      divisions.map((d) => `<option>${esc(d)}</option>`).join("") + `</select>` +
+      `<input type="text" name="newdivision" maxlength="40" placeholder="…or name a new division"></label>` +
+      `<label>Model <small>Haiku: checks, lookups, summaries. Sonnet: everyday work. Opus: hard design and bugs (${used} of ${esc(seats)} seats in use).</small>` +
+      `<select name="model">${options(["sonnet", "opus", "haiku"], W.models, "sonnet")}</select></label>` +
+      `<label>Instructions <small id="hire-count">0 / 8000</small>` +
+      `<textarea name="instructions" rows="14" maxlength="8000" placeholder="Their mission, what they know, the steps they follow, what good looks like, what they never do, and how they report. A template fills this in."></textarea></label>` +
       `<button type="submit" class="btn primary wide">Welcome them to the guild</button></form>`;
   },
 };
+
+document.addEventListener("change", (ev) => {
+  if (ev.target.id !== "hire-template") return;
+  const form = ev.target.form;
+  const t = hireTemplates.find((x) => x.key === ev.target.value);
+  const summary = $("#hire-summary");
+  if (!t) { if (summary) summary.textContent = "Fills in the role, division, model and a full set of instructions. Change anything you like."; return; }
+  form.role.value = t.role;
+  form.instructions.value = t.instructions;
+  form.model.value = t.model;
+  const known = [...form.division.options].some((o) => o.value === t.division || o.textContent === t.division);
+  form.newdivision.value = known ? "" : t.division;
+  if (known) form.division.value = t.division;
+  if (summary) summary.textContent = t.summary;
+  updateHireCount(form);
+});
+
+document.addEventListener("input", (ev) => {
+  if (ev.target.name === "instructions" && ev.target.form && ev.target.form.id === "hire-form") updateHireCount(ev.target.form);
+});
+
+function updateHireCount(form) {
+  const el = $("#hire-count");
+  if (el) el.textContent = `${form.instructions.value.length} / 8000`;
+}
 
 Hooks.jobExtras = () =>
   `<label class="check"><input type="checkbox" name="pm"><span>Party leader mode<small>The lead splits the quest, hands pieces to the guild and to subagents (Haiku for lookups, Sonnet for coding, Opus for hard problems), then reports who did what.</small></span></label>`;
@@ -83,7 +122,7 @@ Object.assign(Hooks.forms, {
   async "hire-form"(form) {
     const r = await api("/api/staff", {
       name: form.name.value, role: form.role.value, instructions: form.instructions.value,
-      division: form.division.value, model: form.model.value,
+      division: form.newdivision.value.trim() || form.division.value, model: form.model.value,
     });
     await poll();
     toast(r.renamed_from ? `${r.renamed_from} was taken, so welcome ${r.staff.name}!` : `Welcome, ${r.staff.name} the ${r.staff.title}!`);

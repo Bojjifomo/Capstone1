@@ -316,6 +316,22 @@ class ChainCase(unittest.TestCase):
         self.assertIn("RUNBOOK.md", roster.WARDENS["lyra"]["instructions"])
         self.assertIn("never merge", roster.WARDENS["thorne"]["instructions"].replace("you never merge", "never merge"))
 
+    def test_every_role_fits_the_hire_form_without_being_cut(self):
+        import roster
+        everyone = list(roster.PRESETS.values()) + list(roster.WARDENS.values()) + roster.TEMPLATES
+        for p in everyone:
+            self.assertLessEqual(len(p["role"]), 80, "%s: the hire form cuts roles at 80 characters" % p["name"] or p.get("key"))
+            self.assertLessEqual(len(p["instructions"]), 8000, p.get("key") or p["name"])
+        keys = [t["key"] for t in roster.TEMPLATES]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertGreaterEqual(len(roster.TEMPLATES), 10)
+        for t in roster.TEMPLATES:
+            self.assertIn(t["model"], ("haiku", "sonnet", "opus"))
+            self.assertIn(t["group"], ("Build", "Guard", "Research", "Words", "Plan"))
+            for needle in ("## What you know", "## Your steps", "## Your quality bar", "## Never", "Indonesian", "report"):
+                self.assertIn(needle, t["instructions"], "%s is missing %r" % (t["key"], needle))
+        self.assertEqual([t["model"] for t in roster.TEMPLATES if t["key"] in ("scout", "architect")], ["haiku", "opus"])
+
     def test_state_survives_a_restart(self):
         self.open_incident()
         again = chain.Chain(self.office)

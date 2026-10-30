@@ -195,7 +195,11 @@ class Chain:
                 done.append({"role": ROLE_NAMES[role], "name": self.holder(role)["name"], "status": "already appointed"})
                 continue
             existing = self.office.team.find(PRESETS[role]["name"])
-            member = self.recruit(role)
+            try:
+                member = self.recruit(role)
+            except RuntimeError as e:
+                done.append({"role": ROLE_NAMES[role], "name": PRESETS[role]["name"], "status": "not recruited: %s" % e})
+                continue
             done.append({"role": ROLE_NAMES[role], "name": member["name"],
                          "status": "appointed (already in the guild)" if existing else "recruited"})
         for key, preset in roster.WARDENS.items():
@@ -203,8 +207,12 @@ class Chain:
             if existing and not existing.get("builtin"):
                 done.append({"role": "Warden", "name": existing["name"], "status": "already in the guild"})
                 continue
-            member, _ = self.office.team.hire(preset["name"], preset["role"], preset["instructions"],
-                                              preset["division"], preset["model"])
+            try:
+                member, _ = self.office.team.hire(preset["name"], preset["role"], preset["instructions"],
+                                                  preset["division"], preset["model"])
+            except RuntimeError as e:
+                done.append({"role": "Warden", "name": preset["name"], "status": "not recruited: %s" % e})
+                continue
             done.append({"role": "Warden", "name": member["name"], "status": "recruited"})
         return done
 
