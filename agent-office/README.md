@@ -137,6 +137,9 @@ ledger; a risky permission mode cannot be used from the chat.
 apply). For a quest it sets the model for messages sent to it from the Guild Hall or the chat; a session you have open in a
 terminal keeps its own `/model`.
 
+A sheet is rebuilt on every poll, so while you are using a dropdown or text field inside it the rebuild is held and catches up when you let go.
+Without that, a phone's picker would be destroyed under the finger while a quest is working.
+
 ## Chain of command
 
 ```

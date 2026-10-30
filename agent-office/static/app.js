@@ -289,7 +289,37 @@ function footerHTML(d) {
     `<button type="submit" class="btn primary">Send</button></div></form>`;
 }
 
+// The sheet is rebuilt on every poll (every 4 s, and while a run streams). A dropdown or text field inside it would be
+// destroyed under the finger, which on a phone means the picker never opens. While someone is using a control in the
+// sheet body, hold the rebuild and catch up as soon as they let go.
+const Hold = { until: 0, deferred: null };
+const BODY_CONTROL = "#sheet-body select, #sheet-body input, #sheet-body textarea";
+
+function usingControl() {
+  const a = document.activeElement;
+  if (a && a.closest && a.closest(BODY_CONTROL)) return true;
+  return Date.now() < Hold.until;
+}
+
+function catchUp() {
+  Hold.until = 0;
+  const d = Hold.deferred;
+  Hold.deferred = null;
+  if (d && UI.open === d.id) renderSheet(UI.detail || d, false);
+}
+
+document.addEventListener("pointerdown", (ev) => {
+  if (ev.target.closest && ev.target.closest(BODY_CONTROL)) Hold.until = Date.now() + 10000;
+}, true);
+document.addEventListener("change", (ev) => {
+  if (ev.target.closest && ev.target.closest(BODY_CONTROL)) { Hold.until = 0; setTimeout(catchUp, 600); }
+}, true);
+document.addEventListener("focusout", (ev) => {
+  if (ev.target.closest && ev.target.closest(BODY_CONTROL)) setTimeout(() => { if (!usingControl()) catchUp(); }, 400);
+}, true);
+
 function renderSheet(d, first) {
+  if (!first && usingControl()) { Hold.deferred = d; return; }
   const body = $("#sheet-body");
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 120;
   MD.reset();
