@@ -28,6 +28,7 @@ Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/st
 tanpa nilai), biar follower yang ketinggalan call tetep tau. Isinya dari call yang dikirim bot (auto atau ketik):
 posisi yang dibuka sebelum bot nyala nggak ada di situ. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
 = mati.
+
 Command follower: `/start` (langganan), `/stop`, `/posisi`.
 
 ## Auto call dari wallet (tanpa ngetik)
@@ -66,8 +67,10 @@ WALLET_ADDRESSES=0x...          # alamat publik wallet lu (BUKAN private key), b
 AUTO_DRY_RUN=1                  # tes dulu: call otomatis cuma dikirim ke lu
 ```
 
-RPC: `RPC_URL` boleh kosong (otomatis RPC publik Robinhood). `CALL_RPC_URL` opsional (API key Alchemy); tambahin
-`CALL_SPLIT=rpc1` biar Alchemy cuma jadi cadangan. Pas pertama nyala bot cuma nyatet "sekarang" dan mulai dari situ.
+RPC (cuma dibaca dari `lp_call_bot/.env`, nggak minjem punya tool lain): `RPC_URL` = utama, boleh kosong (otomatis
+RPC publik Robinhood). `BACKUP_RPC_URLS` = cadangan, pisah koma, urut prioritas (misal SolidRPC lalu key Alchemy):
+baru kepake kalau yang di depannya error, kena limit, atau kuotanya habis (RPC yang kuotanya habis diistirahatin
+sejam). Baris startup `RPC: utama → cadangan …` nunjukin urutannya. Pas pertama nyala bot cuma nyatet "sekarang" dan mulai dari situ.
 Pas udah yakin hasilnya bener, ganti `AUTO_DRY_RUN=0` terus restart bot.
 
 ## Setup

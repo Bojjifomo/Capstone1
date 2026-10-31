@@ -290,6 +290,33 @@ class WatcherTest(unittest.TestCase):
         self.assertIsNone(other.status()["cursor"])
 
 
+class BuildRpcsTest(unittest.TestCase):
+    def rpcs(self, **env):
+        keys = ("RPC_URL", "BACKUP_RPC_URLS", "CALL_RPC_URL")
+        clean = {k: v for k, v in B.os.environ.items() if k not in keys}
+        with mock.patch.dict(B.os.environ, dict(clean, **env), clear=True), \
+                mock.patch.object(W.RH, "load_env", side_effect=AssertionError("jangan baca .env tool lain")):
+            return B.build_rpcs(W)
+
+    def test_default_is_public_rpc_only(self):
+        logs, calls = self.rpcs()
+        self.assertIsInstance(logs, W.R.RPC)
+        self.assertIs(logs, calls)
+
+    def test_backups_in_order_after_the_public_rpc(self):
+        solid = "https://rpc.solidrpc.io/ak_123/evm/4663"
+        logs, calls = self.rpcs(BACKUP_RPC_URLS=solid + ", abcdefghijklmnopqrstuvwxyz123456")
+        self.assertIsInstance(logs, W.R.RPCPool)
+        self.assertEqual(logs.prefer, 0)  # RPC publik dulu
+        self.assertEqual([m.url for m in logs.members],
+                         [W.PUBLIC_RPC, solid, W.RH.ALCHEMY_RPC.format(key="abcdefghijklmnopqrstuvwxyz123456")])
+
+    def test_daily_quota_answer_is_a_quota_error(self):
+        """SolidRPC: 'Daily response quota exceeded' -> pool pindah ke cadangan, bukan error ke bot."""
+        with self.assertRaises(W.R.QuotaError):
+            W.R._result({"error": {"code": -32005, "message": "Daily response quota exceeded"}}, "eth_blockNumber")
+
+
 class FakeTelegram:
     def __init__(self):
         self.sent = []
