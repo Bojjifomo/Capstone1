@@ -60,6 +60,24 @@ def id_list(value):
     return [int(v) if v.strip().lstrip("-").isdigit() else v.strip() for v in value.split(",") if v.strip()]
 
 
+def build_rpcs(watcher):
+    """RPC cuma dari .env bot ini (nggak minjem punya rh_wallet_finder / RH Smart LP Finder, yang bisa kehabisan kuota).
+
+    RPC_URL = utama (default RPC publik Robinhood). BACKUP_RPC_URLS (pisah koma, urut prioritas) + CALL_RPC_URL =
+    cadangan: baru kepake kalau yang di depannya error, kena limit, atau kuotanya habis (yang kuotanya habis
+    diistirahatin sejam). Key Alchemy doang otomatis jadi link Robinhood Chain-nya."""
+    R, RH = watcher.R, watcher.RH
+    primary = RH.rpc_link(os.environ.get("RPC_URL", "")) or watcher.PUBLIC_RPC
+    backups = os.environ.get("BACKUP_RPC_URLS", "").split(",") + [os.environ.get("CALL_RPC_URL", "")]
+    urls = list(dict.fromkeys([primary] + [RH.rpc_link(u) for u in backups if u.strip()]))
+    print("RPC: " + " → ".join(RH.mask(u) for u in urls), flush=True)
+    if len(urls) == 1:
+        one = R.RPC(primary, workers=4)
+        return one, one
+    pool = R.RPCPool([R.RPC(u, workers=4) for u in urls], prefer=0)
+    return pool, pool
+
+
 def build_watcher(store):
     """Auto call dari wallet, atau None kalau WALLET_ADDRESSES belum diisi."""
     wallets = [w.strip().lower() for w in os.environ.get("WALLET_ADDRESSES", "").split(",") if w.strip()]
@@ -69,11 +87,7 @@ def build_watcher(store):
     if bad:
         sys.exit(f"WALLET_ADDRESSES salah (harus 0x + 40 karakter): {bad}")
     import watcher
-    cfg = watcher.RH.load_env()
-    if not cfg["RPC_URL"]:
-        cfg["RPC_URL"] = watcher.PUBLIC_RPC  # RPC publik kuat buat baca log; key Alchemy cukup di CALL_RPC_URL
-        print(f"RPC_URL kosong, pakai RPC publik {watcher.PUBLIC_RPC}", flush=True)
-    logs_rpc, calls_rpc = watcher.R.make_rpcs(cfg)
+    logs_rpc, calls_rpc = build_rpcs(watcher)
     return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
                            catchup_minutes=float(os.environ.get("AUTO_CATCHUP_MINUTES", "30")),
                            range_step=int(os.environ.get("AUTO_RANGE_STEP", "5")))

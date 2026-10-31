@@ -327,6 +327,8 @@ def _result(out, method):
         msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
         if method == "eth_getLogs" and any(w in msg.lower() for w in _RANGE_WORDS):
             raise RangeError(msg, _range_hint(msg))
+        if _quota(msg):  # e.g. SolidRPC "Daily response quota exceeded": let a pool move on to another RPC
+            raise QuotaError(f"{method}: {msg}")
         raise RPCError(f"{method}: {msg}")
     return out.get("result")
 
