@@ -287,7 +287,15 @@ class Chain:
         exact = {p["path"]: p for p in projects}
         out = []
         for k in roster.KNOWN_INTERNS:
-            project = next((r for r in roots if os.path.isdir(os.path.join(r["path"], k["folder"]))), None)
+            fresh = k.get("fresh", "")
+            project = None
+            # a program that runs from an installed copy is watched there (launchd cannot run from an external disk)
+            installed = os.path.expanduser(k["installed"]) if k.get("installed") else ""
+            if installed and os.path.isfile(os.path.join(installed, "bot.py")):
+                project = {"path": installed, "id": "", "label": installed.replace(home, "~", 1)}
+                fresh = k.get("installed_fresh", fresh)
+            if not project:
+                project = next((r for r in roots if os.path.isdir(os.path.join(r["path"], k["folder"]))), None)
             if not project:
                 continue
             if project["path"] in exact:
@@ -295,7 +303,7 @@ class Chain:
             warden = self.office.team.find(k["warden"])
             out.append({
                 "name": k["name"], "project": project["id"], "project_path": project["path"],
-                "project_label": project["label"], "url": k.get("url", ""), "fresh": k.get("fresh", ""),
+                "project_label": project["label"], "url": k.get("url", ""), "fresh": fresh,
                 "fresh_hours": k.get("fresh_hours", 24),
                 "launchd": k.get("launchd", "") if k.get("launchd") in labels else "",
                 "familiar": labels.get(k.get("launchd", ""), ""),

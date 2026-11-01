@@ -2,8 +2,13 @@
 # Jalanin LP Call Bot terus-terusan di Mac lewat launchd: nyala sendiri tiap login, restart sendiri kalau mati.
 #   sh lp_call_bot/install.sh            pasang / update
 #   sh lp_call_bot/install.sh uninstall  copot
+#
+# Bot dikopi ke ~/Projects/lp_call_bot dan jalan dari situ. launchd nggak bisa membuka log atau folder di disk
+# eksternal (/Volumes/...): job-nya gagal start dengan "spawn failed", exit code 78 (EX_CONFIG).
+# .env dan state.json (subscriber + posisi) cuma dikopi kalau di tujuan belum ada, jadi update nggak menimpanya.
 set -e
-HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC="$(cd "$(dirname "$0")" && pwd)"
+HERE="${LP_CALL_BOT_HOME:-$HOME/Projects/lp_call_bot}"
 LABEL="com.bojjifomo.lp-call-bot"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PY="$(command -v python3 || echo /usr/bin/python3)"
@@ -14,8 +19,8 @@ if [ "$1" = "uninstall" ]; then
   echo "LP Call Bot dicopot dari launchd."
   exit 0
 fi
-if [ ! -f "$HERE/.env" ]; then
-  echo "Isi dulu $HERE/.env (cp .env.example .env, isi TELEGRAM_BOT_TOKEN dan OWNER_IDS)." >&2
+if [ ! -f "$HERE/.env" ] && [ ! -f "$SRC/.env" ]; then
+  echo "Isi dulu $SRC/.env (cp .env.example .env, isi TELEGRAM_BOT_TOKEN dan OWNER_IDS)." >&2
   exit 1
 fi
 # Bot lama yang jalan pakai nohup harus dimatiin dulu, biar nggak dobel narik update Telegram.
@@ -23,7 +28,14 @@ if pgrep -f "lp_call_bot/bot.py" >/dev/null 2>&1; then
   echo "Bot lama (nohup) masih jalan. Matiin dulu:  pkill -f lp_call_bot/bot.py   lalu jalanin script ini lagi." >&2
   exit 1
 fi
-mkdir -p "$HOME/Library/LaunchAgents"
+mkdir -p "$HERE" "$HOME/Library/LaunchAgents"
+if [ "$SRC" != "$HERE" ]; then
+  (cd "$SRC" && tar -cf - --exclude .env --exclude state.json --exclude heartbeat --exclude bot.log \
+    --exclude __pycache__ .) | (cd "$HERE" && tar -xf -)
+fi
+[ -f "$HERE/.env" ] || cp "$SRC/.env" "$HERE/.env"
+[ -f "$HERE/state.json" ] || { [ -f "$SRC/state.json" ] && cp "$SRC/state.json" "$HERE/state.json" || true; }
+chmod 600 "$HERE/.env"
 cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,6 +59,7 @@ done
 for i in 1 2 3 4 5; do
   if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
     echo "LP Call Bot jalan lewat launchd ($LABEL)."
+    echo "Jalan dari: $HERE   (kode ada di repo; habis git pull jalanin sh lp_call_bot/install.sh lagi)"
     echo "Restart:  launchctl kickstart -k gui/\$(id -u)/$LABEL"
     echo "Log:      tail -f $HERE/bot.log"
     echo "Sehat kalau $HERE/heartbeat diperbarui tiap ~1 menit."

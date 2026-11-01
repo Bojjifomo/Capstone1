@@ -362,6 +362,33 @@ class ChainCase(unittest.TestCase):
         self.assertIn("heartbeat is 1.0 h old", self.c.check_now("LP Call Bot")["reasons"][0])
         self.assertEqual(self.c.setup_interns()[0]["status"], "already an intern")
 
+    def test_call_bot_is_watched_where_it_is_installed(self):
+        import os
+        home = self.tmp / "home"
+        (home / "Projects" / "lp_call_bot").mkdir(parents=True)
+        (home / "Projects" / "lp_call_bot" / "bot.py").write_text("")
+        (home / "Projects" / "lp_call_bot" / "heartbeat").write_text("")
+        repo = self.tmp / "ext" / "Capstone1"
+        (repo / "lp_call_bot").mkdir(parents=True)
+        (repo / "lp_call_bot" / "heartbeat").write_text("")        # a stale copy of the old layout, must be ignored
+        self.office.projects = lambda: [{"id": "p1", "path": str(repo), "label": "ext/Capstone1"}]
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            bot = next(k for k in self.c.known_interns() if k["name"] == "LP Call Bot")
+            self.assertEqual((bot["project_path"], bot["fresh"]), (str(home / "Projects" / "lp_call_bot"), "heartbeat"))
+            done = {d["name"]: d["status"] for d in self.c.setup_interns()}
+            self.assertTrue(done["LP Call Bot"].startswith("added"), done)
+            self.assertTrue(self.c.check_now("LP Call Bot")["ok"])
+            (home / "Projects" / "lp_call_bot" / "bot.py").unlink()
+            self.assertEqual(next(k for k in self.c.known_interns() if k["name"] == "LP Call Bot")["project_path"], str(repo),
+                             "without an installed copy the repo folder is used, as before")
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old
+
     def test_known_programs_are_found_above_a_sub_folder_session(self):
         repo = self.tmp / "work" / "Capstone1"
         (repo / "agent-office").mkdir(parents=True)
