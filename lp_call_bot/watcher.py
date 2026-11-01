@@ -22,7 +22,13 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rh_wallet_finder"))
+# The decoders live in rh_wallet_finder. In the repo they are one folder up; the installed copy
+# (~/Projects/lp_call_bot, see install.sh) carries its own copies of the four modules in ./rh_wallet_finder.
+_HERE = Path(__file__).resolve().parent
+for _candidate in (_HERE / "rh_wallet_finder", _HERE.parent / "rh_wallet_finder"):
+    if (_candidate / "chain.py").is_file():
+        sys.path.insert(0, str(_candidate))
+        break
 
 import chain as C  # noqa: E402
 import config as RH  # noqa: E402
