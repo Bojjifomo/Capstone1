@@ -91,7 +91,8 @@ case ":$PATH:" in
   *) echo "Note: add ~/.local/bin to your PATH for the office command:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;;
 esac
 echo
-echo "Agent Office is running:  http://127.0.0.1:7777   and   http://100.89.176.76:7777"
+ADDRS="$("$PY" -c 'import json,sys; c=json.load(open(sys.argv[1])); print("   and   ".join("http://%s:%s" % (b, c.get("port", 7777)) for b in c.get("bind", ["127.0.0.1"])))' "$DEST/config.json" 2>/dev/null || echo "http://127.0.0.1:7777")"
+echo "Agent Office is running:  $ADDRS"
 if [ -n "$TS_NAME" ]; then
   echo "For push + home-screen app over https:  tailscale serve --bg --https=443 http://127.0.0.1:7777   ->  https://$TS_NAME"
 fi

@@ -272,11 +272,26 @@ class Chain:
             labels = {j["label"]: j["id"] for j in self.office.familiars.jobs()}
         except Exception:
             labels = {}
+        # Sessions often run inside a sub-folder (Capstone1/agent-office), so look a few folders up as well.
+        home = os.path.expanduser("~")
+        roots = []
+        for p in projects:
+            path, ids = p["path"], p["id"]
+            for _ in range(4):
+                if path not in [r["path"] for r in roots]:
+                    roots.append({"path": path, "id": ids if path == p["path"] else "", "label": path.replace(home, "~", 1)})
+                parent = os.path.dirname(path)
+                if parent == path or parent in ("/", home, os.path.dirname(home)):
+                    break
+                path = parent
+        exact = {p["path"]: p for p in projects}
         out = []
         for k in roster.KNOWN_INTERNS:
-            project = next((p for p in projects if os.path.isdir(os.path.join(p["path"], k["folder"]))), None)
+            project = next((r for r in roots if os.path.isdir(os.path.join(r["path"], k["folder"]))), None)
             if not project:
                 continue
+            if project["path"] in exact:
+                project = dict(project, id=exact[project["path"]]["id"])
             warden = self.office.team.find(k["warden"])
             out.append({
                 "name": k["name"], "project": project["id"], "project_path": project["path"],
