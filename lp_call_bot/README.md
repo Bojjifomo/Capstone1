@@ -98,7 +98,8 @@ launchctl kickstart -k gui/$(id -u)/com.bojjifomo.lp-call-bot   # restart
 Installer **mengopi bot ke `~/Projects/lp_call_bot`** dan jalan dari sana, bukan dari folder repo. Kalau repo ada di disk eksternal
 (`/Volumes/...`), launchd nggak bisa membuka log atau folder di situ: job-nya gagal start (`spawn failed`, exit code 78) dan
 `bot.log` nggak pernah kebuat. `.env` dan `state.json` (subscriber + posisi) dikopi sekali saja, jadi update berikutnya nggak
-menimpanya. Kode tetap diedit di repo; habis `git pull` jalanin `sh lp_call_bot/install.sh` lagi.
+menimpanya. Modul pembaca chain dari `rh_wallet_finder` (chain, config, rpc, keccak: cuma kode, tanpa database dan key) ikut dikopi ke
+`~/Projects/lp_call_bot/rh_wallet_finder/` tiap install. Kode tetap diedit di repo; habis `git pull` jalanin `sh lp_call_bot/install.sh` lagi.
 
 Kalau sebelumnya jalan pakai `nohup`, matiin dulu (`pkill -f lp_call_bot/bot.py`) biar nggak dobel.
 

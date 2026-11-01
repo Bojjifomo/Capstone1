@@ -33,6 +33,17 @@ if [ "$SRC" != "$HERE" ]; then
   (cd "$SRC" && tar -cf - --exclude .env --exclude state.json --exclude heartbeat --exclude bot.log \
     --exclude __pycache__ .) | (cd "$HERE" && tar -xf -)
 fi
+# watcher.py decodes chain logs with four stdlib-only modules from rh_wallet_finder. Copy just those (no database,
+# no .env, no keys): the installed copy has no rh_wallet_finder folder next to it.
+RH_SRC="$SRC/../rh_wallet_finder"
+for f in chain config rpc keccak; do
+  if [ ! -f "$RH_SRC/$f.py" ]; then
+    echo "Nggak nemu $RH_SRC/$f.py. Jalanin install.sh dari folder lp_call_bot di dalam repo Capstone1." >&2
+    exit 1
+  fi
+done
+mkdir -p "$HERE/rh_wallet_finder"
+for f in chain config rpc keccak; do cp "$RH_SRC/$f.py" "$HERE/rh_wallet_finder/$f.py"; done
 [ -f "$HERE/.env" ] || cp "$SRC/.env" "$HERE/.env"
 [ -f "$HERE/state.json" ] || { [ -f "$SRC/state.json" ] && cp "$SRC/state.json" "$HERE/state.json" || true; }
 chmod 600 "$HERE/.env"
