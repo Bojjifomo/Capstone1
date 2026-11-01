@@ -793,3 +793,24 @@ body.chatting #post-quest { display: none; }
 .models-offered { border: 1px solid var(--parch-edge); border-radius: 8px; padding: 6px 10px; margin: 0; }
 .models-offered legend { font: 600 13px var(--serif); color: var(--ink-soft); padding: 0 4px; }
 .models-offered .check { display: inline-flex; margin-right: 14px; }
+
+/* ---- start here / reviews / scorecard ---- */
+.start-here { border: 2px solid #c0842b; border-radius: 10px; background: #fff6e2; padding: 8px 12px; margin: 4px 0 12px; }
+.start-here summary { cursor: pointer; font: 600 15px var(--serif); }
+.start-here ol { list-style: none; padding: 0; margin: 8px 0 2px; }
+.start-here li { display: flex; gap: 8px; padding: 5px 0; border-top: 1px solid var(--parch-edge); font-size: 13.5px; }
+.start-here li span { width: 18px; flex: none; font-weight: 700; }
+.start-here li.ok span { color: #2e9e57; }
+.start-here li.todo span { color: #c0842b; }
+.start-here li small { display: block; color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
+.start-here li.ok b { font-weight: 500; color: var(--ink-soft); }
+.review-row { padding: 6px 0; border-top: 1px solid var(--parch-edge); font-size: 13px; overflow-wrap: anywhere; }
+.review-row a { color: #2f5d8e; }
+.review-row .btn { margin-left: 6px; }
+.form.inline input[type=url] { flex: 1; min-width: 0; }
+.score-wrap { overflow-x: auto; }
+.score { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.score th { text-align: left; font: 600 11.5px var(--sans); color: var(--ink-soft); padding: 3px 4px; border-bottom: 1px solid var(--parch-edge); }
+.score td { padding: 5px 4px; border-bottom: 1px solid var(--parch-edge); vertical-align: top; white-space: nowrap; }
+.score td small { display: block; color: var(--ink-soft); font-size: 11px; white-space: normal; }
+.score td.low { color: #b2433a; font-weight: 700; }

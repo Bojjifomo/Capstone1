@@ -17,6 +17,9 @@
   office incident <id> escalate ["<note>"]  hand an incident to the next rung (warden, ops, CEO, you)
   office round ops|innovator|ceo|budget    start a round now (budget = the CEO's usage review)
   office setup                     recruit the standing team: CEO, operations manager, innovator and two wardens
+  office start                     the setup checklist (START HERE FIRST), checked against the live hall
+  office review <PR link>          the Reviewer reads a pull request and gives a verdict
+  office scorecard [days]          runs, done %, cost and time per person; incidents and reviews
   office usage [days]              where the gold goes: by person, kind, model, project, plus savings ideas
   office model <name> <haiku|sonnet|opus>  move a teammate to another model (Opus seats are limited)
   office doctor                    check the install
@@ -352,6 +355,25 @@ def cmd_setup(args):
         print("  %-20s %s" % (d["name"], d["status"]))
 
 
+def cmd_start(args):
+    steps = call("/api/chain")["start"]
+    done = sum(1 for s in steps if s["done"])
+    print("Start here first: %d of %d done" % (done, len(steps)))
+    for s in steps:
+        print("  %s %s%s" % ("✓" if s["done"] else "·", s["label"], "" if s["done"] else "\n      → " + s["how"]))
+
+
+def cmd_review(args):
+    if not args:
+        sys.exit("usage: office review <https://github.com/owner/repo/pull/N>")
+    r = call("/api/chain/review", {"url": args[0]})
+    print("%s is reviewing %s. Session %s" % (r["who"], r["url"], r["sid"]))
+
+
+def cmd_scorecard(args):
+    print(call("/api/chain/scorecard?days=" + urllib.parse.quote(args[0] if args else "7"))["text"])
+
+
 def cmd_usage(args):
     days = args[0] if args else "7"
     print(call("/api/usage/report?days=" + urllib.parse.quote(days))["text"])
@@ -367,7 +389,8 @@ def cmd_model(args):
 
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
             "propose": cmd_propose, "petitions": cmd_petitions, "brief": cmd_brief,
-            "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "setup": cmd_setup, "model": cmd_model,
+            "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "setup": cmd_setup,
+            "start": cmd_start, "review": cmd_review, "scorecard": cmd_scorecard, "model": cmd_model,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":

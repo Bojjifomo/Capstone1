@@ -7,7 +7,33 @@ const CHAIN_RUNG = {
   ceo: ["👑", "CEO", "Steps in when the Operations Manager fails or cannot fix an incident, and keeps the purse: picks Haiku, Sonnet or Opus for each person."],
   ops: ["⚔️", "Operations Manager", "The orchestrator: makes rounds over every intern and sends the right person."],
   innovator: ["✒️", "Innovator", "Reviews the interns and their incidents, then files petitions for you."],
+  reviewer: ["🔍", "Reviewer", "Reads every pull request the guild opens and gives a verdict before you merge. Never merges."],
 };
+const OUTCOME = { done: "✅ done", blocked: "⛔ blocked", "needs-you": "🙋 needs you", failed: "❌ failed" };
+
+function startHTML(steps) {
+  const done = steps.filter((s) => s.done).length;
+  const all = done === steps.length;
+  return `<details class="start-here"${all ? "" : " open"}><summary><b>Start here first</b> · ${done} of ${steps.length} done</summary>` +
+    `<ol>` + steps.map((s) => `<li class="${s.done ? "ok" : "todo"}"><span>${s.done ? "✓" : "·"}</span><div><b>${esc(s.label)}</b>` +
+      (s.done ? "" : `<small>${esc(s.how)}</small>`) + `</div></li>`).join("") + `</ol></details>`;
+}
+
+function reviewsHTML(c) {
+  const reviewer = c.people.reviewer && c.people.reviewer.name;
+  const rows = (c.reviews || []).map((r) =>
+    `<div class="review-row"><b>${r.ended ? esc(OUTCOME[r.outcome] || r.outcome) : "🔍 reading…"}</b> ` +
+    `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.url.split("github.com/")[1] || r.url)}</a>` +
+    `<small> · by ${esc(r.by)} · ${esc(ago(r.ended || r.started))}</small>` +
+    (r.note ? `<p class="sub">${esc(r.note)}</p>` : "") +
+    `<button type="button" class="btn small" data-sid="${esc(r.sid)}">Open</button></div>`).join("");
+  return `<section class="panel-sec"><h3>Pull request reviews</h3>` +
+    (reviewer ? `<p class="sub">${esc(reviewer)} reads every pull request a guild run opens${c.settings.auto_review ? "" : " (automatic reviews are off)"}. Or paste one:</p>` +
+      `<form id="chain-review-form" class="form inline"><input type="url" name="url" required placeholder="https://github.com/…/pull/12">` +
+      `<button type="submit" class="btn">Review</button></form>`
+      : `<p class="sub">Appoint a Reviewer above to get a verdict on every pull request before you merge.</p>`) +
+    (rows || (reviewer ? `<p class="sub">No reviews yet.</p>` : "")) + `</section>`;
+}
 
 Hooks.header.push((state) => {
   const c = state.chain || {};
@@ -44,10 +70,10 @@ function rungHTML(role, p, staff) {
     ? `<button type="button" class="btn" data-panel-act="chain-round" data-kind="budget">Budget review now</button>` : "";
   return `<div class="rung r-${role}${down ? " down" : ""}"><span class="rung-icon" aria-hidden="true">${icon}</span>` +
     `<div class="rung-body"><p class="rung-title">${esc(title)} · ${who}</p><p class="sub">${esc(what)}</p>` +
-    (p.name ? `<p class="sub">${esc(roundLine(r))}</p>` +
+    (p.name && role !== "reviewer" ? `<p class="sub">${esc(roundLine(r))}</p>` +
       (r.summary ? `<details><summary>Their last report</summary><div class="md">${MD.render(r.summary)}</div></details>` : "") : "") +
     `<div class="btn-row">` +
-    (p.name ? `<button type="button" class="btn" data-panel-act="chain-round" data-kind="${role}">${action}</button>` +
+    (p.name ? (role === "reviewer" ? "" : `<button type="button" class="btn" data-panel-act="chain-round" data-kind="${role}">${action}</button>`) +
       budget + (r.sid ? `<button type="button" class="btn" data-sid="${esc(r.sid)}">Open the round</button>` : "")
       : `<button type="button" class="btn primary" data-panel-act="chain-recruit" data-role="${role}">Recruit one</button>`) +
     `</div><form class="form inline" data-form="chain-appoint" data-role="${role}"><select name="staff" aria-label="Appoint ${esc(title)}">` +
@@ -64,7 +90,7 @@ function healthDot(i) {
 function incidentHTML(x) {
   const attempts = (x.attempts || []).map((a) =>
     `<li><b>${esc(a.who)}</b> (${esc(CHAIN_LEVEL[a.level] || a.level)}): ` +
-    `${a.ended ? (a.ok === false ? "failed" : "finished") : "working…"}` +
+    `${a.ended ? (OUTCOME[a.outcome] || (a.ok === false ? "failed" : "finished")) : "working…"}` +
     (a.summary ? ` <span class="sub">${esc(a.summary.slice(0, 220))}</span>` : "") +
     (a.sid ? ` <button type="button" class="btn small" data-sid="${esc(a.sid)}">Open</button>` : "") + `</li>`).join("");
   return `<div class="incident st-${esc(x.status)}"><p><b>Incident ${esc(x.id)}</b> · ${esc(ago(x.opened))} · ` +
@@ -112,6 +138,8 @@ function settingsHTML(s, dispatched) {
   const n = (name, label, min, max) =>
     `<label>${esc(label)}<input type="number" name="${name}" min="${min}" max="${max}" value="${esc(s[name])}"></label>`;
   return `<form id="chain-settings-form" class="form">` +
+    `<label class="check"><input type="checkbox" name="auto_review"${s.auto_review ? " checked" : ""}><span>Review every pull request` +
+    `<small>The Reviewer reads each pull request a guild run opens and sends you a verdict. Counts toward the daily dispatch limit.</small></span></label>` +
     `<label class="check"><input type="checkbox" name="auto"${s.auto ? " checked" : ""}><span>Autopilot` +
     `<small>Incidents go up the chain and rounds happen on their own. Off: checks still run, people only move when you press a button.</small></span></label>` +
     `<div class="two">${n("check_minutes", "Check every (min)", 1, 240)}${n("fail_after", "Failed checks before an incident", 1, 10)}</div>` +
@@ -139,14 +167,15 @@ Hooks.panels.chain = {
     c.interns.forEach((i) => { if (i.warden_name) (wardens[i.warden_name] = wardens[i.warden_name] || []).push(i.name); });
     const settled = c.incidents.filter((x) => x.status === "resolved").slice(0, 8);
     body.innerHTML =
+      startHTML(c.start || []) +
       `<section class="panel-sec chain-ladder"><h3>The ladder</h3>` +
-      (["ceo", "ops", "innovator"].some((r) => !c.people[r].name)
+      (["ceo", "ops", "innovator", "reviewer"].some((r) => !c.people[r].name)
         ? `<p><button type="button" class="btn primary wide" data-panel-act="chain-team">Recruit the standing team</button>` +
           `<small class="hint">CEO, Operations Manager, Innovator and two wardens (Lyra, Thorne), each with their own written role. Anyone already in the guild is kept as is.</small></p>` : "") +
       `<div class="rung r-you"><span class="rung-icon" aria-hidden="true">🛡️</span><div class="rung-body">` +
       `<p class="rung-title">Guildmaster · <b>bojjifomo</b></p><p class="sub">You approve petitions and seals. What nobody below could fix comes to your phone.</p>` +
       (c.needs_you ? `<p><span class="tag t-down">${esc(c.needs_you)} incident${c.needs_you > 1 ? "s" : ""} need you</span></p>` : "") + `</div></div>` +
-      ["ceo", "ops", "innovator"].map((r) => rungHTML(r, c.people[r], c.staff)).join("") +
+      ["ceo", "ops", "innovator", "reviewer"].map((r) => rungHTML(r, c.people[r], c.staff)).join("") +
       `<div class="rung r-warden"><span class="rung-icon" aria-hidden="true">🗝️</span><div class="rung-body"><p class="rung-title">Wardens</p>` +
       `<p class="sub">${Object.keys(wardens).length ? Object.entries(wardens).map(([w, list]) => `${esc(w)}: ${list.map(esc).join(", ")}`).join("<br>") : "Nobody guards an intern yet. Pick a warden on each intern below."}</p></div></div>` +
       `<div class="rung r-intern"><span class="rung-icon" aria-hidden="true">🌱</span><div class="rung-body"><p class="rung-title">Interns · ${esc(c.interns.length)}</p>` +
@@ -155,6 +184,7 @@ Hooks.panels.chain = {
       (kn.known.some((k) => !k.added) ? `<p><button type="button" class="btn" data-panel-act="chain-known-all">Add every known program that is healthy now</button>` +
         `<small class="hint">${esc(kn.known.filter((k) => !k.added).map((k) => k.name).join(", "))}. A program that is down right now is skipped, with what to do first.</small></p>` : "") +
       `${c.interns.length ? c.interns.map((i) => internHTML(i, c.staff)).join("") : '<p class="loading">No interns yet. Add your first program below.</p>'}</section>` +
+      reviewsHTML(c) +
       `<section class="panel-sec"><h3>Take on an intern</h3>${addInternHTML(projects, bots.jobs || [], c.staff, kn.known)}</section>` +
       `<section class="panel-sec"><h3>Autopilot</h3>${settingsHTML(c.settings, c.dispatched)}</section>` +
       (settled.length ? `<section class="panel-sec"><h3>Recently fixed</h3>${settled.map((x) =>
@@ -163,6 +193,11 @@ Hooks.panels.chain = {
 };
 
 Object.assign(Hooks.forms, {
+  async "chain-review-form"(form) {
+    const r = await api("/api/chain/review", { url: form.url.value.trim() });
+    toast(`${r.who} is reading it. The verdict comes as a raven.`);
+    Hooks.panels.chain.render($("#sheet-body"));
+  },
   async "chain-intern-form"(form) {
     const f = (k) => form[k].value;
     const r = await api("/api/chain/interns", {
@@ -174,7 +209,7 @@ Object.assign(Hooks.forms, {
     Hooks.panels.chain.render($("#sheet-body"));
   },
   async "chain-settings-form"(form) {
-    const body = { auto: form.auto.checked, allowed_models: ["haiku", "sonnet", "opus"].filter((m) => form["model-" + m].checked) };
+    const body = { auto: form.auto.checked, auto_review: form.auto_review.checked, allowed_models: ["haiku", "sonnet", "opus"].filter((m) => form["model-" + m].checked) };
     if (!body.allowed_models.length) { toast("Keep at least one model."); return; }
     ["check_minutes", "fail_after", "ops_every_hours", "innovator_every_days", "stuck_minutes", "max_auto_per_day", "review_hours", "guard_pct", "opus_seats"]
       .forEach((k) => { body[k] = form[k].value; });

@@ -686,14 +686,14 @@ def api_chain_settings(req, m):
     return {"settings": chain_call(APP.office.chain.configure, req.body)}
 
 
-@route("POST", r"/api/chain/appoint/(?P<role>ceo|ops|innovator)")
+@route("POST", r"/api/chain/appoint/(?P<role>ceo|ops|innovator|reviewer)")
 def api_chain_appoint(req, m):
     chain_call(APP.office.chain.appoint, m.group("role"), text_field(req.body, "staff", 20))
     APP.office.ledger.add("guild", "Appointed a new %s" % chain.ROLE_NAMES[m.group("role")], by="bojjifomo")
     return {"ok": True}
 
 
-@route("POST", r"/api/chain/recruit/(?P<role>ceo|ops|innovator)")
+@route("POST", r"/api/chain/recruit/(?P<role>ceo|ops|innovator|reviewer)")
 def api_chain_recruit(req, m):
     member = chain_call(APP.office.chain.recruit, m.group("role"))
     APP.office.ledger.add("hire", "%s the %s, appointed %s" % (member["name"], member["title"],
@@ -722,6 +722,24 @@ def api_chain_known_add(req, m):
         if not d["status"].startswith("already"):
             APP.office.ledger.add("guild", "%s: %s" % (d["name"], d["status"]), by="Chain")
     return {"interns": interns}
+
+
+@route("GET", "/api/chain/scorecard")
+def api_chain_scorecard(req, m):
+    try:
+        days = max(1, min(30, int((req.query.get("days") or ["7"])[0])))
+    except ValueError:
+        raise HttpError(400, "days must be a number")
+    return dict(APP.office.chain.scorecard(days), text=APP.office.chain.scorecard_text(days))
+
+
+@route("POST", "/api/chain/review")
+def api_chain_review(req, m):
+    """Ask the Reviewer to read one pull request now."""
+    r = chain_call(APP.office.chain.request_review, text_field(req.body, "url", 300), by="bojjifomo")
+    if not r:
+        raise HttpError(409, "the review could not start")
+    return r
 
 
 @route("GET", "/api/chain/known")

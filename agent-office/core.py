@@ -11,6 +11,7 @@ import briefing
 import chain
 import economy
 import guard
+import handoff
 import panels
 import personas
 import petitions
@@ -443,13 +444,27 @@ class Office:
         except Exception:
             import traceback
             traceback.print_exc()
+        result = handoff.parse(run.final, bool(run.ok))
+        data["outcome"] = result["outcome"]
         self.emit("quest.finished", data)
+        member = self.team.member_for_cwd(run.cwd)
         who = self.chat_runs.pop(run.sid, None)
         if who:
             reply = " ".join((run.final or "").split())[:400] or ("done" if run.ok else "stopped without an answer")
-            self.ledger.add("reply", reply, by=who, sid=run.sid, ok=bool(run.ok))
+            self.ledger.add("reply", "%s %s" % (handoff.ICON[result["outcome"]], reply), by=who, sid=run.sid,
+                            ok=bool(run.ok), outcome=result["outcome"])
+        chain_owned = run.sid in self.chain.runs
         try:
             self.chain.on_run(run)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        if result["outcome"] == "needs-you" and not chain_owned and member:
+            note = result["note"] or plain(run.final)
+            self.notify("%s needs your word" % member["name"], note, tag="needs-" + run.sid[:8], url="/#s=" + run.sid)
+            self.ledger.add("guild", "🙋 %s needs bojjifomo: %s" % (member["name"], note[:200]), by=member["name"], sid=run.sid)
+        try:
+            self.chain.maybe_review(run, member)
         except Exception:
             import traceback
             traceback.print_exc()

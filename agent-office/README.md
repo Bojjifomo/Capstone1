@@ -151,6 +151,39 @@ A sheet is rebuilt on every poll, so while you are using a dropdown or text fiel
 A click on a dropdown or field is also kept away from the page's tap-to-open handlers, which used to reopen the sheet and close
 the dropdown before it showed.
 
+## Running the guild well
+
+**Start here first.** The top of ⚜️ Chain is a checklist read from the live hall: push on this phone, a daily budget, the
+four seats filled, at least one program watched, a warden on each, every program checked healthy once, a first operations
+round that finished well, Autopilot on. Each open step says what to do. `office start` prints it on the Mac.
+
+**The handoff contract.** Every errand the guild runs ends with one line the hall can read:
+
+```
+RESULT: done - <what is now true>
+RESULT: blocked - <what stopped them>
+RESULT: needs you - <the decision only bojjifomo can make>
+```
+
+The line is added to every brief automatically. *needs you* sends a push straight away and, inside an incident, goes to
+your phone instead of climbing to the CEO, so Opus time is not spent on a decision only you can make. *blocked* climbs the
+ladder as before. Chat answers show the outcome (✅ ⛔ 🙋 ❌) on the Orders tab, and incident attempts show it in ⚜️ Chain.
+A run without the line counts as done when it succeeded and failed when it did not.
+
+**The QA checkpoint.** A fourth seat, the **Reviewer** (Thorne in the standing team). When a guild run succeeds and its
+answer links a GitHub pull request, the Reviewer reads it and answers with a verdict: ✅ safe to merge, ⛔ do not merge yet
+(why), or 🙋 a decision for you. The verdict arrives as a push and in ⚜️ Chain → *Pull request reviews*. The Reviewer never
+merges, approves, pushes or comments on GitHub; you still merge. One review per pull request a day, never their own, and
+it counts toward the daily dispatch limit. Turn it off with *Review every pull request* in Autopilot. On demand:
+`/review <link>` in the chat, the form in ⚜️ Chain, or `office review <link>`.
+
+**Task templates in the chat.** `/fix <program> <what is wrong>` sends that program's warden (or ops when it has none) a
+structured brief: goal, context, the program's checks and health right now, what done looks like, what to answer.
+
+**Scorecard.** 📊 Usage → *Scorecard* (and `office scorecard`): per person over 7 days, runs, % done by their RESULT line,
+average cost and time, and how many were blocked or needed you; incidents opened, fixed, median minutes to fix, how many
+reached you; reviews and their verdicts. Under 70% done is worth a look. The CEO's budget review reads the same scorecard.
+
 ## Chain of command
 
 ```
@@ -284,6 +317,8 @@ Leave `header` out to send only the signature. When `secret` is set the body is 
 | `familiar.error` | A launchd job showed a new error line |
 | `incident.opened` / `incident.escalated` / `incident.resolved` | An intern failed its checks, someone up the chain took it (`data.who`; `you` is your phone), it is healthy again |
 | `ops.down` | The Operations Manager failed or got stuck; the CEO takes over |
+
+`quest.finished` also carries `outcome`: `done`, `blocked`, `needs-you` or `failed`, from the run's RESULT line.
 
 Pending petitions older than `petition_expire_days` (default 14, `0` turns it off) expire. A new petition whose title is a near-duplicate of an open one for the same app is refused. The hall still keeps at most 200 petitions and drops settled ones first.
 

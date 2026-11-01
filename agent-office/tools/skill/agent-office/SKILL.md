@@ -61,6 +61,12 @@ Fix on a branch with a pull request, never merge to main, never touch secrets or
 Haiku is for checks, lookups and summaries, Sonnet for everyday coding, Opus for hard design and tricky bugs.
 Change a model only where `office usage` backs it, and never your own.
 
+## Ending your answer
+
+When a brief came from the Guild Hall, the last line of your answer is the RESULT line it asks for:
+`RESULT: done - …`, `RESULT: blocked - …` or `RESULT: needs you - …`. Use *needs you* only for a decision or step
+bojjifomo alone can take (a key, a cost, a design choice); it goes straight to their phone.
+
 ## Writing a brief
 
 Teammates cannot see your conversation. Every brief must stand on its own:

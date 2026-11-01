@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import briefing
+import handoff
 import personas
 import progress
 import sessions
@@ -357,6 +358,8 @@ class Team:
             result["name"] = member["name"]
             return result
         Path(member["folder"]).mkdir(parents=True, exist_ok=True)
+        if "RESULT:" not in brief:
+            brief += handoff.CONTRACT
         result = self.office.new_job(member["folder"], brief, mode or member.get("mode", "acceptEdits"),
                                      model=member.get("model", "sonnet"), helper=True, origin=origin,
                                      from_queue=from_queue, add_dirs=add_dirs)

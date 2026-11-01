@@ -849,7 +849,7 @@ class ChainRoutes(ServerCase):
         self.assertTrue(next(d for d in team["interns"] if d["name"] == "LP Call Bot")["status"].startswith("added"))
         got = {d["name"]: d["status"] for d in team["team"]}
         self.assertEqual(got["Aurelian"], "recruited")
-        self.assertEqual(got["Thorne"], "recruited")
+        self.assertEqual(next(d for d in team["team"] if d["role"] == "Reviewer"), {"role": "Reviewer", "name": "Thorne", "status": "recruited"})
         self.assertTrue(all(s.startswith("already") for s in
                             {d["name"]: d["status"] for d in self.post("/api/chain/team", {})[1]["team"]}.values()))
         status, r = self.post("/api/chain/recruit/ops", {})
@@ -1042,6 +1042,44 @@ class ChatOrders(ServerCase):
         external = {"Authorization": "Bearer test-token-not-a-secret"}
         self.assertEqual(self.request("POST", "/api/chat", {"text": "/help"}, headers=external,
                                       host="guild.example.ts.net")[0], 403)
+
+    def test_handoff_review_fix_and_checklist(self):
+        self.post("/api/chain/team", {})
+        c = self.request("GET", "/api/chain")[1]
+        self.assertEqual(c["people"]["reviewer"]["name"], "Thorne")
+        self.assertEqual([s["id"] for s in c["start"]][:3], ["ravens", "budget", "team"])
+        self.assertTrue(next(s for s in c["start"] if s["id"] == "team")["done"])
+
+        # every errand ends with the RESULT contract
+        r = self.post("/api/team/ask", {"name": "Lyra", "brief": "check the bot"})[1]
+        for _ in range(40):
+            d = self.request("GET", "/api/session/" + r["sid"])[1]
+            if d.get("messages"):
+                break
+            time.sleep(0.2)
+        first = d["messages"][0]["text"]
+        self.assertIn("RESULT: needs you", first)
+
+        self.assertEqual(self.post("/api/chain/review", {"url": "https://example.com/x"})[0], 400)
+        status, rv = self.post("/api/chat", {"text": "/review https://github.com/Bojjifomo/Capstone1/pull/40"})
+        self.assertEqual((status, rv["to"]), (200, "Thorne"), rv)
+        for _ in range(60):
+            reviews = self.request("GET", "/api/chain")[1]["reviews"]
+            if reviews and reviews[0]["ended"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(reviews[0]["outcome"], "done", reviews)   # fake claude has no RESULT line and succeeds
+        self.assertEqual(self.post("/api/chat", {"text": "/fix Nothing here broken"})[0], 409)
+        project = next(p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp"))
+        lyra = next(m for m in self.request("GET", "/api/team")[1]["staff"] if m["name"] == "Lyra")
+        self.post("/api/chain/interns", {"name": "Web Bot", "project": project["id"], "url": "http://127.0.0.1:9/",
+                                         "warden": lyra["id"]})
+        self.assertEqual(self.post("/api/chat", {"text": "/fix Web Bot"})[0], 409, "what is broken?")
+        status, fx = self.post("/api/chat", {"text": "/fix web bot the page does not answer"})
+        self.assertEqual((status, fx["to"]), (200, "Lyra"), fx)
+        sc = self.request("GET", "/api/chain/scorecard?days=7")[1]
+        self.assertIn("Scorecard, last 7 days", sc["text"])
+        self.assertGreaterEqual(sc["reviews"]["count"], 1)
 
     def test_quest_model(self):
         sid = fixtures.sid(2)
