@@ -191,7 +191,7 @@ PROGRAMS = (
     "| RH Wallet Finder | `rh_wallet_finder/` | Streamlit app + sync worker, SQLite `data/wallets.db` | the database was synced recently |\n"
     "| RH Smart LP Finder | folder next to the repo | local web app on `127.0.0.1:8787` | the page answers |\n"
     "| LP website | `rh_wallet_finder/web/` on Vercel | snapshot uploaded by `publish.py` | the live snapshot is fresh |\n"
-    "| LP Call Bot | `lp_call_bot/` | launchd `com.bojjifomo.lp-call-bot`, Telegram long polling | `lp_call_bot/heartbeat` changed in the last 15 minutes |\n"
+    "| LP Call Bot | code in `lp_call_bot/`, runs from the copy in `~/Projects/lp_call_bot` | launchd `com.bojjifomo.lp-call-bot`, Telegram long polling | `~/Projects/lp_call_bot/heartbeat` changed in the last 15 minutes |\n"
     "| Power Meter | `power-meter/` (installed in `~/Projects/power-meter`) | launchd `com.bojjifomo.power-meter`, port 7788 | the page answers |\n"
     "| Agent Office | `agent-office/` (installed in `~/Projects/agent-office`) | launchd `com.bojjifomo.agent-office`, port 7777 | the Guild Hall answers |\n\n"
     "The repo is `Capstone1`; each program's README says how to run and test it. Read it before you touch the program.\n")
@@ -203,11 +203,16 @@ CALL_BOT = (
     "- **Never send anything through Telegram.** No `/blast`, no test call, no `sendMessage`, no running `bot.py` by hand "
     "to \"see if it works\". Two copies polling at once also steal each other's messages.\n"
     "- Test only with the offline tests: `python3 -m unittest discover -s lp_call_bot/tests`.\n"
-    "- `lp_call_bot/state.json` holds the open positions and the subscriber list. Never edit, move or delete it.\n"
-    "- `lp_call_bot/.env` holds the bot token. Never read it out, print it or copy it.\n"
-    "- Down means the heartbeat is stale. Look in this order: `launchctl list | grep lp-call-bot`, the end of "
-    "`lp_call_bot/bot.log` (\"getUpdates gagal\" = network or token problem; \"409 Conflict\" = a second copy is running), "
-    "then `pgrep -fl lp_call_bot/bot.py`.\n"
+    "- The bot runs from a copy in `~/Projects/lp_call_bot` (made by `sh lp_call_bot/install.sh`): launchd cannot run "
+    "from an external disk. Code changes go in the repo's `lp_call_bot/` with a pull request; after the merge bojjifomo "
+    "re-runs the installer. Never edit the installed copy.\n"
+    "- `state.json` (in the installed copy) holds the open positions and the subscriber list. Never edit, move or delete it.\n"
+    "- `.env` (in the installed copy) holds the bot token. Never read it out, print it or copy it.\n"
+    "- Down means the heartbeat is stale. Look in this order: `launchctl list | grep lp-call-bot`, then "
+    "`launchctl print gui/$(id -u)/com.bojjifomo.lp-call-bot` (\"spawn failed\" with exit code 78 means launchd could not "
+    "open the log or folder: a path on an external disk), the end of `~/Projects/lp_call_bot/bot.log` "
+    "(\"getUpdates gagal\" = network or token problem; \"409 Conflict\" = a second copy is running), then "
+    "`pgrep -fl lp_call_bot/bot.py`.\n"
     "- Fix by restarting it: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.lp-call-bot`. If it is not installed in "
     "launchd yet, tell bojjifomo to run `sh lp_call_bot/install.sh`; do not start it with nohup yourself.\n"
     "- A token problem (401 Unauthorized) or a call format change is bojjifomo's decision: stop and report.\n")
@@ -478,8 +483,9 @@ TEMPLATES = [
 
 KNOWN_INTERNS = [
     {"name": "LP Call Bot", "folder": "lp_call_bot", "fresh": "lp_call_bot/heartbeat", "fresh_hours": 0.25,
+     "installed": "~/Projects/lp_call_bot", "installed_fresh": "heartbeat",
      "launchd": "com.bojjifomo.lp-call-bot", "warden": "Lyra",
-     "hint": "Install it in launchd first: sh lp_call_bot/install.sh (it writes the heartbeat)."},
+     "hint": "Install it in launchd first: sh lp_call_bot/install.sh (it copies the bot to ~/Projects/lp_call_bot and writes the heartbeat)."},
     {"name": "RH Wallet Finder", "folder": "rh_wallet_finder", "fresh": "rh_wallet_finder/data/wallets.db",
      "fresh_hours": 6, "warden": "Lyra", "hint": "Run a first sync so data/wallets.db exists."},
     {"name": "RH Smart LP Finder", "folder": "rh_wallet_finder", "url": "http://127.0.0.1:8787/", "warden": "Lyra",
