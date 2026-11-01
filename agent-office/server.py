@@ -755,7 +755,14 @@ def api_chain_round(req, m):
 @route("POST", "/api/chain/interns")
 def api_chain_intern_add(req, m):
     b = req.body
-    project = APP.office.project_path(text_field(b, "project", 40)) if text_field(b, "project", 40) else ""
+    known = text_field(b, "known", 80)
+    if known:
+        match = next((k for k in APP.office.chain.known_interns() if k["name"] == known), None)
+        if not match:
+            raise HttpError(404, "that program is not in your folders")
+        project = match["project_path"]
+    else:
+        project = APP.office.project_path(text_field(b, "project", 40)) if text_field(b, "project", 40) else ""
     label = ""
     if text_field(b, "familiar", 20):
         job = next((j for j in APP.office.familiars.jobs() if j["id"] == text_field(b, "familiar", 20)), None)

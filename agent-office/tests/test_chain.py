@@ -362,6 +362,20 @@ class ChainCase(unittest.TestCase):
         self.assertIn("heartbeat is 1.0 h old", self.c.check_now("LP Call Bot")["reasons"][0])
         self.assertEqual(self.c.setup_interns()[0]["status"], "already an intern")
 
+    def test_known_programs_are_found_above_a_sub_folder_session(self):
+        repo = self.tmp / "work" / "Capstone1"
+        (repo / "agent-office").mkdir(parents=True)
+        (repo / "lp_call_bot").mkdir()
+        (repo / "lp_call_bot" / "heartbeat").write_text("")
+        # the only known project is a session that ran inside agent-office, like on the Mac mini
+        self.office.projects = lambda: [{"id": "p9", "path": str(repo / "agent-office"), "label": "Capstone1/agent-office"}]
+        known = {k["name"]: k for k in self.c.known_interns()}
+        self.assertIn("LP Call Bot", known)
+        self.assertEqual((known["LP Call Bot"]["project_path"], known["LP Call Bot"]["project"]), (str(repo), ""))
+        done = {d["name"]: d["status"] for d in self.c.setup_interns()}
+        self.assertTrue(done["LP Call Bot"].startswith("added"), done)
+        self.assertEqual(self.c.intern("lp call bot")["project"], str(repo))
+
     def test_lyra_knows_the_call_bot_rules(self):
         import roster
         lyra = roster.WARDENS["lyra"]["instructions"]

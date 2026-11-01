@@ -123,6 +123,7 @@ function addInternHTML(projects, jobs, staff, known) {
     (fresh.length ? `<label>Start from a known program<select id="chain-known"><option value="">Something else (fill it in below)</option>` +
       fresh.map((k) => `<option value="${esc(k.name)}">${esc(k.name)}</option>`).join("") + `</select>` +
       `<small id="chain-known-hint">Fills in the folder, checks and warden.</small></label>` : "") +
+    `<input type="hidden" name="known" value="">` +
     `<label>Name<input type="text" name="name" maxlength="60" required placeholder="e.g. RH Wallet Finder"></label>` +
     `<label>Program folder<select name="project" required>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("")}</select></label>` +
     `<label>launchd job <small>(optional: healthy while it is loaded and its last exit was 0)</small><select name="familiar"><option value="">None</option>` +
@@ -201,7 +202,7 @@ Object.assign(Hooks.forms, {
   async "chain-intern-form"(form) {
     const f = (k) => form[k].value;
     const r = await api("/api/chain/interns", {
-      name: f("name"), project: f("project"), familiar: f("familiar"), url: f("url"),
+      name: f("name"), project: f("project"), known: f("known"), familiar: f("familiar"), url: f("url"),
       fresh: f("fresh"), fresh_hours: f("fresh_hours"), warden: f("warden"),
     });
     toast(`${r.intern.name} joined as an intern. Checking them now…`);
@@ -279,13 +280,14 @@ document.addEventListener("change", (ev) => {
   const form = ev.target.form;
   const k = chainKnown.find((x) => x.name === ev.target.value);
   const hint = $("#chain-known-hint");
-  if (!k) { if (hint) hint.textContent = "Fills in the folder, checks and warden."; return; }
+  if (!k) { form.known.value = ""; if (hint) hint.textContent = "Fills in the folder, checks and warden."; return; }
   form.name.value = k.name;
-  form.project.value = k.project;
+  form.known.value = k.name;
+  if (k.project) form.project.value = k.project;
   form.familiar.value = k.familiar || "";
   form.url.value = k.url || "";
   form.fresh.value = k.fresh || "";
   form.fresh_hours.value = k.fresh_hours || 24;
   form.warden.value = k.warden || "";
-  if (hint) hint.textContent = (k.warden ? `Warden: ${k.warden_name}. ` : `Recruit ${k.warden_name} to be its warden. `) + (k.hint || "");
+  if (hint) hint.textContent = `Folder: ${k.project_label}. ` + (k.warden ? `Warden: ${k.warden_name}. ` : `Recruit ${k.warden_name} to be its warden. `) + (k.hint || "");
 });

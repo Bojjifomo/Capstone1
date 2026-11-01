@@ -844,6 +844,12 @@ class ChainRoutes(ServerCase):
         (bot / "heartbeat").write_text("")
         known = self.request("GET", "/api/chain/known")[1]["known"]
         self.assertIn("LP Call Bot", [k["name"] for k in known])
+        self.assertEqual(self.post("/api/chain/interns", {"name": "X", "known": "Nope", "fresh": "a"})[0], 404)
+        picked = self.post("/api/chain/interns", {"name": "Bot by hand", "known": "LP Call Bot",
+                                                  "fresh": "lp_call_bot/heartbeat", "fresh_hours": 0.25})
+        self.assertEqual(picked[0], 200, picked[1])
+        self.assertTrue(picked[1]["intern"]["project"].endswith("webapp"), "the folder comes from the known program")
+        self.post("/api/chain/interns/%s/remove" % picked[1]["intern"]["id"], {})
         status, team = self.post("/api/chain/team", {})
         self.assertEqual(status, 200, team)
         self.assertTrue(next(d for d in team["interns"] if d["name"] == "LP Call Bot")["status"].startswith("added"))
