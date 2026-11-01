@@ -295,7 +295,9 @@ class ChainCase(unittest.TestCase):
         self.assertEqual(set(by_name), {"Aurelian", "Bram", "Orin", "Lyra", "Thorne"})
         self.assertEqual(by_name["Orin"]["status"], "appointed (already in the guild)")  # the stub already has Orin
         self.assertEqual(by_name["Lyra"]["status"], "already in the guild")
-        self.assertEqual(by_name["Thorne"]["status"], "recruited")
+        self.assertEqual(next(d for d in done if d["role"] == "Reviewer")["status"], "recruited",
+                         "Thorne joins through the Reviewer seat")
+        self.assertEqual(by_name["Thorne"]["status"], "already in the guild", "and is not hired twice as a warden")
         self.assertEqual(c.holder("ceo")["name"], "Aurelian")
         self.assertEqual(c.holder("innovator")["name"], "Orin")
         before = len(self.office.team.staff)
@@ -305,7 +307,7 @@ class ChainCase(unittest.TestCase):
 
     def test_every_role_text_names_its_tools_limits_and_language(self):
         import roster
-        people = list(roster.PRESETS.values()) + list(roster.WARDENS.values())
+        people = list({p["name"]: p for p in list(roster.PRESETS.values()) + list(roster.WARDENS.values())}.values())
         self.assertEqual(len(people), 5)
         for p in people:
             text = p["instructions"]

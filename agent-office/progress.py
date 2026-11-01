@@ -128,8 +128,10 @@ class Progress:
         if getattr(run, "ended", None) and getattr(run, "started", None):
             seconds = max(0, run.ended - run.started)
         cost = getattr(run, "cost", None)
+        import handoff
+        outcome = handoff.parse(getattr(run, "final", ""), bool(run.ok))["outcome"]
         return self.grant(key, name, xp_for(rarity) if run.ok else 0, "quest", title, rarity,
-                          ok=bool(run.ok), cost=cost, seconds=seconds)
+                          ok=bool(run.ok), cost=cost, seconds=seconds, outcome=outcome)
 
     def on_decision(self, item, decision):
         if decision != "approve" or not item:
@@ -160,7 +162,7 @@ class Progress:
         return self.grant(briefing.ORCH_ID, state.get("name") or "Quill", XP["Common"], "quest",
                           "Today's brief", "Common", ok=True, cost=None, seconds=seconds)
 
-    def grant(self, key, name, xp, kind, title, rarity="Common", ok=True, cost=None, seconds=0):
+    def grant(self, key, name, xp, kind, title, rarity="Common", ok=True, cost=None, seconds=0, outcome=""):
         badges, rank_up = [], None
         with self.lock:
             actor = self.actors.setdefault(key, {"name": name, "xp": 0, "history": [], "badges": [], "unlocked": {}})
@@ -173,6 +175,7 @@ class Progress:
                 "ts": time.time(), "ok": bool(ok), "seconds": round(float(seconds or 0), 1),
                 "cost": None if cost is None else round(float(cost), 4), "xp": gained,
                 "title": " ".join(str(title or kind).split())[:80], "rarity": rarity, "kind": kind,
+                "outcome": outcome or ("done" if ok else "failed"),
             })
             actor["history"] = actor["history"][-40:]
             badges = self._badges(actor, kind, rarity, ok, cost)

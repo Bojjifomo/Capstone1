@@ -17,11 +17,13 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import handoff
 import roster
 import store
 
-ROLES = ("ceo", "ops", "innovator")
-ROLE_NAMES = {"ceo": "CEO", "ops": "Operations Manager", "innovator": "Innovator", "warden": "Warden", "you": "you"}
+ROLES = ("ceo", "ops", "innovator", "reviewer")
+ROLE_NAMES = {"ceo": "CEO", "ops": "Operations Manager", "innovator": "Innovator", "reviewer": "Reviewer",
+              "warden": "Warden", "you": "you"}
 LEVELS = ("warden", "ops", "ceo", "you")
 DEFAULTS = {
     "auto": True,                 # dispatch and rounds on their own
@@ -31,6 +33,7 @@ DEFAULTS = {
     "innovator_every_days": 7,    # the innovator's review
     "stuck_minutes": 90,          # a round still running after this counts as failed
     "max_auto_per_day": 12,       # automatic dispatches (incidents and rounds) per day
+    "auto_review": True,          # the Reviewer reads every pull request a guild run opens
     "review_hours": 24,           # the CEO's budget review (0 = off)
     "guard_pct": 80,              # at this share of the daily budget, automatic rounds stop
     "opus_seats": 2,              # how many specialists may run on Opus at once
@@ -43,6 +46,23 @@ LIMITS = {"check_minutes": (1, 240), "fail_after": (1, 10), "ops_every_hours": (
 MODE = "auto"  # Claude Code's guarded auto mode: no prompts, risky actions still blocked
 
 PRESETS = roster.PRESETS   # who gets recruited into each role; the text lives in roster.py
+
+REVIEW_BRIEF = """You are the Reviewer of bojjifomo's guild. {by} just opened this pull request:
+
+{url}
+
+Read it: `gh pr view {url}` and `gh pr diff {url}` (or open the page). Run the project's tests on the branch if you can.
+Check what a careful reviewer checks: does it do what it says, are there tests, could it leak a secret or a key, does it
+weaken a security check or widen a network bind, can it spend RPC quota, money or tokens in a loop, does it touch
+wallets, is anything deleted that should not be.
+
+You review; you never merge, approve, push or comment on GitHub. Your answer comes back to the Guild Hall.
+Your verdict is the RESULT line:
+RESULT: done - safe to merge (one sentence why)
+RESULT: blocked - do not merge yet: <the blocking problems, most important first>
+RESULT: needs you - <a decision only bojjifomo can make, such as a new key, a cost, a design choice>
+
+{rules}"""
 
 RULES = """Rules for every guild run:
 - Work in the folders named here. Read what you need, change only what the fix needs.
@@ -143,6 +163,7 @@ class Chain:
         self.rounds = data.get("rounds") or {}      # kind -> heartbeat
         self.settings = dict(DEFAULTS, **(data.get("settings") or {}))
         self.dispatched = data.get("dispatched") or {"day": "", "n": 0, "warned": False}
+        self.reviews = data.get("reviews") or []    # pull requests the Reviewer read
         self.health = {}                            # intern id -> latest check, memory only
         self.fails = {}                             # intern id -> failed checks in a row
         self._next_check = 0
@@ -175,6 +196,7 @@ class Chain:
             store.save("chain.json", {
                 "roles": self.roles, "interns": self.interns, "incidents": self.incidents[-200:],
                 "runs": self.runs, "rounds": self.rounds, "settings": self.settings, "dispatched": self.dispatched,
+                "reviews": self.reviews[-50:],
             })
 
     # ---- people ---------------------------------------------------------------------
@@ -287,6 +309,150 @@ class Chain:
             self.check_now(item["id"])
             done.append({"name": k["name"], "status": "added, warden %s" % (k["warden_name"] if k["warden"] else "none yet")})
         return done
+
+    # ---- the QA checkpoint: the Reviewer reads every pull request the guild opens ----------------------------
+    def maybe_review(self, run, author=None):
+        if not self.settings.get("auto_review") or getattr(run, "origin", "") == "review" or not run.ok:
+            return []
+        reviewer = self.holder("reviewer")
+        if not reviewer or (author and author["id"] == reviewer["id"]):
+            return []
+        by = author["name"] if author else "a quest"
+        started = []
+        for url in handoff.pr_urls(run.final)[:2]:
+            try:
+                r = self.request_review(url, by=by, cwd=getattr(run, "cwd", ""), automatic=True)
+            except Exception as e:
+                self.office.ledger.add("guild", "No review for %s: %s" % (url, str(e)[:120]), by="Chain")
+                continue
+            if r:
+                started.append(r)
+        return started
+
+    def request_review(self, url, by="bojjifomo", cwd="", automatic=False):
+        if not handoff.PR_URL.fullmatch(str(url or "").strip()):
+            raise ValueError("give a GitHub pull request link, like https://github.com/owner/repo/pull/12")
+        url = url.strip()
+        reviewer = self.holder("reviewer")
+        if not reviewer:
+            raise LookupError("appoint a Reviewer in the Chain panel first")
+        with self.lock:
+            recent = next((x for x in self.reviews if x["url"] == url and (not x.get("ended") or time.time() - x["started"] < 86400)), None)
+        if recent and automatic:
+            return None
+        if recent and not recent.get("ended"):
+            raise RuntimeError("%s is already reviewing it" % recent["reviewer"])
+        if automatic and not self._may_dispatch():
+            return None
+        if self.office.economy.snapshot().get("paused"):
+            if automatic:
+                return None
+            raise RuntimeError("the treasury is empty")
+        brief = REVIEW_BRIEF.format(url=url, by=by, rules=RULES.format(cli=self.cli))
+        dirs = [cwd] if cwd and os.path.isdir(cwd) else []
+        result = self.office.team.ask(reviewer["id"], brief, origin="review", mode=MODE, add_dirs=dirs)
+        if not result.get("sid"):
+            return None
+        with self.lock:
+            self.reviews.append({"url": url, "by": by, "reviewer": reviewer["name"], "sid": result["sid"],
+                                 "started": time.time(), "ended": None, "outcome": "", "note": ""})
+            self.reviews = self.reviews[-50:]
+            self.runs[result["sid"]] = {"kind": "review", "url": url}
+            if automatic:
+                self._count_dispatch()
+            self.save()
+        self.office.ledger.add("guild", "%s is reviewing %s (opened by %s)" % (reviewer["name"], url, by),
+                               by=reviewer["name"], sid=result["sid"])
+        return {"who": reviewer["name"], "sid": result["sid"], "run": result.get("run"), "url": url}
+
+    # ---- START HERE FIRST: the setup, checked from the real state -------------------------------------------
+    def start_steps(self):
+        cfg = getattr(self.office, "cfg", {}) or {}
+        try:
+            budget = float(cfg.get("daily_budget_usd") or 0)
+        except (TypeError, ValueError):
+            budget = 0
+        pusher = getattr(self.office, "pusher", None)
+        ops = self.rounds.get("ops") or {}
+        guarded = [i for i in self.interns if self.member(i.get("warden"))]
+        healthy = [i for i in self.interns if (self.health.get(i["id"]) or {}).get("ok")]
+        steps = [
+            ("ravens", "Push notifications on this phone", bool(pusher and pusher.subscribed),
+             "Ketuk 🪶 di kanan atas → Send ravens to this phone (harus lewat https tailscale)."),
+            ("budget", "A daily budget", budget > 0,
+             "Isi \"daily_budget_usd\" di ~/Projects/agent-office/config.json, lalu restart."),
+            ("team", "CEO, Operations Manager, Innovator and Reviewer appointed", all(self.holder(r) for r in ROLES),
+             "Pencet Recruit the standing team di bawah, atau office setup di Mac."),
+            ("interns", "At least one program watched", bool(self.interns),
+             "Take on an intern di bawah, atau Add every known program."),
+            ("wardens", "Every program has a warden", bool(self.interns) and len(guarded) == len(self.interns),
+             "Pilih Warden di kartu tiap intern."),
+            ("healthy", "Every program checked healthy once", bool(self.interns) and len(healthy) == len(self.interns),
+             "Check now di tiap intern; yang merah dibenerin dulu sebelum Autopilot."),
+            ("round", "A first operations round that finished well", ops.get("ok") is True,
+             "Run a round now di baris Operations Manager, lalu baca laporannya."),
+            ("autopilot", "Autopilot on", bool(self.settings.get("auto")),
+             "Nyalakan di bagian Autopilot, setelah langkah di atas beres."),
+        ]
+        return [{"id": k, "label": label, "done": bool(done), "how": how} for k, label, done, how in steps]
+
+    # ---- scorecard: what to track after launch -----------------------------------------------------------------
+    def scorecard(self, days=7):
+        since = time.time() - days * 86400
+        people = []
+        progress = getattr(self.office, "progress", None)
+        for s in self.office.team.staff if progress else []:
+            hist = [h for h in ((progress.actors.get(s["id"]) or {}).get("history") or [])
+                    if h.get("kind") == "quest" and h.get("ts", 0) >= since]
+            if not hist:
+                continue
+            costs = [h["cost"] for h in hist if h.get("cost") is not None]
+            secs = [h["seconds"] for h in hist if h.get("seconds")]
+            outcomes = {}
+            for h in hist:
+                o = h.get("outcome") or ("done" if h.get("ok") else "failed")
+                outcomes[o] = outcomes.get(o, 0) + 1
+            people.append({
+                "name": s["name"], "model": s.get("model") or "default", "seat": self.role_of(s["id"]), "runs": len(hist),
+                "done_pct": round(100 * outcomes.get("done", 0) / len(hist)),
+                "avg_cost": round(sum(costs) / len(costs), 4) if costs else None,
+                "avg_minutes": round(sum(secs) / len(secs) / 60, 1) if secs else None, "outcomes": outcomes,
+            })
+        people.sort(key=lambda p: -p["runs"])
+        incs = [x for x in self.incidents if x.get("opened", 0) >= since]
+        fixed = [x for x in incs if x["status"] == "resolved" and x.get("resolved")]
+        minutes = sorted((x["resolved"] - x["opened"]) / 60 for x in fixed)
+        by_level = {}
+        for x in fixed:
+            level = (x["attempts"][-1]["level"] if x["attempts"] else "check") if x.get("resolved_by") != "check" else "check"
+            by_level[level] = by_level.get(level, 0) + 1
+        reviews = [r for r in self.reviews if r.get("started", 0) >= since]
+        return {
+            "days": days, "people": people,
+            "incidents": {"opened": len(incs), "fixed": len(fixed), "open": sum(1 for x in incs if x["status"] != "resolved"),
+                          "median_minutes": round(minutes[len(minutes) // 2], 1) if minutes else None,
+                          "fixed_by": by_level,
+                          "reached_you": sum(1 for x in incs if x.get("level") == "you")},
+            "reviews": {"count": len(reviews), "safe": sum(1 for r in reviews if r.get("outcome") == "done"),
+                        "blocked": sum(1 for r in reviews if r.get("outcome") == "blocked")},
+        }
+
+    def scorecard_text(self, days=7):
+        sc = self.scorecard(days)
+        lines = ["Scorecard, last %d days:" % days]
+        for p in sc["people"]:
+            lines.append("- %s (%s%s): %d runs, %d%% done, avg %s, %s min%s" % (
+                p["name"], p["model"], ", " + p["seat"] if p["seat"] else "", p["runs"], p["done_pct"],
+                "$%.3f" % p["avg_cost"] if p["avg_cost"] is not None else "cost unknown",
+                p["avg_minutes"] if p["avg_minutes"] is not None else "?",
+                "".join(", %d %s" % (n, o) for o, n in p["outcomes"].items() if o != "done")))
+        i = sc["incidents"]
+        lines.append("Incidents: %d opened, %d fixed (median %s min), %d reached bojjifomo, fixed by: %s" % (
+            i["opened"], i["fixed"], i["median_minutes"] if i["median_minutes"] is not None else "-", i["reached_you"],
+            ", ".join("%s %d" % kv for kv in i["fixed_by"].items()) or "-"))
+        r = sc["reviews"]
+        lines.append("Reviews: %d (%d safe, %d blocked)" % (r["count"], r["safe"], r["blocked"]))
+        return "\n".join(lines)
 
     def role_of(self, staff_id):
         names = [ROLE_NAMES[r] for r in ROLES if self.roles.get(r) == staff_id]
@@ -636,7 +802,8 @@ class Chain:
         if kind == "budget":
             import report
             data = report.build(self.office, 7)
-            brief = BUDGET_BRIEF.format(when=when, report=report.text(data), guide=report.MODEL_GUIDE, cli=self.cli,
+            brief = BUDGET_BRIEF.format(when=when, report=report.text(data) + "\n\n" + self.scorecard_text(7),
+                                        guide=report.MODEL_GUIDE, cli=self.cli,
                                         rules=RULES.format(cli=self.cli))
         elif kind == "innovator":
             month = time.time() - 30 * 86400
@@ -813,7 +980,13 @@ class Chain:
                 return
             summary = " ".join((run.final or "").split())[:1500]
             ok = bool(run.ok)
-            if entry["kind"] == "round":
+            result = handoff.parse(run.final, ok)
+            if entry["kind"] == "review":
+                rv = next((x for x in self.reviews if x.get("sid") == run.sid), None)
+                if rv:
+                    rv.update(ended=time.time(), outcome=result["outcome"], note=result["note"] or summary[:300])
+                self.save()
+            elif entry["kind"] == "round":
                 kind = entry["round"]
                 r = self.rounds.setdefault(kind, {})
                 r.update(running=False, ended=time.time(), ok=ok, summary=summary[:600])
@@ -829,8 +1002,20 @@ class Chain:
                     return
                 for a in inc["attempts"]:
                     if a.get("sid") == run.sid:
-                        a.update(ended=time.time(), ok=ok, summary=summary)
+                        a.update(ended=time.time(), ok=ok, summary=summary, outcome=result["outcome"],
+                                 note=result["note"])
                 self.save()
+        if entry["kind"] == "review":
+            if rv:
+                verdict = {"done": "safe to merge", "blocked": "do not merge yet", "needs-you": "needs your decision",
+                           "failed": "the review did not finish"}[result["outcome"]]
+                note = rv.get("note") or ""
+                self.office.ledger.add("guild", "%s %s reviewed %s: %s%s" % (
+                    handoff.ICON[result["outcome"]], rv["reviewer"], rv["url"], verdict, (" - " + note[:200]) if note else ""),
+                    by=rv["reviewer"], sid=run.sid)
+                self.office.notify("PR review: %s" % verdict, "%s · %s" % (rv["url"].split("github.com/")[-1], note[:140]),
+                                   tag="review-" + run.sid[:8], url="/#s=" + run.sid)
+            return
         if entry["kind"] == "round":
             if failed_ops:
                 self._ceo_takeover("their round ended with an error: %s" % (summary[:200] or "no report"))
@@ -840,10 +1025,18 @@ class Chain:
         i = self.intern(inc["intern"])
         if not i:
             return
+        stated = result
         result = self.check(i)
         if result["ok"]:
             self.resolve(inc["id"], "fixed by %s" % next((a["who"] for a in inc["attempts"] if a.get("sid") == run.sid), "the guild"),
                          by=next((a["who"] for a in inc["attempts"] if a.get("sid") == run.sid), "guild"))
+        elif stated["outcome"] == "needs-you":
+            # a decision only bojjifomo can make: climbing to the CEO would only spend Opus time on it
+            with self.lock:
+                inc["reasons"] = result["reasons"]
+                inc["level"], inc["status"] = "you", "needs-you"
+                self.save()
+            self._to_you(inc, stated["note"] or "they need your decision")
         else:
             with self.lock:
                 inc["reasons"] = result["reasons"]
@@ -858,8 +1051,8 @@ class Chain:
     def configure(self, changes):
         with self.lock:
             for key, value in changes.items():
-                if key == "auto":
-                    self.settings["auto"] = bool(value)
+                if key in ("auto", "auto_review"):
+                    self.settings[key] = bool(value)
                 elif key == "allowed_models":
                     picked = [m for m in MODEL_CHOICES if isinstance(value, (list, tuple)) and m in value]
                     if not picked:
@@ -901,6 +1094,7 @@ class Chain:
                 "open": sum(1 for x in self.incidents if x["status"] != "resolved"),
                 "needs_you": sum(1 for x in self.incidents if x["status"] == "needs-you"),
                 "dispatched": self.dispatched, "guard": self.guard_view(),
+                "reviews": list(reversed(self.reviews[-10:])), "start": self.start_steps(),
             }
 
     def guard_view(self):

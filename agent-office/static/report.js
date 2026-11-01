@@ -46,12 +46,28 @@ function ideaHTML(i) {
     `<p>${esc(i.detail)}</p><p class="sub">Saves about ${money(i.saving)} a week.</p>${button}</article>`;
 }
 
+function scorecardHTML(sc) {
+  const i = sc.incidents;
+  const rows = sc.people.map((p) =>
+    `<tr><td><b>${esc(p.name)}</b><small>${esc(p.model)}${p.seat ? " · " + esc(p.seat) : ""}</small></td>` +
+    `<td>${p.runs}</td><td class="${p.done_pct < 70 ? "low" : ""}">${p.done_pct}%</td>` +
+    `<td>${p.avg_cost == null ? "–" : money(p.avg_cost)}</td><td>${p.avg_minutes == null ? "–" : p.avg_minutes + "m"}</td>` +
+    `<td>${Object.entries(p.outcomes).filter(([o]) => o !== "done").map(([o, n]) => `${{ blocked: "⛔", "needs-you": "🙋", failed: "❌" }[o] || o} ${n}`).join(" ") || ""}</td></tr>`).join("");
+  return `<section class="panel-sec"><h3>Scorecard · ${sc.days} days</h3>` +
+    (rows ? `<div class="score-wrap"><table class="score"><thead><tr><th>Who</th><th>Runs</th><th>Done</th><th>Avg $</th><th>Avg time</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<p class="sub">No guild runs in this window yet.</p>`) +
+    `<p class="sub">Incidents: ${i.opened} opened, ${i.fixed} fixed${i.median_minutes != null ? ` (median ${i.median_minutes} min)` : ""}, ${i.reached_you} reached you.` +
+    ` Reviews: ${sc.reviews.count} (${sc.reviews.safe} safe, ${sc.reviews.blocked} blocked).</p>` +
+    `<p class="hint">Done counts the RESULT line each run ends with. Under 70% done is worth a look: clearer briefs, or a stronger model.</p></section>`;
+}
+
 Hooks.panels.report = {
   title: "Where the gold goes",
   subtitle: "Usage by person, kind of work, model and project, and what could run cheaper.",
   icon: '<span class="panel-icon">📊</span>',
   async render(body) {
-    const [r, c] = await Promise.all([api("/api/usage/report?days=7"), api("/api/chain").catch(() => null)]);
+    const [r, c, sc] = await Promise.all([api("/api/usage/report?days=7"), api("/api/chain").catch(() => null),
+      api("/api/chain/scorecard?days=7").catch(() => null)]);
     MD.reset();
     const topActor = Math.max(...r.actors.map((a) => a.cost), 0.0001);
     const kinds = r.kinds.map((k) => ({ cost: k.cost, share: k.share, cls: k.kind, label: KIND_NAME[k.kind] }));
@@ -71,6 +87,7 @@ Hooks.panels.report = {
       `<p class="sub">Opus seats: ${esc(r.seats.used)} of ${esc(r.seats.max)} in use.</p></section>` +
       (r.ideas.length ? `<section class="panel-sec"><h3>You could save about ${money(r.potential)} a week</h3>${r.ideas.map(ideaHTML).join("")}</section>` : "") +
       `<section class="panel-sec"><h3>Biggest spenders</h3>${r.actors.length ? r.actors.map((a) => actorHTML(a, topActor)).join("") : '<p class="loading">No usage in this window.</p>'}</section>` +
+      (sc ? scorecardHTML(sc) : "") +
       (r.projects.length ? `<section class="panel-sec"><h3>By project</h3><div class="rows">` + r.projects.map((p) =>
         `<div class="row"><span class="k">${esc(p.name)}</span>${bar(p.cost / topProject)}<span class="v">${money(p.cost)}</span></div>`).join("") + `</div></section>` : "") +
       (ceo ? `<section class="panel-sec"><h3>The CEO's budget review</h3>` +

@@ -35,7 +35,8 @@ TOOLS = (
 REPORT = (
     "## How you end every run\n\n"
     "A short report, three parts: what you found, what you did, what is left (and who has to do it). "
-    "If something needs bojjifomo, say exactly what to do, step by step.\n")
+    "If something needs bojjifomo, say exactly what to do, step by step. The very last line is the RESULT line "
+    "(done / blocked / needs you) that every brief asks for.\n")
 
 PRESETS = {
     "ceo": {
@@ -178,7 +179,8 @@ WARDENS = {
     },
 }
 
-ORDER = ("ceo", "ops", "innovator")
+ORDER = ("ceo", "ops", "innovator", "reviewer")
+PRESETS["reviewer"] = WARDENS["thorne"]   # the same person: a warden who also reviews every pull request
 
 # ---- what each person needs to know about the actual work -----------------------------------------------
 

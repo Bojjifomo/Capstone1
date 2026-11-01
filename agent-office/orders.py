@@ -3,6 +3,8 @@
   @Name <message>        to one person: a guild member gets it as an errand, a quest gets it as your next message
   <message>              to the Operations Manager, who does it or hands it out (the CEO if ops is vacant)
   /check <intern>        check one program now
+  /fix <intern> <what>   a structured fix brief for that program's warden (ops when it has none)
+  /review <PR link>      the Reviewer reads a pull request and gives a verdict
   /round ops|innovator|ceo|budget
   /status                the situation report, in the chat
   /help                  this list
@@ -15,7 +17,21 @@ import chain as chain_mod
 
 HELP = ("@Name pesan → ke satu orang (anggota guild dapat errand, quest dapat pesan berikutnya). "
         "Tanpa @ → ke Operations Manager, dia yang kerjain atau bagi-bagi. "
+        "/fix <program> <masalah> → warden program itu · /review <link PR> → Reviewer kasih vonis · "
         "/check <program> · /round ops|innovator|ceo|budget · /status · /help")
+
+FIX_BRIEF = """bojjifomo asked for a fix on "{name}" (a program in the guild).
+
+What bojjifomo wrote: {what}
+
+Program folder: {project}
+Checks: {checks}
+Health right now: {health}
+
+Goal: make what bojjifomo describes true, with the smallest safe change.
+Context: read the program's README and your RUNBOOK.md first. Code changes go on a new branch with a pull request.
+Done when: the change works, the program's tests pass, and `{cli} check "{name}"` is healthy.
+Your answer: what was wrong, what you changed (with the pull request link if any), how you checked it."""
 
 OPS_BRIEF = """bojjifomo just wrote this in the guild chat:
 
@@ -64,6 +80,19 @@ def find_target(office, key):
     raise OrderError("Nobody in town is called %s. Try @ and a name from the list." % key)
 
 
+def split_intern(office, rest):
+    """'/fix LP Call Bot heartbeat stale' -> the longest intern name at the start, and the rest."""
+    words = rest.split()
+    for n in range(len(words), 0, -1):
+        if office.chain.intern(" ".join(words[:n])):
+            what = " ".join(words[n:]).strip()
+            if not what:
+                raise OrderError("What should be fixed? /fix <program> <what is wrong>")
+            return " ".join(words[:n]), what
+    names = ", ".join(i["name"] for i in office.chain.interns) or "none yet"
+    raise OrderError("Which program? Interns: %s" % names)
+
+
 def handle(office, text, default_mode="acceptEdits"):
     text = " ".join(str(text).split()) if "\n" not in str(text) else str(text).strip()
     if not text:
@@ -84,6 +113,27 @@ def handle(office, text, default_mode="acceptEdits"):
                 raise OrderError("Which program? /check <name>")
             r = office.chain.check_now(rest)
             return {"reply": "%s: %s" % (rest, "sehat" if r["ok"] else "DOWN: " + "; ".join(r["reasons"])), "by": "Chain"}
+        if cmd == "review":
+            r = office.chain.request_review(rest, by="bojjifomo")
+            office.ledger.add("order", "/review " + rest, by="bojjifomo", sid=r["sid"])
+            office.chat_runs[r["sid"]] = r["who"]
+            return {"to": r["who"], "sid": r["sid"], "run": r.get("run")}
+        if cmd == "fix":
+            name, what = split_intern(office, rest)
+            intern = office.chain.intern(name)
+            who = office.chain.member(intern.get("warden")) or office.chain.holder("ops") or office.chain.holder("ceo")
+            if not who:
+                raise OrderError("%s has no warden and nobody runs operations yet. Pick a warden in ⚜️ Chain." % intern["name"])
+            health = office.chain.health.get(intern["id"])
+            brief = FIX_BRIEF.format(name=intern["name"], what=what, project=intern["project"],
+                                     checks=office.chain.checks_text(intern), cli=cli,
+                                     health="unchecked" if not health else ("healthy" if health["ok"] else "DOWN: " + "; ".join(health["reasons"])))
+            result = office.team.ask(who["id"], brief, origin="chat", mode=chain_mod.MODE, add_dirs=[intern["project"]])
+            if result.get("queued_for_gold"):
+                return {"to": who["name"], "held": True}
+            office.chat_runs[result["sid"]] = who["name"]
+            office.ledger.add("order", "/fix %s → %s: %s" % (intern["name"], who["name"], what[:240]), by="bojjifomo", sid=result["sid"])
+            return {"to": who["name"], "sid": result["sid"], "run": result.get("run")}
         if cmd == "round":
             if rest not in ("ops", "innovator", "ceo", "budget"):
                 raise OrderError("/round ops, innovator, ceo or budget")
