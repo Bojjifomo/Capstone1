@@ -106,11 +106,40 @@ Tailscale sends public Funnel requests to the same MagicDNS name as Serve, and m
 | Read | `GET /api/state`, `/api/petitions`, `/api/team`, `/api/team/who`, `/api/ledger`, `/api/usage`, `/api/bots`, `/api/orchestrator` (Quill's last brief) |
 | Write | `POST /api/petitions` (new petition), `POST /api/petitions/<id>/decide` (approve or reject, with a note), `POST /api/team/ask` (not Quill), `POST /api/job` (a new quest, including `"pm": true`), `POST /api/ledger` (`kind` `guild` or `chatter`, `text`, `by`) |
 
+| Hub (read-only) | `GET /api/hub` (what Grokbot can reach), `/api/hub/status` (programs, LP Call Bot, Quill's brief at a glance), `/api/lp/<tool>`, `/api/lpbot`, `/api/chain/situation`, `/api/chain/scorecard` |
+
 Anything else, including session send, hiring, launchd, cleaners, seals, push, starting Quill's brief (`POST /api/orchestrator/brief` or `ask` of Quill), and the static page, is 403. `decide` with `"build": true` is 403 as well; building a petition stays on the phone. A risky quest mode still needs a phone seal.
 
 Every accepted token call is a ledger line `kind: external` with `origin` set (default `grokbot`), and that same origin is stamped on the action itself (the quest, the petition, the errand). The town chat has an **External** tab for these lines; `chatter` also shows under Chatter and `guild` under Guild.
 
 A missing or wrong token on a Funnel request or an `external_hosts` name is 401. The failure is written to the server log without the token. After 8 failures from the same client within 10 minutes the answer is 429. Funnel connects from 127.0.0.1 and sets `X-Forwarded-For` to the public client; that address is what the limit counts. A correct token clears the count. A wrong token on localhost is also 401, so a mismatched `AGENT_OFFICE_TOKEN` fails closed. A correct token on localhost does not open the allowlist and does not skip the Origin check.
+
+### One door for Grokbot: the hub
+
+`gateway.py` puts the rest of Capstone1 behind the same token, read-only, so Grokbot talks to one URL:
+
+| Route | What it returns |
+| --- | --- |
+| `GET /api/hub` | Which pieces are on this Mac (Wallet Finder, LP Call Bot, orchestrator, Chain) and every route Grokbot may call |
+| `GET /api/hub/status` | Program health and open incidents, LP Call Bot alive + open positions, Quill's last brief |
+| `GET /api/lp/status` | Wallet Finder sync / ranking / RPC state |
+| `GET /api/lp/top?n=20&kind=multiday&real=1&last_24h=1` | Top wallets |
+| `GET /api/lp/wallet?wallet=0x…&positions=30` | One wallet and its positions |
+| `GET /api/lp/twin?wallet=0x…&n=15` | Wallets with the closest LP style |
+| `GET /api/lp/pools?n=20&sort=blend&min_mcap=500000&min_tvl=5000&quote=USDG` | Best fee per $ liquidity |
+| `GET /api/lp/pool-results?days=7&sort=fee_apr` | What LPs really kept per pool |
+| `GET /api/lp/smart-lp?n=30` · `GET /api/lp/web-check` | Smart LP Finder next to our scores · the live web snapshot |
+| `GET /api/lpbot` | LP Call Bot heartbeat, open positions (the calls followers already got), follower count |
+
+Each `/api/lp/*` call runs `rh_wallet_finder/finder.py … --json` and returns `{ok, data, cached}` (`text` when the output is not JSON). Answers are cached for 90 seconds, at most two run at once, and finder.py never sees the token. Sync, score, import and publish are not on the hub; they stay with the orchestrator on the Mac. Follower chat ids never leave the Mac.
+
+Where things are: `orchestrator_root` (empty = the folder above agent-office), `wallet_finder_dir` (empty = `<orchestrator_root>/rh_wallet_finder`), `lp_call_bot_dir` (empty = `~/Projects/lp_call_bot`, then the repo copy). The Wallet Finder data must already be synced on this Mac.
+
+From Grokbot:
+
+```sh
+curl -sS "https://<mac>.<tailnet>.ts.net/api/lp/pools?n=5" -H "Authorization: Bearer $AGENT_OFFICE_TOKEN"
+```
 
 ## Giving orders from the town
 

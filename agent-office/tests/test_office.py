@@ -45,7 +45,21 @@ class ServerCase(unittest.TestCase):
 
     @classmethod
     def write_config(cls, app):
+        finder = cls.tmp / "rh_wallet_finder"
+        finder.mkdir(exist_ok=True)
+        (finder / "finder.py").write_text(
+            "import json, os, sys\n"
+            "if sys.argv[1:2] == ['twin']:\n    print('not json'); sys.exit(2)\n"
+            "print(json.dumps({'argv': sys.argv[1:], 'token_seen': 'AGENT_OFFICE_TOKEN' in os.environ}))\n")
+        bot = cls.tmp / "lp_call_bot"
+        bot.mkdir(exist_ok=True)
+        (bot / "bot.py").write_text("")
+        (bot / "heartbeat").write_text("")
+        (bot / "state.json").write_text(json.dumps({"subscribers": [111, 222], "offset": 9, "positions": {
+            "hydx": {"coin": "hydx", "ca": "0x" + "a" * 40, "fee": "2.5%", "range": "-65", "status": "open", "updated": 2},
+            "dark": {"coin": "dark", "ca": "0x" + "b" * 40, "fee": "3%", "range": "-60", "status": "closed", "updated": 1}}}))
         (app / "config.json").write_text(json.dumps({
+            "wallet_finder_dir": str(finder), "lp_call_bot_dir": str(bot),
             "bind": ["127.0.0.1"], "port": PORT, "claude_bin": str(app / "tests" / "fake_claude.py"),
             "project_roots": [str(cls.home / "Projects")], "agents_dir": str(cls.home / "Agents"),
             "launchctl_bin": str(cls.home / "bin" / "launchctl"),
@@ -785,6 +799,43 @@ class ExternalAccess(ServerCase):
         self.assertTrue(job)
         self.assertEqual(job[0]["origin"], "grokbot")
         self.assertTrue(job[0]["pm"])
+
+    def test_hub_reaches_the_rest_of_capstone(self):
+        status, hub = self.call("GET", "/api/hub")
+        self.assertEqual(status, 200, hub)
+        self.assertTrue(hub["pieces"]["wallet_finder"])
+        self.assertTrue(hub["pieces"]["lp_call_bot"])
+        self.assertIn("pools", hub["lp_tools"])
+        status, top = self.call("GET", "/api/lp/top?n=5&kind=degen&real=1")
+        self.assertEqual(status, 200, top)
+        self.assertEqual(top["data"]["argv"], ["top", "--json", "-n", "5", "--kind", "degen", "--real"])
+        self.assertFalse(top["data"]["token_seen"])  # finder.py never sees the token
+        self.assertFalse(top["cached"])
+        self.assertTrue(self.call("GET", "/api/lp/top?n=5&kind=degen&real=1")[1]["cached"])
+        wallet = "0x" + "C" * 40
+        status, w = self.call("GET", "/api/lp/wallet?wallet=" + wallet)
+        self.assertEqual(status, 200, w)
+        self.assertEqual(w["data"]["argv"][:2], ["check", wallet.lower()])
+        self.assertEqual(self.call("GET", "/api/lp/wallet?wallet=0x12")[0], 400)
+        self.assertEqual(self.call("GET", "/api/lp/top?n=999")[0], 400)
+        self.assertEqual(self.call("GET", "/api/lp/pools?sort=evil")[0], 400)
+        self.assertEqual(self.call("GET", "/api/lp/sync")[0], 404)  # write tools are not here at all
+        failed = self.call("GET", "/api/lp/twin?wallet=" + wallet)[1]
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["text"], "not json")
+        status, bot = self.call("GET", "/api/lpbot")
+        self.assertEqual(status, 200, bot)
+        self.assertTrue(bot["alive"])
+        self.assertEqual(bot["followers"], 2)
+        self.assertEqual([p["coin"] for p in bot["open_positions"]], ["hydx"])
+        self.assertNotIn("111", json.dumps(bot))  # follower chat ids stay on the Mac
+        status, glance = self.call("GET", "/api/hub/status")
+        self.assertEqual(status, 200, glance)
+        self.assertIn("situation", glance["chain"])
+        self.assertEqual(glance["lpbot"]["followers"], 2)
+        self.assertEqual(self.call("GET", "/api/chain/situation")[0], 200)
+        self.assertEqual(self.call("GET", "/api/chain")[0], 403)  # the full chain view stays local
+        self.assertEqual(self.call("GET", "/api/lp/top", token="wrong")[0], 401)
 
     def test_failed_tokens_back_off(self):
         import server
