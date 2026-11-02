@@ -443,6 +443,7 @@ async function postQuest(form) {
   const body = {
     project: form.project.value, text: form.text.value.trim(), mode: form.mode.value, model: form.model.value,
     pm: form.pm ? form.pm.checked : false,
+    eco: !!(form.eco && form.eco.checked),
     override: !!(form.override && form.override.checked),
   };
   if (!body.text) return;
@@ -452,7 +453,7 @@ async function postQuest(form) {
   history.replaceState({ sheet: r.sid }, "");
   openSheet(r.sid, false);
   followRun(r.run);
-  toast("Quest posted.");
+  toast(body.eco ? "Quest posted in eco mode: Opus plans and reviews, helpers do the work." : "Quest posted.");
 }
 
 Hooks.panels.settings = {

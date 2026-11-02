@@ -39,13 +39,19 @@ function modelPicker(d) {
     `</select>` + (d.model && (d.staff || d.model_pref) ? `<small class="pf-now">now: ${esc(d.model)}</small>` : "");
 }
 
+function ecoButton(d) {
+  if (d.staff) return "";
+  return `<button type="button" class="btn eco-btn${d.eco ? " on" : ""}" data-act="eco" aria-pressed="${d.eco ? "true" : "false"}">` +
+    `🌿 ${d.eco ? "On: Opus plans, helpers work" : "Off"}</button>`;
+}
+
 Hooks.sheetTop = (d) => {
   if (!d.persona) return "";
   const pay = d.pay || {};
   const summary = PROFILE.summaries[d.id];
   const rows = [
     ["Quest", d.name], ["Started as", d.started_as], ["Division", divisionPicker(d), true], ["Project", d.project],
-    ["Branch", d.branch], ["Model", modelPicker(d), true], ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)],
+    ["Branch", d.branch], ["Model", modelPicker(d), true], ["Eco mode", ecoButton(d), true], ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)],
     ["Pay 30 days", money(pay.month)], ["Last activity", ago(d.active)], ["Last tool", d.last_tool], ["Folder", d.folder],
   ];
   const last = d.messages && [...d.messages].reverse().find((m) => m.role === "assistant" && m.text);
@@ -77,6 +83,11 @@ function refreshFoot(d) {
 }
 
 Object.assign(ACTIONS, {
+  async eco(d) {
+    const r = await api(`/api/session/${d.id}/eco`, { on: !d.eco });
+    toast(r.eco ? `Eco mode on: ${MODEL_NAMES[r.lead] || r.lead} plans and reviews, Sonnet and Haiku do the work.` : "Eco mode off.");
+    if (UI.open === d.id) loadDetail(false);
+  },
   async summarize(d) {
     PROFILE.busy["s" + d.id] = true;
     renderSheet(d, false);

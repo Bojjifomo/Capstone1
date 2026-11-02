@@ -9,6 +9,7 @@ from pathlib import Path
 
 import briefing
 import chain
+import eco
 import economy
 import gateway
 import grok
@@ -68,6 +69,7 @@ class Office:
         self.archived = store.load("archived.json", {})
         self.assigned = store.load("assignments.json", {})  # sid -> division
         self.model_prefs = store.load("models.json", {})    # sid -> model for messages sent from here
+        self.eco = eco.Eco()                                # quests whose Opus lead only plans and reviews
         self.chat_runs = {}                                 # sid -> who, for runs started from the guild chat
         self.flags = {}  # sid -> (ts, message), from the Notification hook; memory only
         self.agents_dir = str(Path(cfg.get("agents_dir", "~/Agents")).expanduser())
@@ -163,6 +165,7 @@ class Office:
             info["staff"] = self.team.staff_for_session(t)
         info["division"] = self.assigned.get(t.id, "")
         info["model_pref"] = self.model_prefs.get(t.id, "")
+        info["eco"] = self.eco.has(t.id)
         info["pay"] = t.pay()
         info["last_tool"] = t.last_tool
         info["started_as"] = STARTED_AS.get(t.started_as, t.started_as or "Terminal")
@@ -287,6 +290,21 @@ class Office:
                 self.model_prefs.pop(sid, None)
             store.save("models.json", self.model_prefs)
 
+    def eco_prompt(self):
+        return eco.prompt(self.chain.cli, self.chain.allowed(), self.chain.pick_model(eco.LEAD))
+
+    def eco_run(self, sid, model):
+        """The model and appended prompt for the next run of a quest: eco quests always get the lead and the rules."""
+        if not self.eco.has(sid):
+            return model, ""
+        return self.chain.pick_model(eco.LEAD), self.eco_prompt()
+
+    def set_eco(self, sid, on):
+        if on and not self.transcript(sid):
+            raise Refused("no such session")
+        self.eco.set(sid, bool(on))
+        return {"eco": self.eco.has(sid), "lead": self.chain.pick_model(eco.LEAD)}
+
     def send(self, sid, text, mode, model="", code_id="", code="", now_please=False):
         if model == "grok":
             raise Refused("a Claude Code quest cannot switch to Grok; give the errand to a Grok guild member")
@@ -306,7 +324,8 @@ class Office:
         status, _ = self.status(t, live, time.time())
         if self.runner.active(sid) or (status == "working" and not now_please):
             return {"queued": self.runner.enqueue(sid, text, mode, model)}
-        run = self.runner.start(sid, t.cwd, text, mode, model=model)
+        model, system = self.eco_run(sid, model)
+        run = self.runner.start(sid, t.cwd, text, mode, model=model, system=system)
         return {"run": run.id}
 
     def send_now(self, sid, qid):
@@ -321,7 +340,8 @@ class Office:
         if live and live.get("desktop"):
             self.runner.put_back(sid, item)
             raise Refused("open in the Claude app", desktop=True)
-        run = self.runner.start(sid, t.cwd, item["text"], item["mode"], model=item.get("model", ""))
+        model, system = self.eco_run(sid, item.get("model", ""))
+        run = self.runner.start(sid, t.cwd, item["text"], item["mode"], model=model, system=system)
         return {"run": run.id}
 
     def projects(self):
@@ -352,8 +372,10 @@ class Office:
         raise Refused("unknown project folder")
 
     def new_job(self, pid, text, mode, model="", code_id="", code="", system="", helper=False, origin="phone",
-                external=False, override=False, from_queue=False, add_dirs=()):
+                external=False, override=False, from_queue=False, add_dirs=(), eco_mode=False):
         text = str(text).strip()
+        if eco_mode:
+            model, system = self.chain.pick_model(eco.LEAD), self.eco_prompt()
         self.check_offered(model)
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write the first message (up to %d characters)" % runner.MAX_TEXT)
@@ -362,13 +384,15 @@ class Office:
             self.check_mode(mode, "bypass:new", code_id, code)
             held = self.economy.consider(external, override, "job", text[:80], {
                 "project": pid, "text": text, "mode": mode, "model": model, "system": system,
-                "helper": bool(helper), "origin": origin, "add_dirs": list(add_dirs or ()),
+                "helper": bool(helper), "origin": origin, "add_dirs": list(add_dirs or ()), "eco": bool(eco_mode),
             })
             if held:
                 if held.get("blocked"):
                     raise Refused("the treasury is empty", paused=True)
                 return held
         sid = str(uuid.uuid4())
+        if eco_mode:
+            self.eco.set(sid, True)
         run = self.runner.start(sid, path, text, mode, new=True, model=model, system=system,
                                 origin=origin, helper=helper, add_dirs=add_dirs)
         if system:
@@ -386,7 +410,7 @@ class Office:
         return self.new_job(payload.get("project") or "", payload.get("text") or "", payload.get("mode") or "acceptEdits",
                             model=payload.get("model") or "", system=payload.get("system") or "",
                             helper=bool(payload.get("helper")), origin=payload.get("origin") or "queue",
-                            from_queue=True, add_dirs=payload.get("add_dirs") or ())
+                            from_queue=True, add_dirs=payload.get("add_dirs") or (), eco_mode=bool(payload.get("eco")))
 
     def pump(self):
         """Start queued messages for sessions that have gone quiet."""
@@ -404,7 +428,8 @@ class Office:
                 continue
             item = self.runner.take(sid)
             try:
-                self.runner.start(sid, t.cwd, item["text"], item["mode"], model=item.get("model", ""))
+                model, system = self.eco_run(sid, item.get("model", ""))
+                self.runner.start(sid, t.cwd, item["text"], item["mode"], model=model, system=system)
             except Exception:
                 self.runner.put_back(sid, item)
 
