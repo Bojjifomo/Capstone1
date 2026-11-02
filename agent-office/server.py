@@ -23,6 +23,8 @@ sys.path.insert(0, str(HERE))
 
 import chain  # noqa: E402
 import core  # noqa: E402
+import gateway  # noqa: E402
+import grok  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
@@ -54,7 +56,14 @@ DEFAULT_CONFIG = {
     "petition_expire_days": 14,     # pending petitions older than this expire; 0 disables
     "pr_poll_seconds": 300,         # how often to ask GitHub about open petition PRs; 0 disables
     "orchestrator_name": "Quill",
-    "orchestrator_root": "",        # repo that contains orchestrator/; empty = sibling of agent-office
+    "orchestrator_root": "",
+    "wallet_finder_dir": "",        # empty = <orchestrator_root>/rh_wallet_finder
+    "lp_call_bot_dir": "",          # empty = ~/Projects/lp_call_bot, then the repo copy
+    "xai_api_key": "",              # prefer XAI_API_KEY in the environment; never commit a real key
+    "grok_model": "grok-4",         # the xAI model Grok members run on
+    "grok_price_in": 3.0,           # $ per million input tokens, for the treasury
+    "grok_price_out": 15.0,         # $ per million output tokens
+    "grok_max_steps": 24,           # tool calls per Grok run before it must answer        # repo that contains orchestrator/; empty = sibling of agent-office
     "orchestrator_timeout": 600,
     "daily_budget_usd": 0,          # 0 = gold is not rationed; set a budget to pause quests when it is spent
     "daily_gold": 100,              # the full purse that budget maps onto
@@ -182,6 +191,7 @@ class App:
         self.version = compute_version()
         cfg["_dev"] = dev
         self.office = core.Office(cfg)
+        self.gateway = self.office.gateway
         self.hosts = set()
         self.external_hosts = set()
         self.token = configured_token(cfg)
@@ -274,7 +284,8 @@ def text_field(body, key, limit=200):
 @route("GET", "/api/options")
 def api_options(req, m):
     return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES),
-            "models": [m for m in runner.MODELS if not m or m in APP.office.chain.allowed()],
+            "models": [m for m in runner.MODELS if not m or m in APP.office.offered_models()],
+            "grok": {"on": bool(APP.office.grok), "model": grok.model_name(APP.cfg)},
             "default_mode": APP.cfg.get("default_mode", "acceptEdits"), "claude": bool(runner.find_claude(APP.cfg))}
 
 
@@ -816,6 +827,47 @@ def api_chain_resolve(req, m):
     return {"incident": APP.office.chain.public_incident(inc)}
 
 
+# ---- the hub: Grokbot's one door to the rest of Capstone1 (gateway.py) -------------
+
+@route("GET", "/api/hub")
+def api_hub(req, m):
+    return APP.gateway.manifest(APP.office.chain)
+
+
+@route("GET", "/api/hub/status")
+def api_hub_status(req, m):
+    """Everything at a glance: town, programs, LP Call Bot, Quill's last brief."""
+    out = {"chain": APP.gateway.chain_summary(APP.office.chain)}
+    try:
+        out["lpbot"] = APP.gateway.lpbot()
+    except LookupError as e:
+        out["lpbot"] = {"missing": str(e)}
+    brief = APP.office.briefing.public()
+    out["brief"] = {k: brief.get(k) for k in ("name", "ended", "ok", "error")}
+    out["brief"]["text"] = (brief.get("text") or "")[:4000]
+    return out
+
+
+@route("GET", r"/api/lp/(?P<tool>[a-z-]{2,20})")
+def api_lp(req, m):
+    try:
+        return APP.gateway.lp(m.group("tool"), req.query)
+    except gateway.GatewayError as e:
+        raise HttpError(400, str(e))
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+
+
+@route("GET", "/api/lpbot")
+def api_lpbot(req, m):
+    try:
+        return APP.gateway.lpbot()
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+
+
 @route("GET", "/api/orchestrator")
 def api_orchestrator(req, m):
     """Quill's latest read-only brief. Starting one is local-only."""
@@ -1012,6 +1064,12 @@ TOKEN_ROUTES = (
     ("GET", re.compile(r"^/api/gold$")),
     ("GET", re.compile(r"^/api/weather$")),
     ("GET", re.compile(r"^/api/raids$")),
+    ("GET", re.compile(r"^/api/hub$")),
+    ("GET", re.compile(r"^/api/hub/status$")),
+    ("GET", re.compile(r"^/api/lp/[a-z-]{2,20}$")),
+    ("GET", re.compile(r"^/api/lpbot$")),
+    ("GET", re.compile(r"^/api/chain/situation$")),
+    ("GET", re.compile(r"^/api/chain/scorecard$")),
     ("POST", re.compile(r"^/api/petitions$")),
     ("POST", re.compile(r"^/api/petitions/[0-9a-f]{8}/decide$")),
     ("POST", re.compile(r"^/api/team/ask$")),

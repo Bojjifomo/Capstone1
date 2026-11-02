@@ -27,14 +27,14 @@ function divisionPicker(d) {
     [...known].map((x) => `<option${x === d.division ? " selected" : ""}>${esc(x)}</option>`).join("") + `</select>`;
 }
 
-const MODEL_NAMES = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
+const MODEL_NAMES = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku", grok: "Grok" };
 
 function modelPicker(d) {
   const staffModel = d.staff && memberById(d.staff.id) ? memberById(d.staff.id).model : "";
   const current = d.staff ? staffModel : d.model_pref;
   const keep = d.staff ? "" : `<option value="">Same as now${d.model ? " (" + esc(d.model) + ")" : ""}</option>`;
   return `<select class="pf-model" data-session="${esc(d.id)}"${d.staff ? ` data-member="${esc(d.staff.name)}"` : ""} aria-label="Model">` + keep +
-    ["opus", "sonnet", "haiku"].filter((m) => !UI.options || UI.options.models.includes(m) || m === current)
+    ["opus", "sonnet", "haiku", "grok"].filter((m) => (d.staff || m !== "grok") && (!UI.options || UI.options.models.includes(m) || m === current))
       .map((m) => `<option value="${m}"${m === current ? " selected" : ""}>${MODEL_NAMES[m]}</option>`).join("") +
     `</select>` + (d.model && (d.staff || d.model_pref) ? `<small class="pf-now">now: ${esc(d.model)}</small>` : "");
 }

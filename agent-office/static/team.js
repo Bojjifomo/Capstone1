@@ -109,8 +109,8 @@ Hooks.panels.hire = {
       `<label>Division<select name="division"><option value="">Pick from the role</option>` +
       divisions.map((d) => `<option>${esc(d)}</option>`).join("") + `</select>` +
       `<input type="text" name="newdivision" maxlength="40" placeholder="…or name a new division"></label>` +
-      `<label>Model <small>Haiku: checks, lookups, summaries. Sonnet: everyday work. Opus: hard design and bugs (${used} of ${esc(seats)} seats in use).</small>` +
-      `<select name="model">${options(["sonnet", "opus", "haiku"].filter((m) => (o.models || []).includes(m)), W.models, tpl.models.includes("sonnet") ? "sonnet" : tpl.models[0])}</select></label>` +
+      `<label>Model <small>Haiku: checks, lookups, summaries. Sonnet: everyday work. Opus: hard design and bugs (${used} of ${esc(seats)} seats in use). Grok: xAI, runs outside Claude Code.</small>` +
+      `<select name="model">${options(["sonnet", "opus", "haiku", "grok"].filter((m) => (o.models || []).includes(m)), W.models, tpl.models.includes("sonnet") ? "sonnet" : tpl.models[0])}</select></label>` +
       `<label>Instructions <small id="hire-count">0 / 8000</small>` +
       `<textarea name="instructions" rows="14" maxlength="8000" placeholder="Their mission, what they know, the steps they follow, what good looks like, what they never do, and how they report. A template fills this in."></textarea></label>` +
       `<button type="submit" class="btn primary wide">Welcome them to the guild</button></form>`;

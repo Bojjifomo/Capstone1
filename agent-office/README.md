@@ -106,11 +106,40 @@ Tailscale sends public Funnel requests to the same MagicDNS name as Serve, and m
 | Read | `GET /api/state`, `/api/petitions`, `/api/team`, `/api/team/who`, `/api/ledger`, `/api/usage`, `/api/bots`, `/api/orchestrator` (Quill's last brief) |
 | Write | `POST /api/petitions` (new petition), `POST /api/petitions/<id>/decide` (approve or reject, with a note), `POST /api/team/ask` (not Quill), `POST /api/job` (a new quest, including `"pm": true`), `POST /api/ledger` (`kind` `guild` or `chatter`, `text`, `by`) |
 
+| Hub (read-only) | `GET /api/hub` (what Grokbot can reach), `/api/hub/status` (programs, LP Call Bot, Quill's brief at a glance), `/api/lp/<tool>`, `/api/lpbot`, `/api/chain/situation`, `/api/chain/scorecard` |
+
 Anything else, including session send, hiring, launchd, cleaners, seals, push, starting Quill's brief (`POST /api/orchestrator/brief` or `ask` of Quill), and the static page, is 403. `decide` with `"build": true` is 403 as well; building a petition stays on the phone. A risky quest mode still needs a phone seal.
 
 Every accepted token call is a ledger line `kind: external` with `origin` set (default `grokbot`), and that same origin is stamped on the action itself (the quest, the petition, the errand). The town chat has an **External** tab for these lines; `chatter` also shows under Chatter and `guild` under Guild.
 
 A missing or wrong token on a Funnel request or an `external_hosts` name is 401. The failure is written to the server log without the token. After 8 failures from the same client within 10 minutes the answer is 429. Funnel connects from 127.0.0.1 and sets `X-Forwarded-For` to the public client; that address is what the limit counts. A correct token clears the count. A wrong token on localhost is also 401, so a mismatched `AGENT_OFFICE_TOKEN` fails closed. A correct token on localhost does not open the allowlist and does not skip the Origin check.
+
+### One door for Grokbot: the hub
+
+`gateway.py` puts the rest of Capstone1 behind the same token, read-only, so Grokbot talks to one URL:
+
+| Route | What it returns |
+| --- | --- |
+| `GET /api/hub` | Which pieces are on this Mac (Wallet Finder, LP Call Bot, orchestrator, Chain) and every route Grokbot may call |
+| `GET /api/hub/status` | Program health and open incidents, LP Call Bot alive + open positions, Quill's last brief |
+| `GET /api/lp/status` | Wallet Finder sync / ranking / RPC state |
+| `GET /api/lp/top?n=20&kind=multiday&real=1&last_24h=1` | Top wallets |
+| `GET /api/lp/wallet?wallet=0x…&positions=30` | One wallet and its positions |
+| `GET /api/lp/twin?wallet=0x…&n=15` | Wallets with the closest LP style |
+| `GET /api/lp/pools?n=20&sort=blend&min_mcap=500000&min_tvl=5000&quote=USDG` | Best fee per $ liquidity |
+| `GET /api/lp/pool-results?days=7&sort=fee_apr` | What LPs really kept per pool |
+| `GET /api/lp/smart-lp?n=30` · `GET /api/lp/web-check` | Smart LP Finder next to our scores · the live web snapshot |
+| `GET /api/lpbot` | LP Call Bot heartbeat, open positions (the calls followers already got), follower count |
+
+Each `/api/lp/*` call runs `rh_wallet_finder/finder.py … --json` and returns `{ok, data, cached}` (`text` when the output is not JSON). Answers are cached for 90 seconds, at most two run at once, and finder.py never sees the token. Sync, score, import and publish are not on the hub; they stay with the orchestrator on the Mac. Follower chat ids never leave the Mac.
+
+Where things are: `orchestrator_root` (empty = the folder above agent-office), `wallet_finder_dir` (empty = `<orchestrator_root>/rh_wallet_finder`), `lp_call_bot_dir` (empty = `~/Projects/lp_call_bot`, then the repo copy). The Wallet Finder data must already be synced on this Mac.
+
+From Grokbot:
+
+```sh
+curl -sS "https://<mac>.<tailnet>.ts.net/api/lp/pools?n=5" -H "Authorization: Bearer $AGENT_OFFICE_TOKEN"
+```
 
 ## Giving orders from the town
 
@@ -350,10 +379,34 @@ Ranks drive the title in the town: Apprentice at 0 XP, Journeyman at 40, Adept a
 
 Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
 
+## Grok members (xAI)
+
+Set an xAI key and the guild gets a fourth model next to Haiku, Sonnet and Opus:
+
+```sh
+# in the server's environment (the launchd plist), or "xai_api_key" in config.json
+export XAI_API_KEY=xai-…
+launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office
+```
+
+* **Grokbot** joins the guild on the first start with a key (Counting House). Talk to it in the town chat: `@Grokbot pool mana yang fee-nya paling gede?` Its answer comes back in the chat like any errand. It remembers the last 20 exchanges (`grok_memory.json`).
+* **Hire your own Grok agents.** Pick *Grok* as the model when hiring, or move someone with the profile's model picker or `office model <name> grok`. A new quest can also start on Grok. A Claude Code quest that already exists cannot switch to Grok.
+* **How it runs.** Claude Code cannot drive a Grok model, so `grok.py` runs its own tool loop on `https://api.x.ai/v1/chat/completions`. The run streams to the phone, the chat gets the final answer, and the cost counts toward the treasury (`grok_spend.json`, priced by `grok_price_in` / `grok_price_out` per million tokens).
+* **What it may do follows the permission mode:**
+
+  | Mode | Tools |
+  | --- | --- |
+  | `plan`, `manual` | Hub (`/api/lp/*` tools, LP Call Bot, Chain), list / read / search files |
+  | `acceptEdits` (the default for guild members) | + write and edit files |
+  | `auto`, `dontAsk`, `bypassPermissions` (Chain rounds and `/fix` use `auto`) | + run commands |
+
+  Files and commands stay inside the member's folder plus the folders a brief adds (a warden's program). Paths are resolved first, so `..` and symlinks cannot leave those folders. `.env`, keys and `config.json` are never read. Commands run without a shell, with a 120-second limit. `sudo`, `curl`, `ssh`, `launchctl`, force pushes and `rm -rf /` are refused. `XAI_API_KEY`, `AGENT_OFFICE_TOKEN` and `ANTHROPIC_API_KEY` are removed from a command's environment.
+* Settings: `grok_model` (default `grok-4`), `grok_max_steps` (24 tool rounds per run), `xai_base_url`.
+
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`petitions.json` · `chain.json` · `models.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `chain.json` · `models.json` · `assignments.json` · `orchestrator.json` · `grok_memory.json` · `grok_spend.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 
