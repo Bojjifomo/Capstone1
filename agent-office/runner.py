@@ -19,7 +19,7 @@ import store
 
 MODES = ("acceptEdits", "auto", "plan", "manual", "dontAsk", "bypassPermissions")
 RISKY_MODES = {"bypassPermissions"}
-MODELS = {"": None, "opus": "opus", "sonnet": "sonnet", "haiku": "haiku"}
+MODELS = {"": None, "opus": "opus", "sonnet": "sonnet", "haiku": "haiku", "grok": None}  # grok runs on grok.Engine
 MAX_TEXT = 20000
 KEEP_RUNS = 60
 
@@ -90,6 +90,7 @@ class Runner:
         self.queues = store.load("queue.json", {})
         self.helpers = set(store.load("helpers.json", []))
         self.lock = threading.RLock()
+        self.grok = None  # grok.Engine, set by the office when an xAI key is configured
 
     # ---- queue ----------------------------------------------------------
     def queue_of(self, sid):
@@ -147,6 +148,8 @@ class Runner:
             store.save("helpers.json", sorted(self.helpers)[-500:])
 
     def start(self, sid, cwd, text, mode, new=False, model="", system="", origin="phone", helper=False, add_dirs=()):
+        if model == "grok":
+            return self._start_grok(sid, cwd, text, mode, system, origin, helper, add_dirs)
         claude = find_claude(self.cfg)
         if not claude:
             raise RuntimeError("claude was not found; set claude_bin in config.json")
@@ -188,6 +191,34 @@ class Runner:
         threading.Thread(target=self._read_stderr, args=(run,), daemon=True).start()
         threading.Thread(target=self._read, args=(run,), daemon=True).start()
         return run
+
+    def _start_grok(self, sid, cwd, text, mode, system, origin, helper, add_dirs):
+        if not self.grok:
+            raise RuntimeError("Grok is off: set XAI_API_KEY (or xai_api_key in config.json) and restart")
+        if mode not in MODES:
+            raise ValueError("unknown permission mode")
+        if not cwd or not os.path.isdir(cwd):
+            raise RuntimeError("the project folder is gone: %s" % cwd)
+        run = Run(sid, cwd, text, mode, origin, helper)
+        run.system = system
+        run.model = "grok"
+        if helper:
+            self.mark_helper(sid)
+        with self.lock:
+            if self.active(sid):
+                raise RuntimeError("this session is already answering")
+            self.runs[run.id] = run
+            self.by_sid[sid] = run.id
+            self._trim()
+        self.grok.start(run, add_dirs, self._finished)
+        return run
+
+    def _finished(self, run):
+        if self.on_finish:
+            try:
+                self.on_finish(run)
+            except Exception:  # a failed notification must not kill the reader
+                pass
 
     def _trim(self):
         done = sorted((r for r in self.runs.values() if r.done), key=lambda r: r.started)
@@ -247,6 +278,10 @@ class Runner:
 
     def stop(self, rid):
         run = self.runs.get(rid)
+        if run and not run.done and getattr(run, "model", "") == "grok":
+            run.cancelled = True
+            run.add("error", "Stopped from the phone.")
+            return True
         if not run or run.done or not run.proc:
             return False
         try:

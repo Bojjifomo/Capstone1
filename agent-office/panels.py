@@ -56,7 +56,9 @@ def usage(office, days=14):
 def cost_today(office):
     key = datetime.now().strftime("%Y-%m-%d")
     with office.scanner.lock:
-        return round(sum(r[4] for t in office.scanner.transcripts.values() for r in t.usage.get(key, {}).values()), 4)
+        claude = sum(r[4] for t in office.scanner.transcripts.values() for r in t.usage.get(key, {}).values())
+    grok = getattr(office, "grok", None)
+    return round(claude + (grok.spent_today() if grok else 0.0), 4)
 
 
 # ---- Familiars: launchd jobs -------------------------------------------------

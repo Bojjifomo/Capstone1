@@ -10,6 +10,8 @@ from pathlib import Path
 import briefing
 import chain
 import economy
+import gateway
+import grok
 import guard
 import handoff
 import panels
@@ -84,6 +86,11 @@ class Office:
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
         self.chain = chain.Chain(self, cli=str(Path(__file__).resolve().parent / "tools" / "office"))
+        self.gateway = gateway.Gateway(cfg)
+        self.grok = grok.Engine(cfg, self) if grok.ready(cfg) else None
+        self.runner.grok = self.grok
+        if self.grok:
+            self.team.ensure_grokbot()
         self.old = {}           # transcripts older than the scan window, loaded on demand
         self.seen = {}          # sid -> (status, working since) for notifications
         self.familiar_seen = {}
@@ -254,12 +261,22 @@ class Office:
                 self.ledger.add("seal", "wrong or expired seal for " + purpose)
             raise Refused("this needs a fresh guild seal from your phone", needs_code=purpose)
 
+    def offered_models(self):
+        """Every model a picker may show: the Claude models the Chain offers, plus grok when an xAI key is set."""
+        return self.chain.allowed() + (["grok"] if self.grok else [])
+
     def check_offered(self, model):
+        if model == "grok":
+            if not self.grok:
+                raise Refused("Grok is off: set XAI_API_KEY (or xai_api_key in config.json) and restart")
+            return
         allowed = self.chain.allowed()
         if model and model in runner.MODELS and model not in allowed:
             raise Refused("%s is not offered right now. Offered: %s" % (model, ", ".join(allowed)))
 
     def set_model_pref(self, sid, model):
+        if model == "grok":
+            raise Refused("a Claude Code quest cannot switch to Grok; give the errand to a Grok guild member")
         if model not in runner.MODELS:
             raise Refused("pick opus, sonnet, haiku, or leave it as it is")
         self.check_offered(model)
@@ -271,6 +288,8 @@ class Office:
             store.save("models.json", self.model_prefs)
 
     def send(self, sid, text, mode, model="", code_id="", code="", now_please=False):
+        if model == "grok":
+            raise Refused("a Claude Code quest cannot switch to Grok; give the errand to a Grok guild member")
         self.check_offered(model)
         pref = self.model_prefs.get(sid, "")
         model = model or (pref if pref in self.chain.allowed() else "")   # a saved choice that is no longer offered is ignored

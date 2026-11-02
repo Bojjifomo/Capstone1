@@ -9,7 +9,7 @@ const W = {
     acceptEdits: "Accept edits", auto: "Auto (guarded)", plan: "Plan only", manual: "Ask first (no prompts here)",
     dontAsk: "Don't ask (deny unknown)", bypassPermissions: "Bypass all (needs seal)",
   },
-  models: { "": "Default model", opus: "Opus: hard problems", sonnet: "Sonnet: everyday", haiku: "Haiku: quick lookups" },
+  models: { "": "Default model", opus: "Opus: hard problems", sonnet: "Sonnet: everyday", haiku: "Haiku: quick lookups", grok: "Grok (xAI): own tool loop" },
   quick: ["Yes, go ahead.", "Continue.", "Commit and push.", "Where are you at? Short summary please."],
 };
 

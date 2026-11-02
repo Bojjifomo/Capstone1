@@ -64,6 +64,12 @@ def title_for(role):
     return DEFAULT_TITLE
 
 
+GROKBOT_INSTRUCTIONS = (
+    "You are bojjifomo's Grok in the guild hall. Chat casually in Indonesian. For anything about LP wallets, "
+    "pools, the LP Call Bot or program health, look it up with the hub tools first and give the numbers. "
+    "Keep answers short; offer detail when it helps.")
+
+
 class Team:
     def __init__(self, office):
         self.office = office
@@ -120,7 +126,7 @@ class Team:
         instructions = str(instructions).strip()[:8000]
         if not role:
             raise ValueError("give the recruit a role")
-        if model not in ("", "opus", "sonnet", "haiku"):
+        if model not in ("", "opus", "sonnet", "haiku", "grok"):
             raise ValueError("unknown model")
         self._offered(model)
         with self.lock:
@@ -161,7 +167,23 @@ class Team:
                 "- Work only inside the folders the brief names.\n") % (
             m["name"], m["title"], m["name"], m["role"], m["instructions"] or "(none yet)")
 
+    def ensure_grokbot(self):
+        """With an xAI key set, the guild has Grokbot: chat with it as @Grokbot. Hired once, then left alone."""
+        if any(s.get("grokbot") for s in self.staff):
+            return None
+        member, _ = self.hire("Grokbot", "Grok assistant: chats with bojjifomo, reads the LP hub, helps with code",
+                              GROKBOT_INSTRUCTIONS, division="The Counting House", model="grok")
+        with self.lock:
+            member["grokbot"] = True
+            member["kind"] = "bard"
+            self.save()
+        return member
+
     def _offered(self, model):
+        if model == "grok":
+            if not getattr(self.office, "grok", None):
+                raise ValueError("Grok is off: set XAI_API_KEY (or xai_api_key in config.json) and restart")
+            return
         chain = getattr(self.office, "chain", None)
         if model and chain and model not in chain.allowed():
             raise ValueError("%s is not offered right now. Offered: %s" % (model, ", ".join(chain.allowed())))
@@ -175,8 +197,8 @@ class Team:
 
     def set_model(self, key, model, by="bojjifomo"):
         """Move a specialist to haiku, sonnet or opus. Opus seats are limited; only bojjifomo changes the CEO's."""
-        if model not in ("haiku", "sonnet", "opus"):
-            raise ValueError("pick haiku, sonnet or opus")
+        if model not in ("haiku", "sonnet", "opus", "grok"):
+            raise ValueError("pick haiku, sonnet, opus or grok")
         self._offered(model)
         with self.lock:
             member = self.find(key)

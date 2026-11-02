@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE))
 import chain  # noqa: E402
 import core  # noqa: E402
 import gateway  # noqa: E402
+import grok  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
@@ -57,7 +58,12 @@ DEFAULT_CONFIG = {
     "orchestrator_name": "Quill",
     "orchestrator_root": "",
     "wallet_finder_dir": "",        # empty = <orchestrator_root>/rh_wallet_finder
-    "lp_call_bot_dir": "",          # empty = ~/Projects/lp_call_bot, then the repo copy        # repo that contains orchestrator/; empty = sibling of agent-office
+    "lp_call_bot_dir": "",          # empty = ~/Projects/lp_call_bot, then the repo copy
+    "xai_api_key": "",              # prefer XAI_API_KEY in the environment; never commit a real key
+    "grok_model": "grok-4",         # the xAI model Grok members run on
+    "grok_price_in": 3.0,           # $ per million input tokens, for the treasury
+    "grok_price_out": 15.0,         # $ per million output tokens
+    "grok_max_steps": 24,           # tool calls per Grok run before it must answer        # repo that contains orchestrator/; empty = sibling of agent-office
     "orchestrator_timeout": 600,
     "daily_budget_usd": 0,          # 0 = gold is not rationed; set a budget to pause quests when it is spent
     "daily_gold": 100,              # the full purse that budget maps onto
@@ -185,7 +191,7 @@ class App:
         self.version = compute_version()
         cfg["_dev"] = dev
         self.office = core.Office(cfg)
-        self.gateway = gateway.Gateway(cfg)
+        self.gateway = self.office.gateway
         self.hosts = set()
         self.external_hosts = set()
         self.token = configured_token(cfg)
@@ -278,7 +284,8 @@ def text_field(body, key, limit=200):
 @route("GET", "/api/options")
 def api_options(req, m):
     return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES),
-            "models": [m for m in runner.MODELS if not m or m in APP.office.chain.allowed()],
+            "models": [m for m in runner.MODELS if not m or m in APP.office.offered_models()],
+            "grok": {"on": bool(APP.office.grok), "model": grok.model_name(APP.cfg)},
             "default_mode": APP.cfg.get("default_mode", "acceptEdits"), "claude": bool(runner.find_claude(APP.cfg))}
 
 

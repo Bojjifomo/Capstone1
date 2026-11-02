@@ -21,7 +21,7 @@
   office review <PR link>          the Reviewer reads a pull request and gives a verdict
   office scorecard [days]          runs, done %, cost and time per person; incidents and reviews
   office usage [days]              where the gold goes: by person, kind, model, project, plus savings ideas
-  office model <name> <haiku|sonnet|opus>  move a teammate to another model (Opus seats are limited)
+  office model <name> <haiku|sonnet|opus|grok>  move a teammate to another model (Opus seats are limited)
   office doctor                    check the install
   office install-hook              add the Claude Code Notification hook (exact "needs you")
   office hook                      (used by the hook itself; reads the event on stdin)
@@ -381,7 +381,7 @@ def cmd_usage(args):
 
 def cmd_model(args):
     if len(args) != 2:
-        sys.exit("usage: office model <name> <haiku|sonnet|opus>")
+        sys.exit("usage: office model <name> <haiku|sonnet|opus|grok>")
     by = os.environ.get("AGENT_OFFICE_NAME") or Path.cwd().name
     r = call("/api/team/model", {"name": args[0], "model": args[1], "by": by})
     print("%s: %s -> %s" % (r["name"], r["was"], r["model"]))

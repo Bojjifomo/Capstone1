@@ -379,10 +379,34 @@ Ranks drive the title in the town: Apprentice at 0 XP, Journeyman at 40, Adept a
 
 Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
 
+## Grok members (xAI)
+
+Set an xAI key and the guild gets a fourth model next to Haiku, Sonnet and Opus:
+
+```sh
+# in the server's environment (the launchd plist), or "xai_api_key" in config.json
+export XAI_API_KEY=xai-…
+launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office
+```
+
+* **Grokbot** joins the guild on the first start with a key (Counting House). Talk to it in the town chat: `@Grokbot pool mana yang fee-nya paling gede?` Its answer comes back in the chat like any errand. It remembers the last 20 exchanges (`grok_memory.json`).
+* **Hire your own Grok agents.** Pick *Grok* as the model when hiring, or move someone with the profile's model picker or `office model <name> grok`. A new quest can also start on Grok. A Claude Code quest that already exists cannot switch to Grok.
+* **How it runs.** Claude Code cannot drive a Grok model, so `grok.py` runs its own tool loop on `https://api.x.ai/v1/chat/completions`. The run streams to the phone, the chat gets the final answer, and the cost counts toward the treasury (`grok_spend.json`, priced by `grok_price_in` / `grok_price_out` per million tokens).
+* **What it may do follows the permission mode:**
+
+  | Mode | Tools |
+  | --- | --- |
+  | `plan`, `manual` | Hub (`/api/lp/*` tools, LP Call Bot, Chain), list / read / search files |
+  | `acceptEdits` (the default for guild members) | + write and edit files |
+  | `auto`, `dontAsk`, `bypassPermissions` (Chain rounds and `/fix` use `auto`) | + run commands |
+
+  Files and commands stay inside the member's folder plus the folders a brief adds (a warden's program). Paths are resolved first, so `..` and symlinks cannot leave those folders. `.env`, keys and `config.json` are never read. Commands run without a shell, with a 120-second limit. `sudo`, `curl`, `ssh`, `launchctl`, force pushes and `rm -rf /` are refused. `XAI_API_KEY`, `AGENT_OFFICE_TOKEN` and `ANTHROPIC_API_KEY` are removed from a command's environment.
+* Settings: `grok_model` (default `grok-4`), `grok_max_steps` (24 tool rounds per run), `xai_base_url`.
+
 ## State files (next to server.py, written atomically)
 
 `config.json` · `names.json` · `archived.json` · `staff.json` · `queue.json` · `helpers.json` ·
-`petitions.json` · `chain.json` · `models.json` · `assignments.json` · `orchestrator.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
+`petitions.json` · `chain.json` · `models.json` · `assignments.json` · `orchestrator.json` · `grok_memory.json` · `grok_spend.json` · `push.json` and `vapid.json` (mode 600) · `ledger.jsonl` (an append-only log)
 
 ## Testing a change (never restart the live one while sessions run)
 
