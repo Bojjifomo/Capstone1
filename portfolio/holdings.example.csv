@@ -1,0 +1,9 @@
+sleeve,asset,ticker,venue,quantity,currency,cost_basis_total,as_of,note
+0,Money market fund,RDPU,Bibit,0,IDR,0,2026-11-01,runway
+0,Retail bond,ORI,Bank,0,IDR,0,2026-11-01,coupon monthly
+1,Bank Central Asia,BBCA,Broker,0,IDR,0,2026-11-01,lots x 100
+1,Bank Mandiri,BMRI,Broker,0,IDR,0,2026-11-01,
+2,Bitcoin,BTC,Exchange,0,USD,0,2026-11-01,DCA
+2,Hyperliquid,HYPE,Exchange,0,USD,0,2026-11-01,DCA
+3,Stablecoin,USDG,0x1234…abcd,0,USD,0,2026-11-01,venue name
+4,LP position,TOKEN/USDG,0x1234…abcd,0,USD,0,2026-11-01,pool fee %, range
