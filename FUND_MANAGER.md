@@ -12,9 +12,9 @@ Files:
 | File | What it is | In git? |
 | --- | --- | --- |
 | `FUND_MANAGER.md` | This doc: how the system works | yes |
+| [`fund/`](fund/README.md) | **The Fund app**: net worth, expenses, the fund manager's recommendations and what came of them, LP auto-track. Runs on the Mac, opened from the phone. Separate from the LP tools | yes (data in `fund.db` is not) |
 | `portfolio/ips.example.md` | Investment Policy Statement template: targets, bands, limits, kill rules | yes |
-| `portfolio/holdings.example.csv` | Ledger format: one row per holding | yes |
-| `portfolio/ips.md`, `portfolio/holdings.csv`, `portfolio/journal/` | Your real numbers and decisions | **no** (`.gitignore`) |
+| `portfolio/ips.md` | Your real rules | **no** (`.gitignore`) |
 | `.claude/agents/fund-manager.md` | The Claude Code subagent that runs this workflow | yes |
 
 ---
@@ -22,30 +22,29 @@ Files:
 ## 1. Infrastructure
 
 ```
- SOURCES (read-only)                 BOOKS                    BRAIN                    OUTPUT
- ─────────────────────               ──────────               ──────────────           ───────────────────────
- IDX broker screenshots ───┐
- CEX balances / exports ───┤
- On-chain wallets ─────────┼──► holdings.csv  ──┐
-   (Alchemy RPC, read-only)│    (the ledger)    │
- Own LP positions ─────────┤                    ├──► fund-manager ──► Daily brief / alerts
-   (finder.py check 0x…)   │    ips.md ─────────┤    agent             Rebalance proposals
- Prices: CoinGecko,        │    (the rules)     │      │               Order checklists ──► YOU execute
-   GeckoTerminal, IDX close┘                    │      │               Monthly report        (broker app,
-                                journal/ ───────┘      │                                      CEX, wallet)
- Opportunity scanners ───────────────────────────────►─┘                       │
-   rh_pools, pool-results, Smart LP, LP Call Bot                               ▼
-                                                                    journal/ (what was done + why)
+ YOU (phone)                         FUND APP (Mac, fund.db)                 FUND MANAGER (Claude)
+ ─────────────                       ───────────────────────                 ─────────────────────
+ balances per account ─────────────► Net worth (IDR / USD, per sleeve)  ──┐
+ expenses / income ────────────────► Pengeluaran (month vs budget)      ──┼─► fund.py report
+                                                                          │        │
+ Wallet Finder DB (read-only, ────► LP (auto): value + money flow  ──────┘        ▼
+   0 RPC, optional)                                                         analysis vs ips.md
+                                                                                   │
+ Saran tab: accept / reject / ◄──── recommendations (fund.py rec add) ◄────────────┘
+   done + actual result ────────────► realised impact ──► next month's review
+                                         │
+                                         ▼
+                                 YOU execute (broker app, CEX, wallet)
 ```
 
 ### Layers
 
 | Layer | Job | Built on | Status |
 | --- | --- | --- | --- |
-| **1. Ledger** | One source of truth: every holding, its sleeve, cost basis, where it lives | `portfolio/holdings.csv` | template in this PR |
+| **1. Ledger** | One source of truth: every account, its sleeve, dated balances; every expense and income | Fund app (`fund/`, `fund.db`) | built |
 | **2. Rules (IPS)** | Targets per sleeve, rebalance bands, position caps, kill rules, what needs your approval | `portfolio/ips.md` | template in this PR |
-| **3. Data feeds** | Prices + balances, read-only | Screenshots (`idx-stock-check`, `portfolio-monthly-review` skills), Alchemy RPC (already connected), CoinGecko / GeckoTerminal, `finder.py check <own wallet>` | partly there |
-| **4. Analytics** | Allocation vs target, drift, net yield per sleeve (after fees, IL, tax), drawdown, concentration, IDR/USD exposure | agent today; `portfolio.py` later (Phase 2) | to build |
+| **3. Data feeds** | Balances, read-only | You in the app (or screenshots the agent types in); LP auto from the Wallet Finder database, no RPC | built |
+| **4. Analytics** | Net worth, change, history, allocation per sleeve, runway, saving rate, budget vs actual, recommendation target vs realised | `fund.py report` | built; drift vs IPS + yield per sleeve by the agent |
 | **5. Opportunity scan** | Where extra yield is, ranked by risk | `rh_pools`, `pool-results` (net APR after IL), Smart LP, `dca-tranche-check`, bank buy ladder | there |
 | **6. Decision + approval** | Signal → IPS check → size → checklist → **you approve** → execute → log | `fund-manager` agent + journal | in this PR |
 | **7. Reporting / alerts** | Daily brief, DCA days, monthly review, triggers | orchestrator `brief`, LP Call Bot / Telegram, Agent Office | partly there |
@@ -55,7 +54,7 @@ Files:
 | Claude does alone | Needs your "yes" | Never |
 | --- | --- | --- |
 | Read balances, prices, LP data | Any buy / sell / swap | Hold private keys, seeds, broker passwords |
-| Update the ledger from your screenshots | Open / close / move an LP | Withdraw or transfer funds |
+| Update balances from your screenshots | Open / close / move an LP | Withdraw or transfer funds |
 | Compute allocation, drift, yields, risk | Changing the IPS targets or limits | Use leverage, borrow, or loop yield unless the IPS allows it |
 | Propose rebalances and size them | Moving money between sleeves | Chase a position past a kill rule |
 | Alert on triggers, write the journal | Spending RPC quota / publishing (`sync`, `publish`) | Put a holding above its cap "just this once" |
@@ -121,7 +120,7 @@ Ranked by expected impact for a portfolio like yours, highest first.
 | **Event-driven** | Alert when a trigger fires (below) → proposal + checklist | agent → Telegram | when it happens |
 | **Weekly** (Sun) | LP review: net APR per position, close losers per kill rules, **profit sweep** into core | agent proposes, you execute | 15 min |
 | **Biweekly** | BTC / HYPE DCA tranche, sized by the value tilt | `dca-tranche-check` | 5 min |
-| **Monthly** (1st) | Full review: update ledger from screenshots, performance per sleeve vs benchmark, rebalance if out of band, cash → yield | `portfolio-monthly-review` | 30 min |
+| **Monthly** (1st) | Full review: update balances in the app, performance per sleeve vs benchmark, rebalance if out of band, cash → yield | `portfolio-monthly-review` | 30 min |
 | **Quarterly** | IPS review: targets, caps, kill rules; post-mortem on the journal | you + agent | 1 h |
 | **Yearly** | Tax summary, income needs, risk profile check | you (+ advisor) | — |
 
@@ -159,9 +158,9 @@ Every proposal the agent makes has the same shape:
 
 | Phase | What | Result |
 | --- | --- | --- |
-| **1 (this PR)** | IPS + ledger templates, `fund-manager` subagent, this workflow | Claude can run the monthly / weekly / daily loop from your screenshots and the LP tools |
-| **2** | `portfolio/portfolio.py`: reads `holdings.csv` + prices → allocation, drift, P&L, net yield per sleeve, as JSON; wired as an orchestrator tool | Numbers computed by code, not by hand |
-| **3** | Read-only on-chain balances (Alchemy) + own LP positions via `finder.py check <your wallet>` merged into the ledger automatically | Crypto + LP sleeves update themselves |
+| **1 (this PR)** | Fund app (net worth, expenses, recommendations + realisation, LP auto-track), IPS template, `fund-manager` subagent, this workflow | You record, Claude reviews and recommends, the app keeps score |
+| **2** | Drift vs IPS targets in the app + monthly snapshot report | The app itself says when to rebalance |
+| **3** | Prices for stocks / BTC held as units (not just balances) | Crypto + IDX sleeves update themselves |
 | **4** | Triggers → Telegram (reuse the LP Call Bot / orchestrator brief on launchd) | Alerts without opening Claude |
 | **5** | Backtests: DCA tilt, rebalance bands, "copy wallet X" (`rh_backtest` from TOOLS.md) | Rules tuned on your own data |
 
@@ -169,10 +168,9 @@ Every proposal the agent makes has the same shape:
 
 1. **Risk profile + goals:** time horizon, monthly expenses (for the runway), max drawdown you
    can sit through on the whole portfolio (e.g. −15% / −25% / −40%).
-2. **Current holdings:** screenshots of broker (IDX), exchanges, wallets (addresses are enough
-   for on-chain), bank / RDPU / SBN balances. Copy `portfolio/holdings.example.csv` to
-   `portfolio/holdings.csv` or just send screenshots and the agent fills it.
+2. **Current holdings:** add your accounts and balances in the Fund app, or send screenshots
+   and the agent types them in (`fund.py balance`). Add your LP wallet(s) to `lp_wallets`.
 3. **Confirm or edit the sleeve targets** in a copy of `portfolio/ips.example.md` → `portfolio/ips.md`.
 4. **Monthly cash flow:** how much new money goes in each month.
 
-Then run: `pakai fund-manager, update portofolio` (or "use fund-manager, monthly review").
+Then install the app (`cd fund && sh tools/install.sh`) and run: `pakai fund-manager, review bulanan`.

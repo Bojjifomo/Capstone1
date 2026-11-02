@@ -12,3 +12,7 @@ lp_call_bot/heartbeat
 portfolio/ips.md
 portfolio/holdings.csv
 portfolio/journal/
+fund/config.json
+fund/*.db
+fund/*.db-*
+fund/logs/

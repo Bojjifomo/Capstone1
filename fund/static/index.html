@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fund">
+<meta name="theme-color" content="#0f1115">
+<title>Fund</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Fund</h1>
+  <nav id="tabs">
+    <button data-tab="nw" class="on">Net worth</button>
+    <button data-tab="spend">Pengeluaran</button>
+    <button data-tab="recs">Saran</button>
+    <button data-tab="lp" hidden>LP</button>
+  </nav>
+</header>
+<main>
+  <section id="nw">
+    <div class="hero card">
+      <div class="label">Net worth</div>
+      <div class="big" id="nw-idr">…</div>
+      <div class="sub"><span id="nw-usd"></span> · <span id="nw-chg"></span></div>
+      <div class="sub">Kurs USD/IDR <button class="link" id="fx-edit"></button></div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="label">Runway</div><div class="val" id="t-runway">–</div><div class="hint">bulan dari Safety</div></div>
+      <div class="tile"><div class="label">Saving rate</div><div class="val" id="t-save">–</div><div class="hint">rata-rata 3 bulan</div></div>
+      <div class="tile"><div class="label">Keluar / bulan</div><div class="val" id="t-spend">–</div><div class="hint">rata-rata 3 bulan</div></div>
+    </div>
+    <div class="card"><h2>Riwayat</h2><div id="chart" class="chart"></div></div>
+    <div class="card"><h2>Per bagian</h2><div id="sleeves"></div></div>
+    <div class="card">
+      <h2>Akun <span class="muted small">tap buat update saldo</span></h2>
+      <div id="stale" class="warn" hidden></div>
+      <div id="accounts"></div>
+      <details class="add">
+        <summary>+ Akun baru</summary>
+        <form id="f-account" class="grid">
+          <input name="name" placeholder="Nama (mis. BCA, Bibit RDPU, BBCA)" required maxlength="80">
+          <select name="kind" id="kinds"></select>
+          <select name="sleeve" id="sleeve-select"></select>
+          <select name="currency"><option>IDR</option><option>USD</option></select>
+          <input name="amount" inputmode="decimal" placeholder="Saldo sekarang (opsional)">
+          <button>Simpan</button>
+        </form>
+        <p class="muted small">Utang (KPR, paylater, kartu kredit): jenis <b>debt</b>, isi angka positif, otomatis dikurangin.</p>
+      </details>
+    </div>
+  </section>
+
+  <section id="spend" hidden>
+    <form id="f-flow" class="card grid">
+      <div class="seg" id="flow-kind">
+        <button type="button" data-kind="expense" class="on">Keluar</button>
+        <button type="button" data-kind="income">Masuk</button>
+      </div>
+      <input name="amount" inputmode="decimal" placeholder="Jumlah (Rp)" required>
+      <input name="category" list="cats" placeholder="Kategori (makan, transport…)" required maxlength="40">
+      <datalist id="cats"></datalist>
+      <input name="note" placeholder="Catatan (opsional)" maxlength="300">
+      <input name="day" type="date">
+      <button>Catat</button>
+    </form>
+    <div class="card">
+      <div class="row between">
+        <button class="link" id="m-prev">‹</button>
+        <h2 id="m-label"></h2>
+        <button class="link" id="m-next">›</button>
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="label">Keluar</div><div class="val" id="m-spent">–</div><div class="hint" id="m-budget"></div></div>
+        <div class="tile"><div class="label">Masuk</div><div class="val" id="m-income">–</div></div>
+        <div class="tile"><div class="label">Sisa</div><div class="val" id="m-left">–</div></div>
+      </div>
+      <div id="cats-bars"></div>
+    </div>
+    <div class="card"><h2>Catatan bulan ini</h2><div id="flows"></div></div>
+    <details class="card add">
+      <summary>Budget per kategori</summary>
+      <form id="f-budget" class="grid">
+        <input name="category" list="cats" placeholder="Kategori" required maxlength="40">
+        <input name="monthly" inputmode="decimal" placeholder="Rp per bulan (0 = hapus)" required>
+        <button>Simpan</button>
+      </form>
+      <div id="budgets"></div>
+    </details>
+  </section>
+
+  <section id="recs" hidden>
+    <div class="tiles">
+      <div class="tile"><div class="label">Terbuka</div><div class="val" id="r-open">–</div></div>
+      <div class="tile"><div class="label">Selesai</div><div class="val" id="r-done">–</div></div>
+      <div class="tile"><div class="label">Realisasi / bulan</div><div class="val" id="r-actual">–</div><div class="hint" id="r-expected"></div></div>
+    </div>
+    <div id="rec-list"></div>
+    <details class="card add">
+      <summary>+ Catatan / ide sendiri</summary>
+      <form id="f-rec" class="grid">
+        <input name="title" placeholder="Judul" required maxlength="160">
+        <textarea name="body" rows="3" placeholder="Detail" maxlength="4000"></textarea>
+        <input name="expected_idr_month" inputmode="decimal" placeholder="Dampak / bulan (Rp, opsional)">
+        <button>Simpan</button>
+      </form>
+    </details>
+  </section>
+
+  <section id="lp" hidden>
+    <div class="card">
+      <div class="row between"><h2>LP (otomatis)</h2><button class="link" id="lp-refresh">Refresh</button></div>
+      <p class="muted small">Dibaca dari database Wallet Finder di Mac. Nol RPC, nol API. Segar sesuai worker Wallet Finder.</p>
+      <div id="lp-error" class="warn" hidden></div>
+      <div class="tiles">
+        <div class="tile"><div class="label">Posisi kebuka</div><div class="val" id="lp-open">–</div><div class="hint" id="lp-npos"></div></div>
+        <div class="tile"><div class="label">USDG nganggur</div><div class="val" id="lp-idle">–</div></div>
+        <div class="tile"><div class="label">Total</div><div class="val" id="lp-total">–</div><div class="hint" id="lp-asof"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row between">
+        <h2>Arus uang</h2>
+        <div class="seg small" id="lp-days">
+          <button type="button" data-days="7">7H</button>
+          <button type="button" data-days="30" class="on">30H</button>
+          <button type="button" data-days="90">90H</button>
+        </div>
+      </div>
+      <div class="tiles four">
+        <div class="tile"><div class="label">Masuk ke LP</div><div class="val" id="lp-dep">–</div></div>
+        <div class="tile"><div class="label">Ditarik</div><div class="val" id="lp-wd">–</div></div>
+        <div class="tile"><div class="label">Fee</div><div class="val" id="lp-fee">–</div></div>
+        <div class="tile"><div class="label">PnL closed</div><div class="val" id="lp-pnl">–</div><div class="hint" id="lp-closed"></div></div>
+      </div>
+      <div id="lp-daily"></div>
+    </div>
+  </section>
+</main>
+<dialog id="dlg"><form method="dialog" id="dlg-form" class="grid"></form></dialog>
+<script src="app.js"></script>
+</body>
+</html>
