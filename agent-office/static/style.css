@@ -21,6 +21,8 @@
   --work: #7bd88f;
   --idle: #9aa5c4;
   --done: #8a7f99;
+  --eco: #2f7a3e;
+  --eco-bg: #d9efd6;
   --text: #efe6d6;
   --muted: #a99fbd;
   --serif: "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
@@ -814,3 +816,8 @@ body.chatting #post-quest { display: none; }
 .score td { padding: 5px 4px; border-bottom: 1px solid var(--parch-edge); vertical-align: top; white-space: nowrap; }
 .score td small { display: block; color: var(--ink-soft); font-size: 11px; white-space: normal; }
 .score td.low { color: #b2433a; font-weight: 700; }
+
+/* eco mode */
+.eco-btn { padding: 4px 10px; font-size: 13px; }
+.eco-btn.on { background: var(--eco-bg); border-color: var(--eco); color: var(--eco); font-weight: 600; }
+.form .check.eco span { color: var(--eco); }

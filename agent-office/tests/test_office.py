@@ -1054,6 +1054,57 @@ class OfferedModels(ServerCase):
         self.assertEqual(self.post("/api/staff/00000000/dismiss", {})[0], 404)
 
 
+class EcoMode(ServerCase):
+    """Eco mode: the lead runs on Opus with plan-and-review rules, on the first message and every later one."""
+
+    wait_run = Stage2.wait_run
+
+    def test_eco_job_and_toggle(self):
+        pid = [p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp")][0]["id"]
+        status, r = self.post("/api/job", {"project": pid, "text": "add a health endpoint", "mode": "acceptEdits",
+                                           "model": "haiku", "eco": True})
+        self.assertEqual(status, 200, r)
+        first = self.wait_run(r["run"])["events"][0]["t"]
+        self.assertIn("model=opus eco=yes", first, "the lead is forced onto Opus with the eco rules")
+        time.sleep(1.5)
+        s = {x["id"]: x for x in self.request("GET", "/api/state")[1]["sessions"]}[r["sid"]]
+        self.assertTrue(s["eco"])
+
+        again = self.post("/api/session/%s/send" % r["sid"], {"text": "now the tests", "mode": "acceptEdits", "now": True})[1]
+        self.assertIn("model=opus eco=yes", self.wait_run(again["run"])["events"][0]["t"], "eco sticks to later messages")
+
+        off = self.post("/api/session/%s/eco" % r["sid"], {"on": False})
+        self.assertEqual((off[0], off[1]["eco"]), (200, False))
+        plain = self.post("/api/session/%s/send" % r["sid"], {"text": "thanks", "mode": "acceptEdits", "now": True})[1]
+        self.assertIn("pm=no", self.wait_run(plain["run"])["events"][0]["t"])
+
+        on = self.post("/api/session/%s/eco" % r["sid"], {"on": True})
+        self.assertEqual((on[0], on[1]["eco"], on[1]["lead"]), (200, True, "opus"))
+        self.assertEqual(self.post("/api/session/%s/eco" % ("0" * 8 + "-0000-0000-0000-" + "0" * 12), {"on": True})[0], 409)
+
+    def test_eco_falls_back_when_opus_is_not_offered(self):
+        self.assertEqual(self.post("/api/chain/settings", {"allowed_models": ["sonnet", "haiku"]})[0], 200)
+        try:
+            pid = [p for p in self.request("GET", "/api/projects")[1]["projects"] if p["label"].endswith("webapp")][0]["id"]
+            status, r = self.post("/api/job", {"project": pid, "text": "rename a helper", "mode": "acceptEdits", "eco": True})
+            self.assertEqual(status, 200, r)
+            self.assertIn("model=sonnet eco=yes", self.wait_run(r["run"])["events"][0]["t"])
+        finally:
+            self.post("/api/chain/settings", {"allowed_models": ["haiku", "sonnet", "opus"]})
+
+
+class EcoPrompt(unittest.TestCase):
+    def test_prompt_names_only_offered_helpers(self):
+        import eco
+        both = eco.prompt("/x/office", ["haiku", "sonnet", "opus"])
+        self.assertIn("- haiku:", both)
+        self.assertIn("- sonnet:", both)
+        self.assertIn("Opus", both)
+        only = eco.prompt("/x/office", ["sonnet", "opus"])
+        self.assertNotIn("- haiku:", only)
+        self.assertIn("only sonnet is offered", only)
+
+
 class ChatOrders(ServerCase):
     """Orders typed in the guild chat, @names, and the per-quest model."""
 

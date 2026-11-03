@@ -300,6 +300,15 @@ def api_send(req, m):
     return result
 
 
+@route("POST", "/api/session/" + SID + "/eco")
+def api_session_eco(req, m):
+    """Eco mode for this quest: an Opus lead that plans and reviews, Sonnet and Haiku helpers that do the work."""
+    sid = m.group("sid")
+    result = APP.office.set_eco(sid, bool(req.body.get("on")))
+    APP.office.ledger.add("guild", "Eco mode %s" % ("on: Opus plans and reviews, helpers work" if result["eco"] else "off"), sid=sid)
+    return result
+
+
 @route("POST", "/api/session/" + SID + "/model")
 def api_session_model(req, m):
     """The model for messages sent to this quest from here. A session open in a terminal keeps its own /model."""
@@ -365,15 +374,17 @@ def api_projects(req, m):
 @route("POST", "/api/job")
 def api_job(req, m):
     b = req.body
-    system = PM_PROMPT if b.get("pm") else ""
+    eco_mode = bool(b.get("eco"))
+    system = PM_PROMPT if b.get("pm") and not eco_mode else ""
     result = APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
                                 text_field(b, "mode"), model=text_field(b, "model"),
                                 code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system,
-                                external=req.external, override=bool(b.get("override")))
+                                external=req.external, override=bool(b.get("override")), eco_mode=eco_mode)
     if result.get("queued_for_gold"):
         APP.office.ledger.add("guild", "Queued until gold returns: " + text_field(b, "text")[:160])
         return result
-    APP.office.ledger.add("job", text_field(b, "text"), sid=result["sid"], mode=text_field(b, "mode"), pm=bool(system))
+    APP.office.ledger.add("job", ("🌿 " if eco_mode else "") + text_field(b, "text"), sid=result["sid"],
+                          mode=text_field(b, "mode"), pm=bool(system) or eco_mode)
     return result
 
 

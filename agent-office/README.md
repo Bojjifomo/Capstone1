@@ -35,6 +35,7 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 | The hall | Sessions from `~/.claude/projects` and `ps`: questing (working), awaiting your word (a real question, AskUserQuestion, plan approval or a permission prompt), resting, returned, archived |
 | Sheet | Recent conversation as light markdown with copy buttons, a message box, a queue (Send now / Remove), Stop |
 | Post a quest | New session in a known project folder, a permission mode, a model, optional party leader (project manager) mode |
+| 🌿 Eco mode | A checkbox on Post a quest and a button on any quest's profile: the lead runs on Opus and only plans and reviews; Haiku and Sonnet subagents do the work (see below) |
 | The guild | Recruited specialists in `~/Agents/<name>`, grouped into division wings; `office team / who / ask / result` |
 | Chain of command | ⚜️ Chain: your programs as **interns** with health checks, a **warden** for each, the **Innovator**, the **Operations Manager** (orchestrator) and the **CEO** as its backup. Broken interns climb warden → ops → CEO → your phone. See [Chain of command](#chain-of-command) |
 | Petitions | Update proposals from the guild (`office propose`): read the plan, then Approve & build (a quest that ends in a PR, never a merge), Approve for later, or Reject with a note |
@@ -415,3 +416,16 @@ sh tests/run_copy.sh                         # throwaway copy on :7790 with a fa
 python3 -m unittest discover -s tests        # parsing, status rules, security, runs, team, panels, external token, chain of command
 node tests/shoot.js stage1,stage2,stage4     # phone-width screenshots into docs/screens/
 ```
+
+## 🌿 Eco mode
+
+Opus is the most expensive model, so in eco mode it only does what it is best at: planning and reviewing.
+
+- **Turn it on:** tick *🌿 Eco mode* when you post a quest, or tap the *Eco mode* button in a quest's profile.
+- **The lead** always runs on Opus (or the strongest offered model, if you took Opus off the offered list in ⚜️ Chain).
+- **The helpers** are subagents the lead starts with the Task tool: Haiku for look-ups, reading, searching, simple
+  edits and running tests; Sonnet for real coding, bug fixes and tests. Only offered models are named.
+- **Review:** the lead checks every helper's result, sends it back if it is not done, and ends with a table of
+  piece, helper, model and result.
+- **It sticks:** every later message you send that quest from the Guild Hall (or that waits in its queue) runs on the
+  Opus lead with the same rules, until you turn the button off. Kept in `eco.json`.

@@ -143,6 +143,7 @@ function updateHireCount(form) {
 }
 
 Hooks.jobExtras = () =>
+  `<label class="check eco"><input type="checkbox" name="eco"><span>🌿 Eco mode<small>The lead runs on Opus and only plans and reviews. Every piece of work goes to a helper: Haiku for look-ups and simple edits, Sonnet for coding. Stays on for every message you send this quest.</small></span></label>` +
   `<label class="check"><input type="checkbox" name="pm"><span>Party leader mode<small>The lead splits the quest, hands pieces to the guild and to subagents (Haiku for lookups, Sonnet for coding, Opus for hard problems), then reports who did what.</small></span></label>`;
 
 Object.assign(Hooks.forms, {

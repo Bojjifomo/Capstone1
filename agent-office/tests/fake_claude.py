@@ -45,8 +45,10 @@ def out(obj):
 log({"type": "user", "message": {"role": "user", "content": text}})
 out({"type": "system", "subtype": "init", "session_id": sid, "model": "claude-sonnet-5-5", "permissionMode": mode})
 mid = "msg_" + uuid.uuid4().hex[:10]
-reply = "**Heard you.** You said: %s\n\n```\nmode=%s pm=%s\n```" % (
-    text[:200], mode, "yes" if "--append-system-prompt" in args else "no")
+reply = "**Heard you.** You said: %s\n\n```\nmode=%s pm=%s model=%s eco=%s\n```" % (
+    text[:200], mode, "yes" if "--append-system-prompt" in args else "no",
+    args[args.index("--model") + 1] if "--model" in args else "default",
+    "yes" if "--append-system-prompt" in args and "eco-mode lead" in args[args.index("--append-system-prompt") + 1] else "no")
 if "ASKBACK" in text:
     reply += "\n\nShould I keep going with the next part?"
 out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": mid}}})
