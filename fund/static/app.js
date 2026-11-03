@@ -28,8 +28,10 @@ const num = (s) => {
 };
 
 async function api(path, body) {
-  const opt = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
-  const r = await fetch(path, opt);
+  // Relative ("api/…"), so the same page works on its own port and inside the Guild Hall at /fund/.
+  // X-Agent-Office: the Guild Hall only forwards POSTs that carry it (its own CSRF check).
+  const opt = body ? { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Office": "1" }, body: JSON.stringify(body) } : {};
+  const r = await fetch(path.replace(/^\//, ""), opt);
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
@@ -220,6 +222,12 @@ $("#f-budget").addEventListener("submit", (e) => {
 
 // ── recommendations ──────────────────────────────────────────────────────────────
 const STATUS = { proposed: "usulan", accepted: "dijalanin", done: "selesai", rejected: "ditolak" };
+const STANCE = { support: "setuju", challenge: "nantang", question: "nanya" };
+const who = (a) => (a === "me" ? "lu" : a === "claude" ? "fund manager" : a);
+// Agents (and you) arguing for or against a recommendation: the critical-thinking trail.
+const notes = (list) => !list || !list.length ? "" : `<div class="notes">${list.map((n) => `<div class="note ${esc(n.stance)}">
+  <div class="hint"><span class="badge ${esc(n.stance)}">${esc(STANCE[n.stance] || n.stance)}</span> ${esc(who(n.author))} · ${esc(n.created)}</div>
+  <p>${esc(n.body)}</p></div>`).join("")}</div>`;
 async function loadRecs() {
   const [{ recs }, s] = await Promise.all([api("/api/recs"), api("/api/summary")]);
   summary = s;
@@ -229,13 +237,14 @@ async function loadRecs() {
   $("#r-expected").textContent = s.recs.expected_idr_month_done ? `target ${short(s.recs.expected_idr_month_done)}` : "";
   $("#rec-list").innerHTML = recs.map((r) => `<div class="card rec" data-id="${r.id}">
       <div class="row between"><span class="badge ${r.status}">${STATUS[r.status]}</span>
-        <span class="hint">${r.author === "me" ? "lu" : "fund manager"} · ${esc(r.created)}${r.sleeve != null ? " · " + esc(meta.sleeves[r.sleeve]) : ""}</span></div>
+        <span class="hint">${esc(who(r.author))} · ${esc(r.created)}${r.sleeve != null ? " · " + esc(meta.sleeves[r.sleeve]) : ""}</span></div>
       <h3>${esc(r.title)}</h3>
       ${r.body ? `<p>${esc(r.body)}</p>` : ""}
       ${r.expected_idr_month ? `<div class="hint">Target dampak: ${esc(short(r.expected_idr_month))} / bulan</div>` : ""}
       ${r.status === "done" ? `<div class="hint">Selesai ${esc(r.done)} · realisasi <b>${esc(short(r.actual_idr_month))}</b> / bulan</div>${r.result ? `<p class="muted">${esc(r.result)}</p>` : ""}` : ""}
+      ${notes(r.notes)}
       <div class="actions">${{
-        proposed: `<button data-act="rejected">Tolak</button><button class="primary" data-act="accepted">Jalanin</button>`,
+        proposed: `<button data-act="note">Tanya</button><button data-act="rejected">Tolak</button><button class="primary" data-act="accepted">Jalanin</button>`,
         accepted: `<button data-act="proposed">Balikin</button><button class="primary" data-act="done">Udah selesai</button>`,
         done: `<button data-act="done">Edit hasil</button>`,
         rejected: `<button data-act="proposed">Buka lagi</button>`,
@@ -246,6 +255,11 @@ $("#rec-list").addEventListener("click", async (e) => {
   const act = e.target.dataset.act, card = e.target.closest(".rec");
   if (!act || !card) return;
   const id = +card.dataset.id;
+  if (act === "note") {
+    const v = await ask("Pertanyaan / catatan buat saran ini", [{ name: "body", label: "Tulis di sini", area: true, value: "" }]);
+    if (!v || !v.body.trim()) return;
+    return api("/api/recs/note", { id, body: v.body, stance: "question" }).then(loadRecs).catch(fail);
+  }
   if (act === "done") {
     const v = await ask("Hasilnya gimana?", [
       { name: "actual", label: "Realisasi dampak per bulan (Rp)", value: "" },
@@ -295,6 +309,7 @@ async function loadLP() {
 
 // ── start ────────────────────────────────────────────────────────────────────────
 (async () => {
+  $("#home").hidden = !location.pathname.startsWith("/fund/");  // opened through the Guild Hall
   try {
     meta = await api("/api/meta");
   } catch (e) { return fail(e); }

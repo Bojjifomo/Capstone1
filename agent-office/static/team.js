@@ -86,7 +86,7 @@ function dismissQuestion(m) {
     "\n\nTheir folder in ~/Agents stays as it is.";
 }
 
-const HIRE_GROUPS = ["Build", "Guard", "Research", "Words", "Plan"];
+const HIRE_GROUPS = ["Build", "Guard", "Research", "Fund", "Words", "Plan"];
 let hireTemplates = [];
 
 Hooks.panels.hire = {

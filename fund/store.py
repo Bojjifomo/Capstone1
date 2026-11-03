@@ -4,6 +4,7 @@ income), budgets, the USD/IDR rate, and the fund manager's recommendations with 
 Standard library only (sqlite3). Every amount is kept in its account's currency and converted
 to IDR with the rate valid on that day, so history does not move when today's rate does.
 """
+import re
 import sqlite3
 import threading
 import time
@@ -19,6 +20,7 @@ SLEEVES = {
 }
 KINDS = ("cash", "bank", "rdpu", "deposito", "sbn", "stock", "crypto", "stable", "lp", "property", "debt", "other")
 REC_STATUS = ("proposed", "accepted", "done", "rejected")
+AUTHOR_RE = re.compile(r"^[A-Za-z0-9 ._'-]{1,40}$")
 CURRENCIES = ("IDR", "USD")
 
 SCHEMA = """
@@ -44,9 +46,15 @@ CREATE TABLE IF NOT EXISTS recs (
   sleeve INTEGER, expected_idr_month REAL,     -- what it should add per month, in IDR
   status TEXT NOT NULL DEFAULT 'proposed', decided TEXT, done TEXT,
   result TEXT, actual_idr_month REAL,           -- what it really added, filled when done
-  author TEXT NOT NULL DEFAULT 'claude'
+  author TEXT NOT NULL DEFAULT 'claude'      -- 'me', 'claude', or the guild agent's name
 );
+CREATE TABLE IF NOT EXISTS rec_notes (       -- agents (and you) arguing for or against a recommendation
+  id INTEGER PRIMARY KEY, rec_id INTEGER NOT NULL, created TEXT NOT NULL, author TEXT NOT NULL,
+  stance TEXT NOT NULL CHECK (stance IN ('support', 'challenge', 'question')), body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rec_notes_rec ON rec_notes(rec_id);
 """
+STANCES = ("support", "challenge", "question")
 
 
 class Invalid(ValueError):
@@ -211,6 +219,13 @@ class Books:
                 self.con.execute("INSERT OR REPLACE INTO budgets(category, monthly) VALUES(?,?)", (category, monthly))
 
     # ── recommendations ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _author(author):
+        author = " ".join(str(author or "claude").split())
+        if not AUTHOR_RE.match(author):
+            raise Invalid("author: letters, numbers, space . _ ' - (max 40)")
+        return author
+
     def add_rec(self, d, author="claude"):
         sleeve = d.get("sleeve")
         if sleeve not in (None, ""):
@@ -225,7 +240,7 @@ class Books:
             return self.con.execute(
                 "INSERT INTO recs(created, title, body, sleeve, expected_idr_month, author) VALUES(?,?,?,?,?,?)",
                 (today(), _text(d.get("title"), "title", limit=160), _text(d.get("body"), "body", False, 4000) or None,
-                 sleeve, exp, author if author in ("claude", "me") else "claude")).lastrowid
+                 sleeve, exp, self._author(author))).lastrowid
 
     def update_rec(self, rid, d):
         r = self.con.execute("SELECT * FROM recs WHERE id=?", (int(rid),)).fetchone()
@@ -244,10 +259,26 @@ class Books:
             self.con.execute("UPDATE recs SET status=?, decided=?, done=?, result=?, actual_idr_month=? WHERE id=?",
                              (status, decided, done, result or None, actual, int(rid)))
 
+    def add_note(self, rid, body, author="claude", stance="challenge"):
+        if not self.con.execute("SELECT 1 FROM recs WHERE id=?", (int(rid),)).fetchone():
+            raise Invalid("no such recommendation")
+        if stance not in STANCES:
+            raise Invalid(f"stance must be one of {', '.join(STANCES)}")
+        with self.con:
+            return self.con.execute("INSERT INTO rec_notes(rec_id, created, author, stance, body) VALUES(?,?,?,?,?)",
+                                    (int(rid), time.strftime("%Y-%m-%d %H:%M"), self._author(author), stance,
+                                     _text(body, "body", limit=3000))).lastrowid
+
     def recs(self, status=None):
         q = "SELECT * FROM recs" + (" WHERE status=?" if status else "") + \
             " ORDER BY CASE status WHEN 'proposed' THEN 0 WHEN 'accepted' THEN 1 WHEN 'done' THEN 2 ELSE 3 END, id DESC"
-        return [dict(r) for r in self.con.execute(q, (status,) if status else ())]
+        out = [dict(r) for r in self.con.execute(q, (status,) if status else ())]
+        notes = {}
+        for n in self.con.execute("SELECT * FROM rec_notes ORDER BY id"):
+            notes.setdefault(n["rec_id"], []).append(dict(n))
+        for r in out:
+            r["notes"] = notes.get(r["id"], [])
+        return out
 
     # ── the numbers ───────────────────────────────────────────────────────────────
     def positions_on(self, day):
@@ -356,5 +387,5 @@ class Books:
         }
 
     def export(self):
-        tables = ("accounts", "balances", "fx", "flows", "budgets", "recs")
+        tables = ("accounts", "balances", "fx", "flows", "budgets", "recs", "rec_notes")
         return {t: [dict(r) for r in self.con.execute(f"SELECT * FROM {t}")] for t in tables}

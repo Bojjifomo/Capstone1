@@ -329,7 +329,7 @@ class ChainCase(unittest.TestCase):
         self.assertGreaterEqual(len(roster.TEMPLATES), 10)
         for t in roster.TEMPLATES:
             self.assertIn(t["model"], ("haiku", "sonnet", "opus"))
-            self.assertIn(t["group"], ("Build", "Guard", "Research", "Words", "Plan"))
+            self.assertIn(t["group"], ("Build", "Guard", "Research", "Fund", "Words", "Plan"))  # HIRE_GROUPS in team.js
             for needle in ("## What you know", "## Your steps", "## Your quality bar", "## Never", "Indonesian", "report"):
                 self.assertIn(needle, t["instructions"], "%s is missing %r" % (t["key"], needle))
         self.assertEqual([t["model"] for t in roster.TEMPLATES if t["key"] in ("scout", "architect")], ["haiku", "opus"])

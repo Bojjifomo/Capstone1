@@ -158,7 +158,8 @@ Every proposal the agent makes has the same shape:
 
 | Phase | What | Result |
 | --- | --- | --- |
-| **1 (this PR)** | Fund app (net worth, expenses, recommendations + realisation, LP auto-track), IPS template, `fund-manager` subagent, this workflow | You record, Claude reviews and recommends, the app keeps score |
+| **1b** | Fund behind the Guild Hall (💰 Fund, `/fund/`), agents in The Counting House propose and challenge recommendations | One door; several agents argue before you decide |
+| **1** | Fund app (net worth, expenses, recommendations + realisation, LP auto-track), IPS template, `fund-manager` subagent, this workflow | You record, Claude reviews and recommends, the app keeps score |
 | **2** | Drift vs IPS targets in the app + monthly snapshot report | The app itself says when to rebalance |
 | **3** | Prices for stocks / BTC held as units (not just balances) | Crypto + IDX sleeves update themselves |
 | **4** | Triggers → Telegram (reuse the LP Call Bot / orchestrator brief on launchd) | Alerts without opening Claude |

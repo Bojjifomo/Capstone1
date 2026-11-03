@@ -25,6 +25,7 @@ import chain  # noqa: E402
 import core  # noqa: E402
 import gateway  # noqa: E402
 import grok  # noqa: E402
+import fundgate  # noqa: E402
 import haiku  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
@@ -68,6 +69,8 @@ DEFAULT_CONFIG = {
     "orchestrator_timeout": 600,
     "daily_budget_usd": 0,          # 0 = gold is not rationed; set a budget to pause quests when it is spent
     "daily_gold": 100,              # the full purse that budget maps onto
+    "fund_url": "http://127.0.0.1:7799",  # the Fund app (../fund), opened from the 💰 Fund button at /fund/
+    "fund_token": "",               # Fund's own token, if you set one there
 }
 
 
@@ -1033,6 +1036,31 @@ def api_petition_build(req, m):
     if result.get("queued_for_gold"):
         return result
     return dict(result, petition=item["id"])
+
+
+# ---- Fund (../fund) behind the same door --------------------------------
+
+FUND_PATH = r"/fund(?P<rest>/[A-Za-z0-9_\-./]*)?"
+
+
+def fund_proxy(req, m, method):
+    rest = m.group("rest")
+    if rest is None:  # /fund → /fund/ so Fund's relative links resolve under it
+        req.handler.send(302, b"", "text/plain", {"Location": "/fund/"})
+        return None
+    status, ctype, data = fundgate.forward(APP.cfg, method, rest, urlsplit(req.handler.path).query, req.body)
+    req.handler.send(status, data, ctype, {"Cache-Control": "no-store"})
+    return None
+
+
+@route("GET", FUND_PATH)
+def fund_get(req, m):
+    return fund_proxy(req, m, "GET")
+
+
+@route("POST", FUND_PATH)
+def fund_post(req, m):
+    return fund_proxy(req, m, "POST")
 
 
 # ---- HTTP plumbing ------------------------------------------------------

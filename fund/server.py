@@ -283,6 +283,9 @@ def make_handler(books, tracker, cfg):
                     books.update_rec(d["id"], d)
                     return self._send(200, {"id": d["id"]})
                 return self._send(200, {"id": books.add_rec(d, author="me")})
+            if p == "/api/recs/note":
+                return self._send(200, {"id": books.add_note(d.get("id"), d.get("body"), "me",
+                                                             d.get("stance") or "question")})
             if p == "/api/lp/refresh":
                 return self._send(200, {"snapshot": tracker.refresh(), "error": tracker.error})
             return self._send(404, {"error": "not found"})
