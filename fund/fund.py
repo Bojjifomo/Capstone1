@@ -4,7 +4,8 @@
   python3 fund.py report                      everything that matters, JSON
   python3 fund.py lp [--days 30]              LP value + money flow (read-only, no RPC)
   python3 fund.py export                      every table, JSON
-  python3 fund.py rec add "title" --body "…" [--sleeve N] [--expected IDR/month]
+  python3 fund.py rec add "title" --body "…" [--sleeve N] [--expected IDR/month] [--by NAME]
+  python3 fund.py rec note ID "why this is wrong / right" --stance challenge|support|question --by NAME
   python3 fund.py rec list [--status proposed|accepted|done|rejected]
   python3 fund.py rec set ID --status done [--result "…"] [--actual IDR/month]
   python3 fund.py account "BCA" --kind bank --sleeve 0 [--currency IDR]
@@ -45,6 +46,12 @@ def main(argv=None):
     s.add_argument("--body")
     s.add_argument("--sleeve", type=int)
     s.add_argument("--expected", type=float, help="IDR per month it should add")
+    s.add_argument("--by", default="claude", help="who proposes it (a guild agent's name)")
+    s = rec.add_parser("note", help="argue for / against / ask about a recommendation")
+    s.add_argument("id", type=int)
+    s.add_argument("body")
+    s.add_argument("--stance", default="challenge", choices=store.STANCES)
+    s.add_argument("--by", default="claude")
     s = rec.add_parser("list")
     s.add_argument("--status", choices=store.REC_STATUS)
     s = rec.add_parser("set")
@@ -96,7 +103,9 @@ def main(argv=None):
         elif a.cmd == "rec":
             if a.rcmd == "add":
                 out({"id": books.add_rec({"title": a.title, "body": a.body, "sleeve": a.sleeve,
-                                          "expected_idr_month": a.expected})})
+                                          "expected_idr_month": a.expected}, author=a.by)})
+            elif a.rcmd == "note":
+                out({"id": books.add_note(a.id, a.body, a.by, a.stance)})
             elif a.rcmd == "list":
                 out(books.recs(a.status))
             else:

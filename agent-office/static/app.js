@@ -558,6 +558,7 @@ document.addEventListener("click", async (ev) => {
     const fn = PANEL_ACTIONS[pact.dataset.panelAct] || (Hooks.panelActions || {})[pact.dataset.panelAct];
     if (fn) return guarded(pact, async () => { if (await fn(pact) !== false && UI.mode && Hooks.panels[UI.mode]) Hooks.panels[UI.mode].render($("#sheet-body")); });
   }
+  if (ev.target.closest("#fund-btn")) { location.href = "/fund/"; return; }  // net worth app, same door
   const open = ev.target.closest("[data-open]");
   if (open) { openPanel(open.dataset.open, true, open.dataset.arg); return; }
   const member = ev.target.closest("[data-staff]");

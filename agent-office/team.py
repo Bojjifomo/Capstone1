@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import briefing
+import fundaccess
 import handoff
 import personas
 import progress
@@ -149,12 +150,21 @@ class Team:
                 "bio": "%s the %s %s. Hired %s for %s." % (final, title, BIO_OPENERS[kind],
                                                            "%d %s" % (datetime.now().day, datetime.now().strftime("%B %Y")), role),
             }
-            (folder / "CLAUDE.md").write_text(self.brief_file(member), encoding="utf-8")
+            self._write_files(member)
             self.staff.append(member)
             if division not in self.divisions:
                 self.divisions.append(division)
             self.save()
         return member, (name if name and name != final else "")
+
+    def _write_files(self, member):
+        """CLAUDE.md, plus the Fund section and permissions for Counting House members."""
+        cfg = getattr(self.office, "cfg", {}) or {}
+        text = self.brief_file(member)
+        if fundaccess.in_fund(member):
+            text += fundaccess.brief_section(cfg, member["name"])
+        (Path(member["folder"]) / "CLAUDE.md").write_text(text, encoding="utf-8")
+        fundaccess.sync_settings(member, cfg)
 
     @staticmethod
     def brief_file(m):
@@ -241,7 +251,7 @@ class Team:
                 if division not in self.divisions:
                     self.divisions.append(division)
             Path(member["folder"]).mkdir(parents=True, exist_ok=True)
-            (Path(member["folder"]) / "CLAUDE.md").write_text(self.brief_file(member), encoding="utf-8")
+            self._write_files(member)
             used = {s["division"] for s in self.staff}
             self.divisions = [d for d in self.divisions if d in used]
             self.save()

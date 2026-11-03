@@ -104,6 +104,23 @@ class Flows(unittest.TestCase):
             b.delete_flow(999)
 
 
+class Notes(unittest.TestCase):
+    def test_agents_propose_and_argue(self):
+        b = books(tempfile.mkdtemp())
+        rid = b.add_rec({"title": "RDPU"}, author="Thorne")
+        b.add_note(rid, "Fee switching belum dihitung", "Sable", "challenge")
+        b.add_note(rid, "Angka kurs udah 3 hari", "Sable", "question")
+        r = b.recs()[0]
+        self.assertEqual(r["author"], "Thorne")
+        self.assertEqual([(n["author"], n["stance"]) for n in r["notes"]], [("Sable", "challenge"), ("Sable", "question")])
+        with self.assertRaises(store.Invalid):
+            b.add_note(rid, "x", "Sable", "maybe")
+        with self.assertRaises(store.Invalid):
+            b.add_note(999, "x")
+        with self.assertRaises(store.Invalid):
+            b.add_rec({"title": "x"}, author="<script>")
+
+
 class Recs(unittest.TestCase):
     def test_lifecycle_and_actualization(self):
         b = books(tempfile.mkdtemp())
@@ -207,6 +224,7 @@ class HTTP(unittest.TestCase):
         self.assertEqual(self.req(u + "/api/balances", {"account": json.loads(body)["id"], "amount": 5_000_000})[0], 200)
         self.assertEqual(self.req(u + "/api/flows", {"kind": "expense", "amount": 25000, "category": "kopi"})[0], 200)
         self.assertEqual(self.req(u + "/api/recs", {"title": "ide gue"})[0], 200)
+        self.assertEqual(self.req(u + "/api/recs/note", {"id": 1, "body": "kenapa?"})[0], 200)
         s = json.loads(self.req(u + "/api/summary")[1])
         self.assertEqual((s["net_worth_idr"], s["month"]["spent"], s["recs"]["open"]), (5_000_000, 25000, 1))
         recs = json.loads(self.req(u + "/api/recs")[1])["recs"]
@@ -247,6 +265,8 @@ class CLI(unittest.TestCase):
         code, out = run("report")
         r = json.loads(out)
         self.assertEqual((r["net_worth_idr"], r["month"]["spent"], len(r["recs_open"]), r["lp"]), (1_000_000, 20000, 1, {"enabled": False}))
+        self.assertEqual(run("rec", "note", "1", "Biaya transfer?", "--stance", "question", "--by", "Sable")[0], 0)
+        self.assertEqual(json.loads(run("report")[1])["recs_open"][0]["notes"][0]["author"], "Sable")
         self.assertEqual(run("rec", "set", "1", "--status", "done", "--actual", "45000")[0], 0)
         self.assertEqual(json.loads(run("report")[1])["recs"]["actual_idr_month_done"], 45000)
         with contextlib.redirect_stderr(io.StringIO()):

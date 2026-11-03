@@ -45,6 +45,7 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 | Vault | Free space, the biggest folders, six fixed cleaners (each needs a phone seal) |
 | Scrying | Search across every transcript |
 | Ledger | Every action taken from the page, and every token call from outside: messages, quests, errands, seals, cleaners |
+| 💰 Fund | Opens the Fund app (`../fund`: net worth, expenses, recommendations) at `/fund/` on this same address. See [The Counting House](#the-counting-house) |
 | Ravens & seals | Web push to your phone; one-time 6-digit seals for risky actions |
 
 ## Security
@@ -379,6 +380,33 @@ Ranks drive the title in the town: Apprentice at 0 XP, Journeyman at 40, Adept a
 ## The Counting House
 
 Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
+
+### The Fund behind the same door
+
+The **💰 Fund** button opens the Fund app (`../fund`, its own program and database) at `/fund/`, so the phone
+needs one address and one home-screen app. The Guild Hall forwards `/fund/…` to `fund_url`
+(default `http://127.0.0.1:7799`; `fund_token` if you set one in Fund). The Host allowlist, https and the POST
+origin check apply on the way in. `/fund` is not on the token allowlist, so external callers (Grokbot over
+Funnel) never see your money. If Fund is not running, the page says how to start it.
+
+### Agents on the Fund (critical thinking)
+
+Put any agent in **The Counting House** and its folder gets a Fund section in `CLAUDE.md` and
+`.claude/settings.json` rules for exactly these Fund commands: `report`, `lp`, `rec list`, `rec add`, `rec note`.
+They can read, propose, and argue on each other's recommendations (`support` / `challenge` / `question`);
+balances, expenses, budgets and the rate stay yours. Move the agent out and the rules are taken out again
+(your own rules in that file stay). Existing agents pick this up the next time they are saved (open them →
+edit → save). Two ready templates under **Fund** in the hire form:
+
+| Template | Job |
+| --- | --- |
+| Fund analyst | Reads the report, finds the biggest levers, tries to break each idea, proposes the survivors with the arithmetic |
+| Fund critic (devil's advocate) | Attacks every open recommendation with a specific flaw, a missing cost or a better alternative |
+
+Ask them like any teammate (`office ask "Fund critic" "review the open recommendations"`). Their notes show
+under each recommendation in Fund's **Saran** tab, where you decide.
+
+Set `fund_dir` if Fund is not installed at `~/Projects/fund`.
 
 ## Grok members (xAI)
 
