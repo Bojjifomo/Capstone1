@@ -1200,3 +1200,40 @@ class ChatOrders(ServerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccessAll(unittest.TestCase):
+    """access_all widens the project list and every run's --add-dir, and only through config.json."""
+
+    def test_project_listing_and_add_dirs(self):
+        import core
+        import runner
+        home = Path(tempfile.mkdtemp(prefix="ao-access-"))
+        for d in ("work/app", "docs", "Library/junk", ".ssh"):
+            (home / d).mkdir(parents=True)
+        old = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            office = core.Office.__new__(core.Office)
+            office.cfg = {"project_roots": [], "access_all": False}
+            office.agents_dir = str(home / "Agents")
+
+            class Stub:
+                lock = __import__("threading").Lock()
+                transcripts = {}
+
+                def refresh(self):
+                    pass
+            office.scanner = Stub()
+            narrow = {p["label"] for p in office.projects()}
+            self.assertNotIn("~/work", narrow)
+            office.cfg["access_all"] = True
+            wide = {p["label"] for p in office.projects()}
+            self.assertTrue({"~/work", "~/work/app", "~/docs"} <= wide, wide)
+            self.assertFalse(any("Library" in x or ".ssh" in x for x in wide), "system and hidden folders stay out of the picker")
+            self.assertIn(Path.home(), runner.access_roots())
+        finally:
+            if old is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old

@@ -429,3 +429,21 @@ Opus is the most expensive model, so in eco mode it only does what it is best at
   piece, helper, model and result.
 - **It sticks:** every later message you send that quest from the Guild Hall (or that waits in its queue) runs on the
   Opus lead with the same rules, until you turn the button off. Kept in `eco.json`.
+
+## Access to every folder (`access_all`)
+
+By default only `project_roots` (`~/Projects`) and `~/Agents` can start a quest. For agents that need the whole Mac,
+set this in `config.json` on the Mac (never from the phone, so a stolen phone cannot widen it):
+
+```json
+"access_all": true
+```
+
+Then restart (`launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`):
+
+- **Post a quest** lists your home folders and the ones inside them (two levels), plus the same under every disk in
+  `/Volumes`. `Library`, `Applications`, hidden folders and symlinks stay out of the list (600 entries at most).
+- **Every run** gets `--add-dir` for your home folder and each disk in `/Volumes`, so an agent started in one project can read
+  and edit its neighbours. That includes hidden folders like `~/.ssh`; the permission mode (Accept edits, Plan, …) is
+  still what decides what it may change.
+- The browser still sends folder ids only. The server decides which folders exist.
