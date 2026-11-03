@@ -54,6 +54,10 @@ STARTED_AS = {"cli": "Terminal", "sdk-cli": "Agent Office", "claude-desktop": "C
               "sdk-ts": "SDK", "sdk-py": "SDK", "claude-vscode": "VS Code", "mcp": "MCP"}
 
 
+SKIP_TOP = {"Library", "Applications", "Movies", "Music", "Pictures", "Public", "node_modules", "Trash"}
+MAX_PROJECTS = 600
+
+
 def home_path(p):
     p = str(p)
     home = str(Path.home())
@@ -360,10 +364,24 @@ class Office:
                         found.setdefault(str(d), 0)
             except OSError:
                 pass
+        if self.cfg.get("access_all"):
+            for root in runner.access_roots():
+                for d in self._subfolders(root):
+                    found.setdefault(str(d), 0)
+                    for sub in self._subfolders(d):
+                        found.setdefault(str(sub), 0)
         items = [{"id": hashlib.sha1(p.encode()).hexdigest()[:12], "path": p, "label": home_path(p), "recent": ts}
                  for p, ts in found.items()]
         items.sort(key=lambda i: (-i["recent"], i["label"].lower()))
-        return items
+        return items[:MAX_PROJECTS]
+
+    @staticmethod
+    def _subfolders(root):
+        try:
+            return [d for d in sorted(root.iterdir())
+                    if d.is_dir() and not d.is_symlink() and not d.name.startswith(".") and d.name not in SKIP_TOP]
+        except OSError:
+            return []
 
     def project_path(self, pid):
         for p in self.projects():

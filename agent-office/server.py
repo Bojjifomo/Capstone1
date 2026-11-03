@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     "external_origin": "grokbot",
     "agents_dir": "~/Agents",
     "project_roots": ["~/Projects"],
+    "access_all": False,        # true = every folder under your home and /Volumes can start a quest, and every run may touch them. Set it here, never from the phone
     "claude_bin": "",           # empty = look in the usual places
     "push_subject": "mailto:bojjifomo@users.noreply.github.com",
     "default_mode": "acceptEdits",

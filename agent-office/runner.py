@@ -24,6 +24,16 @@ MAX_TEXT = 20000
 KEEP_RUNS = 60
 
 
+def access_roots():
+    """With access_all: your home folder and every mounted disk. The server decides this, never the browser."""
+    roots = [Path.home()]
+    try:
+        roots += [d for d in sorted(Path("/Volumes").iterdir()) if d.is_dir() and not d.is_symlink()]
+    except OSError:
+        pass
+    return roots
+
+
 def find_claude(cfg):
     home = Path.home()
     for c in (cfg.get("claude_bin"), shutil.which("claude"), home / ".local/bin/claude",
@@ -166,8 +176,11 @@ class Runner:
             argv += ["--model", MODELS[model]]
         if system:
             argv += ["--append-system-prompt", system]
-        for extra in add_dirs or ():
-            if extra and os.path.isdir(extra):
+        extras = list(add_dirs or ())
+        if self.cfg.get("access_all"):
+            extras += [str(r) for r in access_roots()]
+        for extra in dict.fromkeys(extras):
+            if extra and os.path.isdir(extra) and extra != cwd:
                 argv += ["--add-dir", extra]
         run = Run(sid, cwd, text, mode, origin, helper)
         if helper:
