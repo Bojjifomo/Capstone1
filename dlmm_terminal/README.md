@@ -102,6 +102,8 @@ Test rules (Node, di luar Scriptable): `node dlmm_terminal/scriptable/test_rules
 
 ## Versi web (kayak LP WEB, buat Solana)
 
+Di Mac mini: double-click **`dlmm_terminal/Buka DLMM Web.command`** di Finder (browser kebuka sendiri ke `http://localhost:8790`, biarin jendela Terminal-nya kebuka). Dari HP lewat Tailscale: `http://<nama-mac-mini>:8790`. Pertama kali, macOS mungkin nolak file-nya: klik kanan → Open → Open.
+
 ```bash
 python3 -m dlmm_terminal web                      # http://localhost:8790
 python3 -m dlmm_terminal web --host 0.0.0.0       # buka dari HP lewat Tailscale
