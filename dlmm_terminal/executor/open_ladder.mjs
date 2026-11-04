@@ -26,11 +26,12 @@ const { StrategyType } = DLMMmod;
 const WSOL = "So11111111111111111111111111111111111111112";
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i > 0 ? process.argv[i + 1] : d; };
 const flag = n => process.argv.includes(`--${n}`);
-const out = o => { process.stdout.write(JSON.stringify(o, (k, v) => (typeof v === "bigint" ? v.toString() : v)) + "\n"); };
+const out = o => { process.stdout.write(JSON.stringify({ ...o, rpc: rpcStats() }, (k, v) => (typeof v === "bigint" ? v.toString() : v)) + "\n"); };
 const fail = (msg, extra) => { out({ ok: false, error: msg, ...(extra || {}) }); process.exit(1); };
 
 import { planLadder } from "./ladder.mjs";
 import { loadSigner } from "./keys.mjs";
+import { tradeConnection, withReadConnection, rpcStats } from "./rpc.mjs";
 
 // ---- main ----
 const pool = arg("pool"), sol = Number(arg("sol")), slices = Number(arg("slices", "5"));
@@ -42,8 +43,8 @@ const mode = flag("plan") ? "plan" : flag("build") ? "build" : flag("dry-run") ?
 if (!pool || !(sol > 0) || !(slices >= 1 && slices <= 20) || !(bottom > top && bottom < 100) || strategyType == null) {
   fail("usage: --pool P --sol N --slices 1-20 --bottom 1-99 [--top 0] [--strategy spot|curve|bidask] [--plan|--dry-run|--build] [--owner PK]");
 }
-const rpc = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
-const connection = new Connection(rpc, "confirmed");
+// --plan is read-only and runs on every size change in the web modal: keep it off the keyed RPC
+// (Helius free tier) unless the public node fails. Everything that sends uses the keyed RPC.
 
 let signer = null, owner = null;
 if (mode === "send") {
@@ -56,7 +57,13 @@ if (mode === "send") {
   fail("--owner PUBKEY is needed for --dry-run / --build");
 }
 
-const dlmm = await DLMM.create(connection, new PublicKey(pool));
+let connection, dlmm;
+if (mode === "plan") {
+  dlmm = await withReadConnection(c => { connection = c; return DLMM.create(c, new PublicKey(pool)); });
+} else {
+  connection = tradeConnection();
+  dlmm = await DLMM.create(connection, new PublicKey(pool));
+}
 const lb = dlmm.lbPair;
 const solIsX = lb.tokenXMint.toBase58() === WSOL;
 if (!solIsX && lb.tokenYMint.toBase58() !== WSOL) fail("not a SOL pool");

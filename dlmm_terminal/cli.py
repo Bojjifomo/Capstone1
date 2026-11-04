@@ -9,6 +9,7 @@
   python -m dlmm_terminal open POOL --sol 8      # open a 5-slice Spot SOL-only ladder (RH style), you confirm
   python -m dlmm_terminal benchmark              # benchmark wallet's last 20 days -> habitat profile
   python -m dlmm_terminal signal                 # every 5 min: ping pools that pass gates + match the benchmark
+  python -m dlmm_terminal rpc                    # what the Helius RPC was spent on (open / close / plan)
 """
 from __future__ import annotations
 
@@ -242,6 +243,8 @@ def execute_close(t: exits.Tick, wallet: str, dry_run: bool) -> bool:
         cmd += ["--dry-run", "--owner", wallet]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     print(r.stdout.strip() or r.stderr.strip())
+    from . import node
+    node.log_rpc("close_position.mjs", cmd, node.last_json(r.stdout) or {})
     return r.returncode == 0
 
 
@@ -327,6 +330,40 @@ def cmd_followup(a, cfg):
         append("followup.jsonl", row)
         n += 1
     print(f"filled {n} candidates (price 1h / 6h / 24h later + worst dip) → {DATA / 'followup.jsonl'}")
+
+
+# ---------- RPC usage (Helius free tier) ----------
+
+def cmd_rpc(a, cfg):
+    """What the keyed RPC (Helius) was spent on. Only the executor (open / close / plan) uses RPC;
+    screen, signal, benchmark, monitor (alert) and the web lists use the Meteora + DexScreener APIs."""
+    from . import node
+    rows = [json.loads(l) for l in node.USAGE_LOG.read_text().splitlines() if l.strip()] if node.USAGE_LOG.exists() else []
+    since = datetime.now(timezone.utc).timestamp() - a.days * 86400
+    rows = [r for r in rows if datetime.fromisoformat(r["ts"]).timestamp() >= since]
+    if not rows:
+        return print(f"No executor runs in the last {a.days:g} days → 0 RPC requests. "
+                     "(screen / signal / benchmark / monitor alert / web lists never touch RPC.)")
+    def total(rs, host=None):
+        return sum((r.get("byHost") or {}).get(host, 0) if host else r.get("calls", 0) for r in rs)
+    print(f"RPC requests, last {a.days:g} days: {total(rows)} total · helius {total(rows, 'helius')} · "
+          f"public {total(rows, 'public')}")
+    by: dict = {}
+    for r in rows:
+        k = f"{r['script'].replace('.mjs', '')} --{r['mode']}"
+        v = by.setdefault(k, [0, 0, 0])
+        v[0] += 1
+        v[1] += (r.get("byHost") or {}).get("helius", 0)
+        v[2] += r.get("calls", 0)
+    for k, (n, h, t) in sorted(by.items(), key=lambda kv: -kv[1][1]):
+        print(f"  {k:<28} {n:>4} runs · helius {h:>5} ({h / n:.0f}/run) · all {t}")
+    methods: dict = {}
+    for r in rows:
+        for m, n in (r.get("byMethod") or {}).items():
+            methods[m] = methods.get(m, 0) + n
+    print("  by method: " + ", ".join(f"{m} {n}" for m, n in sorted(methods.items(), key=lambda kv: -kv[1])))
+    days = max(a.days, 1)
+    print(f"  pace ≈ {total(rows, 'helius') / days * 30:,.0f} Helius requests / 30 days")
 
 
 # ---------- benchmark wallet + entry signal ping ----------
@@ -605,6 +642,8 @@ def main(argv=None):
     sg.add_argument("--wallet", help="benchmark wallet (default config signal.benchmarkWallet)")
     sg.add_argument("--min-score", type=float, help="0..1, share of habitat dims the pool must match (default config: 1.0 = all)")
     sg.add_argument("--once", action="store_true", help="one scan, then exit")
+    r = sub.add_parser("rpc", help="RPC (Helius) requests made by open / close / plan, from data/rpc_usage.jsonl")
+    r.add_argument("--days", type=float, default=30)
     w = sub.add_parser("web", help="browser terminal: pools + entry check + chart + portfolio exits")
     w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from the phone over Tailscale")
     w.add_argument("--port", type=int, default=8790)
@@ -614,7 +653,7 @@ def main(argv=None):
         from . import web
         return web.serve(cfg, a.host, a.port)
     {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open,
-     "benchmark": cmd_benchmark, "signal": cmd_signal}[a.cmd](a, cfg)
+     "benchmark": cmd_benchmark, "signal": cmd_signal, "rpc": cmd_rpc}[a.cmd](a, cfg)
 
 
 if __name__ == "__main__":

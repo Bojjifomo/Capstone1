@@ -64,6 +64,25 @@ Benchmark 20 hari (4 Nov 2026): 87 entry di 25 pool, win 87%, +12.86 SOL (PnL Me
 
 Ini **cek kemiripan**, bukan prediksi: spec nemu nggak ada fitur entry yang misahin winner/loser di token baru. Tetap assist mode: ping → lu cek → `open`.
 
+## Hemat Helius (RPC free tier)
+
+Yang **nggak pernah** pakai RPC (0 request): `screen`, `signal` (blast + benchmark), `benchmark`, `monitor` mode alert, `followup`, dan list pool + Portfolio di web. Semuanya dari API Meteora + DexScreener (gratis, tanpa key). Jadi signal 24/7 di Mac mini **nggak makan kuota Helius sama sekali**.
+
+Helius (`SOLANA_RPC_URL`) cuma dipakai pas beneran transaksi:
+
+| Aksi | RPC |
+| --- | --- |
+| Preview ladder (modal Zap di web, `open --plan`) | **node publik** dulu; Helius cuma kalau publik gagal. Dulu ±4 request Helius tiap ubah size |
+| Buka ladder (`open`, tombol ⚡) | Helius: baca pool, simulate + kirim + konfirmasi per slice |
+| Close (`Close` / `monitor --mode auto`) | Helius, cuma pas exit rule kena / lu klik |
+
+Cek pemakaiannya (dicatat ke `data/rpc_usage.jsonl` tiap kali executor jalan):
+
+```bash
+python3 -m dlmm_terminal rpc            # 30 hari: total, Helius vs publik, per aksi, per method, pace / 30 hari
+python3 -m dlmm_terminal rpc --days 7
+```
+
 ## Filter (gate = wajib, flag = warning)
 
 | Tipe | Rule | Kenapa (dari data) |
