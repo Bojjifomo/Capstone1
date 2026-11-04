@@ -72,7 +72,7 @@ function spark(r, w = 64, h = 22) {
 async function getJson(url, opt) {
   // 90s cap: a request that never answers shows as an error, not an endless "Loading…".
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 90_000);
+  const timer = setTimeout(() => ctl.abort(), 90000);
   let r;
   try { r = await fetch(url, { ...(opt || {}), signal: ctl.signal }); }
   catch (e) { throw new Error(e.name === "AbortError" ? `${url.split("?")[0]} nggak jawab dalam 90 detik` : e.message); }
@@ -412,7 +412,7 @@ function renderPortfolio() {
   }).join("");
   const x = pf.exitsCfg || {};
   $("#pfRules").textContent = `Exit rules: alert PnL ≤ ${x.alertAtPnlPct}% · alert 1/3 bawah range · close kalau ${x.closeBelowRangeAfterMin} menit di bawah range (SOL-only) · `
-    + `TP ${x.takeProfitPct ?? "off"} · SL ${x.stopLossPct ?? "off"}. Close di sini lewat Phantom (lu approve). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
+    + `TP ${x.takeProfitPct != null ? x.takeProfitPct : "off"} · SL ${x.stopLossPct != null ? x.stopLossPct : "off"}. Close di sini lewat Phantom (lu approve). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
 }
 
 // ---------- wiring ----------
@@ -471,6 +471,7 @@ $("#loadWallet").onclick = loadPortfolio;
 $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortfolio(); });
 
 (async function init() {
+  window.__dlmmStarted = true;
   state.win = store.get("win", "24h");
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);
@@ -485,7 +486,7 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   try { phantom.connect(true); } catch (e) {}      // reconnect silently if this site was approved before
   await pools;
   if ($("#wallet").value.trim()) loadPortfolio();
-  setInterval(() => loadPools(), 60_000);                       // pools: every minute (server caches 60s)
-  setInterval(() => { if (state.wallet) loadPortfolio(); }, 300_000);   // positions + exit rules: every 5 min
-  setInterval(tickAge, 5_000);
+  setInterval(() => loadPools(), 60000);                       // pools: every minute (server caches 60s)
+  setInterval(() => { if (state.wallet) loadPortfolio(); }, 300000);   // positions + exit rules: every 5 min
+  setInterval(tickAge, 5000);
 })();
