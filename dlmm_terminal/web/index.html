@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DLMM Web</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">◆ DLMM WEB</div>
+  <nav>
+    <button class="tab on" data-view="pools">☄️ Pilih pool</button>
+    <button class="tab" data-view="portfolio">💼 Portfolio <span id="posCount" class="pill hidden">0</span></button>
+  </nav>
+  <div class="stat" id="stNet">posisi <b>--</b></div>
+  <div class="stat" id="stSol">SOL <b>--</b></div>
+  <div class="stat" id="stFees">fees unclaimed <b>--</b></div>
+  <div class="spacer"></div>
+  <a class="chip" href="https://app.meteora.ag/dlmm" target="_blank" rel="noopener">○ Meteora</a>
+  <div class="chip" id="stCap" title="max position = bankroll × loss budget ÷ 0.9">max --</div>
+  <div class="chip live" id="stAge">● --</div>
+</header>
+
+<main>
+  <section class="left" id="viewPools">
+    <div class="bar">
+      <span class="title">PRINTERS</span>
+      <span class="muted">pool SOL · fee per hari dari TVL · klik baris buat detail</span>
+      <span class="spacer"></span>
+      <div class="seg" id="win">
+        <button data-w="1h">1h</button><button data-w="4h">4h</button><button data-w="24h" class="on">24h</button>
+      </div>
+    </div>
+    <div class="bar filters">
+      <input id="q" placeholder="token name or address…" autocomplete="off">
+      <label>TVL ≥ <select id="tvl">
+        <option value="1000">$1.00k</option><option value="2000" selected>$2.00k</option>
+        <option value="5000">$5.00k</option><option value="10000">$10.0k</option><option value="25000">$25.0k</option>
+      </select></label>
+      <label><input type="checkbox" id="passOnly"> v1 pass only</label>
+      <label><input type="checkbox" id="hideSkip" checked> hide SKIP</label>
+      <span class="muted" id="count">--</span>
+    </div>
+    <div class="tablewrap">
+      <table id="pools">
+        <thead><tr>
+          <th data-sort="symbol">POOL<small>bin · fee · age · 24h</small></th>
+          <th class="r" data-sort="tvlUsd">TVL<small>vol 24h</small></th>
+          <th class="r" data-sort="fees">FEES <span class="wl">24H</span><small>% / day</small></th>
+          <th class="r" data-sort="fee1h">FEE 1 JAM<small>% dari TVL · $</small></th>
+          <th class="r" data-sort="mcapUsd">MCAP<small>24h</small></th>
+          <th data-sort="score">ENTRY CHECK<small>spec v1 · reasons</small></th>
+          <th>ZAP<small>plan, you confirm</small></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty hidden" id="poolsEmpty">Loading pools…</div>
+    </div>
+  </section>
+
+  <section class="left hidden" id="viewPortfolio">
+    <div class="bar">
+      <span class="title">PORTFOLIO</span>
+      <span class="muted">posisi DLMM terbuka · exit rules spec v1 dicek tiap refresh (5 menit)</span>
+      <span class="spacer"></span>
+      <input id="wallet" placeholder="wallet address…" autocomplete="off" spellcheck="false">
+      <button class="btn" id="loadWallet">Load</button>
+    </div>
+    <div class="bar summary" id="pfSummary"></div>
+    <div class="tablewrap">
+      <table id="positions">
+        <thead><tr>
+          <th>TOKEN<small>position · held</small></th>
+          <th class="r">PNL<small>SOL · peak</small></th>
+          <th>RANGE<small>price vs top · bottom</small></th>
+          <th>EXIT CHECK<small>alerts · rules</small></th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="pfEmpty">Isi wallet lalu Load. Tanpa private key: cuma baca.</div>
+    </div>
+    <div class="note" id="pfRules"></div>
+  </section>
+
+  <aside class="right" id="detail">
+    <div class="empty">Klik pool buat detail, chart, dan plan zap.</div>
+  </aside>
+</main>
+
+<div class="modal hidden" id="modal"><div class="card" id="modalCard"></div></div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -5,6 +5,7 @@
   python -m dlmm_terminal decide ADDR enter|skip --reason "..."
   python -m dlmm_terminal monitor --wallet W     # every 5 min: log PnL, alerts, exit rules (auto TP/SL)
   python -m dlmm_terminal followup               # fill price 1h/6h/24h after each candidate
+  python -m dlmm_terminal web                    # browser terminal on http://localhost:8790
 """
 from __future__ import annotations
 
@@ -265,8 +266,14 @@ def main(argv=None):
     m.add_argument("--dry-run", action="store_true", help="auto mode: build + simulate the close, don't send")
     m.add_argument("--once", action="store_true")
     sub.add_parser("followup", help="price 1h/6h/24h after each logged candidate")
+    w = sub.add_parser("web", help="browser terminal: pools + entry check + chart + portfolio exits")
+    w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from the phone over Tailscale")
+    w.add_argument("--port", type=int, default=8790)
     a = ap.parse_args(argv)
     cfg = load_config(a.config)
+    if a.cmd == "web":
+        from . import web
+        return web.serve(cfg, a.host, a.port)
     {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup}[a.cmd](a, cfg)
 
 

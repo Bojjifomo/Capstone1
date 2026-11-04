@@ -99,3 +99,17 @@ Setting baru ada di bagian 8–9 `MET Secrets.example.js`. Secrets lama tetap ja
 Batasan iOS: widget refresh tiap ~15 menit dan nggak boleh kirim transaksi, jadi "10 menit di bawah range" = dua refresh yang jaraknya ≥ 10 menit, dan close-nya jalan pas app dibuka (auto) atau pas lu tap notifikasi (alert). Buat yang beneran jalan sendiri tiap 5 menit: `python3 -m dlmm_terminal monitor --mode auto` di Mac.
 
 Test rules (Node, di luar Scriptable): `node dlmm_terminal/scriptable/test_rules.mjs`
+
+## Versi web (kayak LP WEB, buat Solana)
+
+```bash
+python3 -m dlmm_terminal web                      # http://localhost:8790
+python3 -m dlmm_terminal web --host 0.0.0.0       # buka dari HP lewat Tailscale
+```
+
+- **Pilih pool**: semua pool DLMM SOL (TVL ≥ filter), kolom TVL / FEES (1h · 4h · 24h) / FEE 1 JAM / MCAP + sparkline 24h / **ENTRY CHECK** / ZAP. Sort tiap kolom, search, `v1 pass only`, `hide SKIP`. Refresh tiap 1 menit.
+- **ENTRY CHECK** = spec v1: `OPEN` (gate lolos, nggak ada flag) · `CAREFUL` (gate lolos, ada flag) · `WAIT` (gate yang bisa berubah gagal: umur, fee APR, size vs TVL) · `SKIP` (bin step / bukan SOL). Skor + alasan kayak "Volume picking up", "Buyers lead" dari DexScreener cuma konteks, **nggak** ngubah level (spec: nggak ada sinyal entry yang tahan di token baru).
+- **Detail** (klik baris): harga, mcap, TVL, fee/hari, kotak verdict, alasan ✓/✗, tombol zap, chart DexScreener.
+- **Zap**: modal plan (size SOL, range bottom −70%, size vs TVL, cap loss budget, flag) → `Open di Meteora`, `Copy plan`, `Log: enter / skip` (ke `data/decisions.jsonl`). Web ini **nggak pegang key**; buka posisinya di Meteora atau MET Pool di HP.
+- **Portfolio**: posisi terbuka wallet (Meteora API), PnL SOL + peak, range bar (merah = 1/3 bawah), EXIT CHECK pakai rules yang sama dengan `monitor` (dicek tiap 5 menit selama halaman kebuka). Close tetap dari MET Portfolio / Meteora / `monitor --mode auto`.
+- Snapshot semua kandidat ke `data/candidates.jsonl` maksimal tiap 15 menit (buat v2).
