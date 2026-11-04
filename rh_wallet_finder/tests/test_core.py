@@ -308,6 +308,24 @@ class RpcTest(unittest.TestCase):
         self.assertEqual([x["n"] for x in logs], list(range(0, 1000, 10)))  # complete, in order, no repeats
         self.assertGreater(calls["backup"], 0)  # the other RPC carried on while the first rested
 
+    def test_pool_moves_past_a_rejected_key(self):
+        rejected = "Invalid API key or inactive subscription"
+        ms = [R.RPC("https://dead.example"), R.RPC("https://backup.example")]
+        p = R.RPCPool(ms, prefer=0)
+
+        def dead(method, params):
+            raise R.RPCError(f"{method}: {rejected}")
+        ms[0].call = dead
+        ms[1].call = lambda method, params: [{"n": 1}] if method == "eth_getLogs" else "0x10"
+        self.assertEqual(p.call("eth_blockNumber", []), "0x10")
+        ms[0].cool_until = 0
+        self.assertEqual(p.get_logs({}, 0, 9, 10)[0], [{"n": 1}])
+        # every key rejected: the caller still gets the real error
+        ms[1].call = dead
+        ms[0].cool_until = ms[1].cool_until = 0
+        with self.assertRaisesRegex(R.RPCError, rejected):
+            p.call("eth_blockNumber", [])
+
     def test_get_logs_shrinks_and_resumes(self):
         rpc = R.RPC("http://example.invalid", workers=2)
         seen = []
