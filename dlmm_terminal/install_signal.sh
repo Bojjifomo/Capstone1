@@ -57,8 +57,21 @@ except Exception:
     ctx = ssl.create_default_context()
 tok, chat = sys.argv[1], sys.argv[2]
 body = urllib.parse.urlencode({"chat_id": chat, "text": "✅ DLMM signal: Telegram nyambung, watcher dipasang di Mac mini."}).encode()
+import json, urllib.error
 try:
     urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=body, timeout=15, context=ctx).read()
+except urllib.error.HTTPError as e:
+    try:
+        why = json.load(e).get("description", "")
+    except Exception:
+        why = ""
+    print(f"Telegram gagal: HTTP {e.code} {why}", file=sys.stderr)
+    if "chat not found" in why:
+        print("  → chat id salah, atau lu belum pernah chat bot-nya. Buka bot lu di Telegram, tekan Start / kirim /start,", file=sys.stderr)
+        print("    lalu cek DLMM_TG_CHAT_ID = angka 'Id' dari @userinfobot (grup: diawali -100…).", file=sys.stderr)
+    elif e.code == 401:
+        print("  → token salah: copy ulang dari @BotFather (formatnya 123456789:AA…).", file=sys.stderr)
+    sys.exit(1)
 except Exception as e:
     print(f"Telegram gagal: {e}", file=sys.stderr); sys.exit(1)
 PYEOF
