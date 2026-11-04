@@ -261,7 +261,8 @@ function openZap(r, size) {
     const sz = parseFloat($("#zSize").value) || 0, bottom = parseFloat($("#zBottom").value) || 70, slices = parseInt($("#zSlices").value, 10) || 5;
     const sizePct = r.tvlUsd ? sz * d.solUsd / r.tvlUsd * 100 : null;
     const gateFails = r.verdict.reasons.filter(x => !x.ok && !x.flag && !/^sizeVsTvl/.test(x.text)).map(x => nice(x.text));
-    if (sizePct != null && sizePct > 3) gateFails.push(`Size ${sizePct.toFixed(1)}% of TVL (max 3%)`);
+    const maxTvlPct = state.cfg && state.cfg.cfg && state.cfg.cfg.gates.maxPositionPctOfTvl;
+    if (maxTvlPct != null && sizePct != null && sizePct > maxTvlPct) gateFails.push(`Size ${sizePct.toFixed(1)}% of TVL (max ${maxTvlPct}%)`);
     const warn = [];
     if (sz > maxSol + 1e-9) warn.push(`⛔ ${fmtSol(sz, 2)} di atas cap loss budget ${fmtSol(maxSol, 2)}`);
     if (bottom < 65) warn.push(`⚠ Range bottom −${bottom}%: spec pakai −70% (semua rugi besar jatuh 44–58%)`);

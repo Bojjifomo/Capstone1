@@ -50,6 +50,12 @@ class FilterTests(unittest.TestCase):
         for g in ("binStep", "poolAge", "feeApr24h", "sizeVsTvl"):
             self.assertIn(g, joined)
 
+    def test_size_vs_tvl_gate_off_when_null(self):
+        cfg = {**CFG, "gates": {**CFG["gates"], "maxPositionPctOfTvl": None}}
+        c = filters.evaluate(snap(tvl=10_000, fees={"1h": 0, "24h": 400}), candles([1e-5] * 26), cfg, NOW)
+        self.assertGreater(c["sizeVsTvlPct"], 3)          # still computed and shown
+        self.assertFalse(any(g.startswith("sizeVsTvl") for g in c["gatesFailed"]))
+
     def test_young_pool_fee_apr_uses_hours_available(self):
         s = snap(created_at=(NOW.timestamp() - 2 * 3600) * 1000, fees={"1h": 0, "24h": 100})
         f = filters.features(s, [], 8, NOW)

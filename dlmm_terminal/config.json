@@ -1,7 +1,7 @@
 {
   "_note": "Starting values from DLMM-Auto-Entry-Spec v1 (133 closed positions, Oct 25 - Nov 4 2026). Change only after re-testing on unseen tokens (spec section 7).",
   "universe": {"protocol": "meteora-dlmm", "quote": "SOL", "binStepMin": 20, "binStepMax": 250},
-  "gates": {"minPoolAgeMinutes": 60, "minFeeApr24hPct": 1000, "maxPositionPctOfTvl": 3},
+  "gates": {"minPoolAgeMinutes": 60, "minFeeApr24hPct": 1000, "maxPositionPctOfTvl": null, "_maxPositionPctOfTvl": "off (owner, 2026-11-04); set a number like 3 to gate size vs TVL again"},
   "position": {
     "strategy": "Spot", "side": "SOL-only", "rangeBottomPct": -70,
     "bankrollSol": 160, "lossBudgetPct": 5, "defaultSizeSol": 8,

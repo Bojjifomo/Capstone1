@@ -123,7 +123,8 @@ const SPEC = (() => {
     binStepMin: n("SPEC_BIN_STEP_MIN", 20), binStepMax: n("SPEC_BIN_STEP_MAX", 250),
     minPoolAgeMin: n("SPEC_MIN_POOL_AGE_MIN", 60),
     minFeeAprPct: n("SPEC_MIN_FEE_APR_PCT", 1000),
-    maxPctOfTvl: n("SPEC_MAX_PCT_OF_TVL", 3),
+    // Off by default (owner, 2026-11-04). A number in Secrets turns the size-vs-TVL gate back on.
+    maxPctOfTvl: n("SPEC_MAX_PCT_OF_TVL", null),
     pump1hPct: n("SPEC_FLAG_PUMP_1H_PCT", 25), drop6hPct: n("SPEC_FLAG_DROP_6H_PCT", -17),
     minTvlUsd: n("SPEC_FLAG_MIN_TVL_USD", 25000),
     nightFrom: n("SPEC_FLAG_NIGHT_FROM", 0), nightTo: n("SPEC_FLAG_NIGHT_TO", 9), utcOffset: n("SPEC_UTC_OFFSET", 7),
@@ -152,7 +153,7 @@ function specCheck(r, amountSol, nowMs) {
   const apr = specFeeApr(r);
   if (apr == null || apr < SPEC.minFeeAprPct) gates.push(`fee APR ${apr == null ? "--" : Math.round(apr).toLocaleString() + "%"} (< ${SPEC.minFeeAprPct}%)`);
   const sizePct = amountSol > 0 && r.solUsd && r.tvl > 0 ? amountSol * r.solUsd / r.tvl * 100 : null;
-  if (sizePct == null || sizePct > SPEC.maxPctOfTvl) gates.push(`size ${sizePct == null ? "--" : sizePct.toFixed(1) + "%"} of TVL (> ${SPEC.maxPctOfTvl}%)`);
+  if (SPEC.maxPctOfTvl != null && (sizePct == null || sizePct > SPEC.maxPctOfTvl)) gates.push(`size ${sizePct == null ? "--" : sizePct.toFixed(1) + "%"} of TVL (> ${SPEC.maxPctOfTvl}%)`);
   if (r.chg1h != null && r.chg1h >= SPEC.pump1hPct) flags.push(`pump 1h +${r.chg1h.toFixed(0)}%`);
   if (r.chg6h != null && r.chg6h <= SPEC.drop6hPct) flags.push(`drop 6h ${r.chg6h.toFixed(0)}%`);
   if (r.tvl < SPEC.minTvlUsd) flags.push(`TVL ${fmtCompact(r.tvl)}`);
@@ -3058,7 +3059,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     t.addRow(fr);
     const nr = new UITableRow();
     nr.height = 30;
-    const nc = nr.addText(`Gates: bin ${SPEC.binStepMin}-${SPEC.binStepMax} · age ≥ ${SPEC.minPoolAgeMin}m · fee APR ≥ ${SPEC.minFeeAprPct}% · ${fmtSol(size, 2)} ≤ ${SPEC.maxPctOfTvl}% TVL`,
+    const nc = nr.addText(`Gates: bin ${SPEC.binStepMin}-${SPEC.binStepMax} · age ≥ ${SPEC.minPoolAgeMin}m · fee APR ≥ ${SPEC.minFeeAprPct}%` + (SPEC.maxPctOfTvl != null ? ` · ${fmtSol(size, 2)} ≤ ${SPEC.maxPctOfTvl}% TVL` : ""),
       SPEC_MAX_POSITION_SOL != null ? `Max position ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL (bankroll ${SPEC.bankrollSol} × ${SPEC.lossBudgetPct}% ÷ 0.9) · range bottom −${SPEC.rangeBottomPct}%`
         : `Set BANKROLL_SOL in MET Secrets for the loss-budget cap · range bottom −${SPEC.rangeBottomPct}%`);
     nc.titleFont = Font.systemFont(10);
@@ -3337,7 +3338,7 @@ function confirmText(row, preset, z) {
   // Spec v1 first: what blocks this entry, what to look at twice.
   const sc = specCheck(row, preset.amount, Date.now());
   if (!sc.ok) lines.push(`⛔ SPEC v1 SAYS SKIP: ${sc.gates.join("; ")}.`);
-  else lines.push(`✅ Spec v1 gates pass (fee APR ${Math.round(sc.feeApr).toLocaleString()}%, ${sc.sizePct.toFixed(1)}% of TVL).`);
+  else lines.push(`✅ Spec v1 gates pass (fee APR ${Math.round(sc.feeApr).toLocaleString()}%, ${sc.sizePct != null ? sc.sizePct.toFixed(1) + "% of TVL" : "TVL --"}).`);
   if (sc.flags.length) lines.push(`⚠️ Flags (warning only): ${sc.flags.join(", ")}.`);
   if (SPEC_MAX_POSITION_SOL != null && preset.amount > SPEC_MAX_POSITION_SOL + 1e-9) {
     lines.push(`⛔ ${fmtSol(preset.amount, 3)} is over the loss-budget cap of ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL.`);

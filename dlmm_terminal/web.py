@@ -62,7 +62,7 @@ def verdict(c: dict, m: dict | None) -> dict:
     """OPEN / CAREFUL / WAIT / SKIP from the spec gates and flags, plus reasons shown as ✓ / ✗.
 
     SKIP  a gate that won't change (SOL not in pair, bin step outside 20-250)
-    WAIT  a gate that can change (pool too young, fee APR too low, size > 3% of TVL)
+    WAIT  a gate that can change (pool too young, fee APR too low; size vs TVL only if configured)
     CAREFUL  gates pass, some flag shows
     OPEN  gates pass, no flags
     Market signals (volume pace, buyers vs sellers) are context only: the spec found

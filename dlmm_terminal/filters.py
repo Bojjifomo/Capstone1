@@ -113,8 +113,10 @@ def gates(f: dict, cfg: dict) -> tuple[list[str], list[str]]:
         "binStep": f["binStep"] is not None and u["binStepMin"] <= f["binStep"] <= u["binStepMax"],
         "poolAge": f["poolAgeHours"] * 60 >= g["minPoolAgeMinutes"],
         "feeApr24h": f["feeApr24h"] >= g["minFeeApr24hPct"],
-        "sizeVsTvl": f["sizeVsTvlPct"] is not None and f["sizeVsTvlPct"] <= g["maxPositionPctOfTvl"],
     }
+    # Size vs TVL is a gate only when configured (owner turned it off; shown as info).
+    if g.get("maxPositionPctOfTvl") is not None:
+        checks["sizeVsTvl"] = f["sizeVsTvlPct"] is not None and f["sizeVsTvlPct"] <= g["maxPositionPctOfTvl"]
     passed = [k for k, ok in checks.items() if ok]
     failed = [_why(k, f, cfg) for k, ok in checks.items() if not ok]
     return passed, failed
@@ -127,7 +129,7 @@ def _why(k: str, f: dict, cfg: dict) -> str:
         "binStep": f"binStep: {f['binStep']} outside {u['binStepMin']}-{u['binStepMax']}",
         "poolAge": f"poolAge: {f['poolAgeHours'] * 60:.0f}m < {g['minPoolAgeMinutes']}m",
         "feeApr24h": f"feeApr24h: {f['feeApr24h']:.0f}% < {g['minFeeApr24hPct']}%",
-        "sizeVsTvl": f"sizeVsTvl: {f['sizeVsTvlPct']}% > {g['maxPositionPctOfTvl']}%",
+        "sizeVsTvl": f"sizeVsTvl: {f['sizeVsTvlPct']}% > {g.get('maxPositionPctOfTvl')}%",
     }[k]
 
 
