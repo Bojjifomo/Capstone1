@@ -460,7 +460,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").
 $("#stAge").onclick = () => loadPools(true);
 $("#keyBtn").onclick = () => alert(trade.ready()
   ? `Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (DLMM_WEB_PIN)." : "\nTrading cuma dari Mac ini."}`
-  : trade.why() + "\n\nDi .env (folder Capstone1):\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\nSOLANA_RPC_URL=<Helius RPC>\nOpsional: DLMM_WEB_PIN=<PIN> buat trading dari HP.");
+  : trade.why() + "\n\nDi dlmm_terminal/.env:\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\nSOLANA_RPC_URL=<Helius RPC>\nOpsional: DLMM_WEB_PIN=<PIN> buat trading dari HP.");
 $("#positions tbody").addEventListener("click", e => {
   const b = e.target.closest("[data-close]");
   if (!b || !state.pf) return;

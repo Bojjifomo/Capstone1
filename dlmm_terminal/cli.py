@@ -35,11 +35,24 @@ def load_env() -> None:
             for line in p.read_text().splitlines():
                 if "=" in line and not line.lstrip().startswith("#"):
                     k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    # An empty line from the template ("KEY=") means "not set": it must not
+                    # block a value given later in the file or in the other .env.
+                    if v and not os.environ.get(k):
+                        os.environ[k] = v
 
 
 def load_config(path: str | None) -> dict:
-    return json.loads(Path(path or HERE / "config.json").read_text())
+    cfg = json.loads(Path(path or HERE / "config.json").read_text())
+    # Per-person sizing from .env, so nobody has to edit config.json.
+    for env, key in (("DLMM_BANKROLL_SOL", "bankrollSol"), ("DLMM_SIZE_SOL", "defaultSizeSol"), ("DLMM_LOSS_BUDGET_PCT", "lossBudgetPct")):
+        v = os.environ.get(env, "").strip()
+        if v:
+            try:
+                cfg["position"][key] = float(v)
+            except ValueError:
+                print(f"{env}={v!r} bukan angka; pakai config.json", file=sys.stderr)
+    return cfg
 
 
 def append(name: str, row: dict) -> None:
