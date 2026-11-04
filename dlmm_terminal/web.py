@@ -35,7 +35,7 @@ _last_log = 0.0
 
 def _get_json(url: str, timeout: int = 15):
     req = urllib.request.Request(url, headers={"User-Agent": "dlmm-terminal/1", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with api.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
@@ -223,6 +223,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(404, b"executor not installed", "text/plain")
                 return self._send(200, f.read_bytes(), "text/javascript")
         except Exception as exc:
+            import sys
+            import traceback
+            print(f"[{datetime.now():%H:%M:%S}] {u.path} failed: {exc}", file=sys.stderr, flush=True)
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                print("  → SSL: jalanin `python3 -m pip install certifi` (atau 'Install Certificates.command' di folder Python), lalu start ulang.", file=sys.stderr)
+            else:
+                traceback.print_exc()
             return self._json({"error": str(exc)[:300]}, 502)
         name = "index.html" if u.path in ("/", "") else u.path.lstrip("/")
         f = (STATIC / name).resolve()

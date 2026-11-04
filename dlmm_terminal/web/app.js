@@ -78,7 +78,7 @@ async function loadPools(force) {
     }
   } catch (e) {
     $("#poolsEmpty").classList.remove("hidden");
-    $("#poolsEmpty").textContent = "Couldn't load pools: " + e.message;
+    $("#poolsEmpty").textContent = "Gagal ambil pool: " + e.message + " — cek jendela Terminal yang jalanin server.";
   }
 }
 

@@ -59,7 +59,7 @@ def notify(text: str) -> None:
     if token and chat:
         try:
             body = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
-            urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", body, timeout=10).read()
+            api.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", timeout=10, data=body).read()
         except Exception as exc:  # alerts must never kill the monitor
             print(f"  (telegram failed: {exc})", file=sys.stderr)
 
