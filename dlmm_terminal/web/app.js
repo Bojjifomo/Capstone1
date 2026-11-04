@@ -2,6 +2,16 @@
 // Talks only to the local server (web.py); nothing here holds a key.
 "use strict";
 
+// Any script error ends up on the page instead of a silent "Loading…".
+function showFatal(msg) {
+  const el = document.getElementById("poolsEmpty");
+  if (!el) return;
+  el.classList.remove("hidden");
+  el.innerHTML = `<span style="color:#ff5a5f">Error di browser: ${String(msg).replace(/[<>&]/g, "")}</span><br>Coba Cmd+Shift+R. Kalau tetap, screenshot ini + Console (Cmd+Option+J).`;
+}
+window.addEventListener("error", e => showFatal(e.message + (e.filename ? ` (${e.filename.split("/").pop()}:${e.lineno})` : "")));
+window.addEventListener("unhandledrejection", e => showFatal((e.reason && e.reason.message) || e.reason));
+
 const $ = s => document.querySelector(s);
 const state = {
   view: "pools", win: "24h", sort: { key: "fees", desc: true }, data: null, sel: null,
@@ -60,7 +70,13 @@ function spark(r, w = 64, h = 22) {
 
 // ---------- data ----------
 async function getJson(url, opt) {
-  const r = await fetch(url, opt);
+  // 90s cap: a request that never answers shows as an error, not an endless "Loading…".
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 90_000);
+  let r;
+  try { r = await fetch(url, { ...(opt || {}), signal: ctl.signal }); }
+  catch (e) { throw new Error(e.name === "AbortError" ? `${url.split("?")[0]} nggak jawab dalam 90 detik` : e.message); }
+  finally { clearTimeout(timer); }
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
@@ -461,12 +477,13 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   const f = store.get("filters", null);
   if (f) { $("#passOnly").checked = !!f.pass; $("#hideSkip").checked = f.skip !== false; }
   $("#tvl").value = store.get("tvl", "2000");
+  $("#poolsEmpty").classList.remove("hidden");
+  const pools = loadPools();                       // don't wait on anything else first
   try { state.cfg = await getJson("/api/config"); } catch (e) {}
   $("#wallet").value = store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
-  setView(store.get("view", "pools"));
-  phantom.connect(true);   // reconnect silently if this site was approved before
-  $("#poolsEmpty").classList.remove("hidden");
-  await loadPools();
+  try { setView(store.get("view", "pools")); } catch (e) { setView("pools"); }
+  try { phantom.connect(true); } catch (e) {}      // reconnect silently if this site was approved before
+  await pools;
   if ($("#wallet").value.trim()) loadPortfolio();
   setInterval(() => loadPools(), 60_000);                       // pools: every minute (server caches 60s)
   setInterval(() => { if (state.wallet) loadPortfolio(); }, 300_000);   // positions + exit rules: every 5 min
