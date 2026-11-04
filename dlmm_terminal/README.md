@@ -53,7 +53,7 @@ python3 -m dlmm_terminal signal --once --min-score 0.8
 Cara kerjanya:
 
 1. **Benchmark** (0 RPC, API Meteora): semua posisi closed wallet itu dalam N hari, slice yang dibuka ≤ 30 menit di pool yang sama = 1 entry. Tiap entry direkonstruksi **pas waktu entry**: umur pool, fee 1h / 24h sebelum entry, mcap (perkiraan), harga 1h / 6h, hasil (PnL SOL, lama hold). Disimpan ke `data/benchmark.json` + `data/benchmark_entries.jsonl`, dibangun ulang tiap 24 jam.
-2. **Habitat** = bin step yang ngasilin SOL buat wallet itu + band p10–p90 dari `poolAgeHours`, `mcapUsd`, `fees24hUsd`, `fees1hUsd`. Perubahan harga cuma di-log, nggak dipakai buat match (spec §2: gagal di token yang belum dilihat).
+2. **Habitat** (lapis 2) = bin step yang ngasilin SOL buat wallet itu + umur pool p10–p90 wallet itu (1–195 jam) + band tetap dari lu (`signal.bandOverrides`): **mcap $300k–$10M, fee 24h > $200, fee 1h > $20**. Hapus satu baris override = balik ke p10–p90 wallet. Perubahan harga cuma di-log, nggak dipakai buat match (spec §2: gagal di token yang belum dilihat).
 3. **Signal**: tiap 5 menit scan pool SOL → gate v1 → skor habitat (0–1). Lolos semua gate + skor ≥ `minMatchScore` (default 1.0 = semua cocok) → ping. Flag (pump, drop 6h, TVL kecil, entry malam) ikut di pesan sebagai ⚠️, nggak nge-block.
 4. **Anti-spam**: scan pertama kirim satu **digest** (pool yang cocok sekarang). Setelah itu ping cuma pas pool **baru masuk** kriteria, maksimal sekali per `cooldownHours` (6 jam) per pool.
 5. **👀 Wallet entry**: kalau wallet benchmark buka posisi di pool baru, langsung ping + verdict gate & skor habitat (`pingWalletEntries`).

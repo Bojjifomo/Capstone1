@@ -55,6 +55,17 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(len(m["misses"]), 2)  # bin step 20 lost SOL, age outside band
         self.assertEqual(m["score"], 0.6)
 
+    def test_owner_band_overrides(self):
+        p = self._prof()  # benchmark band: mcap exactly 1M, fees24h 5000, fees1h 200
+        ov = {"mcapUsd": {"lo": 300_000, "hi": 10_000_000}, "fees24hUsd": {"lo": 200, "hi": None},
+              "fees1hUsd": {"lo": 20, "hi": None}}
+        c = {"binStep": 100, "poolAgeHours": 5, "mcapUsd": 8e6, "fees24hUsd": 90_000, "fees1hUsd": 25}
+        self.assertLess(benchmark.match(c, p)["score"], 1)          # outside the benchmark's own bands
+        self.assertEqual(benchmark.match(c, p, ov)["score"], 1)     # inside the owner's bands
+        m = benchmark.match({**c, "mcapUsd": 12e6, "fees1hUsd": 10}, p, ov)
+        self.assertIn("mcapUsd $12.00M ∉ $300.0k–$10.00M", m["misses"])
+        self.assertIn("fees1hUsd $10 ∉ > $20", m["misses"])
+
     def test_signal_pings_only_on_new_matches(self):
         cfg = cli.load_config(None)
         prof = self._prof()

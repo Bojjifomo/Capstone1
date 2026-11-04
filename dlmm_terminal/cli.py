@@ -324,7 +324,7 @@ def load_benchmark(cfg: dict, wallet: str | None = None, days: float | None = No
     return prof
 
 
-def print_benchmark(prof: dict) -> None:
+def print_benchmark(prof: dict, overrides: dict | None = None) -> None:
     f = benchmark._fmt
     print(f"\nBenchmark {_short(prof['wallet'])} · last {prof['days']:g} days · built {prof['builtAt']}")
     print(f"  {prof['entries']} entries in {prof['tokens']} pools · win {prof['wins']}/{prof['entries']} "
@@ -334,15 +334,17 @@ def print_benchmark(prof: dict) -> None:
                                        for k, v in sorted(prof["binSteps"].items(), key=lambda kv: -kv[1]["entries"])))
     q = prof["quantiles"]
     print(f"  habitat (p{q[0] * 100:.0f}–p{q[1] * 100:.0f} of entries; * = matched in the signal):")
-    for d, b in prof["bands"].items():
+    for d, b in benchmark.bands_for(prof, overrides).items():
         mark = "*" if d in benchmark.MATCH_DIMS else " "
-        print(f"   {mark} {d:<13} {f(d, b['lo']):>9} – {f(d, b['hi']):<9} median {f(d, b['median'])}"
+        print(f"   {mark} {d:<13} {benchmark._band_txt(d, b):<22}"
+              + (" (fixed in config)" if b.get("fixed") else "")
+              + (f" median {f(d, b['median'])}" if b.get("median") is not None else "")
               + (f", winners {f(d, b['winMedian'])}" if b.get("winMedian") is not None else ""))
 
 
 def cmd_benchmark(a, cfg):
     prof = load_benchmark(cfg, a.wallet, a.days, force=not a.cached)
-    print_benchmark(prof)
+    print_benchmark(prof, cfg["signal"].get("bandOverrides"))
     print(f"\nsaved → {DATA / 'benchmark.json'} (+ benchmark_entries.jsonl, one row per entry)")
 
 
@@ -374,7 +376,7 @@ def _candidate(snap: dict, cfg: dict, prof: dict, with_candles: bool, now: float
     when = datetime.fromtimestamp(now, timezone.utc) if now else None
     c = filters.evaluate(snap, candles_1h(snap["address"]) if with_candles else [], cfg, now=when)
     c.update(benchmark.candidate_dims(snap))
-    return c, benchmark.match(c, prof)
+    return c, benchmark.match(c, prof, cfg["signal"].get("bandOverrides"))
 
 
 def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
@@ -469,7 +471,7 @@ def cmd_signal(a, cfg):
     if a.min_score is not None:
         sig["minMatchScore"] = a.min_score
     prof = load_benchmark(cfg)
-    print_benchmark(prof)
+    print_benchmark(prof, sig.get("bandOverrides"))
     tg = bool(os.environ.get("DLMM_TG_BOT_TOKEN") and os.environ.get("DLMM_TG_CHAT_ID"))
     print(f"\nsignal: gates v1 + benchmark score ≥ {sig['minMatchScore']} · every {sig['pollEveryMin']} min · "
           f"cooldown {sig['cooldownHours']}h per pool · telegram {'on' if tg else 'off (set DLMM_TG_BOT_TOKEN / DLMM_TG_CHAT_ID)'}")

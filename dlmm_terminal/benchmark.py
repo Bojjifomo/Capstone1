@@ -156,7 +156,29 @@ def profile(entries: list[dict], wallet: str, days: float, lo_q: float = 0.1, hi
     }
 
 
-def match(c: dict, prof: dict) -> dict:
+def bands_for(prof: dict, overrides: dict | None = None) -> dict:
+    """Habitat bands from the benchmark, with fixed owner bands on top
+    (config signal.bandOverrides: {dim: {lo, hi}}, null = no limit on that side)."""
+    out = {d: dict(b) for d, b in prof["bands"].items()}
+    for d, o in (overrides or {}).items():
+        if d.startswith("_") or not isinstance(o, dict):
+            continue
+        out[d] = {**out.get(d, {}), "lo": o.get("lo"), "hi": o.get("hi"), "fixed": True}
+    return out
+
+
+def _band_txt(d: str, b: dict) -> str:
+    lo, hi = b.get("lo"), b.get("hi")
+    if lo is None and hi is None:
+        return "any"
+    if hi is None:
+        return f"> {_fmt(d, lo)}"
+    if lo is None:
+        return f"< {_fmt(d, hi)}"
+    return f"{_fmt(d, lo)}–{_fmt(d, hi)}"
+
+
+def match(c: dict, prof: dict, overrides: dict | None = None) -> dict:
     """c: a live candidate (filters.evaluate row + fees1hUsd / fees24hUsd).
     Returns which habitat dims the pool sits inside, and a 0..1 score."""
     hits, misses = [], []
@@ -164,16 +186,17 @@ def match(c: dict, prof: dict) -> dict:
     good_steps = {s for s, v in steps.items() if v["pnlSol"] > 0} or set(steps)
     (hits if str(c.get("binStep")) in good_steps else misses).append(
         f"binStep {c.get('binStep')}" + ("" if str(c.get("binStep")) in good_steps else f" ∉ {sorted(good_steps, key=float)}"))
+    bands = bands_for(prof, overrides)
     for d in MATCH_DIMS:
-        b, v = prof["bands"].get(d), c.get(d)
+        b, v = bands.get(d), c.get(d)
         if not b:
             continue
         if v is None:
             misses.append(f"{d} n/a")
-        elif b["lo"] <= v <= b["hi"]:
+        elif (b.get("lo") is None or v >= b["lo"]) and (b.get("hi") is None or v <= b["hi"]):
             hits.append(f"{d} {_fmt(d, v)}")
         else:
-            misses.append(f"{d} {_fmt(d, v)} ∉ {_fmt(d, b['lo'])}–{_fmt(d, b['hi'])}")
+            misses.append(f"{d} {_fmt(d, v)} ∉ {_band_txt(d, b)}")
     n = len(hits) + len(misses)
     return {"score": round(len(hits) / n, 2) if n else 0, "hits": hits, "misses": misses, "dims": n}
 

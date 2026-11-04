@@ -17,7 +17,13 @@
     "pollEveryMin": 5,
     "minMatchScore": 1.0,
     "cooldownHours": 6,
-    "pingWalletEntries": true
+    "pingWalletEntries": true,
+    "bandOverrides": {
+      "_note": "Owner's fixed layer-2 bands (2026-11-04), used instead of the benchmark's p10-p90 for these dims; null = no limit. Bin step + pool age still come from the benchmark.",
+      "mcapUsd": {"lo": 300000, "hi": 10000000},
+      "fees24hUsd": {"lo": 200, "hi": null},
+      "fees1hUsd": {"lo": 20, "hi": null}
+    }
   },
   "exits": {
     "_note": "Spec section 4: every fixed TP / SL / trailing / time limit lost SOL vs. holding (TP +1/+2/+5/+10% = -7.16/-7.57/-4.37/-1.06 SOL). They stay null unless you turn them on.",
