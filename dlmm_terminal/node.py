@@ -55,7 +55,8 @@ def ladder_args(pool: str, sol: float, slices: int, bottom: float, top: float = 
 def _rpc(method: str, params: list):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     req = urllib.request.Request(rpc_url(), body, {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    from .api import urlopen
+    with urlopen(req, timeout=30) as r:
         d = json.load(r)
     if "error" in d:
         raise RuntimeError(d["error"].get("message", str(d["error"])))

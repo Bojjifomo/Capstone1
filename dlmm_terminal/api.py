@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -11,6 +12,24 @@ BASE = "https://dlmm.datapi.meteora.ag"
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """macOS Pythons (python.org, some Anaconda setups) often ship without the system
+    CA store, so HTTPS fails with CERTIFICATE_VERIFY_FAILED. certifi's bundle fixes that
+    when it is installed (Anaconda has it); otherwise use the default store."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+SSL_CONTEXT = _ssl_context()
+
+
+def urlopen(req, timeout: float = 20, data: bytes | None = None):
+    return urllib.request.urlopen(req, data=data, timeout=timeout, context=SSL_CONTEXT)
+
+
 def get(path: str, params: dict | None = None, retries: int = 3) -> dict:
     url = BASE + path
     if params:
@@ -18,7 +37,7 @@ def get(path: str, params: dict | None = None, retries: int = 3) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "dlmm-terminal/1", "Accept": "application/json"})
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urlopen(req, timeout=20) as r:
                 return json.load(r)
         except (urllib.error.URLError, TimeoutError) as exc:
             if attempt == retries - 1:
