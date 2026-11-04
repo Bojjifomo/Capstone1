@@ -130,9 +130,9 @@ ul.rs li.info { color: var(--muted); }
   .stats { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* phantom + ladder */
-.chip.phantom { background: #1b1630; border-color: #4b3b8f; color: #c9b8ff; cursor: pointer; font: inherit; }
-.chip.phantom.on { border-color: #3ddc84; color: var(--green); background: #10201a; }
+/* trading key chip + ladder */
+.chip.key { background: #1d1a12; border-color: #5a4a22; color: #e8c36a; cursor: pointer; font: inherit; }
+.chip.key.on { border-color: #3ddc84; color: var(--green); background: #10201a; }
 table.ladder { margin: 8px 0; }
 table.ladder td, table.ladder th { position: static; padding: 3px 6px; font-size: 12px; background: transparent; cursor: default; }
 table.ladder tr { background: transparent; cursor: default; }
