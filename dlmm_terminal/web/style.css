@@ -129,3 +129,15 @@ ul.rs li.info { color: var(--muted); }
   th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }
   .stats { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* phantom + ladder */
+.chip.phantom { background: #1b1630; border-color: #4b3b8f; color: #c9b8ff; cursor: pointer; font: inherit; }
+.chip.phantom.on { border-color: #3ddc84; color: var(--green); background: #10201a; }
+table.ladder { margin: 8px 0; }
+table.ladder td, table.ladder th { position: static; padding: 3px 6px; font-size: 12px; background: transparent; cursor: default; }
+table.ladder tr { background: transparent; cursor: default; }
+.lbar { display: inline-block; height: 8px; background: #2b6b47; border-radius: 2px; vertical-align: middle; }
+.btn.go { border-color: var(--green); color: var(--green); }
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn[disabled] { opacity: .5; cursor: default; }
+.res { font-size: 12px; margin-top: 6px; }

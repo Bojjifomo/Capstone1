@@ -46,7 +46,7 @@ Semua angka ada di `config.json`. Bankroll default 160 SOL × loss budget 5% →
 | GATE | Pool DLMM pair SOL, bin step 20–250 | Semua 133 posisi kayak gini; di luar itu nggak ada bukti |
 | GATE | Umur pool ≥ 60 menit | 5 entry di pool < 1h: −1.74 SOL |
 | GATE | Fee APR 24h (atau sejak launch) ≥ 1.000% | 8 entry di bawah itu: −1.30 SOL |
-| GATE | Posisi ≤ 3% TVL | Guard exit pas jual sisa token |
+| ~~GATE~~ | ~~Posisi ≤ 3% TVL~~ | **Dimatiin** (2026-11-04): % TVL tetap ditampilin sebagai info. Nyalain lagi: `gates.maxPositionPctOfTvl: 3` |
 | RISK | Range bottom −70% (wide), bukan −50% | Wide: +9.63 SOL / 61 posisi, terburuk −6%. Standard: −0.72 SOL, terburuk −93% |
 | RISK | Size = loss budget ÷ 0.9 | Satu posisi pernah −93% |
 | FLAG | pump 1h ≥ 25% · drop 6h ≥ 17% · TVL < $25k · entry 00–09 WIB | Bagus di hindsight, gagal di token yang belum dilihat → di-log, nggak nge-block |
@@ -110,8 +110,32 @@ python3 -m dlmm_terminal web --host 0.0.0.0       # buka dari HP lewat Tailscale
 ```
 
 - **Pilih pool**: semua pool DLMM SOL (TVL ≥ filter), kolom TVL / FEES (1h · 4h · 24h) / FEE 1 JAM / MCAP + sparkline 24h / **ENTRY CHECK** / ZAP. Sort tiap kolom, search, `v1 pass only`, `hide SKIP`. Refresh tiap 1 menit.
-- **ENTRY CHECK** = spec v1: `OPEN` (gate lolos, nggak ada flag) · `CAREFUL` (gate lolos, ada flag) · `WAIT` (gate yang bisa berubah gagal: umur, fee APR, size vs TVL) · `SKIP` (bin step / bukan SOL). Skor + alasan kayak "Volume picking up", "Buyers lead" dari DexScreener cuma konteks, **nggak** ngubah level (spec: nggak ada sinyal entry yang tahan di token baru).
+- **ENTRY CHECK** = spec v1: `OPEN` (gate lolos, nggak ada flag) · `CAREFUL` (gate lolos, ada flag) · `WAIT` (gate yang bisa berubah gagal: umur, fee APR) · `SKIP` (bin step / bukan SOL). Skor + alasan kayak "Volume picking up", "Buyers lead" dari DexScreener cuma konteks, **nggak** ngubah level (spec: nggak ada sinyal entry yang tahan di token baru).
 - **Detail** (klik baris): harga, mcap, TVL, fee/hari, kotak verdict, alasan ✓/✗, tombol zap, chart DexScreener.
 - **Zap**: modal plan (size SOL, range bottom −70%, size vs TVL, cap loss budget, flag) → `Open di Meteora`, `Copy plan`, `Log: enter / skip` (ke `data/decisions.jsonl`). Web ini **nggak pegang key**; buka posisinya di Meteora atau MET Pool di HP.
 - **Portfolio**: posisi terbuka wallet (Meteora API), PnL SOL + peak, range bar (merah = 1/3 bawah), EXIT CHECK pakai rules yang sama dengan `monitor` (dicek tiap 5 menit selama halaman kebuka). Close tetap dari MET Portfolio / Meteora / `monitor --mode auto`.
 - Snapshot semua kandidat ke `data/candidates.jsonl` maksimal tiap 15 menit (buat v2).
+
+## Buka & tutup posisi (ladder RH, Spot, SOL-only)
+
+Bentuk ladder sama persis dengan MET Pool di HP (`executor/ladder.mjs` = `MET.planLadder`): **5 slice** lebar bin-nya sama, dari harga sekarang sampai **−70%**, isi SOL **1:2:3:4:5** (slice paling dalam paling gede), Spot di tiap slice. Contoh 8 SOL di bin step 80: 0.53 / 1.07 / 1.6 / 2.13 / 2.67 SOL.
+
+Sekali aja di Mac: `cd dlmm_terminal/executor && npm install` (butuh Node: `brew install node`).
+
+**Dari web (Phantom, key nggak pernah ke server):**
+1. Klik **👻 Connect Phantom** di kanan atas (wallet ikut keisi di Portfolio).
+2. Zap di pool → modal nunjukin gate v1 + tabel 5 slice → **⚡ Buka via Phantom**.
+3. Server build + simulasi tiap slice → Phantom minta approve **sekali** buat semua slice → dikirim satu-satu. Kalau satu gagal, sisanya berhenti dan tetap SOL.
+4. Gate gagal atau di atas cap loss budget = ada konfirmasi tambahan, dicatat sebagai override.
+5. Portfolio: tombol **Close** per posisi (tarik 100% + klaim fee + tutup akun, rent balik). Kalau exit rule nyala, tombolnya jadi merah **Exit → close**.
+
+**Dari Terminal (keypair):**
+
+```bash
+python3 -m dlmm_terminal open <POOL> --sol 8                 # gate → plan 5 slice → ketik y → kirim
+python3 -m dlmm_terminal open <POOL> --sol 8 --dry-run --owner <WALLET>   # simulasi aja
+```
+
+Butuh `DLMM_KEYPAIR=/path/keypair.json` dan `SOLANA_RPC_URL` (Helius) di `.env`. Opsi: `--slices`, `--bottom`, `--top`, `--strategy spot|curve|bidask`, `--force` (gate gagal), `--force-size` (lewat cap).
+
+Sisa memecoin setelah close **belum** di-swap otomatis ke SOL: jual di Jupiter / Cleanup di MET Portfolio.

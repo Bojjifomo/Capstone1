@@ -15,7 +15,7 @@ const good = { binStep: 100, ageDays: 2, tvl: 100000, fees24: 4000, solUsd: 93, 
 let c = m.specCheck(good, 8, now);
 assert(c.ok && c.flags.length === 0 && Math.round(c.feeApr) === 1460, "good pool passes, APR 1460%");
 c = m.specCheck({ ...good, ageDays: 0.5 / 24, binStep: 10, tvl: 20000, fees24: 10, chg1h: 30 }, 8, Date.UTC(2026, 10, 4, 20));
-assert(!c.ok && c.gates.length === 4 && c.flags.length === 3, "bad pool: 4 gates + pump/tvl/night flags: " + c.gates.join("|") + " / " + c.flags.join("|"));
+assert(!c.ok && c.gates.length === 3 && !c.gates.some(g => /TVL/.test(g)) && c.flags.length === 3, "bad pool: 3 gates (size vs TVL off) + pump/tvl/night flags: " + c.gates.join("|") + " / " + c.flags.join("|"));
 // exits (SOL is Y: range below price)
 const P = { solIsX: false, lower: -370, upper: -301, active: -320, depositSol: 8, pnlSol: 0.1, depositTokenUi: 0 };
 let st = {}; let e = m.exitCheck(P, st, 0);

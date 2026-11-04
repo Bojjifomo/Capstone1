@@ -1,6 +1,8 @@
 // Close one Meteora DLMM position: remove 100% liquidity, claim fees, close the account.
 //
 //   node close_position.mjs --pool <POOL> --position <POSITION> [--dry-run] [--owner <PUBKEY>]
+//   node close_position.mjs --pool <POOL> --position <POSITION> --build --owner <PUBKEY>
+//        --build prints {"ok", "txs": [base64]} unsigned, for a wallet (Phantom) to sign and send.
 //
 // env: SOLANA_RPC_URL (required), DLMM_KEYPAIR = path to a Solana keypair JSON (required unless --dry-run).
 // --dry-run builds the transactions and simulates them without signing or sending.
@@ -22,14 +24,15 @@ function arg(name) {
 
 const pool = arg("pool");
 const positionAddr = arg("position");
-const dryRun = process.argv.includes("--dry-run");
-const rpc = process.env.SOLANA_RPC_URL;
+const build = process.argv.includes("--build");
+const dryRun = process.argv.includes("--dry-run") || build;
+const rpc = process.env.SOLANA_RPC_URL || (build ? "https://api.mainnet-beta.solana.com" : undefined);
 if (!pool || !positionAddr || !rpc) {
   console.error("usage: SOLANA_RPC_URL=... node close_position.mjs --pool P --position X [--dry-run] [--owner PUBKEY]");
   process.exit(2);
 }
 
-const keyPath = process.env.DLMM_KEYPAIR;
+const keyPath = build ? null : process.env.DLMM_KEYPAIR;
 const signer = keyPath ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(keyPath, "utf8")))) : null;
 const owner = signer ? signer.publicKey : arg("owner") ? new PublicKey(arg("owner")) : null;
 if (!owner) {
@@ -56,6 +59,19 @@ const txs = await dlmm.removeLiquidity({
   shouldClaimAndClose: true,
 });
 
+if (build) {
+  // Built one after another by the wallet; each gets a fresh blockhash and a simulation.
+  const out = [];
+  for (const tx of txs) {
+    tx.feePayer = owner;
+    tx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+    const sim = await connection.simulateTransaction(tx);
+    out.push({ simulate: sim.value.err ? { err: sim.value.err } : "ok",
+      tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") });
+  }
+  process.stdout.write(JSON.stringify({ ok: out.every(o => o.simulate === "ok"), position: positionAddr, bins: [lowerBinId, upperBinId], txs: out }) + "\n");
+  process.exit(0);
+}
 console.log(`position ${positionAddr} bins ${lowerBinId}..${upperBinId}: ${txs.length} tx(s)`);
 for (const [i, tx] of txs.entries()) {
   if (dryRun) {
