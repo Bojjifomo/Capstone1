@@ -333,9 +333,10 @@ def _result(out, method):
     return out.get("result")
 
 
-# answers that mean "this RPC can't", where another one might: no old block state
+# answers that mean "this RPC can't", where another one might: no old block state, or a key the provider rejects
 _ELSEWHERE = ("missing trie node", "pruned", "historical state", "state unavailable", "state not available",
-              "state is not available", "header not found", "unknown block", "archive", "missing from batch")
+              "state is not available", "header not found", "unknown block", "archive", "missing from batch",
+              "invalid api key", "inactive subscription")
 
 
 def _elsewhere(err):
