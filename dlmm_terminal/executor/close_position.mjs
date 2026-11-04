@@ -4,11 +4,12 @@
 //   node close_position.mjs --pool <POOL> --position <POSITION> --build --owner <PUBKEY>
 //        --build prints {"ok", "txs": [base64]} unsigned, for a wallet (Phantom) to sign and send.
 //
-// env: SOLANA_RPC_URL (required), DLMM_KEYPAIR = path to a Solana keypair JSON (required unless --dry-run).
+// env: SOLANA_RPC_URL (required), DLMM_PRIVATE_KEY or DLMM_KEYPAIR (required unless --dry-run / --build).
+// Sending prints one JSON line at the end: {"ok", "position", "signatures": [...]}.
 // --dry-run builds the transactions and simulates them without signing or sending.
 // Leftover memecoin from the range is NOT swapped to SOL here; sell it yourself (spec: leftovers cost -3.93 SOL).
-import fs from "node:fs";
 import { createRequire } from "node:module";
+import { loadSigner } from "./keys.mjs";
 
 // The SDK's ESM build has a broken directory import; its CommonJS build loads fine.
 const require = createRequire(import.meta.url);
@@ -32,15 +33,14 @@ if (!pool || !positionAddr || !rpc) {
   process.exit(2);
 }
 
-const keyPath = build ? null : process.env.DLMM_KEYPAIR;
-const signer = keyPath ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(keyPath, "utf8")))) : null;
+const signer = build ? null : loadSigner();
 const owner = signer ? signer.publicKey : arg("owner") ? new PublicKey(arg("owner")) : null;
 if (!owner) {
-  console.error("need DLMM_KEYPAIR (or --owner with --dry-run)");
+  console.error("need DLMM_PRIVATE_KEY / DLMM_KEYPAIR (or --owner with --dry-run)");
   process.exit(2);
 }
 if (!dryRun && !signer) {
-  console.error("DLMM_KEYPAIR is required to send");
+  console.error("DLMM_PRIVATE_KEY / DLMM_KEYPAIR is required to send");
   process.exit(2);
 }
 
@@ -72,6 +72,7 @@ if (build) {
   process.stdout.write(JSON.stringify({ ok: out.every(o => o.simulate === "ok"), position: positionAddr, bins: [lowerBinId, upperBinId], txs: out }) + "\n");
   process.exit(0);
 }
+const sigs = [];
 console.log(`position ${positionAddr} bins ${lowerBinId}..${upperBinId}: ${txs.length} tx(s)`);
 for (const [i, tx] of txs.entries()) {
   if (dryRun) {
@@ -82,7 +83,14 @@ for (const [i, tx] of txs.entries()) {
     console.log(`  tx ${i + 1}: simulate ${err ? "ERROR " + JSON.stringify(err) : "ok"} (${tx.instructions.length} ix)`);
     if (err) process.exitCode = 1;
   } else {
-    const sig = await sendAndConfirmTransaction(connection, tx, [signer], { commitment: "confirmed" });
-    console.log(`  tx ${i + 1}: ${sig}`);
+    try {
+      const sig = await sendAndConfirmTransaction(connection, tx, [signer], { commitment: "confirmed" });
+      console.log(`  tx ${i + 1}: ${sig}`);
+      sigs.push(sig);
+    } catch (e) {
+      process.stdout.write(JSON.stringify({ ok: false, position: positionAddr, signatures: sigs, error: String(e.message || e).slice(0, 300) }) + "\n");
+      process.exit(1);
+    }
   }
 }
+if (!dryRun) process.stdout.write(JSON.stringify({ ok: true, position: positionAddr, signatures: sigs }) + "\n");

@@ -122,20 +122,31 @@ Bentuk ladder sama persis dengan MET Pool di HP (`executor/ladder.mjs` = `MET.pl
 
 Sekali aja di Mac: `cd dlmm_terminal/executor && npm install` (butuh Node: `brew install node`).
 
-**Dari web (Phantom, key nggak pernah ke server):**
-1. Klik **👻 Connect Phantom** di kanan atas (wallet ikut keisi di Portfolio).
-2. Zap di pool → modal nunjukin gate v1 + tabel 5 slice → **⚡ Buka via Phantom**.
-3. Server build + simulasi tiap slice → Phantom minta approve **sekali** buat semua slice → dikirim satu-satu. Kalau satu gagal, sisanya berhenti dan tetap SOL.
-4. Gate gagal atau di atas cap loss budget = ada konfirmasi tambahan, dicatat sebagai override.
-5. Portfolio: tombol **Close** per posisi (tarik 100% + klaim fee + tutup akun, rent balik). Kalau exit rule nyala, tombolnya jadi merah **Exit → close**.
+**Key (sekali, kayak LP WEB):** isi `.env` di folder Capstone1, lalu start ulang server:
 
-**Dari Terminal (keypair):**
+```
+DLMM_PRIVATE_KEY=<private key base58, dari Phantom: Settings → Manage Accounts → Show Private Key>
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key lu>
+DLMM_WEB_PIN=<opsional: PIN, biar bisa trading dari HP>
+```
+
+Pakai wallet khusus LP yang isinya cuma yang siap lu risikoin. `.env` udah di-gitignore. Key cuma dibaca proses Node (executor) di Mac; Python dan browser cuma lihat address-nya. Chip kanan atas jadi **🔑 address** kalau key kebaca, **🔒 read-only** kalau belum.
+
+Siapa yang boleh trading: tanpa `DLMM_WEB_PIN` cuma browser di Mac yang jalanin server; dengan PIN, device lain (HP via Tailscale) juga bisa, tapi ditanya PIN. Website lain yang kebuka di browser lu nggak bisa nyuruh server ini trading (butuh header khusus).
+
+**Dari web:**
+1. Zap di pool → modal nunjukin gate v1 + tabel 5 slice → **⚡ Buka ladder** → konfirmasi.
+2. Server simulasi tiap slice, lalu kirim satu-satu. Kalau satu gagal, sisanya berhenti dan tetap SOL. Wallet kurang SOL = stop sebelum kirim apa pun.
+3. Gate gagal atau di atas cap loss budget = ada konfirmasi tambahan, dicatat sebagai override.
+4. Portfolio: tombol **Close** per posisi (tarik 100% + klaim fee + tutup akun, rent balik). Kalau exit rule nyala, tombolnya jadi merah **Exit → close**.
+
+**Dari Terminal:**
 
 ```bash
 python3 -m dlmm_terminal open <POOL> --sol 8                 # gate → plan 5 slice → ketik y → kirim
 python3 -m dlmm_terminal open <POOL> --sol 8 --dry-run --owner <WALLET>   # simulasi aja
 ```
 
-Butuh `DLMM_KEYPAIR=/path/keypair.json` dan `SOLANA_RPC_URL` (Helius) di `.env`. Opsi: `--slices`, `--bottom`, `--top`, `--strategy spot|curve|bidask`, `--force` (gate gagal), `--force-size` (lewat cap).
+Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keypair.json`) + `SOLANA_RPC_URL`. Opsi: `--slices`, `--bottom`, `--top`, `--strategy spot|curve|bidask`, `--force` (gate gagal), `--force-size` (lewat cap).
 
 Sisa memecoin setelah close **belum** di-swap otomatis ke SOL: jual di Jupiter / Cleanup di MET Portfolio.

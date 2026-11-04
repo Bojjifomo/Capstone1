@@ -153,8 +153,8 @@ def cmd_open(a, cfg):
     if a.dry_run and not mode[-1]:
         sys.exit("--dry-run butuh --owner WALLET (atau DLMM_WALLET di .env)")
     if not a.dry_run:
-        if not os.environ.get("DLMM_KEYPAIR"):
-            sys.exit("\nDLMM_KEYPAIR (path keypair JSON) belum di-set. Pakai --dry-run, atau buka lewat web + Phantom.")
+        if not node.key_configured():
+            sys.exit("\nBelum ada key: isi DLMM_PRIVATE_KEY (base58 dari Phantom) di .env, atau pakai --dry-run.")
         if not a.yes and input("\nKirim? ketik y: ").strip().lower() != "y":
             append("decisions.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "pool": a.pool,
                                        "symbol": c["symbol"], "decision": "skip", "decisionReason": "cancelled at confirm"})
@@ -251,8 +251,8 @@ def cmd_monitor(a, cfg):
     risky = [k for k in ("takeProfitPct", "stopLossPct", "trailingPts", "maxHoldMin") if cfg["exits"].get(k) is not None]
     if risky:
         print(f"note: {risky} are on. In the spec data every fixed TP/SL/trailing exit lost SOL vs. holding.")
-    if mode == "auto" and not a.dry_run and not os.environ.get("DLMM_KEYPAIR"):
-        sys.exit("mode=auto needs DLMM_KEYPAIR (path to keypair json) and SOLANA_RPC_URL; or pass --dry-run.")
+    if mode == "auto" and not a.dry_run and not (os.environ.get("DLMM_PRIVATE_KEY") or os.environ.get("DLMM_KEYPAIR")):
+        sys.exit("mode=auto needs DLMM_PRIVATE_KEY (or DLMM_KEYPAIR) and SOLANA_RPC_URL in .env; or pass --dry-run.")
     state_file = DATA / "monitor_state.json"
     states = json.loads(state_file.read_text()) if state_file.exists() else {}
     while True:

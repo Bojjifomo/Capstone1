@@ -4,9 +4,15 @@ a detail panel with the chart, and your wallet's positions with the exit rules.
   python3 -m dlmm_terminal web                 # http://localhost:8790
   python3 -m dlmm_terminal web --port 8790 --host 0.0.0.0   # reachable over Tailscale
 
-No key lives here. Opening a ladder or closing a position is built on the server (Meteora
-SDK, simulated first), signed in the browser by Phantom, and only the signed bytes come
-back to be relayed to the RPC. Without Phantom the page is read-only.
+Trading (like LP WEB): put the wallet's private key in .env as DLMM_PRIVATE_KEY (base58,
+as Phantom exports it). The key stays in the Node executor on this Mac; the browser only
+ever sees the address. Without a key the page is read-only.
+
+Who may trade:
+  * without DLMM_WEB_PIN: only a browser on this Mac (127.0.0.1)
+  * with DLMM_WEB_PIN set: any device that can reach the page (phone over Tailscale), with the PIN
+Trade requests must also carry the X-DLMM-Trade header, which another website open in your
+browser cannot add without a CORS preflight this server never answers.
 """
 from __future__ import annotations
 
@@ -215,13 +221,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"error": "no wallet: pass ?wallet= or set DLMM_WALLET"}, 400)
                 return self._json(portfolio(wallet, self.cfg))
             if u.path == "/api/config":
-                return self._json({"cfg": self.cfg, "wallet": os.environ.get("DLMM_WALLET"),
-                                   "maxPositionSol": filters.max_position_sol(self.cfg), "executor": node.ready()})
-            if u.path == "/vendor/web3.js":   # @solana/web3.js for the browser, from the executor's own install
-                f = node.EXECUTOR / "node_modules" / "@solana" / "web3.js" / "lib" / "index.iife.min.js"
-                if not f.is_file():
-                    return self._send(404, b"executor not installed", "text/plain")
-                return self._send(200, f.read_bytes(), "text/javascript")
+                tw = node.trade_wallet() if not node.ready() else {"ok": False}
+                return self._json({"cfg": self.cfg, "wallet": tw.get("pubkey") or os.environ.get("DLMM_WALLET"),
+                                   "maxPositionSol": filters.max_position_sol(self.cfg), "executor": node.ready(),
+                                   "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("pubkey"),
+                                             "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
+                                             "pin": bool(os.environ.get("DLMM_WEB_PIN")), "local": self._is_local()}})
         except Exception as exc:
             import sys
             import traceback
@@ -238,29 +243,52 @@ class Handler(BaseHTTPRequestHandler):
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}.get(f.suffix, "application/octet-stream")
         self._send(200, f.read_bytes(), ctype)
 
+    def _is_local(self) -> bool:
+        return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+    def _trade_refused(self, body: dict) -> str | None:
+        """None when this request may move money, else why not."""
+        import hmac
+        if self.headers.get("X-DLMM-Trade") != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
+            return "missing trade header"
+        pin = os.environ.get("DLMM_WEB_PIN")
+        if pin:
+            return None if hmac.compare_digest(str(body.get("pin") or ""), pin) else "PIN salah"
+        return None if self._is_local() else "trading cuma dari Mac ini (set DLMM_WEB_PIN di .env buat dari HP)"
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         try:
-            if self.path in ("/api/ladder/plan", "/api/ladder/build"):
+            if self.path in ("/api/trade/open", "/api/trade/close"):
+                why = self._trade_refused(body)
+                if why:
+                    return self._json({"ok": False, "error": why}, 403)
+                if not node.trade_wallet().get("ok"):
+                    return self._json({"ok": False, "error": "belum ada key: isi DLMM_PRIVATE_KEY di .env lalu start ulang"}, 400)
+                from .cli import append
+                ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if self.path.endswith("open"):
+                    pos = self.cfg["position"]
+                    sol = float(body["sol"])
+                    args = node.ladder_args(str(body["pool"]), sol, int(body.get("slices") or pos.get("ladderSlices", 5)),
+                                            abs(float(body.get("bottom") or pos["rangeBottomPct"])), float(body.get("top") or 0),
+                                            str(body.get("strategy") or "spot"))
+                    res = node.run("open_ladder.mjs", args, timeout=600)
+                    append("decisions.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
+                                               "decision": "enter", "sizeSol": sol, "override": bool(body.get("override")),
+                                               "positions": [r.get("position") for r in res.get("results", [])], "ok": res.get("ok"),
+                                               "error": res.get("error")})
+                    return self._json(res)
+                res = node.run("close_position.mjs", ["--pool", str(body["pool"]), "--position", str(body["position"])], timeout=300)
+                append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
+                                        "position": body.get("position"), "rule": body.get("rule"), **res})
+                return self._json(res)
+            if self.path == "/api/ladder/plan":
                 pos = self.cfg["position"]
                 args = node.ladder_args(str(body["pool"]), float(body["sol"]), int(body.get("slices") or pos.get("ladderSlices", 5)),
                                         abs(float(body.get("bottom") or pos["rangeBottomPct"])), float(body.get("top") or 0),
                                         str(body.get("strategy") or "spot"))
-                if self.path.endswith("plan"):
-                    return self._json(node.run("open_ladder.mjs", args + ["--plan"]))
-                return self._json(node.run("open_ladder.mjs", args + ["--build", "--owner", str(body["owner"])]))
-            if self.path == "/api/close/build":
-                return self._json(node.run("close_position.mjs", ["--pool", str(body["pool"]), "--position", str(body["position"]),
-                                                                  "--build", "--owner", str(body["owner"])]))
-            if self.path == "/api/send":
-                res = node.send_signed([str(t) for t in body.get("txs") or []])
-                from .cli import append
-                append("decisions.jsonl" if body.get("kind") == "open" else "closes.jsonl", {
-                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "web+phantom", "kind": body.get("kind"),
-                    "pool": body.get("pool"), "symbol": body.get("symbol"), "positions": body.get("positions"),
-                    "decision": "enter" if body.get("kind") == "open" else None, "sizeSol": body.get("sol"),
-                    "results": res, "ok": all(r.get("ok") for r in res) and len(res) == len(body.get("txs") or [])})
-                return self._json({"ok": all(r.get("ok") for r in res), "results": res})
+                return self._json(node.run("open_ladder.mjs", args + ["--plan"]))
         except (KeyError, ValueError) as exc:
             return self._json({"ok": False, "error": f"bad request: {exc}"}, 400)
         except Exception as exc:

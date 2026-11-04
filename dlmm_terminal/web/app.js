@@ -69,13 +69,14 @@ function spark(r, w = 64, h = 22) {
 }
 
 // ---------- data ----------
-async function getJson(url, opt) {
-  // 90s cap: a request that never answers shows as an error, not an endless "Loading…".
+async function getJson(url, opt, timeoutMs) {
+  // 90s cap by default: a request that never answers shows as an error, not an endless "Loading…".
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 90000);
+  const ms = timeoutMs || 90000;
+  const timer = setTimeout(() => ctl.abort(), ms);
   let r;
   try { r = await fetch(url, { ...(opt || {}), signal: ctl.signal }); }
-  catch (e) { throw new Error(e.name === "AbortError" ? `${url.split("?")[0]} nggak jawab dalam 90 detik` : e.message); }
+  catch (e) { throw new Error(e.name === "AbortError" ? `${url.split("?")[0]} nggak jawab dalam ${Math.round(ms / 1000)} detik` : e.message); }
   finally { clearTimeout(timer); }
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.status);
@@ -212,42 +213,45 @@ function renderDetail(r, keepChart) {
       <button data-zap="${size}">⚡ ◎${+size.toFixed(2)} · 5×Spot −70%</button>
       <button class="edit" data-zap="ask">✏️ custom</button>
     </div>
-    <div class="note">Zap = ladder Spot SOL-only 5 slice (RH), dibuka lewat Phantom: server build + simulasi, lu approve di Phantom. Key nggak pernah ke server.
+    <div class="note">Zap = ladder Spot SOL-only 5 slice (RH), dibuka langsung pakai key di .env (simulasi dulu tiap slice). Key nggak pernah ke browser.
       Skor cuma konteks: spec nggak nemu sinyal entry yang tahan di token baru, jadi level ditentuin gate + flag aja.</div>
     <div class="chart"><iframe src="${chart}" title="chart" loading="lazy"></iframe></div>`;
   if (old && old.querySelector("iframe").src === chart) $("#detail .chart").replaceWith(old);
 }
 
-// ---------- phantom ----------
-// The key stays in Phantom. The server builds and simulates; Phantom signs; the server
-// only relays the signed bytes.
-const phantom = {
-  provider() { const p = (window.phantom && window.phantom.solana) || window.solana; return p && p.isPhantom ? p : null; },
-  key: null,
-  async connect(silent) {
-    const p = this.provider();
-    if (!p) { if (!silent) window.open("https://phantom.app/download", "_blank"); return null; }
-    try {
-      const r = await p.connect(silent ? { onlyIfTrusted: true } : undefined);
-      this.key = r.publicKey.toString();
-    } catch (e) { if (!silent) alert("Phantom: " + (e.message || e)); return null; }
-    paintPhantom();
-    if (!$("#wallet").value.trim() || $("#wallet").value.trim() !== this.key) { $("#wallet").value = this.key; loadPortfolio(); }
-    return this.key;
+// ---------- trading (key in .env on the server, like LP WEB) ----------
+// The browser never sees the key, only the wallet address. Trades need the X-DLMM-Trade
+// header, and the PIN when DLMM_WEB_PIN is set (that is what allows a phone to trade).
+const trade = {
+  info: null,
+  pin: null,
+  ready() { return !!(this.info && this.info.enabled && (this.info.local || this.info.pin)); },
+  why() {
+    const t = this.info || {};
+    if (!t.enabled) return t.error ? `Key error: ${t.error}` : "Read-only: isi DLMM_PRIVATE_KEY di .env lalu start ulang server";
+    if (!t.local && !t.pin) return "Trading cuma dari Mac yang jalanin server (atau set DLMM_WEB_PIN buat dari HP)";
+    return "";
   },
-  // base64 txs from the server -> Phantom signs all at once -> base64 back
-  async signAll(b64s) {
-    if (!window.solanaWeb3) throw new Error("web3.js tidak termuat (jalanin npm install di dlmm_terminal/executor)");
-    const { Transaction } = window.solanaWeb3;
-    const txs = b64s.map(b => Transaction.from(Uint8Array.from(atob(b), c => c.charCodeAt(0))));
-    const signed = await this.provider().signAllTransactions(txs);
-    return signed.map(t => { const raw = t.serialize(); let s = ""; raw.forEach(x => { s += String.fromCharCode(x); }); return btoa(s); });
+  async call(url, body) {
+    if (this.info && this.info.pin && !this.pin) {
+      const p = prompt("PIN trading (DLMM_WEB_PIN):");
+      if (!p) throw new Error("dibatalin");
+      this.pin = p;
+    }
+    try {
+      return await getJson(url, { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
+        body: JSON.stringify(Object.assign({}, body, { pin: this.pin })) }, 600000);
+    } catch (e) {
+      if (/PIN/.test(e.message)) this.pin = null;
+      throw e;
+    }
   },
 };
-function paintPhantom() {
-  const b = $("#phantomBtn");
-  b.classList.toggle("on", !!phantom.key);
-  b.textContent = phantom.key ? `👻 ${short(phantom.key)}` : "👻 Connect Phantom";
+function paintWallet() {
+  const b = $("#keyBtn"), t = trade.info || {};
+  b.classList.toggle("on", trade.ready());
+  b.textContent = t.enabled ? `🔑 ${short(t.wallet)}${trade.ready() ? "" : " · read-only"}` : "🔒 read-only";
+  b.title = trade.ready() ? `Trading wallet ${t.wallet}${t.pin ? " (PIN aktif)" : ""}` : trade.why();
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const solscan = sig => `<a href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">${sig.slice(0, 8)}… ↗</a>`;
@@ -266,7 +270,7 @@ function openZap(r, size) {
     <div id="zBody" style="margin-top:10px"></div>
     <div id="zLadder" class="muted">Plan ladder…</div>
     <div class="acts">
-      <button class="btn go" id="zOpen">${phantom.key ? "⚡ Buka via Phantom" : "👻 Connect Phantom buat buka"}</button>
+      <button class="btn go" id="zOpen" ${trade.ready() ? "" : "disabled"} title="${esc(trade.why())}">${trade.ready() ? "⚡ Buka ladder" : "🔒 " + esc(trade.why())}</button>
       <a class="btn" href="https://app.meteora.ag/dlmm/${r.pool}" target="_blank" rel="noopener">Meteora ↗</a>
       <button class="btn" id="zSkip">Log: skip</button>
       <span class="spacer"></span><button class="btn" id="zClose">Tutup</button>
@@ -317,43 +321,37 @@ function openZap(r, size) {
     $("#zMsg").textContent = "Logged: skip → data/decisions.jsonl";
   };
   $("#zOpen").onclick = async () => {
-    if (!phantom.key) { if (await phantom.connect()) $("#zOpen").textContent = "⚡ Buka via Phantom"; return; }
-    if (!cur.plan) return;
-    if ((cur.gateFails.length || cur.over) && !confirm(`Spec v1 bilang jangan:\n${[...cur.gateFails, ...(cur.over ? ["di atas cap loss budget"] : [])].join("\n")}\n\nTetap buka? (dicatat sebagai override)`)) return;
+    if (!trade.ready() || !cur.plan) return;
+    const over = [...cur.gateFails, ...(cur.over ? ["di atas cap loss budget"] : [])];
+    if (over.length && !confirm(`Spec v1 bilang jangan:\n${over.join("\n")}\n\nTetap buka? (dicatat sebagai override)`)) return;
+    if (!confirm(`Buka ladder ${r.symbol}?\n${cur.sz} SOL · ${cur.plan.slices.length} slice Spot · harga → −${cur.plan.realEnd.toFixed(1)}%\nWallet ${short(trade.info.wallet)}. Ini kirim transaksi beneran.`)) return;
     const btn = $("#zOpen");
     btn.disabled = true;
     try {
-      $("#zMsg").textContent = "Build + simulasi tiap slice…";
-      const b = await post("/api/ladder/build", { pool: r.pool, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, owner: phantom.key });
-      const bad = (b.results || []).filter(x => x.simulate !== "ok");
-      if (!b.results || bad.length) throw new Error(b.error || `simulasi gagal di slice ${bad.map(x => x.slice).join(", ")}: ${JSON.stringify(bad[0] && bad[0].simulate).slice(0, 200)}`);
-      $("#zMsg").textContent = `Simulasi OK (${b.results.length} slice). Approve di Phantom…`;
-      const signed = await phantom.signAll(b.results.map(x => x.tx));
-      $("#zMsg").textContent = "Kirim slice satu-satu…";
-      const s = await post("/api/send", { kind: "open", pool: r.pool, symbol: r.symbol, sol: cur.sz, txs: signed, positions: b.results.map(x => x.position) });
-      $("#zMsg").innerHTML = s.results.map(x => `slice ${x.i + 1}: ${x.ok ? "✓ " : "✗ "}${x.signature ? solscan(x.signature) : ""} ${x.error ? esc(x.error) : ""}`).join("<br>")
-        + `<br>${s.ok ? "✓ Ladder kebuka." : `Kebuka ${s.results.filter(x => x.ok).length} dari ${signed.length}; sisanya tetap SOL di wallet.`}`;
+      $("#zMsg").textContent = "Simulasi + kirim slice satu-satu (bisa 1–2 menit)…";
+      const s = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, override: over.length > 0 });
+      const rows = (s.results || []).map(x => `slice ${x.slice}: ${x.ok ? "✓ " : "✗ "}${x.signature ? solscan(x.signature) : ""} ${x.error ? esc(x.error) : ""}`);
+      $("#zMsg").innerHTML = rows.join("<br>") + (s.error ? `<br><span class="neg">✗ ${esc(s.error)}</span>` : "")
+        + `<br>${s.ok ? "✓ Ladder kebuka." : `Kebuka ${(s.results || []).filter(x => x.ok).length} slice; sisanya tetap SOL di wallet.`}`;
       setTimeout(loadPortfolio, 4000);
     } catch (e) {
-      $("#zMsg").innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span> <span class="muted">Belum ada yang kekirim kalau gagal sebelum Phantom approve.</span>`;
-    } finally { btn.disabled = false; }
+      $("#zMsg").innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`;
+    } finally { btn.disabled = !trade.ready(); }
   };
 }
 
-// Close one position (remove 100%, claim fees, close account) through Phantom.
-async function closeViaPhantom(p, btn) {
-  if (!phantom.key) { await phantom.connect(); return; }
-  if (state.wallet !== phantom.key) { alert("Wallet di Portfolio beda sama yang connect di Phantom."); return; }
+// Close one position (remove 100%, claim fees, close account) with the key in .env.
+async function closePosition(p, btn, rule) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  if (state.wallet !== trade.info.wallet) { alert(`Portfolio lagi nampilin wallet lain. Trading wallet: ${trade.info.wallet}`); return; }
   if (!confirm(`Close ${p.symbol} ${short(p.position)}?\nTarik 100% likuiditas + klaim fee + tutup akun (rent balik).\nSisa token TIDAK di-swap otomatis.`)) return;
   btn.disabled = true;
   const cell = btn.parentElement;
   try {
-    cell.insertAdjacentHTML("beforeend", '<div class="res muted" data-r>build…</div>');
-    const b = await post("/api/close/build", { pool: p.pool, position: p.position, owner: phantom.key });
-    if (!b.txs || !b.ok) throw new Error(b.error || "simulasi gagal");
-    const signed = await phantom.signAll(b.txs.map(x => x.tx));
-    const s = await post("/api/send", { kind: "close", pool: p.pool, symbol: p.symbol, positions: [p.position], txs: signed });
-    cell.querySelector("[data-r]").innerHTML = s.ok ? `✓ closed ${solscan(s.results[s.results.length - 1].signature)}` : `✗ ${esc((s.results.find(x => !x.ok) || {}).error || "gagal")}`;
+    cell.insertAdjacentHTML("beforeend", '<div class="res muted" data-r>closing…</div>');
+    const s = await trade.call("/api/trade/close", { pool: p.pool, position: p.position, symbol: p.symbol, rule: rule || null });
+    const sig = (s.signatures || [])[(s.signatures || []).length - 1];
+    cell.querySelector("[data-r]").innerHTML = s.ok ? `✓ closed ${sig ? solscan(sig) : ""}` : `✗ ${esc(s.error || "gagal")}`;
     setTimeout(loadPortfolio, 4000);
   } catch (e) {
     const r = cell.querySelector("[data-r]");
@@ -412,7 +410,7 @@ function renderPortfolio() {
   }).join("");
   const x = pf.exitsCfg || {};
   $("#pfRules").textContent = `Exit rules: alert PnL ≤ ${x.alertAtPnlPct}% · alert 1/3 bawah range · close kalau ${x.closeBelowRangeAfterMin} menit di bawah range (SOL-only) · `
-    + `TP ${x.takeProfitPct != null ? x.takeProfitPct : "off"} · SL ${x.stopLossPct != null ? x.stopLossPct : "off"}. Close di sini lewat Phantom (lu approve). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
+    + `TP ${x.takeProfitPct != null ? x.takeProfitPct : "off"} · SL ${x.stopLossPct != null ? x.stopLossPct : "off"}. Close di sini pakai key di .env (lu konfirmasi). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
 }
 
 // ---------- wiring ----------
@@ -460,12 +458,14 @@ $("#detail").addEventListener("click", async e => {
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").classList.add("hidden"); });
 $("#stAge").onclick = () => loadPools(true);
-$("#phantomBtn").onclick = () => phantom.connect();
+$("#keyBtn").onclick = () => alert(trade.ready()
+  ? `Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (DLMM_WEB_PIN)." : "\nTrading cuma dari Mac ini."}`
+  : trade.why() + "\n\nDi .env (folder Capstone1):\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\nSOLANA_RPC_URL=<Helius RPC>\nOpsional: DLMM_WEB_PIN=<PIN> buat trading dari HP.");
 $("#positions tbody").addEventListener("click", e => {
   const b = e.target.closest("[data-close]");
   if (!b || !state.pf) return;
   const p = state.pf.rows.find(x => x.position === b.dataset.close);
-  if (p) closeViaPhantom(p, b);
+  if (p) closePosition(p, b, (p.events || []).some(e => e.kind === "close") ? "exit" : null);
 });
 $("#loadWallet").onclick = loadPortfolio;
 $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortfolio(); });
@@ -481,9 +481,11 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   $("#poolsEmpty").classList.remove("hidden");
   const pools = loadPools();                       // don't wait on anything else first
   try { state.cfg = await getJson("/api/config"); } catch (e) {}
-  $("#wallet").value = store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
+  const tw = state.cfg && state.cfg.trade && state.cfg.trade.wallet;
+  $("#wallet").value = tw || store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
   try { setView(store.get("view", "pools")); } catch (e) { setView("pools"); }
-  try { phantom.connect(true); } catch (e) {}      // reconnect silently if this site was approved before
+  trade.info = state.cfg && state.cfg.trade;
+  paintWallet();
   await pools;
   if ($("#wallet").value.trim()) loadPortfolio();
   setInterval(() => loadPools(), 60000);                       // pools: every minute (server caches 60s)

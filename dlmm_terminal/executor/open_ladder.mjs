@@ -9,9 +9,9 @@
 //        --dry-run --owner PK   build + simulate every slice, send nothing
 //        --build --owner PK     build, sign with the new position keys only, print base64
 //                               transactions for a wallet (Phantom) to sign and send
-//        (default)              sign with DLMM_KEYPAIR and send, one slice after another
+//        (default)              sign with the trading key and send, one slice after another
 //
-// env: SOLANA_RPC_URL (required except --plan), DLMM_KEYPAIR (default mode only).
+// env: SOLANA_RPC_URL (required except --plan), DLMM_PRIVATE_KEY or DLMM_KEYPAIR (default mode only).
 // Output is one JSON object on stdout.
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -30,6 +30,7 @@ const out = o => { process.stdout.write(JSON.stringify(o, (k, v) => (typeof v ==
 const fail = (msg, extra) => { out({ ok: false, error: msg, ...(extra || {}) }); process.exit(1); };
 
 import { planLadder } from "./ladder.mjs";
+import { loadSigner } from "./keys.mjs";
 
 // ---- main ----
 const pool = arg("pool"), sol = Number(arg("sol")), slices = Number(arg("slices", "5"));
@@ -46,9 +47,8 @@ const connection = new Connection(rpc, "confirmed");
 
 let signer = null, owner = null;
 if (mode === "send") {
-  const kp = process.env.DLMM_KEYPAIR;
-  if (!kp) fail("DLMM_KEYPAIR (path to a keypair JSON) is needed to send");
-  signer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(kp, "utf8"))));
+  try { signer = loadSigner(); } catch (e) { fail("trading key: " + e.message); }
+  if (!signer) fail("no trading key: set DLMM_PRIVATE_KEY (or DLMM_KEYPAIR) in .env");
   owner = signer.publicKey;
 } else if (arg("owner")) {
   owner = new PublicKey(arg("owner"));
