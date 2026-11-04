@@ -16,3 +16,8 @@ fund/config.json
 fund/*.db
 fund/*.db-*
 fund/logs/
+
+# dlmm_terminal
+dlmm_terminal/data/
+dlmm_terminal/.env
+dlmm_terminal/executor/node_modules/
