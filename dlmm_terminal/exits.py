@@ -29,6 +29,7 @@ class Tick:
     price: float            # token priced in SOL
     range_min: float        # token priced in SOL
     range_max: float
+    sol_only: bool = True   # False when the position also holds deposited token (two-sided / token-side)
 
 
 @dataclass
@@ -77,10 +78,13 @@ def evaluate(t: Tick, state: State, ex: dict) -> list[dict]:
         ev.append({"kind": "close", "rule": rule, "msg": msg})
 
     # --- closes (checked first; stop beats take-profit, as in the replay) ---
-    n = ex.get("closeBelowRangeAfterMin")
+    # Range-vs-entry rules assume a SOL-only range under the entry price. A position that
+    # deposited the token sits partly above price, so "below range" there can be a winner
+    # (wallet review: a two-sided FLOAT position started below its range and closed +19%).
+    n = ex.get("closeBelowRangeAfterMin") if t.sol_only else None
     if n is not None and state.below_since is not None and t.now - state.below_since >= n * 60:
         close("belowRange", f"price below range bottom for {(t.now - state.below_since) / 60:.0f} min")
-    n = ex.get("priceStopBelowEntryPct")
+    n = ex.get("priceStopBelowEntryPct") if t.sol_only else None
     if n is not None and entry and t.price <= entry * (1 + n / 100):
         close("priceStop", f"price {(t.price / entry - 1) * 100:.1f}% vs entry (stop {n}%)")
     n = ex.get("stopLossPct")
@@ -100,11 +104,11 @@ def evaluate(t: Tick, state: State, ex: dict) -> list[dict]:
     n = ex.get("alertAtPnlPct")
     if n is not None and _once(state, "pnl", t.pnl_pct <= n):
         ev.append({"kind": "alert", "rule": "pnlAlert", "msg": f"PnL {t.pnl_pct:.2f}% <= {n}%: your call"})
-    if ex.get("alertBottomThirdOfRange") and span > 0:
+    if t.sol_only and ex.get("alertBottomThirdOfRange") and span > 0:
         if _once(state, "bottomThird", t.price < t.range_min + span / 3):
             ev.append({"kind": "alert", "rule": "bottomThird",
                        "msg": f"price in bottom third of range ({(t.price / entry - 1) * 100:.1f}% vs entry)"})
-    if _once(state, "outOfRange", below):
+    if t.sol_only and _once(state, "outOfRange", below):
         ev.append({"kind": "alert", "rule": "outOfRange", "msg": "price below range bottom: earning no fees"})
 
     closes = [e for e in ev if e["kind"] == "close"]

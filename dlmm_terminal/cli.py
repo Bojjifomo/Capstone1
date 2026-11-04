@@ -145,10 +145,12 @@ def ticks_for_wallet(wallet: str, now: float):
             lo, hi = (lo, hi) if side == "y" else (1 / hi, 1 / lo)
             price = filters.to_token_in_sol(float(pos.get("poolActivePrice") or p.get("poolPrice") or 0), side)
             pnl = pos.get("pnlSolPctChange") or pos.get("pnlPctChange") or 0
+            dep_tok = (pos.get("allTimeDeposits") or {}).get("tokenX" if side == "y" else "tokenY") or {}
             yield exits.Tick(position=pos["positionAddress"], pool=p["poolAddress"], symbol=symbol, now=now,
                              created_at=pos.get("createdAt"), pnl_pct=float(pnl),
                              pnl_sol=float(pos["pnlSol"]) if pos.get("pnlSol") else None,
-                             price=price, range_min=lo, range_max=hi)
+                             price=price, range_min=lo, range_max=hi,
+                             sol_only=float(dep_tok.get("amount") or 0) == 0)
 
 
 def execute_close(t: exits.Tick, wallet: str, dry_run: bool) -> bool:

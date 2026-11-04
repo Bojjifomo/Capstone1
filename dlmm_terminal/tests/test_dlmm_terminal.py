@@ -125,6 +125,15 @@ class ExitTests(unittest.TestCase):
         st = exits.State(close_sent=True)
         self.assertFalse([e for e in exits.evaluate(tick(pnl=5), st, ex) if e["kind"] == "close"])
 
+    def test_token_side_position_skips_range_rules(self):
+        st, t = exits.State(), tick(now=0, price=0.25)
+        t.sol_only = False
+        exits.evaluate(t, st, EX_DEFAULT)
+        t.now = 900
+        self.assertEqual(exits.evaluate(t, st, EX_DEFAULT), [])
+        t.pnl_pct = -12
+        self.assertEqual([e["rule"] for e in exits.evaluate(t, st, EX_DEFAULT)], ["pnlAlert"])
+
     def test_state_roundtrip(self):
         st = exits.State()
         exits.evaluate(tick(pnl=3, price=0.25), st, EX_DEFAULT)
