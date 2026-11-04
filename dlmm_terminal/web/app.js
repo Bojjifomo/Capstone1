@@ -192,67 +192,156 @@ function renderDetail(r, keepChart) {
     <div class="vbox ${v.level}"><span class="lv">${v.level}</span>${label} <span class="muted">skor ${v.score > 0 ? "+" : ""}${v.score}</span></div>
     <ul class="rs">${li}</ul>
     <div class="zapbig">
-      <button data-zap="${size / 2}">⚡ ◎${+(size / 2).toFixed(2)} · Spot −70%</button>
-      <button data-zap="${size}">⚡ ◎${+size.toFixed(2)} · Spot −70%</button>
+      <button data-zap="${size / 2}">⚡ ◎${+(size / 2).toFixed(2)} · 5×Spot −70%</button>
+      <button data-zap="${size}">⚡ ◎${+size.toFixed(2)} · 5×Spot −70%</button>
       <button class="edit" data-zap="ask">✏️ custom</button>
     </div>
-    <div class="note">Zap = plan + log. Posisi dibuka di Meteora atau MET Pool di HP; web ini nggak pegang key.
+    <div class="note">Zap = ladder Spot SOL-only 5 slice (RH), dibuka lewat Phantom: server build + simulasi, lu approve di Phantom. Key nggak pernah ke server.
       Skor cuma konteks: spec nggak nemu sinyal entry yang tahan di token baru, jadi level ditentuin gate + flag aja.</div>
     <div class="chart"><iframe src="${chart}" title="chart" loading="lazy"></iframe></div>`;
   if (old && old.querySelector("iframe").src === chart) $("#detail .chart").replaceWith(old);
 }
 
-// ---------- zap modal ----------
+// ---------- phantom ----------
+// The key stays in Phantom. The server builds and simulates; Phantom signs; the server
+// only relays the signed bytes.
+const phantom = {
+  provider() { const p = (window.phantom && window.phantom.solana) || window.solana; return p && p.isPhantom ? p : null; },
+  key: null,
+  async connect(silent) {
+    const p = this.provider();
+    if (!p) { if (!silent) window.open("https://phantom.app/download", "_blank"); return null; }
+    try {
+      const r = await p.connect(silent ? { onlyIfTrusted: true } : undefined);
+      this.key = r.publicKey.toString();
+    } catch (e) { if (!silent) alert("Phantom: " + (e.message || e)); return null; }
+    paintPhantom();
+    if (!$("#wallet").value.trim() || $("#wallet").value.trim() !== this.key) { $("#wallet").value = this.key; loadPortfolio(); }
+    return this.key;
+  },
+  // base64 txs from the server -> Phantom signs all at once -> base64 back
+  async signAll(b64s) {
+    if (!window.solanaWeb3) throw new Error("web3.js tidak termuat (jalanin npm install di dlmm_terminal/executor)");
+    const { Transaction } = window.solanaWeb3;
+    const txs = b64s.map(b => Transaction.from(Uint8Array.from(atob(b), c => c.charCodeAt(0))));
+    const signed = await this.provider().signAllTransactions(txs);
+    return signed.map(t => { const raw = t.serialize(); let s = ""; raw.forEach(x => { s += String.fromCharCode(x); }); return btoa(s); });
+  },
+};
+function paintPhantom() {
+  const b = $("#phantomBtn");
+  b.classList.toggle("on", !!phantom.key);
+  b.textContent = phantom.key ? `👻 ${short(phantom.key)}` : "👻 Connect Phantom";
+}
+const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const solscan = sig => `<a href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">${sig.slice(0, 8)}… ↗</a>`;
+
+// ---------- zap modal: RH ladder, Spot, SOL-only ----------
 function openZap(r, size) {
-  const d = state.data, maxSol = d.maxPositionSol;
+  const d = state.data, maxSol = d.maxPositionSol, pos = (state.cfg && state.cfg.cfg && state.cfg.cfg.position) || {};
+  const execMissing = state.cfg && state.cfg.executor;
+  $("#modalCard").innerHTML = `
+    <h3>⚡ Zap ${esc(r.symbol)} <span class="muted">bin ${r.binStep} · Spot SOL-only ladder</span></h3>
+    <div class="acts">
+      <label>SOL <input id="zSize" value="${+size.toFixed(4)}"></label>
+      <label>slices <input id="zSlices" value="${pos.ladderSlices || 5}" style="width:50px"></label>
+      <label>bottom −% <input id="zBottom" value="${Math.abs(pos.rangeBottomPct || 70)}" style="width:60px"></label>
+    </div>
+    <div id="zBody" style="margin-top:10px"></div>
+    <div id="zLadder" class="muted">Plan ladder…</div>
+    <div class="acts">
+      <button class="btn go" id="zOpen">${phantom.key ? "⚡ Buka via Phantom" : "👻 Connect Phantom buat buka"}</button>
+      <a class="btn" href="https://app.meteora.ag/dlmm/${r.pool}" target="_blank" rel="noopener">Meteora ↗</a>
+      <button class="btn" id="zSkip">Log: skip</button>
+      <span class="spacer"></span><button class="btn" id="zClose">Tutup</button>
+    </div><div class="res" id="zMsg">${execMissing ? `⚠ Executor: ${esc(execMissing)}` : ""}</div>`;
+  $("#modal").classList.remove("hidden");
+  let cur = null, planTimer = null, planSeq = 0;
   const draw = () => {
-    const sz = parseFloat($("#zSize").value) || 0, bottom = parseFloat($("#zBottom").value) || 70;
+    const sz = parseFloat($("#zSize").value) || 0, bottom = parseFloat($("#zBottom").value) || 70, slices = parseInt($("#zSlices").value, 10) || 5;
     const sizePct = r.tvlUsd ? sz * d.solUsd / r.tvlUsd * 100 : null;
-    const warn = [];
     const gateFails = r.verdict.reasons.filter(x => !x.ok && !x.flag && !/^sizeVsTvl/.test(x.text)).map(x => nice(x.text));
     if (sizePct != null && sizePct > 3) gateFails.push(`Size ${sizePct.toFixed(1)}% of TVL (max 3%)`);
+    const warn = [];
     if (sz > maxSol + 1e-9) warn.push(`⛔ ${fmtSol(sz, 2)} di atas cap loss budget ${fmtSol(maxSol, 2)}`);
     if (bottom < 65) warn.push(`⚠ Range bottom −${bottom}%: spec pakai −70% (semua rugi besar jatuh 44–58%)`);
     const flags = r.verdict.reasons.filter(x => x.flag).map(x => "⚠ " + nice(x.text));
-    const bottomPrice = r.priceSol ? r.priceSol * (1 - bottom / 100) : null;
-    const plan = [`${r.symbol} · ${r.pool}`, `Spot · SOL-only · ${fmtSol(sz, 3)} (≈ ${fmtUsd(sz * d.solUsd)})`,
-      `Range: harga sekarang → −${bottom}%${bottomPrice ? ` (${bottomPrice.toExponential(3)} SOL)` : ""}`,
-      `Size vs TVL: ${fmtPct(sizePct, 2)}`, `Exit: alert PnL −10% · close kalau 10 menit di bawah range · TP/SL off`].join("\n");
     $("#zBody").innerHTML = `
       <div class="vbox ${gateFails.length ? "WAIT" : flags.length ? "CAREFUL" : "OPEN"}" style="margin:0 0 10px">
-        <span class="lv">${gateFails.length ? "SKIP?" : flags.length ? "CAREFUL" : "OPEN"}</span>
-        ${gateFails.length ? esc(gateFails.join(" · ")) : "Gates lolos buat size ini."}</div>
-      ${[...warn, ...flags].map(x => `<div class="warn">${esc(x)}</div>`).join("")}
-      <pre id="zPlan">${esc(plan)}</pre>`;
-    return { sz, bottom, plan, gateFails, flags };
+        <span class="lv">${gateFails.length ? "GATE ✗" : flags.length ? "CAREFUL" : "OPEN"}</span>
+        ${gateFails.length ? esc(gateFails.join(" · ")) : `Gates lolos · ${fmtPct(sizePct, 2)} of TVL`}</div>
+      ${[...warn, ...flags].map(x => `<div class="warn">${esc(x)}</div>`).join("")}`;
+    cur = { sz, bottom, slices, gateFails, flags, over: sz > maxSol + 1e-9 };
+    clearTimeout(planTimer);
+    planTimer = setTimeout(loadPlan, 350);
   };
-  $("#modalCard").innerHTML = `
-    <h3>⚡ Zap ${esc(r.symbol)} <span class="muted">bin ${r.binStep}</span></h3>
-    <div class="acts"><label>SOL <input id="zSize" value="${+size.toFixed(4)}"></label>
-      <label>range bottom −% <input id="zBottom" value="70"></label></div>
-    <div id="zBody" style="margin-top:10px"></div>
-    <div class="acts">
-      <a class="btn primary" href="https://app.meteora.ag/dlmm/${r.pool}" target="_blank" rel="noopener">Open di Meteora ↗</a>
-      <button class="btn" id="zCopy">Copy plan</button>
-      <button class="btn" id="zEnter">Log: enter</button>
-      <button class="btn" id="zSkip">Log: skip</button>
-      <span class="spacer"></span><button class="btn" id="zClose">Tutup</button>
-    </div><div class="note" id="zMsg" style="padding:8px 0 0"></div>`;
-  $("#modal").classList.remove("hidden");
-  let cur = draw();
-  $("#zSize").oninput = $("#zBottom").oninput = () => { cur = draw(); };
-  const log = async decision => {
-    const reason = decision === "skip" ? prompt("Alasan skip?", "") : "";
-    if (reason === null) return;
-    await getJson("/api/decide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-      pool: r.pool, symbol: r.symbol, decision, decisionReason: reason || `size ${cur.sz} SOL, bottom −${cur.bottom}%`,
-      sizeSol: cur.sz, level: r.verdict.level, gatesFailed: cur.gateFails, flags: cur.flags.map(f => f.slice(2)) }) });
-    $("#zMsg").textContent = `Logged: ${decision} → data/decisions.jsonl`;
-  };
-  $("#zEnter").onclick = () => log("enter");
-  $("#zSkip").onclick = () => log("skip");
-  $("#zCopy").onclick = async () => { try { await navigator.clipboard.writeText(cur.plan); $("#zMsg").textContent = "Plan copied."; } catch (e) { $("#zMsg").textContent = "Copy blocked by the browser."; } };
+  async function loadPlan() {
+    const seq = ++planSeq;
+    $("#zLadder").innerHTML = '<span class="muted">Plan ladder…</span>';
+    const p = await post("/api/ladder/plan", { pool: r.pool, sol: cur.sz, slices: cur.slices, bottom: cur.bottom }).catch(e => ({ ok: false, error: e.message }));
+    if (seq !== planSeq) return;
+    if (!p.ok) { $("#zLadder").innerHTML = `<span class="neg">${esc(p.error || "plan gagal")}</span>`; return; }
+    const pl = p.plan, mx = Math.max(...pl.slices.map(s => s.sol));
+    cur.plan = pl;
+    $("#zLadder").innerHTML = `<div class="muted">${pl.slices.length} slice · ${pl.bins} bin · harga → −${pl.realEnd.toFixed(1)}% · isi 1:2:…:${pl.slices.length} (paling dalam paling gede)${pl.raised ? ` · dinaikin ke ${pl.raised} slice (maks 70 bin/slice)` : ""}</div>
+      <table class="ladder"><tr><th>#</th><th>range</th><th class="r">SOL</th><th></th></tr>
+      ${pl.slices.map((s, i) => `<tr><td>${i + 1}</td><td>−${s.nearPct.toFixed(1)}% → −${s.farPct.toFixed(1)}% <span class="muted">(${s.width} bin)</span></td>
+        <td class="r">${s.sol.toFixed(4)}</td><td><span class="lbar" style="width:${Math.round(s.sol / mx * 120)}px"></span></td></tr>`).join("")}</table>
+      <div class="muted">Rent ±${(0.042 * pl.slices.length).toFixed(3)} SOL buat ${pl.slices.length} posisi, balik pas close.</div>`;
+  }
+  draw();
+  ["#zSize", "#zBottom", "#zSlices"].forEach(s => { $(s).oninput = draw; });
   $("#zClose").onclick = () => $("#modal").classList.add("hidden");
+  $("#zSkip").onclick = async () => {
+    const reason = prompt("Alasan skip?", "");
+    if (reason === null) return;
+    await post("/api/decide", { pool: r.pool, symbol: r.symbol, decision: "skip", decisionReason: reason, sizeSol: cur.sz,
+      level: r.verdict.level, gatesFailed: cur.gateFails, flags: cur.flags.map(f => f.slice(2)) });
+    $("#zMsg").textContent = "Logged: skip → data/decisions.jsonl";
+  };
+  $("#zOpen").onclick = async () => {
+    if (!phantom.key) { if (await phantom.connect()) $("#zOpen").textContent = "⚡ Buka via Phantom"; return; }
+    if (!cur.plan) return;
+    if ((cur.gateFails.length || cur.over) && !confirm(`Spec v1 bilang jangan:\n${[...cur.gateFails, ...(cur.over ? ["di atas cap loss budget"] : [])].join("\n")}\n\nTetap buka? (dicatat sebagai override)`)) return;
+    const btn = $("#zOpen");
+    btn.disabled = true;
+    try {
+      $("#zMsg").textContent = "Build + simulasi tiap slice…";
+      const b = await post("/api/ladder/build", { pool: r.pool, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, owner: phantom.key });
+      const bad = (b.results || []).filter(x => x.simulate !== "ok");
+      if (!b.results || bad.length) throw new Error(b.error || `simulasi gagal di slice ${bad.map(x => x.slice).join(", ")}: ${JSON.stringify(bad[0] && bad[0].simulate).slice(0, 200)}`);
+      $("#zMsg").textContent = `Simulasi OK (${b.results.length} slice). Approve di Phantom…`;
+      const signed = await phantom.signAll(b.results.map(x => x.tx));
+      $("#zMsg").textContent = "Kirim slice satu-satu…";
+      const s = await post("/api/send", { kind: "open", pool: r.pool, symbol: r.symbol, sol: cur.sz, txs: signed, positions: b.results.map(x => x.position) });
+      $("#zMsg").innerHTML = s.results.map(x => `slice ${x.i + 1}: ${x.ok ? "✓ " : "✗ "}${x.signature ? solscan(x.signature) : ""} ${x.error ? esc(x.error) : ""}`).join("<br>")
+        + `<br>${s.ok ? "✓ Ladder kebuka." : `Kebuka ${s.results.filter(x => x.ok).length} dari ${signed.length}; sisanya tetap SOL di wallet.`}`;
+      setTimeout(loadPortfolio, 4000);
+    } catch (e) {
+      $("#zMsg").innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span> <span class="muted">Belum ada yang kekirim kalau gagal sebelum Phantom approve.</span>`;
+    } finally { btn.disabled = false; }
+  };
+}
+
+// Close one position (remove 100%, claim fees, close account) through Phantom.
+async function closeViaPhantom(p, btn) {
+  if (!phantom.key) { await phantom.connect(); return; }
+  if (state.wallet !== phantom.key) { alert("Wallet di Portfolio beda sama yang connect di Phantom."); return; }
+  if (!confirm(`Close ${p.symbol} ${short(p.position)}?\nTarik 100% likuiditas + klaim fee + tutup akun (rent balik).\nSisa token TIDAK di-swap otomatis.`)) return;
+  btn.disabled = true;
+  const cell = btn.parentElement;
+  try {
+    cell.insertAdjacentHTML("beforeend", '<div class="res muted" data-r>build…</div>');
+    const b = await post("/api/close/build", { pool: p.pool, position: p.position, owner: phantom.key });
+    if (!b.txs || !b.ok) throw new Error(b.error || "simulasi gagal");
+    const signed = await phantom.signAll(b.txs.map(x => x.tx));
+    const s = await post("/api/send", { kind: "close", pool: p.pool, symbol: p.symbol, positions: [p.position], txs: signed });
+    cell.querySelector("[data-r]").innerHTML = s.ok ? `✓ closed ${solscan(s.results[s.results.length - 1].signature)}` : `✗ ${esc((s.results.find(x => !x.ok) || {}).error || "gagal")}`;
+    setTimeout(loadPortfolio, 4000);
+  } catch (e) {
+    const r = cell.querySelector("[data-r]");
+    if (r) r.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`;
+  } finally { btn.disabled = false; }
 }
 
 // ---------- portfolio ----------
@@ -300,12 +389,13 @@ function renderPortfolio() {
       <td><span class="${cls(pv)}">${fmtPct(pv, 1, true)}</span> <span class="muted">· bottom ${fmtPct(bot, 0)}</span>
         <div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk" style="left:${pos}%"></div>` : ""}</div></td>
       <td>${status}</td>
-      <td><a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
+      <td><button class="btn ${exit ? "danger" : ""}" data-close="${p.position}">${exit ? "Exit → close" : "Close"}</button>
+        <a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
     </tr>`;
   }).join("");
   const x = pf.exitsCfg || {};
   $("#pfRules").textContent = `Exit rules: alert PnL ≤ ${x.alertAtPnlPct}% · alert 1/3 bawah range · close kalau ${x.closeBelowRangeAfterMin} menit di bawah range (SOL-only) · `
-    + `TP ${x.takeProfitPct ?? "off"} · SL ${x.stopLossPct ?? "off"}. Web ini cuma nunjukin; close dari MET Portfolio, Meteora, atau "monitor --mode auto".`;
+    + `TP ${x.takeProfitPct ?? "off"} · SL ${x.stopLossPct ?? "off"}. Close di sini lewat Phantom (lu approve). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
 }
 
 // ---------- wiring ----------
@@ -353,6 +443,13 @@ $("#detail").addEventListener("click", async e => {
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").classList.add("hidden"); });
 $("#stAge").onclick = () => loadPools(true);
+$("#phantomBtn").onclick = () => phantom.connect();
+$("#positions tbody").addEventListener("click", e => {
+  const b = e.target.closest("[data-close]");
+  if (!b || !state.pf) return;
+  const p = state.pf.rows.find(x => x.position === b.dataset.close);
+  if (p) closeViaPhantom(p, b);
+});
 $("#loadWallet").onclick = loadPortfolio;
 $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortfolio(); });
 
@@ -366,6 +463,7 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   try { state.cfg = await getJson("/api/config"); } catch (e) {}
   $("#wallet").value = store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
   setView(store.get("view", "pools"));
+  phantom.connect(true);   // reconnect silently if this site was approved before
   $("#poolsEmpty").classList.remove("hidden");
   await loadPools();
   if ($("#wallet").value.trim()) loadPortfolio();

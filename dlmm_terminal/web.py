@@ -4,8 +4,9 @@ a detail panel with the chart, and your wallet's positions with the exit rules.
   python3 -m dlmm_terminal web                 # http://localhost:8790
   python3 -m dlmm_terminal web --port 8790 --host 0.0.0.0   # reachable over Tailscale
 
-Read-only: nothing here holds a key or sends a transaction. Zap buttons show the
-plan and open the pool on Meteora (or MET Pool on the phone); decisions are logged.
+No key lives here. Opening a ladder or closing a position is built on the server (Meteora
+SDK, simulated first), signed in the browser by Phantom, and only the signed bytes come
+back to be relayed to the RPC. Without Phantom the page is read-only.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import api, exits, filters
+from . import api, exits, filters, node
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "web"
@@ -215,7 +216,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(portfolio(wallet, self.cfg))
             if u.path == "/api/config":
                 return self._json({"cfg": self.cfg, "wallet": os.environ.get("DLMM_WALLET"),
-                                   "maxPositionSol": filters.max_position_sol(self.cfg)})
+                                   "maxPositionSol": filters.max_position_sol(self.cfg), "executor": node.ready()})
+            if u.path == "/vendor/web3.js":   # @solana/web3.js for the browser, from the executor's own install
+                f = node.EXECUTOR / "node_modules" / "@solana" / "web3.js" / "lib" / "index.iife.min.js"
+                if not f.is_file():
+                    return self._send(404, b"executor not installed", "text/plain")
+                return self._send(200, f.read_bytes(), "text/javascript")
         except Exception as exc:
             return self._json({"error": str(exc)[:300]}, 502)
         name = "index.html" if u.path in ("/", "") else u.path.lstrip("/")
@@ -226,9 +232,34 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, f.read_bytes(), ctype)
 
     def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        try:
+            if self.path in ("/api/ladder/plan", "/api/ladder/build"):
+                pos = self.cfg["position"]
+                args = node.ladder_args(str(body["pool"]), float(body["sol"]), int(body.get("slices") or pos.get("ladderSlices", 5)),
+                                        abs(float(body.get("bottom") or pos["rangeBottomPct"])), float(body.get("top") or 0),
+                                        str(body.get("strategy") or "spot"))
+                if self.path.endswith("plan"):
+                    return self._json(node.run("open_ladder.mjs", args + ["--plan"]))
+                return self._json(node.run("open_ladder.mjs", args + ["--build", "--owner", str(body["owner"])]))
+            if self.path == "/api/close/build":
+                return self._json(node.run("close_position.mjs", ["--pool", str(body["pool"]), "--position", str(body["position"]),
+                                                                  "--build", "--owner", str(body["owner"])]))
+            if self.path == "/api/send":
+                res = node.send_signed([str(t) for t in body.get("txs") or []])
+                from .cli import append
+                append("decisions.jsonl" if body.get("kind") == "open" else "closes.jsonl", {
+                    "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "web+phantom", "kind": body.get("kind"),
+                    "pool": body.get("pool"), "symbol": body.get("symbol"), "positions": body.get("positions"),
+                    "decision": "enter" if body.get("kind") == "open" else None, "sizeSol": body.get("sol"),
+                    "results": res, "ok": all(r.get("ok") for r in res) and len(res) == len(body.get("txs") or [])})
+                return self._json({"ok": all(r.get("ok") for r in res), "results": res})
+        except (KeyError, ValueError) as exc:
+            return self._json({"ok": False, "error": f"bad request: {exc}"}, 400)
+        except Exception as exc:
+            return self._json({"ok": False, "error": str(exc)[:300]}, 502)
         if self.path != "/api/decide":
             return self._send(404, b"not found", "text/plain")
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         from .cli import append
         row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "web", **{k: body.get(k) for k in
                ("pool", "symbol", "decision", "decisionReason", "sizeSol", "level", "gatesFailed", "flags")}}

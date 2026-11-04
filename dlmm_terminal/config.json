@@ -4,7 +4,8 @@
   "gates": {"minPoolAgeMinutes": 60, "minFeeApr24hPct": 1000, "maxPositionPctOfTvl": 3},
   "position": {
     "strategy": "Spot", "side": "SOL-only", "rangeBottomPct": -70,
-    "bankrollSol": 160, "lossBudgetPct": 5, "defaultSizeSol": 8
+    "bankrollSol": 160, "lossBudgetPct": 5, "defaultSizeSol": 8,
+    "ladderSlices": 5, "_ladder": "RH ladder: equal-width slices from the price down to rangeBottomPct, SOL split 1:2:...:n (deepest slice biggest), Spot inside each"
   },
   "flags": {"pump1hPct": 25, "drop6hPct": -17, "minTvlUsd": 25000, "nightEntryLocalHours": [0, 9], "utcOffsetHours": 7},
   "scan": {"pages": 2, "pageSize": 100, "prefilterMinTvlUsd": 1000},

@@ -6,6 +6,7 @@
   python -m dlmm_terminal monitor --wallet W     # every 5 min: log PnL, alerts, exit rules (auto TP/SL)
   python -m dlmm_terminal followup               # fill price 1h/6h/24h after each candidate
   python -m dlmm_terminal web                    # browser terminal on http://localhost:8790
+  python -m dlmm_terminal open POOL --sol 8      # open a 5-slice Spot SOL-only ladder (RH style), you confirm
 """
 from __future__ import annotations
 
@@ -122,6 +123,53 @@ def cmd_screen(a, cfg):
     n = sum(c["decision"] == "propose" for c in rows)
     print(f"\n{n} pass all gates, {len(rows) - n} skipped (all logged to {DATA / 'candidates.jsonl'})."
           + ("" if a.all else " Use --all to see the skipped ones and why."))
+
+
+def cmd_open(a, cfg):
+    """Gates first, then the ladder plan, then you type y. Sends with DLMM_KEYPAIR."""
+    from . import node
+    pos = cfg["position"]
+    sol = filters.planned_size_sol(cfg, a.sol)
+    if a.sol and a.sol > sol + 1e-9:
+        print(f"⚠ {a.sol} SOL is over the loss-budget cap; using {sol} SOL (--force-size to override)")
+        if a.force_size:
+            sol = a.sol
+    slices = a.slices or pos.get("ladderSlices", 5)
+    bottom = abs(a.bottom if a.bottom is not None else pos["rangeBottomPct"])
+    c = filters.evaluate(api.pool(a.pool), candles_1h(a.pool), cfg, size_sol=sol)
+    append("candidates.jsonl", {**c, "source": "open"})
+    print(fmt_row(c))
+    if c["gatesFailed"] and not a.force:
+        sys.exit("\nGate gagal: nggak dibuka. --force kalau lu tetap mau (dicatat sebagai override).")
+    plan = node.run("open_ladder.mjs", node.ladder_args(a.pool, sol, slices, bottom, a.top, a.strategy) + ["--plan"])
+    if not plan.get("ok"):
+        sys.exit(f"plan gagal: {plan.get('error')}")
+    p = plan["plan"]
+    print(f"\n{p['strategy'].title()} SOL-only ladder · {sol} SOL · {len(p['slices'])} slice · {p['bins']} bin · "
+          f"harga → −{p['realEnd']:.1f}%  (bin step {p['binStep']})")
+    for i, s_ in enumerate(p["slices"], 1):
+        print(f"  slice {i}: {s_['sol']:.4f} SOL  −{s_['nearPct']:.1f}% → −{s_['farPct']:.1f}%  ({s_['width']} bin)")
+    mode = ["--dry-run", "--owner", a.owner or os.environ.get("DLMM_WALLET", "")] if a.dry_run else []
+    if a.dry_run and not mode[-1]:
+        sys.exit("--dry-run butuh --owner WALLET (atau DLMM_WALLET di .env)")
+    if not a.dry_run:
+        if not os.environ.get("DLMM_KEYPAIR"):
+            sys.exit("\nDLMM_KEYPAIR (path keypair JSON) belum di-set. Pakai --dry-run, atau buka lewat web + Phantom.")
+        if not a.yes and input("\nKirim? ketik y: ").strip().lower() != "y":
+            append("decisions.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "pool": a.pool,
+                                       "symbol": c["symbol"], "decision": "skip", "decisionReason": "cancelled at confirm"})
+            return print("Batal.")
+    res = node.run("open_ladder.mjs", node.ladder_args(a.pool, sol, slices, bottom, a.top, a.strategy) + mode)
+    for r in res.get("results", []):
+        print(f"  slice {r['slice']}: {r['position']}  " + (r.get("signature") or str(r.get("simulate") or r.get("error"))))
+    if res.get("error"):
+        print("error:", res["error"])
+    append("decisions.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "pool": a.pool, "symbol": c["symbol"],
+                               "decision": "enter", "dryRun": a.dry_run, "override": bool(c["gatesFailed"]), "sizeSol": sol,
+                               "slices": slices, "rangeBottomPct": -bottom, "positions": [r["position"] for r in res.get("results", [])],
+                               "ok": res.get("ok")})
+    print("\n" + ("OK" if res.get("ok") else "Nggak semua slice jalan; yang belum kebuka tetap SOL di wallet.")
+          + (" (simulasi, nggak dikirim)" if a.dry_run else ""))
 
 
 def cmd_decide(a, cfg):
@@ -266,6 +314,18 @@ def main(argv=None):
     m.add_argument("--dry-run", action="store_true", help="auto mode: build + simulate the close, don't send")
     m.add_argument("--once", action="store_true")
     sub.add_parser("followup", help="price 1h/6h/24h after each logged candidate")
+    o = sub.add_parser("open", help="open a SOL-only Spot ladder (RH style, 5 slices) after the gates")
+    o.add_argument("pool")
+    o.add_argument("--sol", type=float, help="SOL to deposit (default: config, capped by the loss budget)")
+    o.add_argument("--slices", type=int, help="default config position.ladderSlices (5)")
+    o.add_argument("--bottom", type=float, help="range bottom %% below price (default 70)")
+    o.add_argument("--top", type=float, default=0, help="where the ladder starts below the price, %% (0 = at the price)")
+    o.add_argument("--strategy", default="spot", choices=["spot", "curve", "bidask"])
+    o.add_argument("--dry-run", action="store_true", help="build + simulate only")
+    o.add_argument("--owner", help="wallet for --dry-run (default DLMM_WALLET)")
+    o.add_argument("--force", action="store_true", help="open even when a gate fails (logged as override)")
+    o.add_argument("--force-size", action="store_true", help="allow a size over the loss-budget cap")
+    o.add_argument("-y", "--yes", action="store_true", help="don't ask before sending")
     w = sub.add_parser("web", help="browser terminal: pools + entry check + chart + portfolio exits")
     w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from the phone over Tailscale")
     w.add_argument("--port", type=int, default=8790)
@@ -274,7 +334,7 @@ def main(argv=None):
     if a.cmd == "web":
         from . import web
         return web.serve(cfg, a.host, a.port)
-    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup}[a.cmd](a, cfg)
+    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open}[a.cmd](a, cfg)
 
 
 if __name__ == "__main__":

@@ -115,3 +115,27 @@ python3 -m dlmm_terminal web --host 0.0.0.0       # buka dari HP lewat Tailscale
 - **Zap**: modal plan (size SOL, range bottom −70%, size vs TVL, cap loss budget, flag) → `Open di Meteora`, `Copy plan`, `Log: enter / skip` (ke `data/decisions.jsonl`). Web ini **nggak pegang key**; buka posisinya di Meteora atau MET Pool di HP.
 - **Portfolio**: posisi terbuka wallet (Meteora API), PnL SOL + peak, range bar (merah = 1/3 bawah), EXIT CHECK pakai rules yang sama dengan `monitor` (dicek tiap 5 menit selama halaman kebuka). Close tetap dari MET Portfolio / Meteora / `monitor --mode auto`.
 - Snapshot semua kandidat ke `data/candidates.jsonl` maksimal tiap 15 menit (buat v2).
+
+## Buka & tutup posisi (ladder RH, Spot, SOL-only)
+
+Bentuk ladder sama persis dengan MET Pool di HP (`executor/ladder.mjs` = `MET.planLadder`): **5 slice** lebar bin-nya sama, dari harga sekarang sampai **−70%**, isi SOL **1:2:3:4:5** (slice paling dalam paling gede), Spot di tiap slice. Contoh 8 SOL di bin step 80: 0.53 / 1.07 / 1.6 / 2.13 / 2.67 SOL.
+
+Sekali aja di Mac: `cd dlmm_terminal/executor && npm install` (butuh Node: `brew install node`).
+
+**Dari web (Phantom, key nggak pernah ke server):**
+1. Klik **👻 Connect Phantom** di kanan atas (wallet ikut keisi di Portfolio).
+2. Zap di pool → modal nunjukin gate v1 + tabel 5 slice → **⚡ Buka via Phantom**.
+3. Server build + simulasi tiap slice → Phantom minta approve **sekali** buat semua slice → dikirim satu-satu. Kalau satu gagal, sisanya berhenti dan tetap SOL.
+4. Gate gagal atau di atas cap loss budget = ada konfirmasi tambahan, dicatat sebagai override.
+5. Portfolio: tombol **Close** per posisi (tarik 100% + klaim fee + tutup akun, rent balik). Kalau exit rule nyala, tombolnya jadi merah **Exit → close**.
+
+**Dari Terminal (keypair):**
+
+```bash
+python3 -m dlmm_terminal open <POOL> --sol 8                 # gate → plan 5 slice → ketik y → kirim
+python3 -m dlmm_terminal open <POOL> --sol 8 --dry-run --owner <WALLET>   # simulasi aja
+```
+
+Butuh `DLMM_KEYPAIR=/path/keypair.json` dan `SOLANA_RPC_URL` (Helius) di `.env`. Opsi: `--slices`, `--bottom`, `--top`, `--strategy spot|curve|bidask`, `--force` (gate gagal), `--force-size` (lewat cap).
+
+Sisa memecoin setelah close **belum** di-swap otomatis ke SOL: jual di Jupiter / Cleanup di MET Portfolio.
