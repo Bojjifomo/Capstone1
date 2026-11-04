@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from dlmm_terminal import benchmark, cli
+from dlmm_terminal import benchmark, blast, cli
 from dlmm_terminal.api import SOL_MINT
 
 T0 = 1_793_700_000  # entry time, unix s
@@ -91,6 +91,49 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(cli.signal_once(cfg, prof, state, now=T0 + 900), [])  # back, but within cooldown
             self.assertEqual(len(cli.signal_once(cfg, prof, {**state, "matching": [], "pinged": {}}, now=T0 + 900)), 1)
             self.assertIn("ENTRY SIGNAL", sent[-1])
+
+
+class BlastTests(unittest.TestCase):
+    def _row(self, **kw):
+        r = {"pool": "P" * 44, "name": "A&B-SOL", "symbol": "AB", "feeTvl24h": 10, "fdv": 5e5, "tvl": 3e4,
+             "vol5m": 100, "chg5m": -1.0, "binStep": 100, "volTvl1h": 50, "prorated5m": 40, "score": 1, "dims": 5,
+             "hits": 5, "boost": 0, "buys5m": 3, "sells5m": 2, "txn5m": 5, "ageH": 30, "fees1hUsd": 50,
+             "flags": [], "dsUrl": "https://dexscreener.com/solana/x"}
+        r.update(kw)
+        return r
+
+    def test_row_from_snapshot_and_dexscreener(self):
+        c = {"pool": "P", "name": "M-SOL", "symbol": "M", "fees24hUsd": 3000, "fees1hUsd": 100, "binStep": 100,
+             "mcapUsd": 1e6, "flags": []}
+        snap = {"tvl": 10_000, "volume": {"1h": 20_000}, "created_at": (T0 - 72 * 3600) * 1000}
+        r = blast.row(c, snap, {"score": 1, "dims": 5, "hits": ["x"] * 5},
+                      {"vol5m": 500, "vol1h": 12_000, "chg5m": 2, "buys5m": 4, "sells5m": 6, "boost": 0, "fdv": 9e5}, T0)
+        self.assertEqual(r["feeTvl24h"], 30)       # fees 24h / TVL
+        self.assertEqual(r["volTvl1h"], 200)       # 1h vol / TVL
+        self.assertEqual(r["prorated5m"], 50)      # 5m vol x 12 / 1h vol
+        self.assertEqual(r["txn5m"], 10)
+        self.assertEqual(blast.ago(r["ageH"]), "3 days ago")
+
+    def test_top_n_and_html_escaping(self):
+        rows = [self._row(volTvl1h=v) for v in range(15)]
+        best = blast.top(rows, 10, "volTvl1h")
+        self.assertEqual([r["volTvl1h"] for r in best], list(range(14, 4, -1)))
+        cfg = cli.load_config(None)
+        prof = {"wallet": "W" * 44, "days": 20}
+        msg = blast.message(best, 15, cfg, prof, html_mode=True)
+        self.assertIn("A&amp;B-SOL", msg)
+        self.assertIn("Top 10 of 15", msg)
+        self.assertTrue(all(len(c.encode("utf-16-le")) // 2 <= 4000 for c in cli._tg_chunks(msg * 2)))
+
+    def test_blast_every_30_min_then_wallet_checks(self):
+        cfg = cli.load_config(None)
+        sent = []
+        with mock.patch.object(cli, "blast_once", lambda cfg, prof, state, now: sent.append(now) or state.update(lastBlast=now) or []), \
+             mock.patch.object(cli, "_wallet_entries", lambda *a: []):
+            state = {}
+            for minute in range(0, 65, 5):
+                cli.tick(cfg, {}, state, now=T0 + minute * 60)
+        self.assertEqual([(t - T0) // 60 for t in sent], [0, 30, 60])
 
 
 if __name__ == "__main__":

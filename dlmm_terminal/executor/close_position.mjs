@@ -10,6 +10,7 @@
 // Leftover memecoin from the range is NOT swapped to SOL here; sell it yourself (spec: leftovers cost -3.93 SOL).
 import { createRequire } from "node:module";
 import { loadSigner } from "./keys.mjs";
+import { connectionFor, rpcStats } from "./rpc.mjs";
 
 // The SDK's ESM build has a broken directory import; its CommonJS build loads fine.
 const require = createRequire(import.meta.url);
@@ -44,7 +45,7 @@ if (!dryRun && !signer) {
   process.exit(2);
 }
 
-const connection = new Connection(rpc, "confirmed");
+const connection = connectionFor(rpc);  // counts requests (rpc stats in the JSON output)
 const dlmm = await DLMM.create(connection, new PublicKey(pool));
 const position = await dlmm.getPosition(new PublicKey(positionAddr));
 if (!position.publicKey) throw new Error("position not found");
@@ -69,7 +70,7 @@ if (build) {
     out.push({ simulate: sim.value.err ? { err: sim.value.err } : "ok",
       tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") });
   }
-  process.stdout.write(JSON.stringify({ ok: out.every(o => o.simulate === "ok"), position: positionAddr, bins: [lowerBinId, upperBinId], txs: out }) + "\n");
+  process.stdout.write(JSON.stringify({ rpc: rpcStats(), ok: out.every(o => o.simulate === "ok"), position: positionAddr, bins: [lowerBinId, upperBinId], txs: out }) + "\n");
   process.exit(0);
 }
 const sigs = [];
@@ -88,9 +89,9 @@ for (const [i, tx] of txs.entries()) {
       console.log(`  tx ${i + 1}: ${sig}`);
       sigs.push(sig);
     } catch (e) {
-      process.stdout.write(JSON.stringify({ ok: false, position: positionAddr, signatures: sigs, error: String(e.message || e).slice(0, 300) }) + "\n");
+      process.stdout.write(JSON.stringify({ rpc: rpcStats(), ok: false, position: positionAddr, signatures: sigs, error: String(e.message || e).slice(0, 300) }) + "\n");
       process.exit(1);
     }
   }
 }
-if (!dryRun) process.stdout.write(JSON.stringify({ ok: true, position: positionAddr, signatures: sigs }) + "\n");
+if (!dryRun) process.stdout.write(JSON.stringify({ rpc: rpcStats(), ok: true, position: positionAddr, signatures: sigs }) + "\n");

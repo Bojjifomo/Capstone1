@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import datetime, timezone
 import urllib.request
 from pathlib import Path
 
@@ -30,18 +31,44 @@ def ready() -> str | None:
     return None
 
 
+USAGE_LOG = Path(__file__).resolve().parent / "data" / "rpc_usage.jsonl"
+
+
+def log_rpc(script: str, args: list[str], result: dict) -> None:
+    """Every executor run reports its RPC requests ({"rpc": {calls, byHost, byMethod}}): keep them,
+    so `python -m dlmm_terminal rpc` can show what the Helius free tier is spent on."""
+    st = (result or {}).get("rpc")
+    if not st:
+        return
+    mode = next((a[2:] for a in args if a in ("--plan", "--dry-run", "--build")), "send")
+    row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "script": script, "mode": mode,
+           "ok": result.get("ok"), **st}
+    try:
+        USAGE_LOG.parent.mkdir(exist_ok=True)
+        with open(USAGE_LOG, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+
+
+def last_json(stdout: str) -> dict | None:
+    line = next((l for l in reversed(stdout.strip().splitlines()) if l.startswith("{")), None)
+    try:
+        return json.loads(line) if line else None
+    except json.JSONDecodeError:
+        return None
+
+
 def run(script: str, args: list[str], timeout: int = 240) -> dict:
     missing = ready()
     if missing:
         return {"ok": False, "error": missing}
     env = {**os.environ, "SOLANA_RPC_URL": rpc_url()}
     r = subprocess.run(["node", str(EXECUTOR / script), *args], capture_output=True, text=True, timeout=timeout, env=env)
-    line = next((l for l in reversed(r.stdout.strip().splitlines()) if l.startswith("{")), None)
-    if line:
-        try:
-            return json.loads(line)
-        except json.JSONDecodeError:
-            pass
+    res = last_json(r.stdout)
+    if res is not None:
+        log_rpc(script, args, res)
+        return res
     return {"ok": r.returncode == 0, "error": (r.stderr.strip() or r.stdout.strip())[-600:], "stdout": r.stdout[-2000:]}
 
 

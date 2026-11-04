@@ -55,7 +55,7 @@ Cara kerjanya:
 1. **Benchmark** (0 RPC, API Meteora): semua posisi closed wallet itu dalam N hari, slice yang dibuka ≤ 30 menit di pool yang sama = 1 entry. Tiap entry direkonstruksi **pas waktu entry**: umur pool, fee 1h / 24h sebelum entry, mcap (perkiraan), harga 1h / 6h, hasil (PnL SOL, lama hold). Disimpan ke `data/benchmark.json` + `data/benchmark_entries.jsonl`, dibangun ulang tiap 24 jam.
 2. **Habitat** (lapis 2) = bin step yang ngasilin SOL buat wallet itu + umur pool p10–p90 wallet itu (1–195 jam) + band tetap dari lu (`signal.bandOverrides`): **mcap $300k–$10M, fee 24h > $200, fee 1h > $20**. Hapus satu baris override = balik ke p10–p90 wallet. Perubahan harga cuma di-log, nggak dipakai buat match (spec §2: gagal di token yang belum dilihat).
 3. **Signal**: tiap 5 menit scan pool SOL → gate v1 → skor habitat (0–1). Lolos semua gate + skor ≥ `minMatchScore` (default 1.0 = semua cocok) → ping. Flag (pump, drop 6h, TVL kecil, entry malam) ikut di pesan sebagai ⚠️, nggak nge-block.
-4. **Anti-spam**: scan pertama kirim satu **digest** (pool yang cocok sekarang). Setelah itu ping cuma pas pool **baru masuk** kriteria, maksimal sekali per `cooldownHours` (6 jam) per pool.
+4. **Blast tiap 30 menit** (`mode: "blast"`, default): satu pesan berisi **10 pool terbaik** yang lolos lapis 1 + 2, format kayak card "DLMM Top 10 MEME Fees Opportunities": legend, lalu per pool 🧹 fee 1d/TVL · 📌 FDV · 📊 TVL · 📐 vol 5m · ⏳ harga 5m · 🟥 bin step · 🥩 vol 1h/TVL · 🥤 vol 5m×12 / vol 1h · 🎯 skor benchmark · ⚡ boost DexScreener · 🟢/🔴/♻️ buy/sell/txn 5m · ⏰ umur pool · link Meteora + DS, plus ⚠️ flag. Urutan default **vol 1h / TVL** (`blastSortBy`: `volTvl1h` | `feeTvl24h` | `fees1hUsd` | `prorated5m`). Atur `blastEveryMin` / `blastTop`. Data 5 menit dari DexScreener (gratis, tanpa key). `mode: "new"` = cara lama: ping per pool pas baru masuk kriteria (cooldown `cooldownHours`).
 5. **👀 Wallet entry**: kalau wallet benchmark buka posisi di pool baru, langsung ping + verdict gate & skor habitat (`pingWalletEntries`).
 
 Telegram: isi `DLMM_TG_BOT_TOKEN` + `DLMM_TG_CHAT_ID` di `.env` (sama dengan alert `monitor`). Semua ping ke `data/signals.jsonl`; kandidat lengkap ke `candidates.jsonl` (maks tiap 15 menit) buat v2.
@@ -63,6 +63,25 @@ Telegram: isi `DLMM_TG_BOT_TOKEN` + `DLMM_TG_CHAT_ID` di `.env` (sama dengan ale
 Benchmark 20 hari (4 Nov 2026): 87 entry di 25 pool, win 87%, +12.86 SOL (PnL Meteora, belum termasuk jual sisa token). Bin step 100 paling sering (47×, +9.16 SOL). Habitat: umur pool 1–195 jam, mcap $341k–$2.1M, fee 24h $293–$23.6k, fee 1h $19–$2.6k.
 
 Ini **cek kemiripan**, bukan prediksi: spec nemu nggak ada fitur entry yang misahin winner/loser di token baru. Tetap assist mode: ping → lu cek → `open`.
+
+## Hemat Helius (RPC free tier)
+
+Yang **nggak pernah** pakai RPC (0 request): `screen`, `signal` (blast + benchmark), `benchmark`, `monitor` mode alert, `followup`, dan list pool + Portfolio di web. Semuanya dari API Meteora + DexScreener (gratis, tanpa key). Jadi signal 24/7 di Mac mini **nggak makan kuota Helius sama sekali**.
+
+Helius (`SOLANA_RPC_URL`) cuma dipakai pas beneran transaksi:
+
+| Aksi | RPC |
+| --- | --- |
+| Preview ladder (modal Zap di web, `open --plan`) | **node publik** dulu; Helius cuma kalau publik gagal. Dulu ±4 request Helius tiap ubah size |
+| Buka ladder (`open`, tombol ⚡) | Helius: baca pool, simulate + kirim + konfirmasi per slice |
+| Close (`Close` / `monitor --mode auto`) | Helius, cuma pas exit rule kena / lu klik |
+
+Cek pemakaiannya (dicatat ke `data/rpc_usage.jsonl` tiap kali executor jalan):
+
+```bash
+python3 -m dlmm_terminal rpc            # 30 hari: total, Helius vs publik, per aksi, per method, pace / 30 hari
+python3 -m dlmm_terminal rpc --days 7
+```
 
 ## Filter (gate = wajib, flag = warning)
 
