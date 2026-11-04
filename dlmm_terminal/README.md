@@ -84,3 +84,18 @@ Kenapa TP fix rugi: posisi SOL-only di bawah harga cuma dapet dari fee, PnL bias
 | `followup.jsonl` | Harga 1h/6h/24h setelah kandidat + dip terdalam: bukti skip nyelamatin atau nggak |
 
 Flag dipromote jadi gate kalau (spec §7): ≥ 300 posisi closed di 50+ token (15+ yang rugi > 5%), nambah SOL di token yang belum dilihat (leave-one-token-out), skip ≤ 45% kandidat, dan log skip-nya konfirm.
+
+## Versi HP: MET Pool + MET Portfolio (Scriptable)
+
+`dlmm_terminal/scriptable/` = script Scriptable lu (met-pool-v7, met-portfolio-v7) + rules spec v1. Mesin DLMM-nya tetap punya mereka (open ladder, close, claim, swap Jupiter, practice mode). Yang ditambahin:
+
+| Script | Tambahan |
+| --- | --- |
+| **MET Pool** | Di bawah tiap pool: `✅ v1 gates pass` atau `⛔ <gate yang gagal>` + flag `⚠️`. Default cuma nampilin pool yang lolos semua gate (tap baris filter buat lihat semua). Layar konfirmasi zap nampilin gate/flag, cap loss budget, dan warning kalau range bottom < −65%. Semua kandidat ke-log ke `met_candidates.jsonl` tiap refresh di app, plus keputusan enter/skip pas konfirmasi. |
+| **MET Portfolio** | Exit rule per posisi: alert PnL ≤ −10%, alert harga di 1/3 bawah range, **exit** kalau posisi SOL-only udah ≥ 10 menit di bawah range. Notifikasi iOS (sekali per kejadian), tombol `Exit → SOL` di baris token (close + claim + swap). `EXIT_MODE: "auto"`: buka app = langsung close + swap. PnL tiap refresh ke `met_pnl_log.jsonl`. TP/SL ada tapi default `null`. |
+
+Setting baru ada di bagian 8–9 `MET Secrets.example.js`. Secrets lama tetap jalan (yang nggak ada pakai default spec), jadi cukup tambah `BANKROLL_SOL` kalau mau cap size.
+
+Batasan iOS: widget refresh tiap ~15 menit dan nggak boleh kirim transaksi, jadi "10 menit di bawah range" = dua refresh yang jaraknya ≥ 10 menit, dan close-nya jalan pas app dibuka (auto) atau pas lu tap notifikasi (alert). Buat yang beneran jalan sendiri tiap 5 menit: `python3 -m dlmm_terminal monitor --mode auto` di Mac.
+
+Test rules (Node, di luar Scriptable): `node dlmm_terminal/scriptable/test_rules.mjs`

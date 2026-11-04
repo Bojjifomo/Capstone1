@@ -67,7 +67,7 @@ const secret = name => {
   return v == null ? "" : String(v).trim();
 };
 
-const VERSION = "met-portfolio-v7";
+const VERSION = "met-portfolio-v7+spec1";
 
 const PRACTICE_MODE = typeof SECRETS.PRACTICE_MODE === "boolean" ? SECRETS.PRACTICE_MODE : true;
 const DRY_RUN = PRACTICE_MODE;
@@ -79,6 +79,129 @@ const MAX_LOSS_PERCENT = (() => {
 // What Jupiter's route may slip between quote and fill. Kept inside the loss
 // budget rather than beside it, so the two cannot add up past it.
 const ROUTER_SLIPPAGE_PERCENT = 1;
+
+// ----------------------------- spec v1 exit rules ----------------------------
+// From DLMM-Auto-Entry-Spec v1, replayed on 131 positions every 5 minutes:
+//   take-profit +1/+2/+5/+10%   -7.16 / -7.57 / -4.37 / -1.06 SOL vs. the real exits
+//   stop-loss -10/-15/-25% PnL  -7.60 / -4.24 / -1.35 SOL
+//   close 10 min below range    +0.22 SOL   <- the only rule that added SOL
+// So take-profit and stop-loss stay off unless set in MET Secrets, and the one
+// automatic exit is "below the range for 10 minutes". Alerts: PnL at -10%, and
+// price in the bottom third of the range.
+//
+// EXIT_MODE "alert" (default): a notification; tapping it opens the close.
+// EXIT_MODE "auto": opening the app closes and swaps to SOL by itself.
+// A widget run never sends a transaction, whatever the mode: iOS gives a
+// widget seconds, not the minutes a close and a swap can take.
+//
+// The rules that read the range only apply to SOL-only positions (no token
+// deposited): a two-sided position sits partly above the price, and in the
+// wallet review one started below its range and still closed +19%.
+const EXIT = (() => {
+  const n = (k, d) => { const v = SECRETS[k]; if (v === null) return null; const x = Number(v); return v != null && v !== "" && Number.isFinite(x) ? x : d; };
+  return {
+    mode: String(SECRETS.EXIT_MODE || "alert").toLowerCase() === "auto" ? "auto" : "alert",
+    alertAtPnlPct: n("EXIT_ALERT_PNL_PCT", -10),
+    alertBottomThird: SECRETS.EXIT_ALERT_BOTTOM_THIRD !== false,
+    closeBelowRangeAfterMin: n("EXIT_CLOSE_BELOW_RANGE_MIN", 10),
+    takeProfitPct: n("EXIT_TAKE_PROFIT_PCT", null),
+    stopLossPct: n("EXIT_STOP_LOSS_PCT", null),
+  };
+})();
+function exitStatePath() { const f = FileManager.local(); return f.joinPath(f.libraryDirectory(), "met_exit_state.json"); }
+function loadExitState() { try { const f = FileManager.local(); return f.fileExists(exitStatePath()) ? JSON.parse(f.readString(exitStatePath())) : {}; } catch (e) { return {}; } }
+function saveExitState(st) { try { FileManager.local().writeString(exitStatePath(), JSON.stringify(st)); } catch (e) {} }
+function exitLog(entry) {
+  try {
+    const f = FileManager.local();
+    const path = f.joinPath(f.libraryDirectory(), "met_pnl_log.jsonl");
+    let old = f.fileExists(path) ? f.readString(path) : "";
+    if (old.length > 4_000_000) { f.writeString(path + ".1", old); old = ""; }
+    f.writeString(path, old + JSON.stringify(entry) + "\n");
+  } catch (e) {}
+}
+
+// One position against the rules. Bins, not prices: SOL-only sits below the
+// price when SOL is Y (the token falling moves the active bin down) and above
+// it when SOL is X (the active bin moves up). `st` is that position's saved
+// state and is updated in place.
+function exitCheck(p, st, nowMs) {
+  const out = { alerts: [], exit: null, pnlPct: null, below: false, solOnly: !(p.depositTokenUi > 0) };
+  if (p.partial || p.unindexed || p.lower == null || p.upper == null || p.active == null) return out;
+  const pnlPct = p.depositSol > 0 ? p.pnlSol / p.depositSol * 100 : null;
+  out.pnlPct = pnlPct;
+  const span = p.upper - p.lower;
+  const below = p.solIsX ? p.active > p.upper : p.active < p.lower;
+  const bottomThird = p.solIsX ? p.active > p.upper - span / 3 : p.active < p.lower + span / 3;
+  out.below = below;
+  if (below && out.solOnly) { if (st.belowSince == null) st.belowSince = nowMs; } else st.belowSince = null;
+  st.alerted = st.alerted || [];
+  const once = (key, active, text) => {
+    const had = st.alerted.includes(key);
+    if (active && !had) { st.alerted.push(key); out.alerts.push({ key, text, fresh: true }); }
+    else if (active) out.alerts.push({ key, text, fresh: false });
+    else if (had) st.alerted = st.alerted.filter(k => k !== key);
+  };
+  if (EXIT.alertAtPnlPct != null && pnlPct != null) once("pnl", pnlPct <= EXIT.alertAtPnlPct, `PnL ${pnlPct.toFixed(1)}%`);
+  if (out.solOnly) {
+    once("out", below, "below the range: earning nothing");
+    if (EXIT.alertBottomThird) once("third", bottomThird && !below, "price in the bottom third of the range");
+  }
+  // Exits: the first that holds. A stop counts before a take-profit.
+  const belowMin = st.belowSince != null ? (nowMs - st.belowSince) / 60000 : 0;
+  if (out.solOnly && EXIT.closeBelowRangeAfterMin != null && st.belowSince != null && belowMin >= EXIT.closeBelowRangeAfterMin) {
+    out.exit = { rule: "belowRange", text: `below the range for ${Math.round(belowMin)} min` };
+  } else if (EXIT.stopLossPct != null && pnlPct != null && pnlPct <= EXIT.stopLossPct) {
+    out.exit = { rule: "stopLoss", text: `PnL ${pnlPct.toFixed(1)}% ≤ ${EXIT.stopLossPct}%` };
+  } else if (EXIT.takeProfitPct != null && pnlPct != null && pnlPct >= EXIT.takeProfitPct) {
+    out.exit = { rule: "takeProfit", text: `PnL ${pnlPct.toFixed(1)}% ≥ ${EXIT.takeProfitPct}%` };
+  }
+  return out;
+}
+
+// Every row's positions through exitCheck; new alerts and exits become
+// notifications (once each). Fills r.exits / r.exitAlerts for the table.
+async function runExitRules(rows, nowMs) {
+  const st = loadExitState();
+  const seen = new Set();
+  const notes = [];
+  for (const r of rows) {
+    r.exits = [];
+    r.exitAlerts = [];
+    for (const p of r.positions) {
+      seen.add(p.address);
+      const ps = st[p.address] || (st[p.address] = {});
+      const c = exitCheck(p, ps, nowMs);
+      if (c.pnlPct != null) {
+        exitLog({ ts: new Date(nowMs).toISOString(), position: p.address, pool: p.pool, symbol: r.symbol, pnlPct: +c.pnlPct.toFixed(3),
+          pnlSol: p.pnlSol, inRange: p.inRange, below: c.below, solOnly: c.solOnly, exit: c.exit && c.exit.rule, alerts: c.alerts.map(a => a.key) });
+      }
+      for (const a of c.alerts) {
+        r.exitAlerts.push(a.text);
+        if (a.fresh) notes.push({ r, kind: "alert", text: `${a.text} (${shortAddr(p.address)})` });
+      }
+      if (c.exit) {
+        r.exits.push({ address: p.address, ...c.exit });
+        if (!ps.exitNotified) { ps.exitNotified = true; notes.push({ r, kind: "exit", text: `${c.exit.text} (${shortAddr(p.address)})` }); }
+      } else ps.exitNotified = false;
+    }
+    r.exitAlerts = [...new Set(r.exitAlerts)];
+  }
+  for (const k of Object.keys(st)) if (!seen.has(k)) delete st[k];
+  saveExitState(st);
+  for (const n of notes) {
+    try {
+      const nt = new Notification();
+      nt.title = n.kind === "exit" ? `\u{1F534} Exit ${n.r.symbol}` : `⚠️ ${n.r.symbol}`;
+      nt.body = n.kind === "exit"
+        ? `${n.text}. ${EXIT.mode === "auto" ? "Open MET Portfolio and it closes and swaps to SOL." : "Tap to close and swap to SOL."}`
+        : `${n.text}. Your call.`;
+      nt.threadIdentifier = "met-exit";
+      nt.openURL = `scriptable:///run/${encodeURIComponent(Script.name())}?exit=${n.r.tokenMint}`;
+      await nt.schedule();
+    } catch (e) {}
+  }
+}
 
 // =============================================================================
 //  MET core: Solana and Meteora DLMM in plain JavaScript, for Scriptable.
@@ -2648,6 +2771,7 @@ function positionOf(q, pe) {
     valueSol: num(u.balancesSol) || 0,
     unclaimedSol: sol("unclaimedFeeTokenX") + sol("unclaimedFeeTokenY") + sol("unclaimedRewardTokenX") + sol("unclaimedRewardTokenY"),
     tokenUi: solIsX ? amt("balanceTokenY") : amt("balanceTokenX"),
+    depositTokenUi: num(deep(q, "allTimeDeposits", solIsX ? "tokenY" : "tokenX", "amount")) || 0,
     solUi: solIsX ? amt("balanceTokenX") : amt("balanceTokenY"),
   };
 }
@@ -2778,6 +2902,7 @@ async function main() {
       };
     });
     rows.sort((a, b) => (b.pnlSol || 0) - (a.pnlSol || 0) || b.valueSol - a.valueSol);
+    await runExitRules(rows, nowMs);
 
     // Wallet: SOL, wrapped SOL, leftover tokens at Jupiter's price.
     const walletSol = balance != null ? balance / 1e9 : null;
@@ -3332,6 +3457,24 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
       mk("Close", () => h.onClose([r], r.symbol));
       t.addRow(acts);
     }
+    // Spec v1 exit rules: what fired, and the button to act on it.
+    if ((r.exits && r.exits.length) || (r.exitAlerts && r.exitAlerts.length)) {
+      const er = new UITableRow();
+      er.height = 30;
+      const ex = r.exits && r.exits.length;
+      const ec = er.addText(ex ? `\u{1F534} Exit rule: ${r.exits[0].text}` : `⚠️ ${r.exitAlerts.join(" · ")}`);
+      ec.widthWeight = ex && CAN_ACT ? 62 : 100;
+      ec.titleFont = Font.semiboldSystemFont(11);
+      ec.titleColor = ex ? COL.red : COL.yellow;
+      if (ex && CAN_ACT) {
+        const eb = er.addButton(busy ? "…" : (DRY_RUN ? "Practice exit" : "Exit → SOL"));
+        eb.widthWeight = 38;
+        eb.rightAligned();
+        eb.titleFont = Font.boldSystemFont(13);
+        if (!busy) eb.onTap = () => h.onExit(r, true);
+      }
+      t.addRow(er);
+    }
     divider(6);
   }
 
@@ -3847,6 +3990,28 @@ if (config.runsInWidget) {
     });
   };
 
+  // Spec v1 exit: close the positions whose rule fired, claim, and swap what
+  // comes back to SOL (the same close as the Close button, choice 1). Asked
+  // for in alert mode or from a tap; straight through in auto mode.
+  h.onExit = async (r, ask) => {
+    if (busy || !CAN_ACT || !r.exits || !r.exits.length) return;
+    const addrs = new Set(r.exits.map(e => e.address));
+    const sub = { ...r, positions: r.positions.filter(p => addrs.has(p.address)) };
+    const label = `${r.symbol} (exit: ${r.exits[0].rule})`;
+    if (ask) {
+      const a = new Alert();
+      a.title = `${DRY_RUN ? "Practice: exit" : "Exit"} ${r.symbol}?`;
+      a.message = `${r.exits.map(e => e.text).join("\n")}\n\nCloses ${sub.positions.length} position${sub.positions.length > 1 ? "s" : ""}, claims the fees and sells what comes back as the token, `
+        + `refusing any route more than ${MAX_LOSS_PERCENT}% under the pool price.`
+        + (DRY_RUN ? "\n\nPRACTICE MODE: simulated, nothing is sent." : "");
+      if (DRY_RUN) a.addAction("Close and swap to SOL"); else a.addDestructiveAction("Close and swap to SOL");
+      a.addCancelAction("Not now");
+      if ((await a.presentAlert()) !== 0) return;
+    }
+    exitLog({ ts: new Date().toISOString(), action: ask ? "exit-confirmed" : "exit-auto", symbol: r.symbol, positions: [...addrs], rules: r.exits.map(e => e.rule), practice: DRY_RUN });
+    await closeRows([sub], label, 1);
+  };
+
   // Re-enter: a ladder the price has run above (every slice still all SOL) is
   // closed and opened again under the current price, with the same number of
   // slices and the same width in bins. The table only offers it; whether the
@@ -4068,6 +4233,14 @@ if (config.runsInWidget) {
     await t.present(true);
   } else {
     await h.refresh();
+    // Opened from an exit notification, or auto mode: act on what fired.
+    const want = (typeof args !== "undefined" && args.queryParameters && args.queryParameters.exit) || null;
+    const rowsNow = (current && current.data && !current.stale && current.data.rows) || [];
+    const firing = rowsNow.filter(r => r.exits && r.exits.length && (!want || r.tokenMint === want));
+    if (CAN_ACT && firing.length) {
+      if (EXIT.mode === "auto") { for (const r of firing) await h.onExit(r, false); }
+      else if (want) await h.onExit(firing[0], true);
+    }
     await shown;
   }
 }

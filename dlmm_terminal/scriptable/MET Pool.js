@@ -69,7 +69,7 @@ const secret = name => {
   return v == null ? "" : String(v).trim();
 };
 
-const VERSION = "met-pool-v7";
+const VERSION = "met-pool-v7+spec1";
 
 // Zap presets, in SOL. Checked rather than trusted: a typo that reached the
 // planner would place a ladder nobody asked for, and on Solana every slice is
@@ -111,6 +111,84 @@ const ZAP_PRESETS = (() => {
 // false = really open positions.
 const PRACTICE_MODE = typeof SECRETS.PRACTICE_MODE === "boolean" ? SECRETS.PRACTICE_MODE : true;
 const DRY_RUN = PRACTICE_MODE;
+
+// ----------------------------- spec v1 entry rules ---------------------------
+// From DLMM-Auto-Entry-Spec v1 (133 closed positions, Oct 25 - Nov 4 2026).
+// GATES must all pass; FLAGS are warnings only (they looked good in hindsight
+// and failed on unseen tokens). Every number can be overridden in MET Secrets
+// (SPEC_* keys); a missing key keeps the default, so an old Secrets file works.
+const SPEC = (() => {
+  const n = (k, d) => { const v = Number(SECRETS[k]); return SECRETS[k] != null && SECRETS[k] !== "" && Number.isFinite(v) ? v : d; };
+  return {
+    binStepMin: n("SPEC_BIN_STEP_MIN", 20), binStepMax: n("SPEC_BIN_STEP_MAX", 250),
+    minPoolAgeMin: n("SPEC_MIN_POOL_AGE_MIN", 60),
+    minFeeAprPct: n("SPEC_MIN_FEE_APR_PCT", 1000),
+    maxPctOfTvl: n("SPEC_MAX_PCT_OF_TVL", 3),
+    pump1hPct: n("SPEC_FLAG_PUMP_1H_PCT", 25), drop6hPct: n("SPEC_FLAG_DROP_6H_PCT", -17),
+    minTvlUsd: n("SPEC_FLAG_MIN_TVL_USD", 25000),
+    nightFrom: n("SPEC_FLAG_NIGHT_FROM", 0), nightTo: n("SPEC_FLAG_NIGHT_TO", 9), utcOffset: n("SPEC_UTC_OFFSET", 7),
+    rangeBottomPct: n("SPEC_RANGE_BOTTOM_PCT", 70),
+    bankrollSol: n("BANKROLL_SOL", 0), lossBudgetPct: n("LOSS_BUDGET_PCT", 5),
+  };
+})();
+// One bad position fell 93%, so the most one position may hold is the loss
+// budget / 0.9. Without BANKROLL_SOL in Secrets there is no cap to check.
+const SPEC_MAX_POSITION_SOL = SPEC.bankrollSol > 0 ? SPEC.bankrollSol * SPEC.lossBudgetPct / 100 / 0.9 : null;
+
+// Fee APR = fees over the window / TVL, annualised. A pool younger than 24h
+// is judged on the hours it has, as the spec does.
+function specFeeApr(r) {
+  if (!(r.tvl > 0) || r.fees24 == null) return null;
+  const ageH = r.ageDays != null ? r.ageDays * 24 : 24;
+  const hours = Math.max(Math.min(24, ageH), 1 / 60);
+  return r.fees24 / r.tvl * 8760 / hours * 100;
+}
+// Gates and flags for one pool row and a planned deposit, at `nowMs`.
+function specCheck(r, amountSol, nowMs) {
+  const gates = [], flags = [];
+  if (!(r.binStep >= SPEC.binStepMin && r.binStep <= SPEC.binStepMax)) gates.push(`bin step ${r.binStep} (${SPEC.binStepMin}-${SPEC.binStepMax})`);
+  const ageMin = r.ageDays != null ? r.ageDays * 1440 : null;
+  if (ageMin == null || ageMin < SPEC.minPoolAgeMin) gates.push(`pool ${ageMin == null ? "age unknown" : Math.round(ageMin) + "m old"} (< ${SPEC.minPoolAgeMin}m)`);
+  const apr = specFeeApr(r);
+  if (apr == null || apr < SPEC.minFeeAprPct) gates.push(`fee APR ${apr == null ? "--" : Math.round(apr).toLocaleString() + "%"} (< ${SPEC.minFeeAprPct}%)`);
+  const sizePct = amountSol > 0 && r.solUsd && r.tvl > 0 ? amountSol * r.solUsd / r.tvl * 100 : null;
+  if (sizePct == null || sizePct > SPEC.maxPctOfTvl) gates.push(`size ${sizePct == null ? "--" : sizePct.toFixed(1) + "%"} of TVL (> ${SPEC.maxPctOfTvl}%)`);
+  if (r.chg1h != null && r.chg1h >= SPEC.pump1hPct) flags.push(`pump 1h +${r.chg1h.toFixed(0)}%`);
+  if (r.chg6h != null && r.chg6h <= SPEC.drop6hPct) flags.push(`drop 6h ${r.chg6h.toFixed(0)}%`);
+  if (r.tvl < SPEC.minTvlUsd) flags.push(`TVL ${fmtCompact(r.tvl)}`);
+  const hour = new Date(nowMs + SPEC.utcOffset * 3600000).getUTCHours();
+  if (hour >= SPEC.nightFrom && hour < SPEC.nightTo) flags.push(`night entry ${String(hour).padStart(2, "0")}h`);
+  return { ok: gates.length === 0, gates, flags, feeApr: apr, sizePct };
+}
+// The size the table judges a row by: the biggest preset, capped by the loss budget.
+function specRowSize() {
+  const biggest = Math.max(...ZAP_PRESETS.map(p => p.amount));
+  return SPEC_MAX_POSITION_SOL != null ? Math.min(biggest, SPEC_MAX_POSITION_SOL) : biggest;
+}
+// Every candidate the app ranks is logged, passing or not, so v2 can measure
+// what skipping cost or saved (spec section 5). One JSON line per pool per
+// refresh, in Scriptable's own folder; the file is rotated at about 4 MB.
+function specLog(entries) {
+  try {
+    const f = FileManager.local();
+    const path = f.joinPath(f.libraryDirectory(), "met_candidates.jsonl");
+    let old = f.fileExists(path) ? f.readString(path) : "";
+    if (old.length > 4_000_000) { f.writeString(path + ".1", old); old = ""; }
+    f.writeString(path, old + entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+  } catch (e) {}
+}
+function specLogRows(rows, decision, extra) {
+  const now = Date.now(), size = specRowSize();
+  specLog(rows.map(r => {
+    const c = specCheck(r, (extra && extra.amount) || size, now);
+    return { ts: new Date(now).toISOString(), pool: r.id, tokenMint: r.tokenMint, symbol: r.symbol,
+      poolAgeHours: r.ageDays != null ? +(r.ageDays * 24).toFixed(2) : null, tvlUsd: r.tvl, feeApr24h: c.feeApr != null ? Math.round(c.feeApr) : null,
+      volTvl24h: r.tvl > 0 ? +(r.vol24 / r.tvl).toFixed(2) : null, mcapUsd: r.mcap, priceChg1h: r.chg1h, priceChg6h: r.chg6h, priceChg24h: r.chg24,
+      binStep: r.binStep, baseFeePct: r.baseFeePct, sizeSol: (extra && extra.amount) || size, sizeVsTvlPct: c.sizePct != null ? +c.sizePct.toFixed(2) : null,
+      entryHourLocal: new Date(now + SPEC.utcOffset * 3600000).getUTCHours(),
+      gatesFailed: c.gates, flags: c.flags, decision: decision || (c.ok ? "candidate" : "skip"), ...(extra || {}) };
+  }));
+}
 
 // =============================================================================
 //  MET core: Solana and Meteora DLMM in plain JavaScript, for Scriptable.
@@ -2837,6 +2915,7 @@ async function main() {
       ranked: ranked.length,
     };
     saveJson(DATA_SUFFIX, { t: Date.now(), v: ROW_SCHEMA, data });
+    if (!config.runsInWidget) specLogRows(rows);
   } catch (e) {
     const c = loadDataCache();
     if (c) { data = c.data; stale = true; dataTime = c.t; error = String((e && e.message) || e).slice(0, 80); }
@@ -2879,7 +2958,7 @@ function presetLabel(p) {
   return `⚡️${SOL_SIGN}${amt} ${STRATEGY_SHORT[p.strategy]} ${p.slices > 1 ? p.slices + "×" : ""}${band}`;
 }
 
-function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol, sortMode, onSort, onZap, busy, progress) {
+function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol, sortMode, onSort, onZap, busy, progress, spec) {
   setDisplay(DISPLAY_CUR, d.solUsd, d.usdIdr);
   t.removeAllRows();
   t.showSeparators = true;
@@ -2965,6 +3044,30 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     t.addRow(sr);
   }
 
+  // Spec v1 filter: tap to show every pool or only those passing all gates.
+  if (spec) {
+    const fr = new UITableRow();
+    fr.height = 44;
+    const size = specRowSize();
+    const fc = fr.addButton(spec.only
+      ? `✅ Spec v1 gates on · ${spec.passing}/${spec.total} pass · show all`
+      : `☑️ Spec v1 gates off · ${spec.passing}/${spec.total} pass · filter`);
+    fc.centerAligned();
+    fc.titleFont = Font.semiboldSystemFont(13);
+    fc.onTap = spec.onToggle;
+    t.addRow(fr);
+    const nr = new UITableRow();
+    nr.height = 30;
+    const nc = nr.addText(`Gates: bin ${SPEC.binStepMin}-${SPEC.binStepMax} · age ≥ ${SPEC.minPoolAgeMin}m · fee APR ≥ ${SPEC.minFeeAprPct}% · ${fmtSol(size, 2)} ≤ ${SPEC.maxPctOfTvl}% TVL`,
+      SPEC_MAX_POSITION_SOL != null ? `Max position ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL (bankroll ${SPEC.bankrollSol} × ${SPEC.lossBudgetPct}% ÷ 0.9) · range bottom −${SPEC.rangeBottomPct}%`
+        : `Set BANKROLL_SOL in MET Secrets for the loss-budget cap · range bottom −${SPEC.rangeBottomPct}%`);
+    nc.titleFont = Font.systemFont(10);
+    nc.titleColor = COL.muted;
+    nc.subtitleFont = Font.systemFont(10);
+    nc.subtitleColor = COL.faint;
+    t.addRow(nr);
+  }
+
   // The same five columns as the rows below (name, 24h chart, TVL, fees,
   // mcap), so every label sits over its numbers.
   const COLW = [25, 18, 20, 19, 18];
@@ -2998,7 +3101,9 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
 
   drawProgress(t, progress);
 
+  const specNow = Date.now(), specSize = specRowSize();
   for (const r of d.rows || []) {
+    const sc = specCheck(r, specSize, specNow);
     const row = new UITableRow();
     row.height = 58;
     const sub = [`bin ${r.binStep}`, fmtAge(r.ageDays)];
@@ -3041,6 +3146,17 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     row.onSelect = () => Safari.open(`${DEX_URL}/${r.id}`);
     row.dismissOnSelect = false;
     t.addRow(row);
+
+    // Spec v1 verdict under every pool: which gate blocks it, which flags show.
+    const vr = new UITableRow();
+    vr.height = 22;
+    const vtext = sc.ok
+      ? `✅ v1 gates pass · APR ${Math.round(sc.feeApr).toLocaleString()}%` + (sc.flags.length ? ` · ⚠️ ${sc.flags.join(" · ")}` : "")
+      : `⛔ ${sc.gates.join(" · ")}` + (sc.flags.length ? ` · ⚠️ ${sc.flags.join(" · ")}` : "");
+    const vc = vr.addText(vtext);
+    vc.titleFont = Font.systemFont(10);
+    vc.titleColor = sc.ok ? (sc.flags.length ? COL.yellow : COL.green) : COL.muted;
+    t.addRow(vr);
 
     // Buttons on a row of their own with no onSelect: a near miss does
     // nothing, rather than opening a browser.
@@ -3218,6 +3334,18 @@ function confirmText(row, preset, z) {
   const plan = z.plans[preset.strategy];
   const n = plan.slices.length;
   const lines = [];
+  // Spec v1 first: what blocks this entry, what to look at twice.
+  const sc = specCheck(row, preset.amount, Date.now());
+  if (!sc.ok) lines.push(`⛔ SPEC v1 SAYS SKIP: ${sc.gates.join("; ")}.`);
+  else lines.push(`✅ Spec v1 gates pass (fee APR ${Math.round(sc.feeApr).toLocaleString()}%, ${sc.sizePct.toFixed(1)}% of TVL).`);
+  if (sc.flags.length) lines.push(`⚠️ Flags (warning only): ${sc.flags.join(", ")}.`);
+  if (SPEC_MAX_POSITION_SOL != null && preset.amount > SPEC_MAX_POSITION_SOL + 1e-9) {
+    lines.push(`⛔ ${fmtSol(preset.amount, 3)} is over the loss-budget cap of ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL.`);
+  }
+  if (preset.range < SPEC.rangeBottomPct - 5) {
+    lines.push(`⚠️ Range bottom −${preset.range}%: the spec uses about −${SPEC.rangeBottomPct}% (every big loss fell 44-58%, through a −50% bottom).`);
+  }
+  lines.push("");
   lines.push(`${fmtSol(preset.amount, 3)} SOL into ${n} ${n > 1 ? "slices" : "position"}`
     + (plan.raised ? ` (raised from ${preset.slices}: 70 bins max each)` : "") + ".");
   if (n > 1) {
@@ -3318,13 +3446,27 @@ if (config.runsInWidget) {
       return desc ? vb - va : va - vb;
     });
   };
+  // Spec v1 filter, remembered between runs. On by default: the table shows
+  // only pools that pass every gate; the toggle shows the rest with reasons.
+  const specPath = (() => { const f = FileManager.local(); return f.joinPath(f.libraryDirectory(), "met_spec_filter.json"); })();
+  let specOnly = (() => { try { const f = FileManager.local(); return f.fileExists(specPath) ? JSON.parse(f.readString(specPath)).only !== false : true; } catch (e) { return true; } })();
+  const toggleSpec = () => {
+    specOnly = !specOnly;
+    try { FileManager.local().writeString(specPath, JSON.stringify({ only: specOnly })); } catch (e) {}
+    if (current && current.data) show(current, false);
+  };
   let lastCustom = { amount: ZAP_PRESETS[0].amount, top: ZAP_PRESETS[0].top, range: ZAP_PRESETS[0].range, slices: ZAP_PRESETS[0].slices, strategy: ZAP_PRESETS[0].strategy };
 
   const show = (r, refreshing) => {
     if (r && r.data && r.data.rows) {
       const base = tokenView ? { ...r.data, rows: tokenView.rows, tokenView: tokenView.symbol } : r.data;
-      fillTable(t, { ...base, rows: sortRows(base.rows) }, r.stale, r.dataTime, refreshing, r.error, refresh,
-        sortCol, sortMode, handleSort, ZAP_READY ? onZap : null, busy, progress);
+      // A search always shows what it found; the filter applies to the ranked list.
+      const now = Date.now(), size = specRowSize();
+      const passing = base.rows.filter(x => specCheck(x, size, now).ok);
+      const rows = specOnly && !tokenView ? passing : base.rows;
+      const spec = { only: specOnly && !tokenView, passing: passing.length, total: base.rows.length, onToggle: toggleSpec };
+      fillTable(t, { ...base, rows: sortRows(rows) }, r.stale, r.dataTime, refreshing, r.error, refresh,
+        sortCol, sortMode, handleSort, ZAP_READY ? onZap : null, busy, progress, spec);
     } else {
       fillEmptyTable(t, (r && r.message) || "Nothing loaded", refreshing, refresh, progress);
     }
@@ -3404,12 +3546,14 @@ if (config.runsInWidget) {
     a.addCancelAction("Cancel");
     const choice = await a.presentAlert();
     if (choice < 0 || choice >= order.length) {
+      specLogRows([row], "skip", { amount: preset.amount, decisionReason: "cancelled on confirm" });
       progress = null;
       busy = false;
       return show(current, false);
     }
     const strategy = order[choice];
     lastCustom.strategy = strategy;
+    specLogRows([row], "enter", { amount: preset.amount, strategy, rangeBottomPct: -preset.range, slices: preset.slices, practice: DRY_RUN });
     progress.title = `${fmtSol(preset.amount, 3)} into ${row.symbol} · ${STRATEGY_NAME[strategy]}`;
     try {
       const res = await runZap(row, preset, strategy, z, rep);

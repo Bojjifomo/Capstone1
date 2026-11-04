@@ -81,4 +81,34 @@ module.exports = {
   // MET Pool). Deposits, rent and every confirm screen stay in SOL, because
   // that is what is sent. IDR uses a USD/IDR rate refreshed every 6 hours.
   DISPLAY_CURRENCY: "SOL",
+
+  // -- 8. Spec v1 entry rules (MET Pool). Optional. --------------------------
+  // MET Pool shows under every pool whether it passes the spec's gates, and
+  // by default lists only those that do (tap the filter row for all).
+  // Your bankroll in SOL sets the loss-budget cap: max position =
+  // BANKROLL_SOL x LOSS_BUDGET_PCT% / 0.9. Leave 0 for no cap check.
+  BANKROLL_SOL: 0,
+  LOSS_BUDGET_PCT: 5,
+  // Gates and flags keep the spec's numbers unless you set them here:
+  // SPEC_BIN_STEP_MIN 20, SPEC_BIN_STEP_MAX 250, SPEC_MIN_POOL_AGE_MIN 60,
+  // SPEC_MIN_FEE_APR_PCT 1000, SPEC_MAX_PCT_OF_TVL 3, SPEC_FLAG_PUMP_1H_PCT 25,
+  // SPEC_FLAG_DROP_6H_PCT -17, SPEC_FLAG_MIN_TVL_USD 25000,
+  // SPEC_FLAG_NIGHT_FROM 0, SPEC_FLAG_NIGHT_TO 9, SPEC_UTC_OFFSET 7,
+  // SPEC_RANGE_BOTTOM_PCT 70.
+
+  // -- 9. Spec v1 exit rules (MET Portfolio). Optional. ----------------------
+  // "alert": a notification when a rule fires; tap it to close and swap.
+  // "auto":  opening MET Portfolio closes and swaps by itself. The widget
+  //          never sends anything, in either mode.
+  EXIT_MODE: "alert",
+  // Alert when a position's PnL falls to this % (null = off).
+  EXIT_ALERT_PNL_PCT: -10,
+  // Close a SOL-only position that has sat below its range this long.
+  // Checked when the widget or app refreshes, so in practice: two refreshes
+  // at least this far apart. null = off.
+  EXIT_CLOSE_BELOW_RANGE_MIN: 10,
+  // Off on purpose: in the spec's replay every fixed take-profit and
+  // stop-loss lost SOL against holding. Set a number to turn one on.
+  EXIT_TAKE_PROFIT_PCT: null,
+  EXIT_STOP_LOSS_PCT: null,
 };
