@@ -23,7 +23,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, benchmark, exits, filters
+from . import api, benchmark, blast, exits, filters
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -68,15 +68,34 @@ def read_rows(name: str) -> list[dict]:
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
 
 
-def notify(text: str) -> None:
+def _tg_chunks(text: str, limit: int = 4000) -> list[str]:
+    """Telegram caps a message at 4096 UTF-16 units (an emoji counts 2): split on blank lines."""
+    def n(t: str) -> int:
+        return len(t.encode("utf-16-le")) // 2
+    out, cur = [], ""
+    for part in text.split("\n\n"):
+        if cur and n(cur) + 2 + n(part) > limit:
+            out.append(cur)
+            cur = part
+        else:
+            cur = f"{cur}\n\n{part}" if cur else part
+    return out + ([cur] if cur else [])
+
+
+def notify(text: str, html: str | None = None) -> None:
+    """Print `text`; send it to Telegram when configured. `html` = Telegram-HTML version to send instead."""
     print(text, flush=True)
     token, chat = os.environ.get("DLMM_TG_BOT_TOKEN"), os.environ.get("DLMM_TG_CHAT_ID")
     if token and chat:
-        try:
-            body = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
-            api.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", timeout=10, data=body).read()
-        except Exception as exc:  # alerts must never kill the monitor
-            print(f"  (telegram failed: {exc})", file=sys.stderr)
+        for chunk in _tg_chunks(html or text):
+            try:
+                fields = {"chat_id": chat, "text": chunk, "disable_web_page_preview": "true"}
+                if html:
+                    fields["parse_mode"] = "HTML"
+                api.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", timeout=10,
+                            data=urllib.parse.urlencode(fields).encode()).read()
+            except Exception as exc:  # alerts must never kill the monitor
+                print(f"  (telegram failed: {exc})", file=sys.stderr)
 
 
 def candles_1h(pool: str, hours: int = 26) -> list[dict]:
@@ -392,14 +411,9 @@ def _candidate(snap: dict, cfg: dict, prof: dict, with_candles: bool, now: float
     return c, benchmark.match(c, prof, cfg["signal"].get("bandOverrides"))
 
 
-def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
-    """One scan. Pings a pool when it *starts* passing gates + benchmark (not every tick it stays
-    there), at most once per cooldownHours. The first scan of a fresh state sends one digest instead.
-    state: {'pinged': {pool: ts}, 'matching': [pool], 'walletPools': [pool], 'lastLog': ts}."""
-    sig, now = cfg["signal"], now or time.time()
-    pinged, out = state.setdefault("pinged", {}), []
-    was = set(state.get("matching", []))
-    first = "matching" not in state
+def scan_hits(cfg: dict, prof: dict, state: dict, now: float) -> list[tuple[dict, dict, dict]]:
+    """Every SOL pool that passes the v1 gates and the benchmark score: [(candidate, match, snapshot)]."""
+    sig = cfg["signal"]
     log_all = now - state.get("lastLog", 0) >= 15 * 60
     hits = []
     for snap in scan_pools(cfg):
@@ -414,7 +428,40 @@ def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) ->
         if log_all or hit:
             append("candidates.jsonl", {**c, "source": "signal", "benchmark": m})
         if hit:
-            hits.append((c, m))
+            hits.append((c, m, snap))
+    if log_all:
+        state["lastLog"] = now
+    return hits
+
+
+def blast_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
+    """Top-N card (signal.blastTop, default 10) of the pools passing gates + benchmark, sorted by
+    signal.blastSortBy. Sent when signal.blastEveryMin has passed since the last one."""
+    sig, now = cfg["signal"], now or time.time()
+    hits = scan_hits(cfg, prof, state, now)
+    dx = blast.dex_5m([c["pool"] for c, _, _ in hits])
+    rows = [blast.row(c, snap, m, dx.get(c["pool"]), now) for c, m, snap in hits]
+    best = blast.top(rows, sig.get("blastTop", 10), sig.get("blastSortBy", "volTvl1h"))
+    notify(blast.message(best, len(rows), cfg, prof, html_mode=False),
+           html=blast.message(best, len(rows), cfg, prof, html_mode=True))
+    state["lastBlast"] = now
+    ts = datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds")
+    for i, r in enumerate(best, 1):
+        append("signals.jsonl", {"ts": ts, "kind": "blast", "rank": i, "pool": r["pool"], "symbol": r["symbol"],
+                                 "feeTvl24h": round(r["feeTvl24h"], 2), "volTvl1h": round(r["volTvl1h"], 2),
+                                 "tvl": r["tvl"], "flags": r["flags"]})
+    return best
+
+
+def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
+    """mode 'new': ping a pool when it *starts* passing gates + benchmark (not every tick it stays
+    there), at most once per cooldownHours. The first scan of a fresh state sends one digest instead.
+    state: {'pinged': {pool: ts}, 'matching': [pool], 'walletPools': [pool], 'lastLog': ts}."""
+    sig, now = cfg["signal"], now or time.time()
+    pinged, out = state.setdefault("pinged", {}), []
+    was = set(state.get("matching", []))
+    first = "matching" not in state
+    hits = [(c, m) for c, m, _ in scan_hits(cfg, prof, state, now)]
     hits.sort(key=lambda cm: (-cm[1]["score"], len(cm[0]["flags"]), -cm[0]["feeApr24h"]))
     state["matching"] = sorted(c["pool"] for c, _ in hits)
     if first and hits:
@@ -439,12 +486,24 @@ def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) ->
                "tvlUsd": c["tvlUsd"], "priceSol": c["priceSol"]}
         append("signals.jsonl", row)
         out.append(row)
-    if log_all:
-        state["lastLog"] = now
     if sig.get("pingWalletEntries"):
         out += _wallet_entries(cfg, prof, state, now)
     for pool in [p for p, t in pinged.items() if now - t > 7 * 86400]:
         pinged.pop(pool)
+    return out
+
+
+def tick(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
+    """One loop step. mode 'blast' (default): the top-N card every blastEveryMin, wallet-entry pings
+    every tick. mode 'new': per-pool pings on new matches (signal_once)."""
+    sig, now = cfg["signal"], now or time.time()
+    if sig.get("mode", "blast") != "blast":
+        return signal_once(cfg, prof, state, now)
+    out = []
+    if now - state.get("lastBlast", 0) >= sig.get("blastEveryMin", 30) * 60 - 30:
+        out += blast_once(cfg, prof, state, now)
+    if sig.get("pingWalletEntries"):
+        out += _wallet_entries(cfg, prof, state, now)
     return out
 
 
@@ -486,15 +545,17 @@ def cmd_signal(a, cfg):
     prof = load_benchmark(cfg)
     print_benchmark(prof, sig.get("bandOverrides"))
     tg = bool(os.environ.get("DLMM_TG_BOT_TOKEN") and os.environ.get("DLMM_TG_CHAT_ID"))
-    print(f"\nsignal: gates v1 + benchmark score ≥ {sig['minMatchScore']} · every {sig['pollEveryMin']} min · "
-          f"cooldown {sig['cooldownHours']}h per pool · telegram {'on' if tg else 'off (set DLMM_TG_BOT_TOKEN / DLMM_TG_CHAT_ID)'}")
+    how = (f"blast top {sig.get('blastTop', 10)} every {sig.get('blastEveryMin', 30)} min, sorted by {sig.get('blastSortBy', 'volTvl1h')}"
+           if sig.get("mode", "blast") == "blast" else f"ping new matches, cooldown {sig['cooldownHours']}h per pool")
+    print(f"\nsignal: gates v1 + benchmark score ≥ {sig['minMatchScore']} · {how} · wallet check every "
+          f"{sig['pollEveryMin']} min · telegram {'on' if tg else 'off (set DLMM_TG_BOT_TOKEN / DLMM_TG_CHAT_ID)'}")
     state_file = DATA / "signal_state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
     while True:
         try:
             if (datetime.now(timezone.utc) - datetime.fromisoformat(prof["builtAt"])).total_seconds() > sig["refreshBenchmarkHours"] * 3600:
                 prof = load_benchmark(cfg)
-            sent = signal_once(cfg, prof, state)
+            sent = tick(cfg, prof, state)
             DATA.mkdir(exist_ok=True)
             state_file.write_text(json.dumps(state))
             print(f"{datetime.now():%H:%M} scan done · {len(sent)} ping(s)", flush=True)
