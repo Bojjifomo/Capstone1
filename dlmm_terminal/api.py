@@ -76,3 +76,34 @@ def position_pnl(pool_address: str, wallet: str, status: str = "open") -> list[d
         if not d.get("hasNext"):
             return out
         page += 1
+
+
+def portfolio(wallet: str, since: float | None = None) -> list[dict]:
+    """Every pool the wallet ever LP'd (open + closed), newest close first. Stops paging
+    once pools closed before `since` (unix seconds) start showing up."""
+    pools, page = [], 1
+    while True:
+        d = get("/portfolio", {"user": wallet, "page": page, "page_size": 100})
+        rows = d.get("pools", [])
+        pools += rows
+        if not d.get("hasNext") or (since and rows and (rows[-1].get("lastClosedAt") or 0) < since):
+            return pools
+        page += 1
+
+
+def volume_history(address: str, timeframe: str, start: int, end: int) -> list[dict]:
+    return get(f"/pools/{address}/volume/history", {"timeframe": timeframe, "start_time": start, "end_time": end}).get("data", [])
+
+
+def chunked(fetch, address: str, start: int, end: int, span_h: int = 72) -> list[dict]:
+    """1h history endpoints cover <= 72h per request; walk the window in chunks."""
+    out, t = [], start
+    while t < end:
+        out += fetch(address, "1h", t, min(end, t + span_h * 3600))
+        t += span_h * 3600
+    seen, uniq = set(), []
+    for r in sorted(out, key=lambda r: r["timestamp"]):
+        if r["timestamp"] not in seen:
+            seen.add(r["timestamp"])
+            uniq.append(r)
+    return uniq

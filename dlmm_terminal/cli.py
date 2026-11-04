@@ -7,6 +7,8 @@
   python -m dlmm_terminal followup               # fill price 1h/6h/24h after each candidate
   python -m dlmm_terminal web                    # browser terminal on http://localhost:8790
   python -m dlmm_terminal open POOL --sol 8      # open a 5-slice Spot SOL-only ladder (RH style), you confirm
+  python -m dlmm_terminal benchmark              # benchmark wallet's last 20 days -> habitat profile
+  python -m dlmm_terminal signal                 # every 5 min: ping pools that pass gates + match the benchmark
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, exits, filters
+from . import api, benchmark, exits, filters
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -308,6 +310,201 @@ def cmd_followup(a, cfg):
     print(f"filled {n} candidates (price 1h / 6h / 24h later + worst dip) → {DATA / 'followup.jsonl'}")
 
 
+# ---------- benchmark wallet + entry signal ping ----------
+
+def _short(addr: str) -> str:
+    return f"{addr[:6]}…{addr[-4:]}" if addr and len(addr) > 12 else addr or "?"
+
+
+def load_benchmark(cfg: dict, wallet: str | None = None, days: float | None = None, force: bool = False) -> dict:
+    """data/benchmark.json, rebuilt when it is for another wallet/window or older than refreshBenchmarkHours."""
+    sig = cfg["signal"]
+    wallet, days = wallet or sig["benchmarkWallet"], days or sig["benchmarkDays"]
+    path = DATA / "benchmark.json"
+    if path.exists() and not force:
+        prof = json.loads(path.read_text())
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(prof["builtAt"])).total_seconds() / 3600
+        if prof["wallet"] == wallet and prof["days"] == days and age_h < sig["refreshBenchmarkHours"]:
+            return prof
+    print(f"building benchmark: {_short(wallet)}, last {days:g} days …", flush=True)
+    entries = benchmark.build(wallet, days, log=lambda m: print(m, flush=True))
+    if not entries:
+        raise RuntimeError(f"no closed SOL DLMM positions for {wallet} in the last {days:g} days")
+    prof = benchmark.profile(entries, wallet, days)
+    DATA.mkdir(exist_ok=True)
+    path.write_text(json.dumps(prof, indent=1))
+    (DATA / "benchmark_entries.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
+    return prof
+
+
+def print_benchmark(prof: dict, overrides: dict | None = None) -> None:
+    f = benchmark._fmt
+    print(f"\nBenchmark {_short(prof['wallet'])} · last {prof['days']:g} days · built {prof['builtAt']}")
+    print(f"  {prof['entries']} entries in {prof['tokens']} pools · win {prof['wins']}/{prof['entries']} "
+          f"({prof['winRatePct']}%) · PnL {prof['pnlSol']:+.2f} SOL (Meteora PnL, before selling leftover tokens) "
+          f"· median size {prof['capitalSolMedian']} SOL")
+    print("  bin steps:  " + "  ".join(f"{k}: {v['entries']}x {v['pnlSol']:+.2f} SOL"
+                                       for k, v in sorted(prof["binSteps"].items(), key=lambda kv: -kv[1]["entries"])))
+    q = prof["quantiles"]
+    print(f"  habitat (p{q[0] * 100:.0f}–p{q[1] * 100:.0f} of entries; * = matched in the signal):")
+    for d, b in benchmark.bands_for(prof, overrides).items():
+        mark = "*" if d in benchmark.MATCH_DIMS else " "
+        print(f"   {mark} {d:<13} {benchmark._band_txt(d, b):<22}"
+              + (" (fixed in config)" if b.get("fixed") else "")
+              + (f" median {f(d, b['median'])}" if b.get("median") is not None else "")
+              + (f", winners {f(d, b['winMedian'])}" if b.get("winMedian") is not None else ""))
+
+
+def cmd_benchmark(a, cfg):
+    prof = load_benchmark(cfg, a.wallet, a.days, force=not a.cached)
+    print_benchmark(prof, cfg["signal"].get("bandOverrides"))
+    print(f"\nsaved → {DATA / 'benchmark.json'} (+ benchmark_entries.jsonl, one row per entry)")
+
+
+def signal_message(c: dict, m: dict, prof: dict, head: str) -> str:
+    f = benchmark._fmt
+    lines = [
+        f"{head} · {c['name'] or c['symbol']}",
+        f"gates v1 ✅ · benchmark {len(m['hits'])}/{m['dims']} ({_short(prof['wallet'])}, {prof['days']:g}d)"
+        if not c["gatesFailed"] else f"gates ⛔ {'; '.join(c['gatesFailed'])} · benchmark {len(m['hits'])}/{m['dims']}",
+        f"fee APR 24h {c['feeApr24h']:,.0f}% · 1h {c['feeApr1h']:,.0f}% · TVL {f('tvlUsd', c['tvlUsd'])} · "
+        f"age {f('poolAgeHours', c['poolAgeHours'])} · mcap {f('mcapUsd', c['mcapUsd']) if c['mcapUsd'] else 'n/a'} · "
+        f"bin {c['binStep']}",
+        f"fees 1h {f('fees1hUsd', c['fees1hUsd'])} · 24h {f('fees24hUsd', c['fees24hUsd'])} · "
+        f"price 1h {c['priceChg1h'] if c['priceChg1h'] is not None else 'n/a'}% · 6h "
+        f"{c['priceChg6h'] if c['priceChg6h'] is not None else 'n/a'}%",
+    ]
+    if m["misses"]:
+        lines.append("outside habitat: " + " · ".join(m["misses"]))
+    lines.append("flags: " + (" · ".join(f"⚠️ {x}" for x in c["flags"]) if c["flags"] else "none"))
+    p = c["plan"]
+    lines.append(f"plan: {p['strategy']} {p['side']} {p['sizeSol']} SOL, bottom {p['rangeBottomPct']}% "
+                 f"({c['sizeVsTvlPct']}% of TVL)")
+    lines.append(f"https://app.meteora.ag/dlmm/{c['pool']}")
+    lines.append("assist mode: lu yang konfirmasi (`python3 -m dlmm_terminal open " + c["pool"] + "`)")
+    return "\n".join(lines)
+
+
+def _candidate(snap: dict, cfg: dict, prof: dict, with_candles: bool, now: float | None = None) -> tuple[dict, dict]:
+    when = datetime.fromtimestamp(now, timezone.utc) if now else None
+    c = filters.evaluate(snap, candles_1h(snap["address"]) if with_candles else [], cfg, now=when)
+    c.update(benchmark.candidate_dims(snap))
+    return c, benchmark.match(c, prof, cfg["signal"].get("bandOverrides"))
+
+
+def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
+    """One scan. Pings a pool when it *starts* passing gates + benchmark (not every tick it stays
+    there), at most once per cooldownHours. The first scan of a fresh state sends one digest instead.
+    state: {'pinged': {pool: ts}, 'matching': [pool], 'walletPools': [pool], 'lastLog': ts}."""
+    sig, now = cfg["signal"], now or time.time()
+    pinged, out = state.setdefault("pinged", {}), []
+    was = set(state.get("matching", []))
+    first = "matching" not in state
+    log_all = now - state.get("lastLog", 0) >= 15 * 60
+    hits = []
+    for snap in scan_pools(cfg):
+        try:
+            c, m = _candidate(snap, cfg, prof, with_candles=False, now=now)  # cheap pass: snapshot only
+            if not c["gatesFailed"] and m["score"] >= sig["minMatchScore"]:
+                c, m = _candidate(snap, cfg, prof, with_candles=True, now=now)  # price moves for the flags
+        except Exception as exc:
+            print(f"error {snap.get('name')}: {exc}", file=sys.stderr)
+            continue
+        hit = not c["gatesFailed"] and m["score"] >= sig["minMatchScore"]
+        if log_all or hit:
+            append("candidates.jsonl", {**c, "source": "signal", "benchmark": m})
+        if hit:
+            hits.append((c, m))
+    hits.sort(key=lambda cm: (-cm[1]["score"], len(cm[0]["flags"]), -cm[0]["feeApr24h"]))
+    state["matching"] = sorted(c["pool"] for c, _ in hits)
+    if first and hits:
+        f = benchmark._fmt
+        notify(f"🟢 DLMM signal watcher on · {len(hits)} pool(s) pass v1 gates + benchmark "
+               f"{_short(prof['wallet'])} ({prof['days']:g}d) right now:\n" + "\n".join(
+                   f"• {c['name'] or c['symbol']}  APR24h {c['feeApr24h']:,.0f}% · TVL {f('tvlUsd', c['tvlUsd'])} · "
+                   f"age {f('poolAgeHours', c['poolAgeHours'])}" + (f" · ⚠️ {', '.join(c['flags'])}" if c["flags"] else "")
+                   + f"\n  https://app.meteora.ag/dlmm/{c['pool']}" for c, _ in hits[:10])
+               + ("" if len(hits) <= 10 else f"\n… +{len(hits) - 10} more (data/signals.jsonl)")
+               + "\nFrom here on: one ping per pool when it newly matches.")
+    for c, m in hits:
+        new = c["pool"] not in was and now - pinged.get(c["pool"], 0) >= sig["cooldownHours"] * 3600
+        if not first and not new:
+            continue
+        if not first:
+            notify(signal_message(c, m, prof, "🟢 DLMM ENTRY SIGNAL"))
+        pinged[c["pool"]] = now
+        row = {"ts": datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"),
+               "kind": "digest" if first else "match", "pool": c["pool"], "symbol": c["symbol"], "score": m["score"],
+               "hits": m["hits"], "misses": m["misses"], "flags": c["flags"], "feeApr24h": c["feeApr24h"],
+               "tvlUsd": c["tvlUsd"], "priceSol": c["priceSol"]}
+        append("signals.jsonl", row)
+        out.append(row)
+    if log_all:
+        state["lastLog"] = now
+    if sig.get("pingWalletEntries"):
+        out += _wallet_entries(cfg, prof, state, now)
+    for pool in [p for p, t in pinged.items() if now - t > 7 * 86400]:
+        pinged.pop(pool)
+    return out
+
+
+def _wallet_entries(cfg: dict, prof: dict, state: dict, now: float) -> list[dict]:
+    """Ping when the benchmark wallet opens a position in a pool it wasn't in on the last tick."""
+    wallet = prof["wallet"]
+    try:
+        open_now = {p["poolAddress"] for p in api.open_portfolio(wallet)}
+    except Exception as exc:
+        print(f"benchmark wallet poll failed: {exc}", file=sys.stderr)
+        return []
+    first = "walletPools" not in state
+    new = open_now - set(state.get("walletPools", []))
+    state["walletPools"] = sorted(open_now)
+    if first:  # don't blast the positions that were already open when the watcher started
+        return []
+    out = []
+    for pool in sorted(new):
+        try:
+            c, m = _candidate(api.pool(pool), cfg, prof, with_candles=True, now=now)
+        except Exception as exc:
+            notify(f"👀 benchmark {_short(wallet)} entered {pool} (detail failed: {exc})")
+            continue
+        notify(signal_message(c, m, prof, f"👀 BENCHMARK WALLET ENTERED ({_short(wallet)})"))
+        row = {"ts": datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"), "kind": "walletEntry",
+               "pool": pool, "symbol": c["symbol"], "gatesFailed": c["gatesFailed"], "score": m["score"],
+               "flags": c["flags"], "priceSol": c["priceSol"]}
+        append("signals.jsonl", row)
+        out.append(row)
+    return out
+
+
+def cmd_signal(a, cfg):
+    sig = cfg["signal"]
+    if a.wallet:
+        sig["benchmarkWallet"] = a.wallet
+    if a.min_score is not None:
+        sig["minMatchScore"] = a.min_score
+    prof = load_benchmark(cfg)
+    print_benchmark(prof, sig.get("bandOverrides"))
+    tg = bool(os.environ.get("DLMM_TG_BOT_TOKEN") and os.environ.get("DLMM_TG_CHAT_ID"))
+    print(f"\nsignal: gates v1 + benchmark score ≥ {sig['minMatchScore']} · every {sig['pollEveryMin']} min · "
+          f"cooldown {sig['cooldownHours']}h per pool · telegram {'on' if tg else 'off (set DLMM_TG_BOT_TOKEN / DLMM_TG_CHAT_ID)'}")
+    state_file = DATA / "signal_state.json"
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    while True:
+        try:
+            if (datetime.now(timezone.utc) - datetime.fromisoformat(prof["builtAt"])).total_seconds() > sig["refreshBenchmarkHours"] * 3600:
+                prof = load_benchmark(cfg)
+            sent = signal_once(cfg, prof, state)
+            DATA.mkdir(exist_ok=True)
+            state_file.write_text(json.dumps(state))
+            print(f"{datetime.now():%H:%M} scan done · {len(sent)} ping(s)", flush=True)
+        except Exception as exc:
+            print(f"tick failed: {exc}", file=sys.stderr)
+        if a.once:
+            return
+        time.sleep(sig["pollEveryMin"] * 60)
+
+
 def main(argv=None):
     load_env()
     ap = argparse.ArgumentParser(prog="dlmm_terminal", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -339,6 +536,14 @@ def main(argv=None):
     o.add_argument("--force", action="store_true", help="open even when a gate fails (logged as override)")
     o.add_argument("--force-size", action="store_true", help="allow a size over the loss-budget cap")
     o.add_argument("-y", "--yes", action="store_true", help="don't ask before sending")
+    b = sub.add_parser("benchmark", help="profile a benchmark wallet's entries of the last N days")
+    b.add_argument("--wallet", help="default config signal.benchmarkWallet")
+    b.add_argument("--days", type=float, help="default config signal.benchmarkDays (20)")
+    b.add_argument("--cached", action="store_true", help="reuse data/benchmark.json if still fresh")
+    sg = sub.add_parser("signal", help="ping pools that pass the gates and match the benchmark wallet")
+    sg.add_argument("--wallet", help="benchmark wallet (default config signal.benchmarkWallet)")
+    sg.add_argument("--min-score", type=float, help="0..1, share of habitat dims the pool must match (default config: 1.0 = all)")
+    sg.add_argument("--once", action="store_true", help="one scan, then exit")
     w = sub.add_parser("web", help="browser terminal: pools + entry check + chart + portfolio exits")
     w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from the phone over Tailscale")
     w.add_argument("--port", type=int, default=8790)
@@ -347,7 +552,8 @@ def main(argv=None):
     if a.cmd == "web":
         from . import web
         return web.serve(cfg, a.host, a.port)
-    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open}[a.cmd](a, cfg)
+    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open,
+     "benchmark": cmd_benchmark, "signal": cmd_signal}[a.cmd](a, cfg)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ agent **orchestrator** yang ngejalanin semuanya dari satu tempat.
 | **Pool finder** | `rh_wallet_finder/pools.py` | Pool di Robinhood Chain (semua DEX) yang fee-nya paling gede per $ likuiditas: volume 1h / 24h, pace, APR, filter mcap ≥ $500k & TVL ≥ $5k. Data GeckoTerminal, fee tier dibaca on-chain (pool 0% kebuang). Tab **Pools** di app, `finder.py pools`. | Mac / di mana aja (nggak butuh database) |
 | **RH Smart LP Finder** | folder sebelah (`../RH Smart LP Finder`, bukan di repo ini) | Ranking LP satu pool, dihitung pas diklik. Wallet Finder baca database-nya (read-only): saved wallets → Watchlist, ranking per pool → kolom **Smart LP**. Kodenya: `rh_wallet_finder/smartlp.py`. | Mac, `localhost:8787` |
 | **Website widget** (web showcase) | `rh_wallet_finder/web/` | Halaman read-only di Vercel: board Multiday / Degen / 24h, filter, preset, detail wallet. Diisi snapshot yang di-upload Mac (`publish.py` → `/api/publish` → Vercel Blob → `/api/snapshot`). | Vercel |
-| **DLMM Terminal** (Solana LP) | `dlmm_terminal/` | Filter entry pool Meteora DLMM SOL (gate + flag dari DLMM-Auto-Entry-Spec v1), log semua kandidat, monitor PnL posisi tiap 5 menit + alert + exit rule (auto close lewat SDK Meteora). | Mac / di mana aja |
+| **DLMM Terminal** (Solana LP) | `dlmm_terminal/` | Filter entry pool Meteora DLMM SOL (gate + flag dari DLMM-Auto-Entry-Spec v1), log semua kandidat, monitor PnL posisi tiap 5 menit + alert + exit rule (auto close lewat SDK Meteora). `signal`: ping pool yang lolos gate + mirip habitat wallet benchmark 20 hari. | Mac / di mana aja |
 
 Alurnya:
 
