@@ -9,6 +9,16 @@
   },
   "flags": {"pump1hPct": 25, "drop6hPct": -17, "minTvlUsd": 25000, "nightEntryLocalHours": [0, 9], "utcOffsetHours": 7},
   "scan": {"pages": 2, "pageSize": 100, "prefilterMinTvlUsd": 1000},
+  "signal": {
+    "_note": "Entry ping: pool passes the v1 gates AND sits inside the benchmark wallet's habitat (bin steps it made SOL in + p10-p90 of pool age, mcap, fees 1h/24h at its entries). A similarity check on top of the gates, not a predictor (spec section 2).",
+    "benchmarkWallet": "WKX8JSQ7K4XNPHN24MjrDCi8fRVTr4KFkh4aa3TZmpt",
+    "benchmarkDays": 20,
+    "refreshBenchmarkHours": 24,
+    "pollEveryMin": 5,
+    "minMatchScore": 1.0,
+    "cooldownHours": 6,
+    "pingWalletEntries": true
+  },
   "exits": {
     "_note": "Spec section 4: every fixed TP / SL / trailing / time limit lost SOL vs. holding (TP +1/+2/+5/+10% = -7.16/-7.57/-4.37/-1.06 SOL). They stay null unless you turn them on.",
     "mode": "alert",
