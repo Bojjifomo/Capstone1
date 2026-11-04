@@ -91,7 +91,28 @@
 </main>
 
 <div class="modal hidden" id="modal"><div class="card" id="modalCard"></div></div>
+<script>
+  // Separate from app.js on purpose: if app.js can't even be parsed (old browser,
+  // half-downloaded file), this still says so instead of an endless "Loading…".
+  (function () {
+    var said = false;
+    function say(msg) {
+      said = true;
+      var el = document.getElementById("poolsEmpty");
+      if (!el) return;
+      el.className = "empty";
+      el.innerHTML = '<span style="color:#ff5a5f">' + String(msg).replace(/[<>&]/g, "") + "</span><br>"
+        + "Browser: " + navigator.userAgent.replace(/[<>&]/g, "") + "<br>Screenshot ini + Console (Cmd+Option+J) ke Claude.";
+    }
+    window.addEventListener("error", function (e) {
+      say("Error: " + e.message + (e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : ""));
+    });
+    setTimeout(function () {
+      if (!window.__dlmmStarted && !said) say("app.js nggak jalan di browser ini (mungkin versi browser terlalu lama, atau file gagal ke-load).");
+    }, 8000);
+  })();
+</script>
 <script src="/vendor/web3.js" async></script>
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
