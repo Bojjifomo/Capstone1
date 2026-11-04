@@ -1,0 +1,11 @@
+{
+  "name": "dlmm-terminal-executor",
+  "private": true,
+  "type": "module",
+  "description": "Closes a Meteora DLMM position (remove 100%, claim, close). Called by `python -m dlmm_terminal monitor --mode auto`.",
+  "dependencies": {
+    "@meteora-ag/dlmm": "1.9.14",
+    "@solana/web3.js": "1.98.4",
+    "bn.js": "5.2.2"
+  }
+}

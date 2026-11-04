@@ -1,0 +1,25 @@
+{
+  "_note": "Starting values from DLMM-Auto-Entry-Spec v1 (133 closed positions, Oct 25 - Nov 4 2026). Change only after re-testing on unseen tokens (spec section 7).",
+  "universe": {"protocol": "meteora-dlmm", "quote": "SOL", "binStepMin": 20, "binStepMax": 250},
+  "gates": {"minPoolAgeMinutes": 60, "minFeeApr24hPct": 1000, "maxPositionPctOfTvl": 3},
+  "position": {
+    "strategy": "Spot", "side": "SOL-only", "rangeBottomPct": -70,
+    "bankrollSol": 160, "lossBudgetPct": 5, "defaultSizeSol": 8
+  },
+  "flags": {"pump1hPct": 25, "drop6hPct": -17, "minTvlUsd": 25000, "nightEntryLocalHours": [0, 9], "utcOffsetHours": 7},
+  "scan": {"pages": 2, "pageSize": 100, "prefilterMinTvlUsd": 1000},
+  "exits": {
+    "_note": "Spec section 4: every fixed TP / SL / trailing / time limit lost SOL vs. holding (TP +1/+2/+5/+10% = -7.16/-7.57/-4.37/-1.06 SOL). They stay null unless you turn them on.",
+    "mode": "alert",
+    "pollEveryMin": 5,
+    "alertAtPnlPct": -10,
+    "alertBottomThirdOfRange": true,
+    "closeBelowRangeAfterMin": 10,
+    "priceStopBelowEntryPct": null,
+    "takeProfitPct": null,
+    "stopLossPct": null,
+    "trailingPts": null,
+    "trailingArmPct": 1,
+    "maxHoldMin": null
+  }
+}
