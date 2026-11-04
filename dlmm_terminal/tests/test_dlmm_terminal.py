@@ -147,6 +147,23 @@ class ExitTests(unittest.TestCase):
         self.assertEqual((st2.peak_pnl, st2.below_since, st2.alerted), (st.peak_pnl, st.below_since, st.alerted))
 
 
+class EnvTests(unittest.TestCase):
+    def test_empty_template_value_does_not_block_a_later_one(self):
+        import os, tempfile
+        from pathlib import Path
+        from unittest import mock
+        from dlmm_terminal import cli
+        with tempfile.TemporaryDirectory() as d:
+            pkg = Path(d) / "pkg"
+            pkg.mkdir()
+            (pkg / ".env").write_text("DLMM_TEST_X=\nDLMM_TEST_X=20\n# DLMM_TEST_Y=9\n")
+            with mock.patch.object(cli, "HERE", pkg), mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("DLMM_TEST_X", None)
+                cli.load_env()
+                self.assertEqual(os.environ.get("DLMM_TEST_X"), "20")
+                self.assertIsNone(os.environ.get("DLMM_TEST_Y"))
+
+
 class WebVerdictTests(unittest.TestCase):
     def test_levels(self):
         from dlmm_terminal import web

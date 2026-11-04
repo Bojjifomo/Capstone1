@@ -156,3 +156,13 @@ python3 -m dlmm_terminal open <POOL> --sol 8 --dry-run --owner <WALLET>   # simu
 Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keypair.json`) + `SOLANA_RPC_URL`. Opsi: `--slices`, `--bottom`, `--top`, `--strategy spot|curve|bidask`, `--force` (gate gagal), `--force-size` (lewat cap).
 
 Sisa memecoin setelah close **belum** di-swap otomatis ke SOL: jual di Jupiter / Cleanup di MET Portfolio.
+
+## Kirim ke temen
+
+`dlmm_terminal/share/` = paket buat orang lain: launcher klik-dua-kali (Mac `Mulai DLMM Terminal.command`, Windows `Mulai DLMM Terminal.bat`) yang ngecek Python/Node, install SDK, bikin `.env` dan buka web, plus panduan (`PANDUAN.md` / PDF). Bikin ZIP-nya:
+
+```bash
+bash dlmm_terminal/share/build_share.sh ~/Desktop
+```
+
+ZIP nggak berisi `.env`, `data/`, `node_modules`, atau script HP. Ukuran posisi per orang diatur di `.env` (`DLMM_BANKROLL_SOL`, `DLMM_SIZE_SOL`), bukan di `config.json`.
