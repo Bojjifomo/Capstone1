@@ -49,7 +49,9 @@ def _chg(closes: list[float], hours_back: int) -> float | None:
     return (closes[-1] / then - 1) * 100 if then else None
 
 
-def features(snapshot: dict, candles_1h: list[dict], size_sol: float, now: datetime) -> dict:
+def features(snapshot: dict, candles_1h: list[dict], size_sol: float, now: datetime,
+             changes: dict | None = None) -> dict:
+    """`changes` ({'1h','6h','24h'} in %, e.g. from DexScreener) fills price changes when no candles are given."""
     side = sol_side(snapshot)
     tok = token_of(snapshot) if side else snapshot.get("token_x", {})
     sol_usd = (snapshot["token_y"] if side == "y" else snapshot["token_x"]).get("price", 0) if side else 0
@@ -60,6 +62,8 @@ def features(snapshot: dict, candles_1h: list[dict], size_sol: float, now: datet
     highs = [to_token_in_sol(c["high" if side == "y" else "low"], side) for c in last24]
     lows = [to_token_in_sol(c["low" if side == "y" else "high"], side) for c in last24]
     cfg = snapshot.get("pool_config") or {}
+    ch = changes or {}
+    pick = lambda n, k: _round(_chg(closes, n)) if closes else _round(ch.get(k))
     return {
         "pool": snapshot.get("address"),
         "name": snapshot.get("name"),
@@ -72,9 +76,9 @@ def features(snapshot: dict, candles_1h: list[dict], size_sol: float, now: datet
         "feeApr24h": round(_window_fee_apr(snapshot, 24, age_h), 1),
         "volTvl24h": round(((snapshot.get("volume") or {}).get("24h", 0) or 0) / tvl, 2) if tvl else None,
         "mcapUsd": tok.get("market_cap"),
-        "priceChg1h": _round(_chg(closes, 1)),
-        "priceChg6h": _round(_chg(closes, 6)),
-        "priceChg24h": _round(_chg(closes, 24)),
+        "priceChg1h": pick(1, "1h"),
+        "priceChg6h": pick(6, "6h"),
+        "priceChg24h": pick(24, "24h"),
         "range24hPct": _round((max(highs) / min(lows) - 1) * 100 if lows and min(lows) > 0 else None),
         "binStep": cfg.get("bin_step"),
         "baseFeePct": cfg.get("base_fee_pct"),
@@ -142,11 +146,11 @@ def flags(f: dict, cfg: dict) -> list[str]:
 
 
 def evaluate(snapshot: dict, candles_1h: list[dict], cfg: dict, now: datetime | None = None,
-             size_sol: float | None = None) -> dict:
+             size_sol: float | None = None, changes: dict | None = None) -> dict:
     """One candidate row in the spec's log schema."""
     now = now or datetime.now(timezone.utc)
     size = planned_size_sol(cfg, size_sol)
-    f = features(snapshot, candles_1h, size, now)
+    f = features(snapshot, candles_1h, size, now, changes)
     f["entryHourLocal"] = (now + timedelta(hours=cfg["flags"].get("utcOffsetHours", 7))).hour
     passed, failed = gates(f, cfg)
     fl = flags(f, cfg)

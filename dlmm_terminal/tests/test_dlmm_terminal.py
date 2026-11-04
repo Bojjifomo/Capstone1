@@ -141,5 +141,22 @@ class ExitTests(unittest.TestCase):
         self.assertEqual((st2.peak_pnl, st2.below_since, st2.alerted), (st.peak_pnl, st.below_since, st.alerted))
 
 
+class WebVerdictTests(unittest.TestCase):
+    def test_levels(self):
+        from dlmm_terminal import web
+        base = {"gatesFailed": [], "flags": [], "feeApr24h": 2000, "sizeVsTvlPct": 1.0, "poolAgeHours": 5}
+        self.assertEqual(web.verdict(base, None)["level"], "OPEN")
+        self.assertEqual(web.verdict({**base, "flags": ["pump1h +30%"]}, None)["level"], "CAREFUL")
+        self.assertEqual(web.verdict({**base, "gatesFailed": ["poolAge: 30m < 60m"]}, None)["level"], "WAIT")
+        self.assertEqual(web.verdict({**base, "gatesFailed": ["binStep: 10 outside 20-250"]}, None)["level"], "SKIP")
+
+    def test_market_info_never_changes_level(self):
+        from dlmm_terminal import web
+        base = {"gatesFailed": [], "flags": [], "feeApr24h": 2000, "sizeVsTvlPct": 1.0, "poolAgeHours": 5}
+        v = web.verdict(base, {"vol1h": 1, "vol24": 1000, "buys24": 10, "sells24": 90})
+        self.assertEqual(v["level"], "OPEN")
+        self.assertEqual(len([x for x in v["info"] if not x["ok"]]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
