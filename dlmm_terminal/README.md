@@ -122,7 +122,13 @@ Bentuk ladder sama persis dengan MET Pool di HP (`executor/ladder.mjs` = `MET.pl
 
 Sekali aja di Mac: `cd dlmm_terminal/executor && npm install` (butuh Node: `brew install node`).
 
-**Key (sekali, kayak LP WEB):** isi `.env` di folder Capstone1, lalu start ulang server:
+**Key (sekali, kayak LP WEB):** bikin `dlmm_terminal/.env` dari template dan buka di TextEdit (atau double-click `Buka DLMM Web.command`, yang bikinin otomatis kalau belum ada):
+
+```bash
+cp -n dlmm_terminal/.env.example dlmm_terminal/.env && chmod 600 dlmm_terminal/.env && open -e dlmm_terminal/.env
+```
+
+Isinya, lalu save dan start ulang server:
 
 ```
 DLMM_PRIVATE_KEY=<private key base58, dari Phantom: Settings → Manage Accounts → Show Private Key>
