@@ -54,6 +54,10 @@ module.exports = {
   // The buttons MET Pool shows on every pool. Up to three; a Custom button is
   // always there too.
   //
+  // LEAVE THIS EMPTY ([]) to get the Mac terminal's ladder: Spot, SOL-only,
+  // 5 slices down to -70%, in two sizes (half and all of DEFAULT_SIZE_SOL,
+  // capped by the loss budget in section 8). Presets you list here replace it.
+  //
   //   amount    SOL to deposit
   //   slices    how many positions to split it into (1-20). Each one holds up
   //             to 70 bins and locks about 0.042 SOL of rent until you close
@@ -63,10 +67,7 @@ module.exports = {
   //   range     how far below the price it reaches, in % (1-99).
   //   strategy  "spot", "curve" or "bidask": the shape offered first. You can
   //             still pick another one on the confirm screen.
-  MET_ZAP_PRESETS: [
-    { amount: 0.5, slices: 1, top: 0, range: 50, strategy: "bidask" },
-    { amount: 1, slices: 3, top: 0, range: 70, strategy: "spot" },
-  ],
+  MET_ZAP_PRESETS: [],
 
   // -- 6. Worst price you accept when swapping to SOL, in %. ------------------
   // Measured against the pool price, all in. A swap that would come back
@@ -89,12 +90,26 @@ module.exports = {
   // BANKROLL_SOL x LOSS_BUDGET_PCT% / 0.9. Leave 0 for no cap check.
   BANKROLL_SOL: 0,
   LOSS_BUDGET_PCT: 5,
+  // Size of the big zap button, in SOL (the small one is half). Empty = 8.
+  DEFAULT_SIZE_SOL: "",
   // Gates and flags keep the spec's numbers unless you set them here:
   // SPEC_BIN_STEP_MIN 20, SPEC_BIN_STEP_MAX 250, SPEC_MIN_POOL_AGE_MIN 60,
   // SPEC_MIN_FEE_APR_PCT 1000, SPEC_MAX_PCT_OF_TVL off (a number turns it on), SPEC_FLAG_PUMP_1H_PCT 25,
   // SPEC_FLAG_DROP_6H_PCT -17, SPEC_FLAG_MIN_TVL_USD 25000,
   // SPEC_FLAG_NIGHT_FROM 0, SPEC_FLAG_NIGHT_TO 9, SPEC_UTC_OFFSET 7,
   // SPEC_RANGE_BOTTOM_PCT 70.
+
+  // -- 8b. Signal (MET Pool > SIGNAL). Optional. ------------------------------
+  // SIGNAL = pools that pass the v1 gates AND look like the pools the benchmark
+  // wallet enters (bin steps it made SOL in, pool age, your fixed mcap / fees
+  // bands) AND are not dead-then-alive. It needs the "DLMM Rules" script; the
+  // benchmark is rebuilt on the phone every 24h (about 100 Meteora requests).
+  // Defaults are the Mac terminal's; set only what you want to change:
+  //   BENCHMARK_WALLET "WKX8JS...", BENCHMARK_DAYS 20,
+  //   SIGNAL_MIN_MATCH_SCORE 1 (1 = every dim must match),
+  //   SIGNAL_REVIVAL_MODE "gate" | "flag" | "off",
+  //   SIGNAL_SORT_BY "volTvl1h" | "feeTvl24h" | "fees1hUsd",
+  //   SCAN_MIN_TVL_USD 2000 (pools below this are not listed at all).
 
   // -- 9. Spec v1 exit rules (MET Portfolio). Optional. ----------------------
   // "alert": a notification when a rule fires; tap it to close and swap.
