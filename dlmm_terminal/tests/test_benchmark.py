@@ -64,7 +64,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(benchmark.match(c, p, ov)["score"], 1)     # inside the owner's bands
         m = benchmark.match({**c, "mcapUsd": 12e6, "fees1hUsd": 10}, p, ov)
         self.assertIn("mcapUsd $12.00M ∉ $300.0k–$10.00M", m["misses"])
-        self.assertIn("fees1hUsd $10 ∉ > $20", m["misses"])
+        self.assertIn("fees1hUsd $10 ∉ ≥ $20", m["misses"])
 
     def test_signal_pings_only_on_new_matches(self):
         cfg = cli.load_config(None)
@@ -73,14 +73,16 @@ class BenchmarkTests(unittest.TestCase):
                 "token_x": {"address": "A", "symbol": "A", "market_cap": 1e6},
                 "token_y": {"address": SOL_MINT, "symbol": "SOL", "price": 100},
                 "pool_config": {"bin_step": 100}, "fees": {"1h": 200, "24h": 5000}, "volume": {"24h": 1e5},
-                "current_price": 1e-5}
+                "cumulative_metrics": {"fees": 10_000}, "current_price": 1e-5}
         pools = [snap]
         sent = []
         with mock.patch.object(cli, "scan_pools", lambda cfg: pools), \
              mock.patch.object(cli, "candles_1h", lambda p, hours=26: []), \
              mock.patch.object(cli, "append", lambda *a: None), \
              mock.patch.object(cli, "notify", sent.append), \
-             mock.patch.object(cli.api, "open_portfolio", lambda w: []):
+             mock.patch.object(cli.api, "open_portfolio", lambda w: []), \
+             mock.patch.object(cli.api, "chunked", lambda *a, **k: []), \
+             mock.patch.object(cli.blast, "token_stats", lambda mints, now: {"A": {"volume24hUsd": 1e5, "ageHours": 5}}):
             state = {}
             self.assertEqual(len(cli.signal_once(cfg, prof, state, now=T0)), 1)   # first scan: one digest
             self.assertIn("watcher on", sent[-1])
@@ -128,7 +130,8 @@ class BlastTests(unittest.TestCase):
     def test_blast_every_30_min_then_wallet_checks(self):
         cfg = cli.load_config(None)
         sent = []
-        with mock.patch.object(cli, "blast_once", lambda cfg, prof, state, now: sent.append(now) or state.update(lastBlast=now) or []), \
+        with mock.patch.object(cli, "blast_once", lambda cfg, prof, state, now, hits=None: sent.append(now) or state.update(lastBlast=now) or []), \
+             mock.patch.object(cli, "scan_hits", lambda *a: []), \
              mock.patch.object(cli, "_wallet_entries", lambda *a: []):
             state = {}
             for minute in range(0, 65, 5):
@@ -170,6 +173,64 @@ class RevivalTests(unittest.TestCase):
                 self.assertEqual(len(ex), 0 if keep else 1)
                 if mode == "flag":
                     self.assertIn("dead→alive", c["flags"][0])
+
+
+class GmgnFilterTests(unittest.TestCase):
+    def test_candidate_dims_token_wide(self):
+        snap = {"token_y": {"address": SOL_MINT, "price": 100}, "fees": {"1h": 5, "24h": 50},
+                "cumulative_metrics": {"fees": 6000}, "volume": {"24h": 20_000}}
+        d = benchmark.candidate_dims(snap, {"volume24hUsd": 80_000, "ageHours": 30}, pool_age_h=10)
+        self.assertEqual(d["totalFeesSol"], 60)      # $6000 / $100
+        self.assertEqual(d["volume24hUsd"], 80_000)  # token-wide beats the pool's 20k
+        self.assertEqual(d["tokenAgeHours"], 30)
+        d = benchmark.candidate_dims(snap, None, pool_age_h=10)  # DexScreener down: fall back to the pool
+        self.assertEqual((d["volume24hUsd"], d["tokenAgeHours"]), (20_000, 10))
+
+    def test_gmgn_bands(self):
+        cfg = cli.load_config(None)["signal"]
+        prof = {"binSteps": {"100": {"pnlSol": 1}}, "bands": {}}
+        ok = {"binStep": 100, "tokenAgeHours": 20, "mcapUsd": 9e5, "volume24hUsd": 60_000, "totalFeesSol": 55}
+        self.assertEqual(benchmark.match(ok, prof, cfg["bandOverrides"], cfg["matchDims"])["score"], 1)
+        for k, v in (("tokenAgeHours", 0.5), ("tokenAgeHours", 300), ("mcapUsd", 3e5), ("mcapUsd", 1.1e7),
+                     ("volume24hUsd", 40_000), ("totalFeesSol", 49)):
+            self.assertLess(benchmark.match({**ok, k: v}, prof, cfg["bandOverrides"], cfg["matchDims"])["score"], 1, k)
+
+    def test_token_stats_sums_all_pairs(self):
+        pairs = [{"pairAddress": "a", "volume": {"h24": 1000}, "pairCreatedAt": (T0 - 10 * 3600) * 1000},
+                 {"pairAddress": "b", "volume": {"h24": 500}, "pairCreatedAt": (T0 - 30 * 3600) * 1000},
+                 {"pairAddress": "a", "volume": {"h24": 1000}, "pairCreatedAt": (T0 - 10 * 3600) * 1000}]
+
+        class R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, *a): return __import__("json").dumps(pairs).encode()
+        with mock.patch.object(blast.api, "urlopen", lambda *a, **k: R()):
+            st = blast.token_stats(["M"], T0)
+        self.assertEqual(st["M"], {"volume24hUsd": 1500, "ageHours": 30, "pairs": 2})
+
+    def test_new_entry_alert(self):
+        cfg = cli.load_config(None)
+        prof = {"wallet": "W" * 44, "days": 20}
+        def hit(mint, pool, apr=2000):
+            c = {"tokenMint": mint, "pool": pool, "name": f"{mint}-SOL", "symbol": mint, "feeApr24h": apr, "feeApr1h": 1,
+                 "tvlUsd": 5e4, "poolAgeHours": 20, "mcapUsd": 1e6, "binStep": 100, "fees1hUsd": 1, "fees24hUsd": 1,
+                 "priceChg1h": 0, "priceChg6h": 0, "gatesFailed": [], "flags": [], "sizeVsTvlPct": 1,
+                 "volume24hUsd": 6e4, "totalFeesSol": 60, "tokenAgeHours": 20,
+                 "plan": {"strategy": "Spot", "side": "SOL-only", "sizeSol": 8, "rangeBottomPct": -70}}
+            return c, {"hits": ["x"] * 5, "misses": [], "dims": 5, "score": 1}, {}
+        sent = []
+        with mock.patch.object(cli, "notify", sent.append), mock.patch.object(cli, "append", lambda *a: None):
+            state = {}
+            self.assertEqual(cli._new_entrants([hit("A", "p1")], cfg, prof, state, T0), [])          # first scan: record only
+            out = cli._new_entrants([hit("A", "p1"), hit("B", "p2"), hit("B", "p3", 9000)], cfg, prof, state, T0 + 300)
+            self.assertEqual([r["pool"] for r in out], ["p3"])     # B is new; one alert, on its best pool
+            self.assertIn("NEW IN DETECTION", sent[-1])
+            self.assertIn("+1 other pool", sent[-1])
+            self.assertEqual(cli._new_entrants([hit("A", "p1"), hit("B", "p3")], cfg, prof, state, T0 + 600), [])
+            cli._new_entrants([hit("A", "p1")], cfg, prof, state, T0 + 900)                         # B drops out
+            self.assertEqual(cli._new_entrants([hit("A", "p1"), hit("B", "p3")], cfg, prof, state, T0 + 1200), [])  # cooldown
+            cli._new_entrants([hit("A", "p1")], cfg, prof, state, T0 + 7 * 3600)
+            self.assertEqual(len(cli._new_entrants([hit("A", "p1"), hit("B", "p3")], cfg, prof, state, T0 + 7 * 3600 + 300)), 1)
 
 
 if __name__ == "__main__":

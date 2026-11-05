@@ -172,22 +172,23 @@ def _band_txt(d: str, b: dict) -> str:
     if lo is None and hi is None:
         return "any"
     if hi is None:
-        return f"> {_fmt(d, lo)}"
+        return f"≥ {_fmt(d, lo)}"
     if lo is None:
-        return f"< {_fmt(d, hi)}"
+        return f"≤ {_fmt(d, hi)}"
     return f"{_fmt(d, lo)}–{_fmt(d, hi)}"
 
 
-def match(c: dict, prof: dict, overrides: dict | None = None) -> dict:
-    """c: a live candidate (filters.evaluate row + fees1hUsd / fees24hUsd).
-    Returns which habitat dims the pool sits inside, and a 0..1 score."""
+def match(c: dict, prof: dict, overrides: dict | None = None, dims: list[str] | None = None) -> dict:
+    """c: a live candidate (filters.evaluate row + candidate_dims). `dims` (config signal.matchDims)
+    picks the layer-2 features; default MATCH_DIMS. A dim with no band (benchmark or override) is skipped.
+    Returns which dims the pool sits inside, and a 0..1 score."""
     hits, misses = [], []
     steps = prof.get("binSteps") or {}
     good_steps = {s for s, v in steps.items() if v["pnlSol"] > 0} or set(steps)
     (hits if str(c.get("binStep")) in good_steps else misses).append(
         f"binStep {c.get('binStep')}" + ("" if str(c.get("binStep")) in good_steps else f" ∉ {sorted(good_steps, key=float)}"))
     bands = bands_for(prof, overrides)
-    for d in MATCH_DIMS:
+    for d in dims or MATCH_DIMS:
         b, v = bands.get(d), c.get(d)
         if not b:
             continue
@@ -202,14 +203,32 @@ def match(c: dict, prof: dict, overrides: dict | None = None) -> dict:
 
 
 def _fmt(d: str, v: float) -> str:
-    if d == "poolAgeHours":
+    if d.endswith("Sol"):
+        return f"{v:,.0f} SOL" if v >= 10 else f"{v:.2f} SOL"
+    if d in ("poolAgeHours", "tokenAgeHours"):
         return f"{v:.0f}h" if v >= 1 else f"{v * 60:.0f}m"
     if d.endswith("Usd"):
         return f"${v / 1e6:.2f}M" if v >= 1e6 else f"${v / 1e3:.1f}k" if v >= 1e3 else f"${v:.0f}"
     return f"{v:g}"
 
 
-def candidate_dims(snapshot: dict) -> dict:
-    """Live equivalents of the entry-time fee features."""
+def candidate_dims(snapshot: dict, token: dict | None = None, pool_age_h: float | None = None) -> dict:
+    """Live layer-2 features.
+    fees1hUsd / fees24hUsd   this pool's LP fees
+    totalFeesSol             this pool's LP fees since launch, in SOL (stand-in for GMGN "Total Fees",
+                             which counts the token's trader fees on every venue and has no free source)
+    volume24hUsd             the token's 24h volume over all its pairs (DexScreener), else this pool's
+    tokenAgeHours            since the token's first pair (DexScreener), else the pool's age"""
     fees = snapshot.get("fees") or {}
-    return {"fees1hUsd": fees.get("1h") or 0, "fees24hUsd": fees.get("24h") or 0}
+    side = "y" if (snapshot.get("token_y") or {}).get("address") == api.SOL_MINT else "x"
+    sol_usd = (snapshot.get(f"token_{side}") or {}).get("price") or 0
+    cum = (snapshot.get("cumulative_metrics") or {}).get("fees")
+    token = token or {}
+    return {
+        "fees1hUsd": fees.get("1h") or 0,
+        "fees24hUsd": fees.get("24h") or 0,
+        "totalFeesSol": round(cum / sol_usd, 2) if cum is not None and sol_usd else None,
+        "volume24hUsd": token.get("volume24hUsd") if token.get("volume24hUsd") is not None
+        else (snapshot.get("volume") or {}).get("24h"),
+        "tokenAgeHours": token.get("ageHours") if token.get("ageHours") is not None else pool_age_h,
+    }

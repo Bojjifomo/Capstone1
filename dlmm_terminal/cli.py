@@ -426,6 +426,9 @@ def signal_message(c: dict, m: dict, prof: dict, head: str) -> str:
         f"fee APR 24h {c['feeApr24h']:,.0f}% · 1h {c['feeApr1h']:,.0f}% · TVL {f('tvlUsd', c['tvlUsd'])} · "
         f"age {f('poolAgeHours', c['poolAgeHours'])} · mcap {f('mcapUsd', c['mcapUsd']) if c['mcapUsd'] else 'n/a'} · "
         f"bin {c['binStep']}",
+        f"token age {f('tokenAgeHours', c['tokenAgeHours']) if c.get('tokenAgeHours') is not None else 'n/a'} · "
+        f"vol 24h {f('volume24hUsd', c['volume24hUsd']) if c.get('volume24hUsd') is not None else 'n/a'} · "
+        f"total fees {f('totalFeesSol', c['totalFeesSol']) if c.get('totalFeesSol') is not None else 'n/a'}",
         f"fees 1h {f('fees1hUsd', c['fees1hUsd'])} · 24h {f('fees24hUsd', c['fees24hUsd'])} · "
         f"price 1h {c['priceChg1h'] if c['priceChg1h'] is not None else 'n/a'}% · 6h "
         f"{c['priceChg6h'] if c['priceChg6h'] is not None else 'n/a'}%",
@@ -441,27 +444,45 @@ def signal_message(c: dict, m: dict, prof: dict, head: str) -> str:
     return "\n".join(lines)
 
 
-def _candidate(snap: dict, cfg: dict, prof: dict, with_candles: bool, now: float | None = None) -> tuple[dict, dict]:
+def _candidate(snap: dict, cfg: dict, prof: dict, with_candles: bool, now: float | None = None,
+               token: dict | None = None) -> tuple[dict, dict]:
     when = datetime.fromtimestamp(now, timezone.utc) if now else None
     c = filters.evaluate(snap, candles_1h(snap["address"]) if with_candles else [], cfg, now=when)
-    c.update(benchmark.candidate_dims(snap))
-    return c, benchmark.match(c, prof, cfg["signal"].get("bandOverrides"))
+    c.update(benchmark.candidate_dims(snap, token, c["poolAgeHours"]))
+    sig = cfg["signal"]
+    return c, benchmark.match(c, prof, sig.get("bandOverrides"), sig.get("matchDims"))
 
 
 def scan_hits(cfg: dict, prof: dict, state: dict, now: float) -> list[tuple[dict, dict, dict]]:
-    """Every SOL pool that passes the v1 gates and the benchmark score: [(candidate, match, snapshot)]."""
+    """Every SOL pool that passes layer 1 (v1 gates) and layer 2 (signal.matchDims bands + benchmark
+    bin steps), minus dead-then-alive pools: [(candidate, match, snapshot)].
+    Pass 1 is snapshot-only gates; only pools that pass get the DexScreener token stats (one request
+    per token), candles and hourly history."""
     sig = cfg["signal"]
     log_all = now - state.get("lastLog", 0) >= 15 * 60
-    hits, excluded = [], []
+    hits, excluded, passed = [], [], []
     for snap in scan_pools(cfg):
         try:
-            c, m = _candidate(snap, cfg, prof, with_candles=False, now=now)  # cheap pass: snapshot only
-            if not c["gatesFailed"] and m["score"] >= sig["minMatchScore"]:
-                c, m = _candidate(snap, cfg, prof, with_candles=True, now=now)  # price moves for the flags
+            c, m = _candidate(snap, cfg, prof, with_candles=False, now=now)
         except Exception as exc:
             print(f"error {snap.get('name')}: {exc}", file=sys.stderr)
             continue
-        hit = not c["gatesFailed"] and m["score"] >= sig["minMatchScore"]
+        if c["gatesFailed"]:
+            if log_all:
+                append("candidates.jsonl", {**c, "source": "signal", "benchmark": m})
+            continue
+        passed.append((snap, c))
+    tokens = blast.token_stats([c["tokenMint"] for _, c in passed], now) if passed else {}
+    for snap, c0 in passed:
+        try:
+            tok = tokens.get(c0["tokenMint"])
+            c, m = _candidate(snap, cfg, prof, with_candles=False, now=now, token=tok)
+            if m["score"] >= sig["minMatchScore"]:
+                c, m = _candidate(snap, cfg, prof, with_candles=True, now=now, token=tok)  # price moves for flags
+        except Exception as exc:
+            print(f"error {snap.get('name')}: {exc}", file=sys.stderr)
+            continue
+        hit = m["score"] >= sig["minMatchScore"]
         if hit:
             hit = _revival_check(c, snap, sig, now, excluded)
         if log_all or hit:
@@ -500,11 +521,11 @@ def _revival_check(c: dict, snap: dict, sig: dict, now: float, excluded: list) -
     return False
 
 
-def blast_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
+def blast_once(cfg: dict, prof: dict, state: dict, now: float | None = None, hits: list | None = None) -> list[dict]:
     """Top-N card (signal.blastTop, default 10) of the pools passing gates + benchmark, sorted by
     signal.blastSortBy. Sent when signal.blastEveryMin has passed since the last one."""
     sig, now = cfg["signal"], now or time.time()
-    hits = scan_hits(cfg, prof, state, now)
+    hits = scan_hits(cfg, prof, state, now) if hits is None else hits
     dx = blast.dex_5m([c["pool"] for c, _, _ in hits])
     rows = [blast.row(c, snap, m, dx.get(c["pool"]), now) for c, m, snap in hits]
     best = blast.top(rows, sig.get("blastTop", 10), sig.get("blastSortBy", "volTvl1h"))
@@ -561,16 +582,56 @@ def signal_once(cfg: dict, prof: dict, state: dict, now: float | None = None) ->
 
 
 def tick(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
-    """One loop step. mode 'blast' (default): the top-N card every blastEveryMin, wallet-entry pings
-    every tick. mode 'new': per-pool pings on new matches (signal_once)."""
+    """One loop step (every pollEveryMin). mode 'blast' (default): scan, 🆕 alert for tokens that just
+    entered detection, the top-N card every blastEveryMin, wallet-entry pings. mode 'new': per-pool
+    pings on new matches (signal_once)."""
     sig, now = cfg["signal"], now or time.time()
     if sig.get("mode", "blast") != "blast":
         return signal_once(cfg, prof, state, now)
-    out = []
+    hits = scan_hits(cfg, prof, state, now)
+    out = _new_entrants(hits, cfg, prof, state, now)
     if now - state.get("lastBlast", 0) >= sig.get("blastEveryMin", 30) * 60 - 30:
-        out += blast_once(cfg, prof, state, now)
+        out += blast_once(cfg, prof, state, now, hits=hits)
     if sig.get("pingWalletEntries"):
         out += _wallet_entries(cfg, prof, state, now)
+    return out
+
+
+def _new_entrants(hits: list, cfg: dict, prof: dict, state: dict, now: float) -> list[dict]:
+    """🆕 alert when a token enters detection that was not in it on the previous scan (and was not
+    alerted within newAlertCooldownHours). Keyed by token, so a token with several pools alerts once,
+    on its best pool. The first scan of a fresh state only records what is there (the blast covers it)."""
+    sig = cfg["signal"]
+    if not sig.get("newEntryAlerts", True):
+        return []
+    best: dict = {}
+    for c, m, snap in hits:
+        k = c["tokenMint"] or c["pool"]
+        if k not in best or c["feeApr24h"] > best[k][0]["feeApr24h"]:
+            best[k] = (c, m, snap)
+    first = "detected" not in state
+    was = set(state.get("detected", []))
+    alerted = state.setdefault("newAlerted", {})
+    state["detected"] = sorted(best)
+    out = []
+    if first:
+        return out
+    cool = sig.get("newAlertCooldownHours", 6) * 3600
+    for k, (c, m, snap) in best.items():
+        if k in was or now - alerted.get(k, 0) < cool:
+            continue
+        others = sum(1 for cc, _, _ in hits if (cc["tokenMint"] or cc["pool"]) == k) - 1
+        notify(signal_message(c, m, prof, "🆕 NEW IN DETECTION")
+               + (f"\n(+{others} other pool(s) of this token also pass)" if others else ""))
+        alerted[k] = now
+        row = {"ts": datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"), "kind": "newEntry",
+               "token": k, "pool": c["pool"], "symbol": c["symbol"], "feeApr24h": c["feeApr24h"],
+               "tvlUsd": c["tvlUsd"], "mcapUsd": c["mcapUsd"], "volume24hUsd": c.get("volume24hUsd"),
+               "totalFeesSol": c.get("totalFeesSol"), "tokenAgeHours": c.get("tokenAgeHours"), "flags": c["flags"]}
+        append("signals.jsonl", row)
+        out.append(row)
+    for k in [k for k, t in alerted.items() if now - t > 7 * 86400]:
+        alerted.pop(k)
     return out
 
 
