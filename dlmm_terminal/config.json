@@ -24,6 +24,13 @@
     "minMatchScore": 1.0,
     "cooldownHours": 6,
     "pingWalletEntries": true,
+    "revival": {
+      "_note": "Dead-then-alive pools (pump-and-dump on a quiet token, e.g. DAVID-SOL): >= minDeadHours hours in a row with fees < deadHourPct% of the 24h total AND the 3 busiest hours >= minTop3Share of 24h fees. Owner's call (2026-11-05): gate. Benchmark data: 4 such entries, all won (+1.42 SOL), so 'flag' keeps them with a warning, 'off' ignores it.",
+      "mode": "gate",
+      "minDeadHours": 6,
+      "minTop3Share": 0.7,
+      "deadHourPct": 0.5
+    },
     "bandOverrides": {
       "_note": "Owner's fixed layer-2 bands (2026-11-04), used instead of the benchmark's p10-p90 for these dims; null = no limit. Bin step + pool age still come from the benchmark.",
       "mcapUsd": {"lo": 300000, "hi": 10000000},

@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from dlmm_terminal import benchmark, blast, cli
+from dlmm_terminal import activity, benchmark, blast, cli
 from dlmm_terminal.api import SOL_MINT
 
 T0 = 1_793_700_000  # entry time, unix s
@@ -134,6 +134,42 @@ class BlastTests(unittest.TestCase):
             for minute in range(0, 65, 5):
                 cli.tick(cfg, {}, state, now=T0 + minute * 60)
         self.assertEqual([(t - T0) // 60 for t in sent], [0, 30, 60])
+
+
+class RevivalTests(unittest.TestCase):
+    CFG = {"minDeadHours": 6, "minTop3Share": 0.7}
+
+    def hours(self, fees):
+        return [{"timestamp": i * 3600, "fees": f} for i, f in enumerate(fees)]
+
+    def test_dead_then_alive_is_caught(self):  # DAVID-SOL shape: ~20h of nothing, then a burst
+        f = activity.features(self.hours([0] * 18 + [447, 18, 3416, 1189, 36, 235]), age_h=107)
+        self.assertEqual(f["deadStreak"], 18)
+        self.assertGreater(f["top3Share"], 0.9)
+        self.assertTrue(activity.revived(f, self.CFG))
+
+    def test_steady_pool_passes(self):
+        f = activity.features(self.hours([200, 150, 300, 250] * 6), age_h=72)
+        self.assertEqual(f["deadStreak"], 0)
+        self.assertFalse(activity.revived(f, self.CFG))
+
+    def test_new_pool_is_not_a_revival(self):  # 4h old: all fees in few hours, but it was never dead
+        f = activity.features(self.hours([0] * 20 + [500, 900, 700, 300]), age_h=4)
+        self.assertEqual(f["hours"], 4)
+        self.assertFalse(activity.revived(f, self.CFG))
+
+    def test_gate_flag_off(self):
+        snap = {"address": "A"}
+        base = {"pool": "A", "symbol": "A", "poolAgeHours": 100, "flags": [], "gatesFailed": [], "decision": "propose"}
+        dead = [{"timestamp": i, "fees": f} for i, f in enumerate([0] * 18 + [400, 0, 3000, 1000, 0, 200])]
+        with mock.patch.object(cli.api, "chunked", lambda *a, **k: dead):
+            for mode, keep in (("gate", False), ("flag", True), ("off", True)):
+                c, ex = {**base, "flags": [], "gatesFailed": []}, []
+                sig = {"revival": {**self.CFG, "mode": mode}}
+                self.assertEqual(cli._revival_check(c, snap, sig, T0, ex), keep, mode)
+                self.assertEqual(len(ex), 0 if keep else 1)
+                if mode == "flag":
+                    self.assertIn("dead→alive", c["flags"][0])
 
 
 if __name__ == "__main__":

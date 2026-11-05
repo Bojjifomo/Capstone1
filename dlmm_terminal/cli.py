@@ -24,7 +24,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import api, benchmark, blast, exits, filters
+from . import activity, api, benchmark, blast, exits, filters
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -452,7 +452,7 @@ def scan_hits(cfg: dict, prof: dict, state: dict, now: float) -> list[tuple[dict
     """Every SOL pool that passes the v1 gates and the benchmark score: [(candidate, match, snapshot)]."""
     sig = cfg["signal"]
     log_all = now - state.get("lastLog", 0) >= 15 * 60
-    hits = []
+    hits, excluded = [], []
     for snap in scan_pools(cfg):
         try:
             c, m = _candidate(snap, cfg, prof, with_candles=False, now=now)  # cheap pass: snapshot only
@@ -462,13 +462,42 @@ def scan_hits(cfg: dict, prof: dict, state: dict, now: float) -> list[tuple[dict
             print(f"error {snap.get('name')}: {exc}", file=sys.stderr)
             continue
         hit = not c["gatesFailed"] and m["score"] >= sig["minMatchScore"]
+        if hit:
+            hit = _revival_check(c, snap, sig, now, excluded)
         if log_all or hit:
             append("candidates.jsonl", {**c, "source": "signal", "benchmark": m})
         if hit:
             hits.append((c, m, snap))
     if log_all:
         state["lastLog"] = now
+    state["revivedExcluded"] = excluded
     return hits
+
+
+def _revival_check(c: dict, snap: dict, sig: dict, now: float, excluded: list) -> bool:
+    """Dead-then-alive (pump-and-dump on a quiet token): one hourly-history request per pool that
+    already passed everything else. mode gate = drop it, flag = keep with a warning, off = skip."""
+    rv = sig.get("revival") or {}
+    mode = rv.get("mode", "gate")
+    if mode == "off":
+        return True
+    try:
+        hourly = api.chunked(api.volume_history, c["pool"], int(now - 26 * 3600), int(now))
+    except Exception as exc:
+        print(f"activity {c['symbol']}: {exc}", file=sys.stderr)
+        return True
+    f = activity.features(hourly, c["poolAgeHours"], rv.get("deadHourPct", 0.5))
+    c["activity"] = f
+    if not activity.revived(f, rv):
+        return True
+    why = activity.describe(f)
+    if mode == "flag":
+        c["flags"].append(why)
+        return True
+    c["gatesFailed"].append(f"revival: {why}")
+    c["decision"], c["decisionReason"] = "skip", "; ".join(c["gatesFailed"])
+    excluded.append({"pool": c["pool"], "symbol": c["symbol"], **f})
+    return False
 
 
 def blast_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> list[dict]:
@@ -479,8 +508,9 @@ def blast_once(cfg: dict, prof: dict, state: dict, now: float | None = None) -> 
     dx = blast.dex_5m([c["pool"] for c, _, _ in hits])
     rows = [blast.row(c, snap, m, dx.get(c["pool"]), now) for c, m, snap in hits]
     best = blast.top(rows, sig.get("blastTop", 10), sig.get("blastSortBy", "volTvl1h"))
-    notify(blast.message(best, len(rows), cfg, prof, html_mode=False),
-           html=blast.message(best, len(rows), cfg, prof, html_mode=True))
+    skipped = len(state.get("revivedExcluded") or [])
+    notify(blast.message(best, len(rows), cfg, prof, html_mode=False, revived=skipped),
+           html=blast.message(best, len(rows), cfg, prof, html_mode=True, revived=skipped))
     state["lastBlast"] = now
     ts = datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds")
     for i, r in enumerate(best, 1):
