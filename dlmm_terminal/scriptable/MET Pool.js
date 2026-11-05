@@ -22,7 +22,13 @@
 //  several positions stepping 1:2:...:n away from the price, like RH, with
 //  the shape drawn inside every slice (MET.ladderShape).
 //
+//  v1 filter + SIGNAL (same as the Mac terminal): each pool gets an OPEN / CAREFUL / WAIT /
+//  SKIP verdict from the spec's gates and flags; SIGNAL adds the benchmark wallet's habitat and
+//  the dead-then-alive gate. That logic lives in the "DLMM Rules" script, which must sit next
+//  to this one in Scriptable.
+//
 //  SETUP:
+//   0. Put "DLMM Rules" in Scriptable (the script this one imports its filters from).
 //   1. Put "MET Secrets" in Scriptable and fill in your keys (see that file).
 //   2. Put this file in Scriptable as "MET Pool".
 //   3. Home Screen > add a Scriptable widget (medium or large) running it.
@@ -69,7 +75,22 @@ const secret = name => {
   return v == null ? "" : String(v).trim();
 };
 
-const VERSION = "met-pool-v7+spec1";
+const VERSION = "met-pool-v7+dlmm2";
+
+// ----------------------------- DLMM rules ------------------------------------
+// The v1 gates and flags, the OPEN / CAREFUL / WAIT / SKIP verdict, the benchmark
+// "habitat" match and the dead-then-alive gate live in the "DLMM Rules" script: the
+// JavaScript twin of the Mac terminal, checked against Python's own answers by tests.
+// Put it in Scriptable next to this script and "MET Secrets".
+const RULES = (() => {
+  for (const name of ["DLMM Rules", "DLMMRules"]) {
+    try { const m = importModule(name); if (m && typeof m.makeConfig === "function") return m; } catch (e) {}
+  }
+  throw new Error('Script "DLMM Rules" not found: add it to Scriptable (see the README).');
+})();
+const CFG = RULES.makeConfig(SECRETS);
+const SPEC_MAX_POSITION_SOL = CFG.position.bankrollSol > 0 ? RULES.maxPositionSol(CFG) : null;
+const PLANNED_SIZE = RULES.plannedSizeSol(CFG);
 
 // Zap presets, in SOL. Checked rather than trusted: a typo that reached the
 // planner would place a ladder nobody asked for, and on Solana every slice is
@@ -91,10 +112,13 @@ function normStrategy(s) {
 }
 const MAX_SLICES = 20;
 const MIN_SLICE_SOL = 0.01;
-const ZAP_PRESETS_DEFAULT = [
-  { amount: 0.5, slices: 1, top: 0, range: 50, strategy: "bidask" },
-  { amount: 1, slices: 3, top: 0, range: 70, strategy: "spot" },
-];
+// Default = the Mac terminal's ladder: Spot, SOL-only, 5 slices down to -70%, half and full planned size.
+const ZAP_PRESETS_DEFAULT = (() => {
+  const slices = Math.max(1, Math.min(20, Math.floor(CFG.position.ladderSlices || 5)));
+  const range = Math.abs(CFG.position.rangeBottomPct);
+  const mk = a => ({ amount: Math.round(a * 1000) / 1000, slices, top: 0, range, strategy: "spot" });
+  return [mk(PLANNED_SIZE / 2), mk(PLANNED_SIZE)];
+})();
 const ZAP_PRESETS = (() => {
   const raw = SECRETS.MET_ZAP_PRESETS;
   if (!Array.isArray(raw) || !raw.length) return ZAP_PRESETS_DEFAULT;
@@ -112,63 +136,11 @@ const ZAP_PRESETS = (() => {
 const PRACTICE_MODE = typeof SECRETS.PRACTICE_MODE === "boolean" ? SECRETS.PRACTICE_MODE : true;
 const DRY_RUN = PRACTICE_MODE;
 
-// ----------------------------- spec v1 entry rules ---------------------------
-// From DLMM-Auto-Entry-Spec v1 (133 closed positions, Oct 25 - Nov 4 2026).
-// GATES must all pass; FLAGS are warnings only (they looked good in hindsight
-// and failed on unseen tokens). Every number can be overridden in MET Secrets
-// (SPEC_* keys); a missing key keeps the default, so an old Secrets file works.
-const SPEC = (() => {
-  const n = (k, d) => { const v = Number(SECRETS[k]); return SECRETS[k] != null && SECRETS[k] !== "" && Number.isFinite(v) ? v : d; };
-  return {
-    binStepMin: n("SPEC_BIN_STEP_MIN", 20), binStepMax: n("SPEC_BIN_STEP_MAX", 250),
-    minPoolAgeMin: n("SPEC_MIN_POOL_AGE_MIN", 60),
-    minFeeAprPct: n("SPEC_MIN_FEE_APR_PCT", 1000),
-    // Off by default (owner, 2026-11-04). A number in Secrets turns the size-vs-TVL gate back on.
-    maxPctOfTvl: n("SPEC_MAX_PCT_OF_TVL", null),
-    pump1hPct: n("SPEC_FLAG_PUMP_1H_PCT", 25), drop6hPct: n("SPEC_FLAG_DROP_6H_PCT", -17),
-    minTvlUsd: n("SPEC_FLAG_MIN_TVL_USD", 25000),
-    nightFrom: n("SPEC_FLAG_NIGHT_FROM", 0), nightTo: n("SPEC_FLAG_NIGHT_TO", 9), utcOffset: n("SPEC_UTC_OFFSET", 7),
-    rangeBottomPct: n("SPEC_RANGE_BOTTOM_PCT", 70),
-    bankrollSol: n("BANKROLL_SOL", 0), lossBudgetPct: n("LOSS_BUDGET_PCT", 5),
-  };
-})();
-// One bad position fell 93%, so the most one position may hold is the loss
-// budget / 0.9. Without BANKROLL_SOL in Secrets there is no cap to check.
-const SPEC_MAX_POSITION_SOL = SPEC.bankrollSol > 0 ? SPEC.bankrollSol * SPEC.lossBudgetPct / 100 / 0.9 : null;
-
-// Fee APR = fees over the window / TVL, annualised. A pool younger than 24h
-// is judged on the hours it has, as the spec does.
-function specFeeApr(r) {
-  if (!(r.tvl > 0) || r.fees24 == null) return null;
-  const ageH = r.ageDays != null ? r.ageDays * 24 : 24;
-  const hours = Math.max(Math.min(24, ageH), 1 / 60);
-  return r.fees24 / r.tvl * 8760 / hours * 100;
-}
-// Gates and flags for one pool row and a planned deposit, at `nowMs`.
-function specCheck(r, amountSol, nowMs) {
-  const gates = [], flags = [];
-  if (!(r.binStep >= SPEC.binStepMin && r.binStep <= SPEC.binStepMax)) gates.push(`bin step ${r.binStep} (${SPEC.binStepMin}-${SPEC.binStepMax})`);
-  const ageMin = r.ageDays != null ? r.ageDays * 1440 : null;
-  if (ageMin == null || ageMin < SPEC.minPoolAgeMin) gates.push(`pool ${ageMin == null ? "age unknown" : Math.round(ageMin) + "m old"} (< ${SPEC.minPoolAgeMin}m)`);
-  const apr = specFeeApr(r);
-  if (apr == null || apr < SPEC.minFeeAprPct) gates.push(`fee APR ${apr == null ? "--" : Math.round(apr).toLocaleString() + "%"} (< ${SPEC.minFeeAprPct}%)`);
-  const sizePct = amountSol > 0 && r.solUsd && r.tvl > 0 ? amountSol * r.solUsd / r.tvl * 100 : null;
-  if (SPEC.maxPctOfTvl != null && (sizePct == null || sizePct > SPEC.maxPctOfTvl)) gates.push(`size ${sizePct == null ? "--" : sizePct.toFixed(1) + "%"} of TVL (> ${SPEC.maxPctOfTvl}%)`);
-  if (r.chg1h != null && r.chg1h >= SPEC.pump1hPct) flags.push(`pump 1h +${r.chg1h.toFixed(0)}%`);
-  if (r.chg6h != null && r.chg6h <= SPEC.drop6hPct) flags.push(`drop 6h ${r.chg6h.toFixed(0)}%`);
-  if (r.tvl < SPEC.minTvlUsd) flags.push(`TVL ${fmtCompact(r.tvl)}`);
-  const hour = new Date(nowMs + SPEC.utcOffset * 3600000).getUTCHours();
-  if (hour >= SPEC.nightFrom && hour < SPEC.nightTo) flags.push(`night entry ${String(hour).padStart(2, "0")}h`);
-  return { ok: gates.length === 0, gates, flags, feeApr: apr, sizePct };
-}
-// The size the table judges a row by: the biggest preset, capped by the loss budget.
-function specRowSize() {
-  const biggest = Math.max(...ZAP_PRESETS.map(p => p.amount));
-  return SPEC_MAX_POSITION_SOL != null ? Math.min(biggest, SPEC_MAX_POSITION_SOL) : biggest;
-}
-// Every candidate the app ranks is logged, passing or not, so v2 can measure
-// what skipping cost or saved (spec section 5). One JSON line per pool per
-// refresh, in Scriptable's own folder; the file is rotated at about 4 MB.
+// ----------------------------- candidate log ----------------------------------
+// Every candidate the app ranks is logged, passing or not, so v2 can measure what skipping cost
+// or saved (spec section 5). One JSON line per pool per refresh, in Scriptable's own folder
+// (same schema as the Mac's candidates.jsonl); the file is rotated at about 4 MB.
+const specRowSize = () => PLANNED_SIZE;
 function specLog(entries) {
   try {
     const f = FileManager.local();
@@ -179,16 +151,12 @@ function specLog(entries) {
   } catch (e) {}
 }
 function specLogRows(rows, decision, extra) {
-  const now = Date.now(), size = specRowSize();
-  specLog(rows.map(r => {
-    const c = specCheck(r, (extra && extra.amount) || size, now);
-    return { ts: new Date(now).toISOString(), pool: r.id, tokenMint: r.tokenMint, symbol: r.symbol,
-      poolAgeHours: r.ageDays != null ? +(r.ageDays * 24).toFixed(2) : null, tvlUsd: r.tvl, feeApr24h: c.feeApr != null ? Math.round(c.feeApr) : null,
-      volTvl24h: r.tvl > 0 ? +(r.vol24 / r.tvl).toFixed(2) : null, mcapUsd: r.mcap, priceChg1h: r.chg1h, priceChg6h: r.chg6h, priceChg24h: r.chg24,
-      binStep: r.binStep, baseFeePct: r.baseFeePct, sizeSol: (extra && extra.amount) || size, sizeVsTvlPct: c.sizePct != null ? +c.sizePct.toFixed(2) : null,
-      entryHourLocal: new Date(now + SPEC.utcOffset * 3600000).getUTCHours(),
-      gatesFailed: c.gates, flags: c.flags, decision: decision || (c.ok ? "candidate" : "skip"), ...(extra || {}) };
-  }));
+  const now = Date.now();
+  specLog(rows.filter(r => r.c).map(r => Object.assign({}, r.c, {
+    ts: new Date(now).toISOString(), source: "phone", level: r.v && r.v.level,
+    decision: decision || (r.c.gatesFailed.length ? "skip" : "candidate"),
+    signal: r.sig ? { score: r.sig.score, hit: r.sig.hit, excluded: r.sig.excluded } : undefined,
+  }, extra || {})));
 }
 
 // =============================================================================
@@ -2602,11 +2570,12 @@ const REFRESH_MIN = 15;
 // Filters. A TVL floor because fee yield divides by TVL: a nearly empty pool
 // with a couple of trades shows a rate no position could realise. The market
 // cap floor is the widget Parameter ("300K", "2M").
-const MCAP_DEFAULT = 300_000;
+// The ranked list is the Mac terminal's scan: SOL pools on either side, TVL >= scan.minTvlUsd, and a wide
+// fee-yield floor so the WAIT rows are worth seeing too. The verdict, not a floor, says what to skip.
+const MCAP_DEFAULT = 0;
 let MIN_MCAP = MCAP_DEFAULT;
-const MIN_TVL = 10_000;
-const MIN_VOL24 = 5_000;
-const RANK_SIZE = 150;
+const MIN_TVL = CFG.scan.minTvlUsd;
+const MAX_TABLE_ROWS = 120;
 
 // Never deposit the last of the SOL: closing a position later costs a fee too.
 const RESERVE_SOL = 0.02;
@@ -2636,7 +2605,7 @@ function parseUsd(v) {
   MIN_MCAP = fromParam || fromQuery || MCAP_DEFAULT;
 }
 const DATA_SUFFIX = MIN_MCAP === MCAP_DEFAULT ? "data" : `data_${MIN_MCAP}`;
-const ROW_SCHEMA = 1;
+const ROW_SCHEMA = 2;
 function loadDataCache() {
   const c = loadJson(DATA_SUFFIX);
   return c && c.v === ROW_SCHEMA && c.data && c.data.rows ? c : null;
@@ -2701,10 +2670,12 @@ function sparkline(r, w, h) {
 // ----------------------------- data ------------------------------------------
 // One row shape for every way a pool reaches the table: the ranked list, a
 // search, a pool opened from a link.
+const RAW = new Map();      // pool address -> the raw API row, kept for this run only (never cached)
 function poolRow(p, now) {
   if (!p || !p.token_x || !p.token_y) return null;
   const solIsX = p.token_x.address === WSOL, solIsY = p.token_y.address === WSOL;
   if (!solIsX && !solIsY) return null;
+  RAW.set(p.address, p);
   const tok = solIsX ? p.token_y : p.token_x;
   const sol = solIsX ? p.token_x : p.token_y;
   const num = v => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -2725,6 +2696,11 @@ function poolRow(p, now) {
     vol24: w(p.volume, "24h") || 0,
     vol1h: w(p.volume, "1h") || 0,
     fees24: w(p.fees, "24h") || 0,
+    fees1h: w(p.fees, "1h") || 0,
+    fees4h: w(p.fees, "4h") || 0,
+    // fees of each window as % of TVL per day at that window's pace (the web's 1h / 4h / 24h switch)
+    feePctW: tvl > 0 ? { "1h": (w(p.fees, "1h") || 0) / tvl * 2400, "4h": (w(p.fees, "4h") || 0) / tvl * 600, "24h": (w(p.fees, "24h") || 0) / tvl * 100 } : { "1h": 0, "4h": 0, "24h": 0 },
+    volTvl1h: tvl > 0 ? (w(p.volume, "1h") || 0) / tvl * 100 : 0,
     feePctDay: w(p.fee_tvl_ratio, "24h"),
     feePctDay1h: w(p.fee_tvl_ratio, "1h") != null ? w(p.fee_tvl_ratio, "1h") * 24 : null,
     mcap: num(tok.market_cap),
@@ -2740,12 +2716,28 @@ function poolRow(p, now) {
 }
 
 async function fetchRanked() {
-  const filter = `token_y=${WSOL} && tvl>=${MIN_TVL} && volume_24h>=${MIN_VOL24} && is_blacklisted=false`;
-  const url = `${DATAPI}/pools?page_size=${RANK_SIZE}&sort_by=${encodeURIComponent("fee_tvl_ratio_24h:desc")}`
-    + `&filter_by=${encodeURIComponent(filter)}`;
-  const j = await MET.getJson(url, { timeout: 15 });
-  const now = Date.now();
-  return (j.data || []).map(p => poolRow(p, now)).filter(Boolean);
+  const sc = CFG.scan;
+  const minRatio = CFG.gates.minFeeApr24hPct / 365 / 4;      // wide prefilter: WAIT rows are worth seeing too
+  const base = `is_blacklisted=false && tvl>=${Math.max(MIN_TVL, sc.prefilterMinTvlUsd)} && fee_tvl_ratio_24h>=${minRatio.toFixed(4)}`;
+  const urls = [];
+  for (const side of ["token_y", "token_x"]) {
+    for (let page = 1; page <= sc.pages; page++) {
+      urls.push(`${DATAPI}/pools?page=${page}&page_size=${sc.pageSize}&sort_by=${encodeURIComponent("fee_tvl_ratio_24h:desc")}`
+        + `&filter_by=${encodeURIComponent(`${base} && ${side}=${WSOL}`)}`);
+    }
+  }
+  const bodies = await Promise.all(urls.map(u => MET.getJson(u, { timeout: 15 }).catch(() => null)));
+  if (bodies.every(b => !b)) throw new Error("Meteora data API did not answer");
+  const now = Date.now(), seen = new Set(), rows = [];
+  for (const j of bodies) {
+    for (const p of (j && j.data) || []) {
+      if (!p || seen.has(p.address)) continue;
+      seen.add(p.address);
+      const r = poolRow(p, now);
+      if (r) rows.push(r);
+    }
+  }
+  return rows;
 }
 
 // DexScreener indexes DLMM pools by their address. 30 per request, in
@@ -2765,17 +2757,98 @@ async function fetchMarket(ids) {
         chg1h: pc.h1 != null ? Number(pc.h1) : null,
         chg5m: pc.m5 != null ? Number(pc.m5) : null,
         txns24: p.txns && p.txns.h24 ? (Number(p.txns.h24.buys) || 0) + (Number(p.txns.h24.sells) || 0) : null,
+        buys24: p.txns && p.txns.h24 ? Number(p.txns.h24.buys) || 0 : null,
+        sells24: p.txns && p.txns.h24 ? Number(p.txns.h24.sells) || 0 : null,
+        dxVol1h: p.volume && p.volume.h1 != null ? Number(p.volume.h1) : null,
+        dxVol24: p.volume && p.volume.h24 != null ? Number(p.volume.h24) : null,
         mcap: Number(p.marketCap) || Number(p.fdv) || null,
       });
     }
   }
   return out;
 }
+// One row's v1 candidate + verdict, from the raw API row and DexScreener's price moves and trade counts.
+function evalRow(r, nowMs) {
+  const p = RAW.get(r.id);
+  if (!p) return r;
+  const c = RULES.evaluate(p, CFG, nowMs || Date.now(), { sizeSol: PLANNED_SIZE, changes: { "1h": r.chg1h, "6h": r.chg6h, "24h": r.chg24 } });
+  Object.assign(c, RULES.candidateDims(p));
+  r.c = c;
+  r.mk = { vol1h: r.dxVol1h, vol24: r.dxVol24, buys24: r.buys24, sells24: r.sells24 };
+  r.v = RULES.verdict(c, r.mk.buys24 == null && r.mk.vol1h == null ? null : r.mk);
+  return r;
+}
 function withMarket(rows, market) {
+  const now = Date.now();
   return rows.map(r => {
     const m = market.get(r.id);
-    if (!m) return r;
-    return { ...r, chg24: m.chg24, chg6h: m.chg6h, chg1h: m.chg1h, chg5m: m.chg5m, txns24: m.txns24, mcap: r.mcap != null ? r.mcap : m.mcap };
+    const out = !m ? r : { ...r, chg24: m.chg24, chg6h: m.chg6h, chg1h: m.chg1h, chg5m: m.chg5m, txns24: m.txns24,
+      buys24: m.buys24, sells24: m.sells24, dxVol1h: m.dxVol1h, dxVol24: m.dxVol24, mcap: r.mcap != null ? r.mcap : m.mcap };
+    return evalRow(out, now);
+  });
+}
+
+// ----------------------------- signal: benchmark habitat + revival ----------------------------
+// Layer 2 on top of the v1 gates, as on the Mac: the pool must sit inside what the benchmark wallet
+// enters (bin steps it made SOL in; pool age; the owner's fixed mcap / fees bands) and must not be a
+// dead-then-alive pool. A similarity check, not a predictor (spec section 2).
+const BENCH_FILE = "met_benchmark.json", HOURLY_FILE = "met_hourly.json";
+function readLib(name) { try { const p = fm.joinPath(fm.libraryDirectory(), name); return fm.fileExists(p) ? JSON.parse(fm.readString(p)) : null; } catch (e) { return null; } }
+function writeLib(name, v) { try { fm.writeString(fm.joinPath(fm.libraryDirectory(), name), JSON.stringify(v)); } catch (e) {} }
+// The profile on the phone: the last one built here, else the one that shipped inside "DLMM Rules".
+function loadProfile() {
+  const c = readLib(BENCH_FILE);
+  if (c && c.profile && c.profile.wallet === CFG.signal.benchmarkWallet && c.profile.days === CFG.signal.benchmarkDays) return { profile: c.profile, own: true };
+  return { profile: RULES.DEFAULT_PROFILE, own: false };
+}
+function benchAgeHours() {
+  const pr = loadProfile().profile;
+  return pr ? (Date.now() - Date.parse(pr.builtAt)) / 3600000 : Infinity;
+}
+const benchStale = () => benchAgeHours() > CFG.signal.refreshBenchmarkHours || !loadProfile().own && benchAgeHours() > 24;
+// Hourly fees of the last ~26h, one request per pool, remembered for ten minutes.
+async function hourlyFor(ids) {
+  const cache = readLib(HOURLY_FILE) || {}, now = Date.now(), out = new Map(), todo = [];
+  ids.forEach(id => { const e = cache[id]; if (e && now - e.t < 600000) out.set(id, e.rows); else todo.push(id); });
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      const id = todo[next++];
+      try {
+        const end = Math.floor(now / 1000);
+        const j = await MET.getJson(`${DATAPI}/pools/${id}/volume/history?timeframe=1h&start_time=${end - 26 * 3600}&end_time=${end}`, { timeout: 12 });
+        const rows = (j.data || []).map(r => ({ timestamp: r.timestamp, fees: r.fees || 0 })).sort((a, b) => a.timestamp - b.timestamp);
+        out.set(id, rows);
+        cache[id] = { t: now, rows };
+      } catch (e) {}
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, todo.length) }, worker));
+  Object.keys(cache).forEach(k => { if (now - cache[k].t > 3600000) delete cache[k]; });
+  writeLib(HOURLY_FILE, cache);
+  return out;
+}
+async function signalPass(rows) {
+  const sig = CFG.signal, prof = loadProfile().profile;
+  if (!prof) return;
+  const cand = [];
+  rows.forEach(r => {
+    if (!r.c) return;
+    const m = RULES.matchBenchmark(r.c, prof, sig.bandOverrides);
+    r.sig = { score: m.score, hits: m.hits.length, dims: m.dims, hitTxt: m.hits, missTxt: m.misses, excluded: false, warn: null, act: null,
+      hit: r.c.gatesFailed.length === 0 && m.score >= sig.minMatchScore };
+    if (r.sig.hit) cand.push(r);
+  });
+  if ((sig.revival || {}).mode === "off" || !cand.length) return;
+  const hourly = await hourlyFor(cand.slice(0, 60).map(r => r.id));
+  cand.forEach(r => {
+    const h = hourly.get(r.id);
+    if (!h) return;                                  // request failed: keep the pool, as the Mac does
+    const cc = { poolAgeHours: r.c.poolAgeHours, gatesFailed: r.c.gatesFailed.slice(), flags: r.c.flags.slice(), decision: r.c.decision };
+    const keep = RULES.applyRevival(cc, h, CFG);
+    r.sig.act = cc.activity;
+    if (!keep) { r.sig.hit = false; r.sig.excluded = true; r.sig.why = cc.gatesFailed[cc.gatesFailed.length - 1]; }
+    else if (cc.flags.length > r.c.flags.length) r.sig.warn = cc.flags[cc.flags.length - 1];
   });
 }
 
@@ -2883,6 +2956,8 @@ function errorWidget(msg) {
 }
 
 // ----------------------------- main ------------------------------------------
+// The widget shows what passes the v1 gates (OPEN / CAREFUL), or everything while nothing does.
+const wRows = rows => { const ok = (rows || []).filter(r => r.v && (r.v.level === "OPEN" || r.v.level === "CAREFUL")); return ok.length ? ok : (rows || []); };
 function summarise(rows) {
   const pcts = rows.map(r => r.feePctDay).filter(v => v != null).sort((a, b) => a - b);
   return {
@@ -2898,7 +2973,7 @@ async function main() {
     const ranked = await fetchRanked();
     // The mcap floor applies to what is known. A token the API has no cap for
     // is left out of the browse list; a search still finds it.
-    const kept = ranked.filter(r => r.mcap != null && r.mcap >= MIN_MCAP);
+    const kept = MIN_MCAP > 0 ? ranked.filter(r => r.mcap != null && r.mcap >= MIN_MCAP) : ranked;
     const [market, balance, usdIdr] = await Promise.all([
       fetchMarket(kept.map(r => r.id)).catch(() => new Map()),
       fetchBalance().catch(() => null),
@@ -2906,6 +2981,7 @@ async function main() {
     ]);
     const rows = withMarket(kept, market);
     rows.sort((a, b) => (b.feePctDay || 0) - (a.feePctDay || 0) || b.vol24 - a.vol24);
+    if (!config.runsInWidget) { try { await signalPass(rows); } catch (e) {} }
     const CHROME = 110, PITCH = 15.5;
     const rowBudget = config.widgetFamily === "small" ? 0
       : Math.max(0, Math.min(20, Math.floor((widgetSize().h - CHROME) / PITCH)));
@@ -2925,13 +3001,13 @@ async function main() {
       return { widget: errorWidget(msg), data: null, message: msg };
     }
   }
-  return { widget: buildWidget({ ...data, rows: data.rows.slice(0, data.rowBudget || 6) }, stale, dataTime), data, stale, dataTime, error };
+  return { widget: buildWidget({ ...data, rows: wRows(data.rows).slice(0, data.rowBudget || 6) }, stale, dataTime), data, stale, dataTime, error };
 }
 
 // The widget only refreshes what it shows: one data-API call for the visible
 // pools and the balance, both cheap. Ranking again belongs in the app.
 async function refreshWidgetRows(cached) {
-  const rows = cached.data.rows.slice(0, cached.data.rowBudget || 6);
+  const rows = wRows(cached.data.rows).slice(0, cached.data.rowBudget || 6);
   if (!rows.length) return null;
   // Multi-value filters take commas, whatever the API docs say about "|":
   // measured, "|" matches nothing.
@@ -2971,7 +3047,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
   const hCell = header.addText(
     d.tokenView ? `${d.rows.length} ${d.tokenView} pools` : `${d.rows.length} pools`,
     d.tokenView ? `Meteora DLMM SOL pools for ${d.tokenView} · every pool, no floors`
-      : `Meteora DLMM · SOL pairs · mcap ≥ ${fmtShort(MIN_MCAP)} · TVL ≥ ${fmtShort(MIN_TVL)}`);
+      : `Meteora DLMM · SOL pairs · TVL ≥ ${fmtShort(MIN_TVL)}` + (MIN_MCAP > 0 ? ` · mcap ≥ ${fmtShort(MIN_MCAP)}` : ""));
   hCell.widthWeight = 55;
   hCell.titleFont = Font.boldSystemFont(20);
   hCell.subtitleFont = Font.systemFont(12);
@@ -3045,28 +3121,62 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     t.addRow(sr);
   }
 
-  // Spec v1 filter: tap to show every pool or only those passing all gates.
-  if (spec) {
-    const fr = new UITableRow();
-    fr.height = 44;
-    const size = specRowSize();
-    const fc = fr.addButton(spec.only
-      ? `✅ Spec v1 gates on · ${spec.passing}/${spec.total} pass · show all`
-      : `☑️ Spec v1 gates off · ${spec.passing}/${spec.total} pass · filter`);
-    fc.centerAligned();
-    fc.titleFont = Font.semiboldSystemFont(13);
-    fc.onTap = spec.onToggle;
-    t.addRow(fr);
+  // Mode (ALL / V1 PASS / SIGNAL), the fee window, and what the current mode means.
+  const win = spec && spec.win || "24h";
+  if (spec && !spec.hideControls) {
+    const mr = new UITableRow();
+    mr.height = 44;
+    for (const [key, label] of [["all", "ALL"], ["v1", "V1 PASS"], ["signal", "SIGNAL"]]) {
+      const on = spec.mode === key;
+      const b = mr.addButton(`${on ? "● " : ""}${label} ${spec.counts[key]}`);
+      b.widthWeight = 33;
+      b.centerAligned();
+      b.titleFont = on ? Font.boldSystemFont(14) : Font.systemFont(14);
+      b.titleColor = on ? COL.accent : COL.muted;
+      b.onTap = () => spec.onMode(key);
+    }
+    t.addRow(mr);
+    const wr = new UITableRow();
+    wr.height = 36;
+    const wl = wr.addText("Fees window");
+    wl.widthWeight = 34;
+    wl.titleFont = Font.systemFont(12);
+    wl.titleColor = COL.muted;
+    for (const w of ["1h", "4h", "24h"]) {
+      const b = wr.addButton(spec.win === w ? `● ${w}` : w);
+      b.widthWeight = 22;
+      b.centerAligned();
+      b.titleFont = spec.win === w ? Font.boldSystemFont(13) : Font.systemFont(13);
+      b.titleColor = spec.win === w ? COL.accent : COL.muted;
+      b.onTap = () => spec.onWin(w);
+    }
+    t.addRow(wr);
     const nr = new UITableRow();
-    nr.height = 30;
-    const nc = nr.addText(`Gates: bin ${SPEC.binStepMin}-${SPEC.binStepMax} · age ≥ ${SPEC.minPoolAgeMin}m · fee APR ≥ ${SPEC.minFeeAprPct}%` + (SPEC.maxPctOfTvl != null ? ` · ${fmtSol(size, 2)} ≤ ${SPEC.maxPctOfTvl}% TVL` : ""),
-      SPEC_MAX_POSITION_SOL != null ? `Max position ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL (bankroll ${SPEC.bankrollSol} × ${SPEC.lossBudgetPct}% ÷ 0.9) · range bottom −${SPEC.rangeBottomPct}%`
-        : `Set BANKROLL_SOL in MET Secrets for the loss-budget cap · range bottom −${SPEC.rangeBottomPct}%`);
+    nr.height = 46;
+    const g = CFG.gates, u = CFG.universe, sg = CFG.signal;
+    let line1, line2;
+    if (spec.mode === "signal") {
+      const b = spec.bench;
+      line1 = `Signal = v1 gates + benchmark ${shortAddr(sg.benchmarkWallet)} ${sg.benchmarkDays}d (score ≥ ${sg.minMatchScore}) · revival ${(sg.revival || {}).mode}`;
+      line2 = b ? `Benchmark: ${b.entries} entries · built ${b.age}${b.own ? "" : " (bundled)"} · tap here to rebuild` : "No benchmark yet · tap here to build";
+    } else {
+      line1 = `Gates: bin ${u.binStepMin}-${u.binStepMax} · age ≥ ${g.minPoolAgeMinutes}m · fee APR ≥ ${g.minFeeApr24hPct}%` + (g.maxPositionPctOfTvl != null ? ` · size ≤ ${g.maxPositionPctOfTvl}% TVL` : "");
+      line2 = SPEC_MAX_POSITION_SOL != null ? `Max position ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL (bankroll ${CFG.position.bankrollSol} × ${CFG.position.lossBudgetPct}% ÷ 0.9) · ladder ${CFG.position.ladderSlices}× Spot to ${CFG.position.rangeBottomPct}%`
+        : `Set BANKROLL_SOL in MET Secrets for the loss-budget cap · ladder ${CFG.position.ladderSlices}× Spot to ${CFG.position.rangeBottomPct}%`;
+    }
+    const nc = nr.addText(line1, line2);
     nc.titleFont = Font.systemFont(10);
     nc.titleColor = COL.muted;
     nc.subtitleFont = Font.systemFont(10);
     nc.subtitleColor = COL.faint;
+    if (spec.mode === "signal") { nr.onSelect = spec.onBench; nr.dismissOnSelect = false; }
     t.addRow(nr);
+    if (spec.mode === "signal" && !spec.counts.signal) {
+      const er = new UITableRow();
+      er.height = 40;
+      er.addText("No pool is inside the signal right now.", "Gates + benchmark + no dead→alive. Check V1 PASS, or try again in a few minutes.").titleFont = Font.systemFont(12);
+      t.addRow(er);
+    }
   }
 
   // The same five columns as the rows below (name, 24h chart, TVL, fees,
@@ -3074,7 +3184,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
   const COLW = [25, 18, 20, 19, 18];
   const labels = new UITableRow();
   labels.height = 34;
-  const NAMES = ["POOL", "TVL", "FEES", "MCAP"];
+  const NAMES = ["POOL", "TVL", `FEES ${win}`, "MCAP"];
   for (let ci = 0; ci < 4; ci++) {
     if (ci === 1) { const ch = labels.addText("24H"); ch.widthWeight = COLW[1]; ch.centerAligned(); ch.titleFont = Font.semiboldSystemFont(10); ch.titleColor = COL.faint; }
     const active = ci === sortCol;
@@ -3102,9 +3212,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
 
   drawProgress(t, progress);
 
-  const specNow = Date.now(), specSize = specRowSize();
   for (const r of d.rows || []) {
-    const sc = specCheck(r, specSize, specNow);
     const row = new UITableRow();
     row.height = 58;
     const sub = [`bin ${r.binStep}`, fmtAge(r.ageDays)];
@@ -3127,13 +3235,15 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     tv.subtitleFont = Font.systemFont(11);
     tv.subtitleColor = COL.muted;
 
-    const fe = row.addText(fmtCompact(r.fees24), fmtPct(r.feePctDay) + "/day");
+    const feeW = win === "1h" ? r.fees1h : win === "4h" ? r.fees4h : r.fees24;
+    const pctW = r.feePctW ? r.feePctW[win] : r.feePctDay;
+    const fe = row.addText(fmtCompact(feeW), fmtPct(pctW) + "/day");
     fe.widthWeight = 19;
     fe.rightAligned();
     fe.titleFont = Font.semiboldSystemFont(16);
-    fe.titleColor = r.fees24 > 0 ? COL.green : COL.muted;
+    fe.titleColor = feeW > 0 ? COL.green : COL.muted;
     fe.subtitleFont = Font.systemFont(11);
-    fe.subtitleColor = feeRateColor(r.feePctDay);
+    fe.subtitleColor = feeRateColor(pctW);
 
     const mk = row.addText(r.mcap == null ? "--" : fmtCompact(r.mcap),
       `1h ${fmtPct(r.feePctDay1h, r.feePctDay1h >= 100 ? 0 : 1)}/d`);
@@ -3148,16 +3258,31 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     row.dismissOnSelect = false;
     t.addRow(row);
 
-    // Spec v1 verdict under every pool: which gate blocks it, which flags show.
+    // The verdict under every pool (spec v1 gates + flags; market context only explains). Tap: all the reasons.
+    const v = r.v;
     const vr = new UITableRow();
-    vr.height = 22;
-    const vtext = sc.ok
-      ? `✅ v1 gates pass · APR ${Math.round(sc.feeApr).toLocaleString()}%` + (sc.flags.length ? ` · ⚠️ ${sc.flags.join(" · ")}` : "")
-      : `⛔ ${sc.gates.join(" · ")}` + (sc.flags.length ? ` · ⚠️ ${sc.flags.join(" · ")}` : "");
-    const vc = vr.addText(vtext);
-    vc.titleFont = Font.systemFont(10);
-    vc.titleColor = sc.ok ? (sc.flags.length ? COL.yellow : COL.green) : COL.muted;
+    vr.height = 24;
+    if (v) {
+      const why = v.reasons.filter(x => !x.ok).concat(v.info).slice(0, 2).map(x => RULES.nice(x.text)).join(" · ") || (v.level === "OPEN" ? "gates pass" : "");
+      const vc = vr.addText(`● ${v.level} ${v.score > 0 ? "+" : ""}${v.score}  ${why}`);
+      vc.titleFont = Font.semiboldSystemFont(11);
+      vc.titleColor = v.level === "OPEN" ? COL.green : v.level === "CAREFUL" ? COL.yellow : v.level === "WAIT" ? COL.red : COL.faint;
+    } else {
+      const vc = vr.addText("…");
+      vc.titleFont = Font.systemFont(11);
+      vc.titleColor = COL.faint;
+    }
+    if (spec && spec.onDetail) { vr.onSelect = () => spec.onDetail(r); vr.dismissOnSelect = false; }
     t.addRow(vr);
+    if (spec && spec.mode === "signal" && r.sig) {
+      const sr2 = new UITableRow();
+      sr2.height = 22;
+      const act = r.sig.act;
+      const sc2 = sr2.addText(`🎯 ${r.sig.hits}/${r.sig.dims}  ·  🥩 ${fmtPct(r.volTvl1h, 1)} vol/TVL 1h` + (act ? `  ·  🫀 ${act.activeHours}/${act.hours}h` : "") + (r.sig.warn ? `  ·  ⚠️ ${RULES.nice("revival: " + r.sig.warn)}` : ""));
+      sc2.titleFont = Font.systemFont(10);
+      sc2.titleColor = r.sig.warn ? COL.yellow : COL.muted;
+      t.addRow(sr2);
+    }
 
     // Buttons on a row of their own with no onSelect: a near miss does
     // nothing, rather than opening a browser.
@@ -3181,6 +3306,17 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
       if (!busy) cz.onTap = () => onZap(r, "__ask__");
       t.addRow(zr);
     }
+  }
+
+  if (d.more > 0) {
+    const mo = new UITableRow();
+    mo.height = 40;
+    const mc = mo.addText(`${d.more} more not drawn`, "The phone draws the first 120. Sort, search, or use V1 PASS / SIGNAL to narrow down.");
+    mc.titleFont = Font.systemFont(12);
+    mc.titleColor = COL.muted;
+    mc.subtitleFont = Font.systemFont(10);
+    mc.subtitleColor = COL.faint;
+    t.addRow(mo);
   }
 
   const foot = new UITableRow();
@@ -3336,15 +3472,20 @@ function confirmText(row, preset, z) {
   const n = plan.slices.length;
   const lines = [];
   // Spec v1 first: what blocks this entry, what to look at twice.
-  const sc = specCheck(row, preset.amount, Date.now());
-  if (!sc.ok) lines.push(`⛔ SPEC v1 SAYS SKIP: ${sc.gates.join("; ")}.`);
-  else lines.push(`✅ Spec v1 gates pass (fee APR ${Math.round(sc.feeApr).toLocaleString()}%, ${sc.sizePct != null ? sc.sizePct.toFixed(1) + "% of TVL" : "TVL --"}).`);
-  if (sc.flags.length) lines.push(`⚠️ Flags (warning only): ${sc.flags.join(", ")}.`);
+  const sc = row.c ? RULES.recheck(row.c, CFG, preset.amount, Date.now()) : null;
+  if (sc) {
+    if (sc.gatesFailed.length) lines.push(`⛔ SPEC v1 SAYS SKIP: ${sc.gatesFailed.map(RULES.nice).join("; ")}.`);
+    else lines.push(`✅ Spec v1 gates pass (fee APR ${Math.round(sc.feeApr24h).toLocaleString("en-US")}%${sc.sizeVsTvlPct != null ? ", " + sc.sizeVsTvlPct.toFixed(1) + "% of TVL" : ""}).`);
+    if (sc.flags.length) lines.push(`⚠️ Flags (warning only): ${sc.flags.map(RULES.nice).join(", ")}.`);
+  }
+  if (row.sig && row.sig.excluded) lines.push(`⛔ Signal says skip: ${RULES.nice(row.sig.why || "revival")}.`);
+  else if (row.sig && row.sig.hit) lines.push(`🎯 Signal: inside the benchmark habitat (${row.sig.hits}/${row.sig.dims}).`);
   if (SPEC_MAX_POSITION_SOL != null && preset.amount > SPEC_MAX_POSITION_SOL + 1e-9) {
     lines.push(`⛔ ${fmtSol(preset.amount, 3)} is over the loss-budget cap of ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL.`);
   }
-  if (preset.range < SPEC.rangeBottomPct - 5) {
-    lines.push(`⚠️ Range bottom −${preset.range}%: the spec uses about −${SPEC.rangeBottomPct}% (every big loss fell 44-58%, through a −50% bottom).`);
+  const wantBottom = Math.abs(CFG.position.rangeBottomPct);
+  if (preset.range < wantBottom - 5) {
+    lines.push(`⚠️ Range bottom −${preset.range}%: the spec uses about −${wantBottom}% (every big loss fell 44-58%, through a −50% bottom).`);
   }
   lines.push("");
   lines.push(`${fmtSol(preset.amount, 3)} SOL into ${n} ${n > 1 ? "slices" : "position"}`
@@ -3424,21 +3565,32 @@ if (config.runsInWidget) {
       const stale = new Promise(resolve => Timer.schedule(12_000, false, () => resolve(null)));
       const fresh = await Promise.race([refreshWidgetRows(cached).catch(() => null), stale]);
       w = fresh ? buildWidget(fresh, false, Date.now())
-        : buildWidget({ ...cached.data, rows: cached.data.rows.slice(0, cached.data.rowBudget || 6) }, true, cached.t);
+        : buildWidget({ ...cached.data, rows: wRows(cached.data.rows).slice(0, cached.data.rowBudget || 6) }, true, cached.t);
     }
   } catch (e) {
     const c = loadDataCache();
     w = c && c.data && c.data.rows && c.data.rows.length
-      ? buildWidget({ ...c.data, rows: c.data.rows.slice(0, c.data.rowBudget || 6) }, true, c.t)
+      ? buildWidget({ ...c.data, rows: wRows(c.data.rows).slice(0, c.data.rowBudget || 6) }, true, c.t)
       : errorWidget(String((e && e.message) || e).slice(0, 80));
   }
   Script.setWidget(w);
 } else {
   const t = new UITable();
   let shown = null, current = null, busy = false, progress = null, tokenView = null;
-  const SORT_KEYS = [["binStep", "ageDays"], ["tvl", "vol24"], ["fees24", "feePctDay"], ["mcap", "feePctDay1h"]];
-  let sortCol = 2, sortMode = 2;
+  const SORT_KEYS = [["binStep", "ageDays"], ["tvl", "vol24"], ["feesW", "feePctSel"], ["mcap", "feePctDay1h"]];
+  let sortCol = 2, sortMode = 2, sortTouched = false;
+  // What the table shows, remembered between runs: ALL | V1 PASS | SIGNAL, and the fees window.
+  const savedView = readLib("met_view.json") || {};
+  let mode = ["all", "v1", "signal"].includes(savedView.mode) ? savedView.mode : "v1";
+  let win = ["1h", "4h", "24h"].includes(savedView.win) ? savedView.win : "24h";
+  const saveView = () => writeLib("met_view.json", { mode, win });
+  // The Signal list is ordered like the Mac's top-10 card (signal.blastSortBy), until you sort a column yourself.
+  const SIGNAL_SORT = { volTvl1h: x => x.volTvl1h, feeTvl24h: x => (x.tvl > 0 ? x.fees24 / x.tvl * 100 : 0), fees1hUsd: x => x.fees1h, prorated5m: x => x.volTvl1h };
   const sortRows = rows => {
+    if (mode === "signal" && !sortTouched) {
+      const f = SIGNAL_SORT[CFG.signal.blastSortBy] || SIGNAL_SORT.volTvl1h;
+      return [...rows].sort((a, b) => f(b) - f(a));
+    }
     const key = SORT_KEYS[sortCol][sortMode >> 1];
     const desc = !(sortMode & 1);
     return [...rows].sort((a, b) => {
@@ -3447,33 +3599,98 @@ if (config.runsInWidget) {
       return desc ? vb - va : va - vb;
     });
   };
-  // Spec v1 filter, remembered between runs. On by default: the table shows
-  // only pools that pass every gate; the toggle shows the rest with reasons.
-  const specPath = (() => { const f = FileManager.local(); return f.joinPath(f.libraryDirectory(), "met_spec_filter.json"); })();
-  let specOnly = (() => { try { const f = FileManager.local(); return f.fileExists(specPath) ? JSON.parse(f.readString(specPath)).only !== false : true; } catch (e) { return true; } })();
-  const toggleSpec = () => {
-    specOnly = !specOnly;
-    try { FileManager.local().writeString(specPath, JSON.stringify({ only: specOnly })); } catch (e) {}
-    if (current && current.data) show(current, false);
-  };
   let lastCustom = { amount: ZAP_PRESETS[0].amount, top: ZAP_PRESETS[0].top, range: ZAP_PRESETS[0].range, slices: ZAP_PRESETS[0].slices, strategy: ZAP_PRESETS[0].strategy };
 
+  const benchInfo = () => {
+    const { profile, own } = loadProfile();
+    if (!profile) return null;
+    const h = benchAgeHours();
+    return { entries: profile.entries, own, age: h < 1 ? `${Math.round(h * 60)}m ago` : h < 48 ? `${h.toFixed(0)}h ago` : `${(h / 24).toFixed(0)}d ago` };
+  };
   const show = (r, refreshing) => {
     if (r && r.data && r.data.rows) {
       const base = tokenView ? { ...r.data, rows: tokenView.rows, tokenView: tokenView.symbol } : r.data;
-      // A search always shows what it found; the filter applies to the ranked list.
-      const now = Date.now(), size = specRowSize();
-      const passing = base.rows.filter(x => specCheck(x, size, now).ok);
-      const rows = specOnly && !tokenView ? passing : base.rows;
-      const spec = { only: specOnly && !tokenView, passing: passing.length, total: base.rows.length, onToggle: toggleSpec };
-      fillTable(t, { ...base, rows: sortRows(rows) }, r.stale, r.dataTime, refreshing, r.error, refresh,
+      const all = base.rows;
+      all.forEach(x => {
+        if (!x.v) evalRow(x);                                   // search results arrive without a verdict
+        x.feesW = win === "1h" ? x.fees1h : win === "4h" ? x.fees4h : x.fees24;
+        x.feePctSel = x.feePctW ? x.feePctW[win] : x.feePctDay;
+      });
+      const isV1 = x => x.v && (x.v.level === "OPEN" || x.v.level === "CAREFUL");
+      const isSig = x => x.sig && x.sig.hit;
+      const counts = { all: all.length, v1: all.filter(isV1).length, signal: all.filter(isSig).length };
+      // A search always shows what it found; the mode applies to the ranked list.
+      let rows = tokenView ? all : mode === "v1" ? all.filter(isV1) : mode === "signal" ? all.filter(isSig) : all;
+      rows = sortRows(rows);
+      const more = Math.max(0, rows.length - MAX_TABLE_ROWS);
+      const spec = { mode, counts, win, hideControls: !!tokenView, bench: benchInfo(), onMode: onMode, onWin: onWin, onDetail: showDetail, onBench: () => runBench(true) };
+      fillTable(t, { ...base, rows: rows.slice(0, MAX_TABLE_ROWS), more }, r.stale, r.dataTime, refreshing, r.error, refresh,
         sortCol, sortMode, handleSort, ZAP_READY ? onZap : null, busy, progress, spec);
     } else {
       fillEmptyTable(t, (r && r.message) || "Nothing loaded", refreshing, refresh, progress);
     }
     if (shown) t.reload(); else shown = t.present(false);
   };
+  const onMode = m => { mode = m; sortTouched = false; saveView(); if (current && current.data) show(current, false); };
+  const onWin = w => { win = w; saveView(); if (current && current.data) show(current, false); };
+  // Every reason behind one verdict, and the signal's hits and misses.
+  const showDetail = async r => {
+    const v = r.v;
+    if (!v) return;
+    const L = [`${v.level}  (score ${v.score > 0 ? "+" : ""}${v.score})`, ""];
+    v.reasons.forEach(x => L.push((x.ok ? "✓ " : x.flag ? "⚠ " : "✗ ") + RULES.nice(x.text)));
+    v.info.forEach(x => L.push((x.ok ? "✓ " : "✗ ") + x.text + " (context)"));
+    if (r.sig) {
+      L.push("", `Signal: ${r.sig.hit ? "INSIDE" : r.sig.excluded ? "excluded" : "outside"} the benchmark habitat (${r.sig.hits}/${r.sig.dims})`);
+      r.sig.hitTxt.forEach(x => L.push("✓ " + x));
+      r.sig.missTxt.forEach(x => L.push("✗ " + x));
+      if (r.sig.excluded) L.push("⛔ " + RULES.nice(r.sig.why));
+      if (r.sig.warn) L.push("⚠ " + RULES.nice("revival: " + r.sig.warn));
+    }
+    const a = new Alert();
+    a.title = `${r.symbol} · bin ${r.binStep}`;
+    a.message = L.join("\n");
+    a.addAction("DexScreener");
+    a.addAction("Meteora");
+    a.addCancelAction("Close");
+    const i = await a.presentAlert();
+    if (i === 0) Safari.open(`${DEX_URL}/${r.id}`);
+    if (i === 1) Safari.open(`${METEORA_URL}/${r.id}`);
+  };
+  // Rebuild the benchmark habitat from the wallet's closed positions (about 100 Meteora requests, no RPC).
+  const runBench = async ask => {
+    if (busy) return;
+    const sg = CFG.signal;
+    if (ask) {
+      const a = new Alert();
+      a.title = "Rebuild the benchmark?";
+      a.message = `Reads ${shortAddr(sg.benchmarkWallet)}'s closed positions of the last ${sg.benchmarkDays} days from Meteora's data API (about 100 requests, no RPC, no key) and rebuilds the habitat the Signal list matches against.`;
+      a.addAction("Rebuild");
+      a.addCancelAction("Cancel");
+      if ((await a.presentAlert()) !== 0) return;
+    }
+    busy = true;
+    progress = { title: "Benchmark", steps: [], running: true, outcome: null };
+    show(current, false);
+    const rep = makeReporter(progress, () => show(current, false));
+    const si = rep.start(`Read ${shortAddr(sg.benchmarkWallet)} · last ${sg.benchmarkDays}d`);
+    try {
+      const net = { getJson: url => MET.getJson(url, { timeout: 20 }) };
+      const out = await RULES.buildBenchmark(net, sg.benchmarkWallet, sg.benchmarkDays, undefined, m => rep.detail(si, String(m).trim().slice(0, 60)), 4);
+      writeLib(BENCH_FILE, { profile: out.profile });
+      rep.ok(si, `${out.entries.length} entries in ${out.profile.tokens} pools · win ${out.profile.winRatePct}%`);
+      if (current && current.data) { await signalPass(current.data.rows); saveJson(DATA_SUFFIX, { t: current.dataTime || Date.now(), v: ROW_SCHEMA, data: current.data }); }
+      progress.outcome = { ok: true, text: `Benchmark rebuilt: ${out.entries.length} entries, bin steps ${Object.keys(out.profile.binSteps).join(", ")}.` };
+    } catch (e) {
+      rep.fail(si, String((e && e.message) || e).slice(0, 80));
+      progress.outcome = { ok: false, text: "Benchmark not rebuilt: " + String((e && e.message) || e).slice(0, 100) };
+    }
+    progress.running = false;
+    busy = false;
+    show(current, false);
+  };
   const handleSort = c => {
+    sortTouched = true;
     if (c === sortCol) sortMode = (sortMode + 1) % 4;
     else { sortCol = c; sortMode = 0; }
     if (current && current.data) show(current, false);
@@ -3684,6 +3901,8 @@ if (config.runsInWidget) {
     catch (e) { current = { data: null, message: "Couldn't load: " + String((e && e.message) || e).slice(0, 100) }; }
     busy = false;
     show(current, false);
+    // Like the Mac (signal.refreshBenchmarkHours): a stale benchmark is rebuilt in the background of the screen.
+    if (current && current.data && benchStale()) await runBench(false);
   };
 
   const cached = loadDataCache();

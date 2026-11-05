@@ -130,20 +130,52 @@ Kenapa TP fix rugi: posisi SOL-only di bawah harga cuma dapet dari fee, PnL bias
 
 Flag dipromote jadi gate kalau (spec §7): ≥ 300 posisi closed di 50+ token (15+ yang rugi > 5%), nambah SOL di token yang belum dilihat (leave-one-token-out), skip ≤ 45% kandidat, dan log skip-nya konfirm.
 
-## Versi HP: MET Pool + MET Portfolio (Scriptable)
+## Versi HP: MET Pool + MET Portfolio + DLMM Rules (Scriptable iPhone)
 
-`dlmm_terminal/scriptable/` = script Scriptable lu (met-pool-v7, met-portfolio-v7) + rules spec v1. Mesin DLMM-nya tetap punya mereka (open ladder, close, claim, swap Jupiter, practice mode). Yang ditambahin:
+`dlmm_terminal/scriptable/` = versi iPhone dari terminal ini, dengan fitur yang sama dengan web. Mesin DLMM-nya (buka ladder, close, claim, swap Jupiter, practice mode, key di HP) tetap punya script MET lu; logika filternya sekarang **dibagi** sama Mac lewat satu modul.
 
-| Script | Tambahan |
-| --- | --- |
-| **MET Pool** | Di bawah tiap pool: `✅ v1 gates pass` atau `⛔ <gate yang gagal>` + flag `⚠️`. Default cuma nampilin pool yang lolos semua gate (tap baris filter buat lihat semua). Layar konfirmasi zap nampilin gate/flag, cap loss budget, dan warning kalau range bottom < −65%. Semua kandidat ke-log ke `met_candidates.jsonl` tiap refresh di app, plus keputusan enter/skip pas konfirmasi. |
-| **MET Portfolio** | Exit rule per posisi: alert PnL ≤ −10%, alert harga di 1/3 bawah range, **exit** kalau posisi SOL-only udah ≥ 10 menit di bawah range. Notifikasi iOS (sekali per kejadian), tombol `Exit → SOL` di baris token (close + claim + swap). `EXIT_MODE: "auto"`: buka app = langsung close + swap. PnL tiap refresh ke `met_pnl_log.jsonl`. TP/SL ada tapi default `null`. |
+**Isi folder `dlmm_terminal/scriptable/`, 4 script yang di-paste ke Scriptable (nama persis):**
 
-Setting baru ada di bagian 8–9 `MET Secrets.example.js`. Secrets lama tetap jalan (yang nggak ada pakai default spec), jadi cukup tambah `BANKROLL_SOL` kalau mau cap size.
+| Nama di Scriptable | File | Isi |
+| --- | --- | --- |
+| `MET Secrets` | `MET Secrets.example.js` | Key, RPC, ukuran, setting. Dibikin sekali, nggak ikut update. |
+| `DLMM Rules` | `DLMM Rules.js` | **Baru.** Gate v1, flag, verdict OPEN/CAREFUL/WAIT/SKIP, benchmark, revival. Nggak punya UI dan nggak pegang key. |
+| `MET Pool` | `MET Pool.js` | Daftar pool + ENTRY CHECK + SIGNAL + zap ladder. |
+| `MET Portfolio` | `MET Portfolio.js` | Posisi, PnL, exit rule, close. |
 
-Batasan iOS: widget refresh tiap ~15 menit dan nggak boleh kirim transaksi, jadi "10 menit di bawah range" = dua refresh yang jaraknya ≥ 10 menit, dan close-nya jalan pas app dibuka (auto) atau pas lu tap notifikasi (alert). Buat yang beneran jalan sendiri tiap 5 menit: `python3 -m dlmm_terminal monitor --mode auto` di Mac.
+**Fitur MET Pool (sama kayak web):**
 
-Test rules (Node, di luar Scriptable): `node dlmm_terminal/scriptable/test_rules.mjs`
+- **Scan** pool SOL dua sisi (SOL di X atau di Y), TVL ≥ `SCAN_MIN_TVL_USD` (default $2.000), tanpa floor mcap (widget parameter `300K` tetap bisa dipakai).
+- **ENTRY CHECK** di bawah tiap pool: `● OPEN / CAREFUL / WAIT / SKIP` + skor + 2 alasan teratas (gate gagal, flag, plus konteks DexScreener: volume jam terakhir vs pace 24 jam, buyers vs sellers). Tap baris itu buat semua alasan.
+- **Tiga mode**: `ALL` · `V1 PASS` (OPEN + CAREFUL, default) · `SIGNAL`.
+- **Jendela fee** `1h / 4h / 24h` (kolom FEES + %/hari + sort ikut berubah).
+- **SIGNAL** = lolos gate v1 **dan** mirip habitat wallet benchmark (bin step yang untung, umur pool, band mcap/fees dari lu) **dan** bukan pool "mati lalu hidup" (revival gate). Diurut kayak kartu top-10 di Mac (`SIGNAL_SORT_BY`, default Vol/TVL 1 jam). Tiap baris: `🎯 hits/dims · 🥩 vol/TVL 1h · 🫀 jam aktif`.
+- **Benchmark** dibangun di HP dari data Meteora (±100 request, tanpa RPC, ±20 detik): otomatis tiap 24 jam, atau tap baris info di mode SIGNAL. Sebelum itu dipakai profil bawaan di `DLMM Rules`.
+- **Zap** default = ladder terminal: Spot SOL-only, 5 slice sampai −70%, isi 1:2:3:4:5, dua ukuran (setengah dan penuh `DEFAULT_SIZE_SOL`, dibatasi loss budget). Layar konfirmasi nampilin gate/flag/signal, cap loss budget, dan warning kalau range bottom < −65%.
+- **Log**: tiap refresh ke `met_candidates.jsonl` (skema sama dengan `candidates.jsonl` di Mac), keputusan enter/skip pas konfirmasi.
+- **Widget** nampilin pool yang lolos V1 (atau semuanya kalau belum ada yang lolos).
+
+**MET Portfolio** (nggak berubah): alert PnL ≤ −10%, alert harga di 1/3 bawah range, **exit** kalau posisi SOL-only ≥ 10 menit di bawah range, notifikasi iOS, tombol `Exit → SOL`. `EXIT_MODE: "auto"` = buka app langsung close + swap. TP/SL ada tapi default `null`.
+
+**Setup di HP:**
+
+1. Scriptable → `+` → paste `MET Secrets.example.js`, namain **`MET Secrets`**, isi `HELIUS_API_KEY` dan `SOLANA_PRIVATE_KEY` (wallet khusus LP), tambah `BANKROLL_SOL` (modal LP lu, SOL). **Biarin `MET_ZAP_PRESETS: []`** biar dapat ladder terminal (kalau Secrets lama lu masih ada preset `bidask`/`3 slice`, kosongin).
+2. Paste `DLMM Rules.js` → namain **`DLMM Rules`**.
+3. Paste `MET Pool.js` → **`MET Pool`**, dan `MET Portfolio.js` → **`MET Portfolio`**.
+4. `PRACTICE_MODE: true` dulu (semua tombol cuma simulasi) sampai lu udah coba sekali.
+
+Update angka filter di Mac (`config.json`) lalu jalanin `python3 dlmm_terminal/scriptable/stamp_rules.py` dan paste ulang `DLMM Rules.js`; test-nya nolak kalau defaultnya beda dari `config.json`.
+
+Batasan iOS: widget refresh tiap ~15 menit dan nggak boleh kirim transaksi, jadi "10 menit di bawah range" = dua refresh yang jaraknya ≥ 10 menit, dan close-nya jalan pas app dibuka (auto) atau pas lu tap notifikasi (alert). Buat yang beneran jalan sendiri tiap 5 menit: `python3 -m dlmm_terminal monitor --mode auto` di Mac. Daftar Signal di Telegram tiap 30 menit tetap dari Mac (`signal`), bukan dari HP.
+
+**Test** (Node, di luar Scriptable):
+
+```bash
+node dlmm_terminal/scriptable/tests/test_dlmm_rules.mjs     # DLMM Rules vs jawaban Python (92 cek)
+node dlmm_terminal/scriptable/test_rules.mjs                # exit rule MET Portfolio
+NODE_USE_ENV_PROXY=1 node dlmm_terminal/scriptable/tests/harness_pool.mjs --mode=signal   # jalanin MET Pool beneran ke API live, UI di-stub
+python3 dlmm_terminal/scriptable/tests/make_golden.py       # rekam ulang jawaban Python setelah ubah filters/benchmark/config
+```
 
 ## Versi web (kayak LP WEB, buat Solana)
 
