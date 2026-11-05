@@ -31,12 +31,19 @@
       "minTop3Share": 0.7,
       "deadHourPct": 0.5
     },
+    "matchDims": ["tokenAgeHours", "mcapUsd", "volume24hUsd", "totalFeesSol"],
+    "_matchDims": "The filter = v1 gates + these bands (owner's GMGN filter, 2026-11-05: one layer, no benchmark layer). Available: tokenAgeHours, poolAgeHours, mcapUsd, volume24hUsd, totalFeesSol, fees24hUsd, fees1hUsd",
+    "requireBenchmarkBinSteps": false,
+    "_requireBenchmarkBinSteps": "true = also require a bin step the benchmark wallet made SOL in (the old layer 2). The benchmark wallet still drives the 👀 wallet-entry pings.",
     "bandOverrides": {
-      "_note": "Owner's fixed layer-2 bands (2026-11-04), used instead of the benchmark's p10-p90 for these dims; null = no limit. Bin step + pool age still come from the benchmark.",
-      "mcapUsd": {"lo": 300000, "hi": 10000000},
-      "fees24hUsd": {"lo": 200, "hi": null},
-      "fees1hUsd": {"lo": 20, "hi": null}
-    }
+      "_note": "Owner's layer-2 bands, GMGN-style (2026-11-05): age 60m-15000m, mcap $400K-$10M, volume >= $50K, total fees >= 50 SOL. null = no limit. tokenAgeHours / volume24hUsd are token-wide (DexScreener, all pairs); totalFeesSol is this DLMM pool's LP fees since launch (GMGN's 'Total Fees' counts trader fees on every venue, no free source).",
+      "tokenAgeHours": {"lo": 1, "hi": 250},
+      "mcapUsd": {"lo": 400000, "hi": 10000000},
+      "volume24hUsd": {"lo": 50000, "hi": null},
+      "totalFeesSol": {"lo": 50, "hi": null}
+    },
+    "newEntryAlerts": true,
+    "newAlertCooldownHours": 6
   },
   "exits": {
     "_note": "Spec section 4: every fixed TP / SL / trailing / time limit lost SOL vs. holding (TP +1/+2/+5/+10% = -7.16/-7.57/-4.37/-1.06 SOL). They stay null unless you turn them on.",
