@@ -158,7 +158,13 @@ Flag dipromote jadi gate kalau (spec §7): ≥ 300 posisi closed di 50+ token (1
 
 **MET Portfolio** (nggak berubah): alert PnL ≤ −10%, alert harga di 1/3 bawah range, **exit** kalau posisi SOL-only ≥ 10 menit di bawah range, notifikasi iOS, tombol `Exit → SOL`. `EXIT_MODE: "auto"` = buka app langsung close + swap. TP/SL ada tapi default `null`.
 
-**Setup di HP:**
+**Panduan install lengkap:** `dlmm_terminal/scriptable/PANDUAN_IPHONE.md` (PDF: `Panduan iPhone.pdf`). Bikin paket yang tinggal dipindahin ke iPhone (4 script dengan nama persis + PDF):
+
+```bash
+bash dlmm_terminal/scriptable/build_iphone_pack.sh ~/Desktop     # -> DLMM-iPhone.zip
+```
+
+**Ringkasnya:**
 
 1. Scriptable → `+` → paste `MET Secrets.example.js`, namain **`MET Secrets`**, isi `HELIUS_API_KEY` dan `SOLANA_PRIVATE_KEY` (wallet khusus LP), tambah `BANKROLL_SOL` (modal LP lu, SOL). **Biarin `MET_ZAP_PRESETS: []`** biar dapat ladder terminal (kalau Secrets lama lu masih ada preset `bidask`/`3 slice`, kosongin).
 2. Paste `DLMM Rules.js` → namain **`DLMM Rules`**.
