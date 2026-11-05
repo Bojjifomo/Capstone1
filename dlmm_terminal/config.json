@@ -32,7 +32,9 @@
       "deadHourPct": 0.5
     },
     "matchDims": ["tokenAgeHours", "mcapUsd", "volume24hUsd", "totalFeesSol"],
-    "_matchDims": "Layer 2 = these + the benchmark's profitable bin steps. Available: tokenAgeHours, poolAgeHours, mcapUsd, volume24hUsd, totalFeesSol, fees24hUsd, fees1hUsd",
+    "_matchDims": "The filter = v1 gates + these bands (owner's GMGN filter, 2026-11-05: one layer, no benchmark layer). Available: tokenAgeHours, poolAgeHours, mcapUsd, volume24hUsd, totalFeesSol, fees24hUsd, fees1hUsd",
+    "requireBenchmarkBinSteps": false,
+    "_requireBenchmarkBinSteps": "true = also require a bin step the benchmark wallet made SOL in (the old layer 2). The benchmark wallet still drives the 👀 wallet-entry pings.",
     "bandOverrides": {
       "_note": "Owner's layer-2 bands, GMGN-style (2026-11-05): age 60m-15000m, mcap $400K-$10M, volume >= $50K, total fees >= 50 SOL. null = no limit. tokenAgeHours / volume24hUsd are token-wide (DexScreener, all pairs); totalFeesSol is this DLMM pool's LP fees since launch (GMGN's 'Total Fees' counts trader fees on every venue, no free source).",
       "tokenAgeHours": {"lo": 1, "hi": 250},

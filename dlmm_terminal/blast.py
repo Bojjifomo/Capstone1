@@ -24,7 +24,6 @@ LEGEND = [
     ("🟥", "Bin Step"),
     ("🥩", "1hr Vol / TVL"),
     ("🥤", "Prorated 5m Vol / 1hr Vol"),
-    ("🎯", "Benchmark match"),
     ("⚡", "DEX Boost"),
     ("🟢", "5m Buys"),
     ("🔴", "5m Sells"),
@@ -161,7 +160,7 @@ def _line(r: dict, link: bool) -> str:
     ds = f'<a href="{e(r["dsUrl"])}">DS</a>' if link else "DS"
     out = (f"{name} 🧹 {_pct(r['feeTvl24h'])} 📌 {_short(r['fdv'])} 📊 {_usd(r['tvl'])} "
            f"📐 {_usd(r['vol5m'])} ⏳ {_pct(r['chg5m'], True)} 🟥 {r['binStep']} "
-           f"🥩 {_pct(r['volTvl1h'])} 🥤 {_pct(r['prorated5m'])} 🎯 {r['hits']}/{r['dims']} "
+           f"🥩 {_pct(r['volTvl1h'])} 🥤 {_pct(r['prorated5m'])} "
            f"⚡ {r['boost']} 🟢 {r['buys5m'] if r['buys5m'] is not None else 'n/a'} "
            f"🔴 {r['sells5m'] if r['sells5m'] is not None else 'n/a'} "
            f"♻️ {r['txn5m'] if r['txn5m'] is not None else 'n/a'} "
@@ -173,7 +172,7 @@ def _line(r: dict, link: bool) -> str:
     return out
 
 
-LABELS = {"tokenAgeHours": "age", "poolAgeHours": "pool age", "mcapUsd": "mcap", "volume24hUsd": "vol 24h",
+LABELS = {"tokenAgeHours": "token age", "poolAgeHours": "pool age", "mcapUsd": "mcap", "volume24hUsd": "vol 24h",
           "totalFeesSol": "total fees", "fees24hUsd": "fees 24h", "fees1hUsd": "fees 1h"}
 
 
@@ -182,7 +181,7 @@ def layer2(sig: dict) -> str:
     from .benchmark import _band_txt
     ov = sig.get("bandOverrides") or {}
     parts = [f"{LABELS.get(d, d)} {_band_txt(d, ov[d])}" for d in sig.get("matchDims") or [] if isinstance(ov.get(d), dict)]
-    return ", ".join(parts) if parts else "benchmark bands"
+    return ", ".join(parts) if parts else "no GMGN bands"
 
 
 def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool, revived: int = 0) -> str:
@@ -196,9 +195,10 @@ def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool
     legend = "\n".join(f"{icon} {label}" for icon, label in LEGEND)
     body = "\n\n".join(_line(r, html_mode) for r in rows)
     wallet = prof["wallet"]
-    foot = (f"Filtered by v1 gates (SOL pair, bin {u['binStepMin']}-{u['binStepMax']}, age ≥ {g['minPoolAgeMinutes']}m, "
-            f"fee APR 24h ≥ {g['minFeeApr24hPct']:,}%) + {layer2(sig)} + bin steps of {wallet[:6]}…{wallet[-4:]} "
-            f"{prof['days']:g}d. "
+    foot = (f"Filtered by: SOL pair, bin {u['binStepMin']}-{u['binStepMax']}, pool age ≥ {g['minPoolAgeMinutes']}m, "
+            f"fee APR 24h ≥ {g['minFeeApr24hPct']:,}%, {layer2(sig)}"
+            + (f", bin steps of {wallet[:6]}…{wallet[-4:]} {prof['days']:g}d" if sig.get("requireBenchmarkBinSteps") else "")
+            + ". "
             + (f"Excluded {revived} dead→alive pool(s). " if revived else "")
             + f"Top {len(rows)} of {total}, sorted by {SORT_KEYS.get(sig.get('blastSortBy'), sig.get('blastSortBy'))}.")
     return "\n\n".join([head, b(f"DLMM Top {len(rows)} MEME Fees Opportunities"), legend, body, b(foot) if html_mode else foot])

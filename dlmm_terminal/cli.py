@@ -421,8 +421,8 @@ def signal_message(c: dict, m: dict, prof: dict, head: str) -> str:
     f = benchmark._fmt
     lines = [
         f"{head} · {c['name'] or c['symbol']}",
-        f"gates v1 ✅ · benchmark {len(m['hits'])}/{m['dims']} ({_short(prof['wallet'])}, {prof['days']:g}d)"
-        if not c["gatesFailed"] else f"gates ⛔ {'; '.join(c['gatesFailed'])} · benchmark {len(m['hits'])}/{m['dims']}",
+        f"filter ✅ gates v1 + GMGN {len(m['hits'])}/{m['dims']}"
+        if not c["gatesFailed"] else f"gates ⛔ {'; '.join(c['gatesFailed'])} · GMGN {len(m['hits'])}/{m['dims']}",
         f"fee APR 24h {c['feeApr24h']:,.0f}% · 1h {c['feeApr1h']:,.0f}% · TVL {f('tvlUsd', c['tvlUsd'])} · "
         f"age {f('poolAgeHours', c['poolAgeHours'])} · mcap {f('mcapUsd', c['mcapUsd']) if c['mcapUsd'] else 'n/a'} · "
         f"bin {c['binStep']}",
@@ -434,7 +434,7 @@ def signal_message(c: dict, m: dict, prof: dict, head: str) -> str:
         f"{c['priceChg6h'] if c['priceChg6h'] is not None else 'n/a'}%",
     ]
     if m["misses"]:
-        lines.append("outside habitat: " + " · ".join(m["misses"]))
+        lines.append("outside filter: " + " · ".join(m["misses"]))
     lines.append("flags: " + (" · ".join(f"⚠️ {x}" for x in c["flags"]) if c["flags"] else "none"))
     p = c["plan"]
     lines.append(f"plan: {p['strategy']} {p['side']} {p['sizeSol']} SOL, bottom {p['rangeBottomPct']}% "
@@ -450,12 +450,14 @@ def _candidate(snap: dict, cfg: dict, prof: dict, with_candles: bool, now: float
     c = filters.evaluate(snap, candles_1h(snap["address"]) if with_candles else [], cfg, now=when)
     c.update(benchmark.candidate_dims(snap, token, c["poolAgeHours"]))
     sig = cfg["signal"]
-    return c, benchmark.match(c, prof, sig.get("bandOverrides"), sig.get("matchDims"))
+    return c, benchmark.match(c, prof, sig.get("bandOverrides"), sig.get("matchDims"),
+                              bin_steps=sig.get("requireBenchmarkBinSteps", False))
 
 
 def scan_hits(cfg: dict, prof: dict, state: dict, now: float) -> list[tuple[dict, dict, dict]]:
-    """Every SOL pool that passes layer 1 (v1 gates) and layer 2 (signal.matchDims bands + benchmark
-    bin steps), minus dead-then-alive pools: [(candidate, match, snapshot)].
+    """Every SOL pool that passes the filter (v1 gates + signal.matchDims bands, the owner's GMGN filter;
+    + the benchmark's bin steps only if requireBenchmarkBinSteps), minus dead-then-alive pools:
+    [(candidate, match, snapshot)].
     Pass 1 is snapshot-only gates; only pools that pass get the DexScreener token stats (one request
     per token), candles and hourly history."""
     sig = cfg["signal"]

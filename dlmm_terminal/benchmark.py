@@ -178,15 +178,17 @@ def _band_txt(d: str, b: dict) -> str:
     return f"{_fmt(d, lo)}–{_fmt(d, hi)}"
 
 
-def match(c: dict, prof: dict, overrides: dict | None = None, dims: list[str] | None = None) -> dict:
+def match(c: dict, prof: dict, overrides: dict | None = None, dims: list[str] | None = None,
+          bin_steps: bool = True) -> dict:
     """c: a live candidate (filters.evaluate row + candidate_dims). `dims` (config signal.matchDims)
-    picks the layer-2 features; default MATCH_DIMS. A dim with no band (benchmark or override) is skipped.
+    picks the features; default MATCH_DIMS. bin_steps=False skips the benchmark's bin-step check. A dim with no band (benchmark or override) is skipped.
     Returns which dims the pool sits inside, and a 0..1 score."""
     hits, misses = [], []
     steps = prof.get("binSteps") or {}
-    good_steps = {s for s, v in steps.items() if v["pnlSol"] > 0} or set(steps)
-    (hits if str(c.get("binStep")) in good_steps else misses).append(
-        f"binStep {c.get('binStep')}" + ("" if str(c.get("binStep")) in good_steps else f" ∉ {sorted(good_steps, key=float)}"))
+    if bin_steps and steps:
+        good_steps = {s for s, v in steps.items() if v["pnlSol"] > 0} or set(steps)
+        (hits if str(c.get("binStep")) in good_steps else misses).append(
+            f"binStep {c.get('binStep')}" + ("" if str(c.get("binStep")) in good_steps else f" ∉ {sorted(good_steps, key=float)}"))
     bands = bands_for(prof, overrides)
     for d in dims or MATCH_DIMS:
         b, v = bands.get(d), c.get(d)
