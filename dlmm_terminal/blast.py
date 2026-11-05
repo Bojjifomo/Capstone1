@@ -29,6 +29,7 @@ LEGEND = [
     ("🟢", "5m Buys"),
     ("🔴", "5m Sells"),
     ("♻️", "5m Txn"),
+    ("🫀", "Active hours (24h)"),
     ("⏰", "Pool Created At"),
 ]
 
@@ -88,6 +89,8 @@ def row(c: dict, snap: dict, m: dict, dx: dict | None, now: float) -> dict:
         "txn5m": (buys or 0) + (sells or 0) if buys is not None or sells is not None else None,
         "ageH": (now - (snap.get("created_at") or 0) / 1000) / 3600,
         "fees1hUsd": c.get("fees1hUsd") or 0,
+        "activeHours": (c.get("activity") or {}).get("activeHours"),
+        "hours": (c.get("activity") or {}).get("hours"),
         "flags": c["flags"],
         "dsUrl": dx.get("dsUrl") or f"https://dexscreener.com/solana/{c['pool']}",
     }
@@ -132,14 +135,16 @@ def _line(r: dict, link: bool) -> str:
            f"🥩 {_pct(r['volTvl1h'])} 🥤 {_pct(r['prorated5m'])} 🎯 {r['hits']}/{r['dims']} "
            f"⚡ {r['boost']} 🟢 {r['buys5m'] if r['buys5m'] is not None else 'n/a'} "
            f"🔴 {r['sells5m'] if r['sells5m'] is not None else 'n/a'} "
-           f"♻️ {r['txn5m'] if r['txn5m'] is not None else 'n/a'} ⏰ {ago(r['ageH'])} · {ds}")
+           f"♻️ {r['txn5m'] if r['txn5m'] is not None else 'n/a'} "
+           + (f"🫀 {r['activeHours']}/{r['hours']}h " if r.get("activeHours") is not None else "")
+           + f"⏰ {ago(r['ageH'])} · {ds}")
     if r["flags"]:
         flags = " · ".join(r["flags"])
         out += f"\n⚠️ {e(flags) if link else flags}"
     return out
 
 
-def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool) -> str:
+def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool, revived: int = 0) -> str:
     """The card. html_mode=True for Telegram (parse_mode=HTML), False for the terminal."""
     sig, g, u = cfg["signal"], cfg["gates"], cfg["universe"]
     b = lambda s: f"<b>{s}</b>" if html_mode else s
@@ -153,5 +158,6 @@ def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool
     foot = (f"Filtered by v1 gates (SOL pair, bin {u['binStepMin']}-{u['binStepMax']}, age ≥ {g['minPoolAgeMinutes']}m, "
             f"fee APR 24h ≥ {g['minFeeApr24hPct']:,}%) + benchmark {wallet[:6]}…{wallet[-4:]} "
             f"{prof['days']:g}d (score ≥ {sig['minMatchScore']}). "
-            f"Top {len(rows)} of {total}, sorted by {SORT_KEYS.get(sig.get('blastSortBy'), sig.get('blastSortBy'))}.")
+            + (f"Excluded {revived} dead→alive pool(s). " if revived else "")
+            + f"Top {len(rows)} of {total}, sorted by {SORT_KEYS.get(sig.get('blastSortBy'), sig.get('blastSortBy'))}.")
     return "\n\n".join([head, b(f"DLMM Top {len(rows)} MEME Fees Opportunities"), legend, body, b(foot) if html_mode else foot])
