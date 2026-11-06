@@ -7,7 +7,7 @@
 import { createRequire } from "node:module";
 import { loadSigner } from "./keys.mjs";
 import { tradeConnection, rpcStats } from "./rpc.mjs";
-import { sellToSol } from "./swap.mjs";
+import { sellToSol, jupQuote } from "./swap.mjs";
 
 const require = createRequire(import.meta.url);
 const { PublicKey, Transaction, TransactionInstruction, sendAndConfirmTransaction } = require("@solana/web3.js");
@@ -42,7 +42,12 @@ for (const a of accounts) {
   const t = { mint: a.mint, amount: a.ui, status: "" };
   tokens.push(t);
   if (a.frozen) { t.status = "frozen: left"; continue; }
-  // what it is worth first (no send), so dust is left alone
+  // dust first, from one Jupiter quote (most leftovers are dust: no pool lookups for them)
+  try {
+    const q = await jupQuote(a.mint, a.raw.toString());
+    if (Number(q.outAmount) / 1e9 < minSol) { t.sol = Number(q.outAmount) / 1e9; t.status = `dust (< ${minSol} SOL): left`; continue; }
+  } catch {}
+  // what it is worth and where it would sell (no send)
   const est = await sellToSol(a.mint, a.raw.toString(), { connection, owner, maxLossPct: maxLoss, dry: true });
   if (!est.ok) { t.status = "not sold: " + est.error; continue; }
   t.sol = est.sol;
