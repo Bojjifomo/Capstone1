@@ -4024,8 +4024,7 @@ if (config.runsInWidget) {
     const pools = [...new Set(r.positions.map(p => p.pool))];
     const why = pools.length !== 1 ? "its slices sit in more than one pool; close them instead"
       : ps.length !== r.positions.length ? "some positions are not indexed yet; try again in a minute"
-      : r.holdsToken ? "the price has come into the ladder, so part of it is the token now: close (and swap) instead"
-      : !(r.solInside > 0.02) ? "it holds almost no SOL"
+      : !(r.holdsToken ? r.valueSol > 0.02 : r.solInside > 0.02) ? "it holds almost no SOL"
       : r.lo == null ? "its range is not known yet"
       : null;
     if (why) {
@@ -4038,8 +4037,10 @@ if (config.runsInWidget) {
     const a = new Alert();
     a.title = `${DRY_RUN ? "Practice: re-enter" : "Re-enter"} ${r.symbol}?`;
     a.message = `Closes ${ps.length} slice${ps.length > 1 ? "s" : ""} and opens ${slices} again from the price down, `
-      + `${bins} bins wide, with the SOL the close returns (about ${fmtSol(r.solInside, 3)}).\n\n`
-      + "It first checks on chain that the ladder is still all SOL, and stops if the price has moved into it. "
+      + `${bins} bins wide, with the SOL the close returns (about ${fmtSol(r.holdsToken ? r.valueSol : r.solInside, 3)}).\n\n`
+      + (r.holdsToken
+        ? `The price is inside the ladder, so part of it is the token: what the close returns of it is sold to SOL first (refusing any route more than ${MAX_LOSS_PERCENT}% under the pool price). `
+        : "It first checks on chain whether the ladder is still all SOL; if the price has moved into it, the token that comes back is sold to SOL first. ")
       + "Fees and the old positions' rent stay in the wallet; the new positions lock rent again. "
       + "It is two steps: if the re-open fails, the SOL simply stays in the wallet.\n\n"
       + `Pick the shape${r.strategy ? ` (it was opened as ${STRATEGY_NAME[r.strategy]})` : ""}:`
@@ -4060,25 +4061,34 @@ if (config.runsInWidget) {
       // the active bin: below it when SOL is Y, above it when SOL is X.
       const active = pool.lb.activeId;
       const touched = read.live.filter(p => p.pos.liquidRange && (solIsX ? p.pos.liquidRange[0] <= active : p.pos.liquidRange[1] >= active));
-      if (touched.length) {
-        rep.fail(ri, "the price is inside the ladder now");
-        return { ok: false, text: "Not re-entered: the price has moved into the ladder since the table loaded, so part of it is the token. Nothing was sent." };
-      }
-      rep.ok(ri, `${read.live.length} open, all SOL, ${bins} bins`);
+      const holdsNow = touched.length > 0 || !!r.holdsToken;
+      rep.ok(ri, `${read.live.length} open, ${holdsNow ? "price inside the ladder: the token will be sold" : "all SOL"}, ${bins} bins`);
       const otherMint = solIsX ? pool.lb.tokenYMint : pool.lb.tokenXMint;
       const mintAcc = (await MET.getAccounts(SEND_RPC, [otherMint])).get(otherMint);
       const mint = MET.parseMint(mintAcc.data, mintAcc.owner);
       const rentBack = [...(await MET.getAccounts(SEND_RPC, read.live.map(p => p.address))).values()].reduce((sum, acc) => sum + (acc ? acc.lamports : 0), 0);
       const balBefore = (await SEND_RPC.call("getBalance", [ACTOR.address, { commitment: "confirmed" }])).value;
+      const byMint = new Map(read.live.map(p => [(p.pool.lb.tokenXMint === WSOL ? p.pool.lb.tokenYMint : p.pool.lb.tokenXMint), p.pool]));
+      const tokBefore = holdsNow && !DRY_RUN ? await tokenBalances([...byMint.keys()]) : null;
       const closeRes = await runGroups(MET.packUnits(ACTOR.address, unitsFor(read, "close"), 2), "Close", rep);
       if (!closeRes.dryRun && !closeRes.ok) {
         return { ok: false, text: `Closed ${closeRes.done} of ${closeRes.total}; not re-opened. What closed is SOL in the wallet.` };
+      }
+      // Inside the ladder: sell the token the close returned (never what was already in the wallet).
+      let sold = null;
+      if (holdsNow && !DRY_RUN) {
+        let tokAfter = null;
+        try { tokAfter = await tokenBalances([...byMint.keys()]); } catch (e) {}
+        if (!tokAfter) return { ok: false, text: "Closed, but could not read the wallet to sell the token; not re-opened. CLEANUP sells it." };
+        sold = await sellReturned(tokBefore, tokAfter, byMint, rep, { maxLoss: MAX_LOSS_PERCENT, slippage: ROUTER_SLIPPAGE_PERCENT, solUsd: current && current.data && current.data.solUsd });
+        if (sold.failed) return { ok: false, text: `Closed, but ${sold.failed} token sale${sold.failed > 1 ? "s" : ""} did not go through; not re-opened. Use CLEANUP to sell it, then open again.` };
       }
       // Live: what came back, less the rent refund, and never more than the
       // table said the ladder held (the rest is fees, which stay).
       // Practice: nothing came back, so the re-open is simulated with what the
       // wallet can pay for now; only the amount differs from a real run.
-      const tableLamports = BigInt(Math.floor(r.solInside * 1e9));
+      // The table's SOL value, plus 5% when the token was sold (price moved since the table loaded).
+      const tableLamports = BigInt(Math.floor((holdsNow ? (r.valueSol || r.solInside) * 1.05 : r.solInside) * 1e9));
       let lamports, note = "";
       const rent = await MET.rentRates(SEND_RPC);
       if (!DRY_RUN) {

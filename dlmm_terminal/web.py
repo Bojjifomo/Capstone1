@@ -259,7 +259,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         try:
-            if self.path in ("/api/trade/open", "/api/trade/close"):
+            if self.path in ("/api/trade/open", "/api/trade/close", "/api/trade/reenter"):
                 why = self._trade_refused(body)
                 if why:
                     return self._json({"ok": False, "error": why}, 403)
@@ -278,6 +278,18 @@ class Handler(BaseHTTPRequestHandler):
                                                "decision": "enter", "sizeSol": sol, "override": bool(body.get("override")),
                                                "positions": [r.get("position") for r in res.get("results", [])], "ok": res.get("ok"),
                                                "error": res.get("error")})
+                    return self._json(res)
+                if self.path.endswith("reenter"):
+                    pos = self.cfg["position"]
+                    positions = [str(x) for x in body["positions"]]
+                    args = ["--pool", str(body["pool"]), "--positions", ",".join(positions), "--maxloss", str(float(body.get("maxloss") or 5))]
+                    if body.get("reopen"):
+                        args += ["--reopen", "--slices", str(int(body.get("slices") or len(positions) or pos.get("ladderSlices", 5))),
+                                 "--bottom", str(abs(float(body.get("bottom") or pos["rangeBottomPct"]))), "--top", str(float(body.get("top") or 0)),
+                                 "--strategy", str(body.get("strategy") or "spot")]
+                    res = node.run("reenter.mjs", args, timeout=900)
+                    append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
+                                            "positions": positions, "rule": "reenter" if body.get("reopen") else "close-swap", **{k: res.get(k) for k in ("ok", "error", "step", "solBack", "reopenSol")}})
                     return self._json(res)
                 res = node.run("close_position.mjs", ["--pool", str(body["pool"]), "--position", str(body["position"])], timeout=300)
                 append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),

@@ -207,6 +207,34 @@ def cmd_open(a, cfg):
           + (" (simulasi, nggak dikirim)" if a.dry_run else ""))
 
 
+def cmd_reenter(a, cfg):
+    """Close ladder positions of a pool, sell the token to SOL (Jupiter), optionally open the ladder again."""
+    from . import node
+    pos = cfg["position"]
+    positions = [x for x in a.positions.split(",") if x]
+    args = ["--pool", a.pool, "--positions", ",".join(positions), "--maxloss", str(a.maxloss)]
+    if a.reopen:
+        args += ["--reopen", "--slices", str(a.slices or len(positions)), "--bottom", str(abs(a.bottom if a.bottom is not None else pos["rangeBottomPct"])),
+                 "--top", str(a.top), "--strategy", a.strategy] + (["--sol", str(a.sol)] if a.sol else [])
+    if a.dry_run:
+        owner = a.owner or os.environ.get("DLMM_WALLET", "")
+        if not owner:
+            sys.exit("--dry-run butuh --owner WALLET (atau DLMM_WALLET di .env)")
+        res = node.run("reenter.mjs", args + ["--dry-run", "--owner", owner])
+        print(json.dumps(res, indent=2))
+        return
+    if not node.key_configured():
+        sys.exit("Belum ada key: isi DLMM_PRIVATE_KEY di .env, atau pakai --dry-run.")
+    what = "RE-ENTRY (close, jual token, buka ladder lagi)" if a.reopen else "CLOSE + SWAP ke SOL"
+    if not a.yes and input(f"{what} untuk {len(positions)} posisi di {a.pool}. Ketik y: ").strip().lower() != "y":
+        return print("Batal.")
+    res = node.run("reenter.mjs", args, timeout=900)
+    append("closes.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "cli", "pool": a.pool,
+                            "positions": positions, "rule": "reenter" if a.reopen else "close-swap",
+                            **{k: res.get(k) for k in ("ok", "error", "step", "solBack", "reopenSol")}})
+    print(json.dumps(res, indent=2))
+
+
 def cmd_decide(a, cfg):
     last = [c for c in read_rows("candidates.jsonl") if c["pool"] == a.pool]
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "pool": a.pool,
@@ -714,6 +742,19 @@ def main(argv=None):
     m.add_argument("--mode", choices=["alert", "auto"])
     m.add_argument("--dry-run", action="store_true", help="auto mode: build + simulate the close, don't send")
     m.add_argument("--once", action="store_true")
+    re_ = sub.add_parser("reenter", help="close a pool's ladder positions, sell the token to SOL, optionally re-open (also when in range)")
+    re_.add_argument("pool")
+    re_.add_argument("positions", help="comma-separated position addresses of that pool")
+    re_.add_argument("--reopen", action="store_true", help="open the ladder again at the current price (re-entry)")
+    re_.add_argument("--slices", type=int)
+    re_.add_argument("--bottom", type=float)
+    re_.add_argument("--top", type=float, default=0)
+    re_.add_argument("--sol", type=float, help="re-open with this much SOL (default: all that came back)")
+    re_.add_argument("--strategy", default="spot")
+    re_.add_argument("--maxloss", type=float, default=5, help="refuse to sell when the swap pays this %% under the pool price")
+    re_.add_argument("--dry-run", action="store_true")
+    re_.add_argument("--owner")
+    re_.add_argument("-y", "--yes", action="store_true")
     sub.add_parser("followup", help="price 1h/6h/24h after each logged candidate")
     o = sub.add_parser("open", help="open a SOL-only Spot ladder (RH style, 5 slices) after the gates")
     o.add_argument("pool")
@@ -745,7 +786,7 @@ def main(argv=None):
     if a.cmd == "web":
         from . import web
         return web.serve(cfg, a.host, a.port)
-    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open,
+    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open, "reenter": cmd_reenter,
      "benchmark": cmd_benchmark, "signal": cmd_signal, "rpc": cmd_rpc}[a.cmd](a, cfg)
 
 
