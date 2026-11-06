@@ -71,7 +71,7 @@
   <section class="left hidden" id="viewPortfolio">
     <div class="bar">
       <span class="title">PORTFOLIO</span>
-      <span class="muted">posisi DLMM terbuka · exit rules spec v1 dicek tiap refresh (5 menit)</span>
+      <span class="muted">posisi DLMM terbuka · exit rules dicek tiap refresh · 🎯 auto exit per ladder</span>
       <span class="spacer"></span>
       <input id="wallet" placeholder="wallet address…" autocomplete="off" spellcheck="false">
       <button class="btn" id="loadWallet">Load</button>
@@ -81,7 +81,7 @@
       <table id="positions">
         <thead><tr>
           <th>TOKEN<small>position · held</small></th>
-          <th class="r">PNL<small>nilai · fee · peak</small></th>
+          <th class="r">PNL<small>◎/$ · % · nilai · fee</small></th>
           <th>RANGE<small>price vs top · bottom</small></th>
           <th>EXIT CHECK<small>alerts · rules</small></th>
           <th><button class="btn" id="cleanupBtn" title="Jual sisa token + tutup token account kosong">Cleanup</button></th>
@@ -120,6 +120,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

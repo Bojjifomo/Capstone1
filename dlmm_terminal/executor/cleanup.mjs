@@ -2,18 +2,18 @@
 //
 //   node cleanup.mjs [--dry-run --owner PK] [--maxloss 5] [--min-sol 0.005] [--no-sell] [--no-close]
 //
-// A token is sold only when Jupiter's route is worth at least --min-sol SOL and its price impact is at most
-// --maxloss %. USDC, USDT and wSOL are never sold. One JSON line: {ok, mode, tokens:[...], emptyAccounts, ...}.
+// A token is sold (Jupiter, else its Meteora DLMM pool) only when it is worth at least --min-sol SOL and
+// the sale pays at most --maxloss % under the pool price (Jupiter's price impact when no pool is known). USDC, USDT and wSOL are never sold. One JSON line: {ok, mode, tokens:[...], emptyAccounts, ...}.
 import { createRequire } from "node:module";
 import { loadSigner } from "./keys.mjs";
 import { tradeConnection, rpcStats } from "./rpc.mjs";
+import { sellToSol, jupQuote } from "./swap.mjs";
 
 const require = createRequire(import.meta.url);
-const { PublicKey, VersionedTransaction, Transaction, TransactionInstruction, sendAndConfirmTransaction } = require("@solana/web3.js");
+const { PublicKey, Transaction, TransactionInstruction, sendAndConfirmTransaction } = require("@solana/web3.js");
 const WSOL = "So11111111111111111111111111111111111111112";
 const KEEP = new Set([WSOL, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]);
 const PROGRAMS = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"];
-const JUP = "https://lite-api.jup.ag/swap/v1";
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i > 0 ? process.argv[i + 1] : d; };
 const flag = n => process.argv.includes(`--${n}`);
 const out = o => process.stdout.write(JSON.stringify({ ...o, rpc: rpcStats() }) + "\n");
@@ -41,27 +41,23 @@ for (const a of accounts) {
   if (KEEP.has(a.mint) || flag("no-sell")) continue;
   const t = { mint: a.mint, amount: a.ui, status: "" };
   tokens.push(t);
+  if (a.frozen) { t.status = "frozen: left"; continue; }
+  // dust first, from one Jupiter quote (most leftovers are dust: no pool lookups for them)
   try {
-    const q = await (await fetch(`${JUP}/quote?inputMint=${a.mint}&outputMint=${WSOL}&amount=${a.raw}&slippageBps=300`)).json();
-    if (!q.outAmount) { t.status = "no route: left"; continue; }
-    t.sol = Number(q.outAmount) / 1e9;
-    t.impactPct = Number(q.priceImpactPct) * 100;
-    if (a.frozen) { t.status = "frozen: left"; continue; }
-    if (t.sol < minSol) { t.status = `dust (< ${minSol} SOL): left`; continue; }
-    if (t.impactPct > maxLoss) { t.status = `price impact ${t.impactPct.toFixed(1)}% > ${maxLoss}%: left`; continue; }
-    if (dry) { t.status = "would sell"; continue; }
-    const sw = await (await fetch(`${JUP}/swap`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ quoteResponse: q, userPublicKey: owner.toBase58(), wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: 2_000_000, priorityLevel: "high" } } }) })).json();
-    if (!sw.swapTransaction) { t.status = "swap build failed: left"; continue; }
-    const tx = VersionedTransaction.deserialize(Buffer.from(sw.swapTransaction, "base64"));
-    tx.sign([signer]);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
-    const c = await connection.confirmTransaction(sig, "confirmed");
-    t.status = c.value.err ? "failed on chain: left" : "sold";
-    t.signature = sig;
-    if (!c.value.err && t.status === "sold") empties.push(a);   // the account is empty now
-  } catch (e) { t.status = "error: " + String(e.message || e).slice(0, 80); }
+    const q = await jupQuote(a.mint, a.raw.toString());
+    if (Number(q.outAmount) / 1e9 < minSol) { t.sol = Number(q.outAmount) / 1e9; t.status = `dust (< ${minSol} SOL): left`; continue; }
+  } catch {}
+  // what it is worth and where it would sell (no send)
+  const est = await sellToSol(a.mint, a.raw.toString(), { connection, owner, maxLossPct: maxLoss, dry: true });
+  if (!est.ok) { t.status = "not sold: " + est.error; continue; }
+  t.sol = est.sol;
+  t.via = est.via;
+  t.underPct = est.underPct;
+  if (est.sol < minSol) { t.status = `dust (< ${minSol} SOL): left`; continue; }
+  if (dry) { t.status = `would sell via ${est.via}`; continue; }
+  const res = await sellToSol(a.mint, a.raw.toString(), { connection, signer, owner, maxLossPct: maxLoss, pool: est.pool });
+  if (res.ok) { t.status = `sold via ${res.via}`; t.signature = res.signature; t.sol = res.sol; empties.push(a); }
+  else t.status = "not sold: " + res.error;
 }
 
 // closeAccount (instruction 9): account, destination, owner

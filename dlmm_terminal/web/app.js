@@ -522,7 +522,7 @@ async function cleanupWallet(btn) {
   btn.textContent = "cleanup…";
   try {
     const s = await trade.call("/api/trade/cleanup", {});
-    const sold = (s.tokens || []).filter(t => t.status === "sold").length;
+    const sold = (s.tokens || []).filter(t => /^sold/.test(t.status)).length;
     alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n` + (s.tokens || []).map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`).join("\n") : "Gagal: " + (s.error || "?"));
     loadPortfolio();
   } catch (e) { alert("Gagal: " + (e.message || e)); }
@@ -554,6 +554,34 @@ async function reenterPool(p, btn, reopen) {
   } finally { btn.disabled = false; }
 }
 
+// Auto exit (take profit) per ladder: off / 3% / 5% / 10%. The server (web.py) checks armed ladders every
+// few minutes without RPC and closes + swaps to SOL when the ladder's PnL % reaches the target.
+function autoExitCell(p, pnlPct) {
+  const a = (state.pf.autoExit || {})[p.pool], choices = state.pf.tpChoices || [3, 5, 10];
+  const cur = a && a.status === "armed" ? a.pct : 0;
+  const opts = [0, ...choices].map(v => `<option value="${v}" ${v === cur ? "selected" : ""}>${v ? "TP +" + v + "%" : "auto exit: off"}</option>`).join("");
+  let st = "";
+  if (a && a.status === "armed") {
+    const left = pnlPct != null ? a.pct - pnlPct : null;
+    st = `<span class="tp on">🎯 nyala · close+swap di +${a.pct}%${left != null ? ` (kurang ${left.toFixed(2)}%)` : ""}</span>`;
+  } else if (a && a.status === "firing") st = `<span class="tp warn">⏳ lagi close + swap…</span>`;
+  else if (a && a.status === "done") st = `<span class="tp pos">✓ auto exit: ${esc(a.msg || "")}</span>`;
+  else if (a && a.status === "failed") st = `<span class="tp neg">✗ auto exit gagal: ${esc(a.msg || "")}</span>`;
+  return `<div class="tpbox"><select class="tpsel" data-tp="${p.pool}" data-sym="${esc(p.symbol)}" title="Auto exit: close semua slice + jual token ke SOL saat PnL ladder ≥ target. Dicek server tiap ${state.pf.autoExitCheckMin || 2} menit (tanpa RPC) selama DLMM Web jalan.">${opts}</select>${st}</div>`;
+}
+async function setAutoExit(sel) {
+  const pct = +sel.value;
+  if (!trade.ready()) { alert(trade.why()); renderPortfolio(); return; }
+  if (pct && !confirm(`Nyalain AUTO EXIT ${sel.dataset.sym} di PnL +${pct}%?\n\nKalau PnL ladder (PnL ◎ ÷ deposit) sampai +${pct}%, server langsung close semua slice + jual token ke SOL pakai key di .env, tanpa nanya lagi.\nCuma jalan selama DLMM Web nyala di Mac.\n\nCatatan spec v1: TP tetap rata-rata lebih jelek dari exit manual.`)) { renderPortfolio(); return; }
+  try {
+    const r = await getJson("/api/autoexit", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
+      body: JSON.stringify({ pool: sel.dataset.tp, symbol: sel.dataset.sym, pct, pin: trade.pin }) });
+    state.pf.autoExit = r.autoExit;
+    toast(pct ? `🎯 Auto exit ${sel.dataset.sym} nyala di +${pct}%` : `Auto exit ${sel.dataset.sym} mati`);
+  } catch (e) { alert("Gagal: " + e.message); }
+  renderPortfolio();
+}
+
 // ---------- portfolio ----------
 async function loadPortfolio() {
   const w = $("#wallet").value.trim();
@@ -577,7 +605,7 @@ function renderPortfolio() {
   const pnlPct = pf.depositSol ? pf.pnlSol / pf.depositSol * 100 : null;
   $("#pfSummary").innerHTML = `<span>nilai <b>${mS(pf.valueSol, 3)}</b> <span class="muted">${mAlt(pf.valueSol)}</span></span>
     <span>fees unclaimed <b>${mS(pf.unclaimedSol, 4)}</b></span>
-    <span>PnL <b class="${cls(pf.pnlSol)}">${mS(pf.pnlSol, 3)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span> <span class="muted">${mAlt(pf.pnlSol)}</span></span>
+    <span>PnL <b class="big ${cls(pf.pnlSol)}">${pf.pnlSol > 0 ? "+" : ""}${mS(pf.pnlSol, 3)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span> <span class="muted">${mAlt(pf.pnlSol)}</span></span>
     <span>deposit <b>${mS(pf.depositSol, 3)}</b></span>
     <span>wallet bebas <b>${mS(pf.walletSol, 3)}</b></span>
     <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>`;
@@ -609,13 +637,14 @@ function renderPortfolio() {
     const val = p.poolBalancesSol, fee = p.poolUnclaimedSol;
     return `<tr>
       <td><span class="sym">${esc(p.symbol)}${pingOf(p.pool) ? `<span class="rank">📡#${pingOf(p.pool).rank}</span>` : ""}</span><span class="sub">${n} slice · ${held ? age(held / 60) : "--"}${holdsToken ? " · pegang token" : ""}</span></td>
-      <td class="r"><span class="big ${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span><span class="sub">${mS(pnlSol, 4)} <span class="muted">${mAlt(pnlSol)}</span></span><span class="sub">nilai ${mS(val, 3)} · fee ${mS(fee, 4)} · peak ${fmtPct(peak, 2, true)}</span></td>
+      <td class="r"><span class="big ${cls(pnlSol)}">${pnlSol > 0 ? "+" : ""}${mS(pnlSol, 4)}</span><span class="sub"><span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span> · <span class="muted">${mAlt(pnlSol)}</span></span><span class="sub">nilai ${mS(val, 3)} · fee ${mS(fee, 4)} · peak ${fmtPct(peak, 2, true)}</span></td>
       <td><span class="${cls(pv)}">${fmtPct(pv, 1, true)}</span> <span class="muted">· bottom ${fmtPct(bot, 0)}</span>
         <div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk" style="left:${pos}%"></div>` : ""}</div></td>
       <td>${status}</td>
       <td><button class="btn ${exit ? "danger" : ""}" data-close="${ids}">${exit ? "Exit → close" : "Close"}</button>
         <button class="btn" data-swap="${ids}" title="Close semua slice + jual token ke SOL">Close+swap</button>
         <button class="btn go" data-reenter="${ids}" title="Close + jual token + buka ladder lagi di harga sekarang (juga kalau masih in range)">Re-entry</button>
+        ${autoExitCell(p, pnlPct)}
         <a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
     </tr>`;
   }).join("");
@@ -792,6 +821,7 @@ $("#positions tbody").addEventListener("click", e => {
   closeGroup(row, b, state.pf.rows.filter(x => x.pool === row.pool), (row.events || []).some(e => e.kind === "close") ? "exit" : null);
 });
 $("#cleanupBtn").onclick = () => cleanupWallet($("#cleanupBtn"));
+$("#positions tbody").addEventListener("change", e => { const s = e.target.closest("[data-tp]"); if (s) setAutoExit(s); });
 $("#loadWallet").onclick = loadPortfolio;
 $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortfolio(); });
 
@@ -822,8 +852,11 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   loadWatch();
   loadPing();
   if ($("#wallet").value.trim()) loadPortfolio();
-  setInterval(() => loadPing(), 5 * 60000);                    // PING: server rebuilds every 5 min
-  setInterval(() => loadPools(), 60000);                       // pools: every minute (server caches 60s)
-  setInterval(() => { if (state.wallet) loadPortfolio(); }, 300000);   // positions + exit rules: every 5 min
+  // One refresh period for pools, PING and positions (⚙ Settings → Web, default 15 min) to spare the RPC quota.
+  // The auto exit check runs on the server on its own clock, so a long period here never delays a take-profit.
+  const every = Math.max(1, +((state.cfg && state.cfg.cfg && state.cfg.cfg.web && state.cfg.cfg.web.refreshMin) || 15)) * 60000;
+  setInterval(() => loadPing(), every);
+  setInterval(() => loadPools(), every);
+  setInterval(() => { if (state.wallet) loadPortfolio(); }, every);
   setInterval(tickAge, 5000);
 })();
