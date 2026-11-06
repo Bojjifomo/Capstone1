@@ -77,20 +77,33 @@ const DEFAULTS = {
       "minTop3Share": 0.7,
       "deadHourPct": 0.5
     },
+    "matchDims": [
+      "tokenAgeHours",
+      "mcapUsd",
+      "volume24hUsd",
+      "totalFeesSol"
+    ],
+    "requireBenchmarkBinSteps": false,
     "bandOverrides": {
+      "tokenAgeHours": {
+        "lo": 1,
+        "hi": 250
+      },
       "mcapUsd": {
-        "lo": 300000,
+        "lo": 400000,
         "hi": 10000000
       },
-      "fees24hUsd": {
-        "lo": 200,
+      "volume24hUsd": {
+        "lo": 50000,
         "hi": null
       },
-      "fees1hUsd": {
-        "lo": 20,
+      "totalFeesSol": {
+        "lo": 50,
         "hi": null
       }
-    }
+    },
+    "newEntryAlerts": true,
+    "newAlertCooldownHours": 6
   },
   "exits": {
     "mode": "alert",
@@ -278,7 +291,192 @@ function makeConfig(secrets) {
   if (typeof s.SIGNAL_SORT_BY === "string" && s.SIGNAL_SORT_BY.trim()) sig.blastSortBy = s.SIGNAL_SORT_BY.trim();
   if (["gate", "flag", "off"].includes(String(s.SIGNAL_REVIVAL_MODE || "").toLowerCase())) sig.revival.mode = String(s.SIGNAL_REVIVAL_MODE).toLowerCase();
   if (cfg.scan.minTvlUsd == null) cfg.scan.minTvlUsd = 2000;         // the web's default TVL floor
+  // Exit rules and the swap's loss limit, so MET Portfolio and the ⚙ Settings screen read one config.
+  const ml = n("MAX_LOSS_PERCENT");
+  cfg.trade = { maxLossPct: ml > 0 && ml <= 50 ? ml : 5 };
+  const ex = cfg.exits = cfg.exits || {};
+  const nx = k => (s[k] === null ? null : n(k));                    // null in Secrets = rule off
+  if (String(s.EXIT_MODE || "").toLowerCase() === "auto") ex.mode = "auto";
+  [["EXIT_ALERT_PNL_PCT", "alertAtPnlPct"], ["EXIT_CLOSE_BELOW_RANGE_MIN", "closeBelowRangeAfterMin"],
+    ["EXIT_TAKE_PROFIT_PCT", "takeProfitPct"], ["EXIT_STOP_LOSS_PCT", "stopLossPct"]].forEach(([k, key]) => {
+    const v = nx(k);
+    if (v !== undefined) ex[key] = v;
+  });
+  if (s.EXIT_ALERT_BOTTOM_THIRD === false) ex.alertBottomThirdOfRange = false;
   return cfg;
+}
+
+// ---------------------------------------------------------------- settings ---
+// What the ⚙ Settings screen can change: the same list as settings.py on the Mac. The phone keeps
+// them in the library directory (dlmm_settings.json, shared by MET Pool and MET Portfolio) as
+// {path: value}, applied on top of makeConfig(MET Secrets).
+const SETTINGS_SCHEMA = [
+  ["position.defaultSizeSol", "Ladder", "Size default (SOL)", "num", { min: 0.01 }],
+  ["position.ladderSlices", "Ladder", "Jumlah slice", "int", { min: 1, max: 20 }],
+  ["position.rangeBottomPct", "Ladder", "Range bottom (%, negatif)", "num", { min: -99, max: -1 }],
+  ["position.strategy", "Ladder", "Bentuk", "select", { options: ["Spot", "Curve", "BidAsk"] }],
+  ["position.bankrollSol", "Risk", "Bankroll LP (SOL)", "num", { min: 0.1 }],
+  ["position.lossBudgetPct", "Risk", "Loss budget per posisi (%)", "num", { min: 0.1, max: 100 }],
+  ["trade.maxLossPct", "Risk", "Swap: batal kalau di bawah harga pool > (%)", "num", { min: 0.5, max: 50 }],
+  ["universe.binStepMin", "Gate v1", "Bin step min", "int", { min: 1 }],
+  ["universe.binStepMax", "Gate v1", "Bin step max", "int", { min: 1 }],
+  ["gates.minPoolAgeMinutes", "Gate v1", "Umur pool min (menit)", "num", { min: 0 }],
+  ["gates.minFeeApr24hPct", "Gate v1", "Fee APR 24h min (%)", "num", { min: 0 }],
+  ["gates.maxPositionPctOfTvl", "Gate v1", "Size maks % TVL (kosong = off)", "numnull", { min: 0 }],
+  ["flags.pump1hPct", "Flag", "Pump 1h ≥ (%)", "num", {}],
+  ["flags.drop6hPct", "Flag", "Drop 6h ≤ (%)", "num", {}],
+  ["flags.minTvlUsd", "Flag", "TVL tipis < ($)", "num", { min: 0 }],
+  ["flags.nightEntryLocalHours.0", "Flag", "Jam malam dari (WIB)", "int", { min: 0, max: 23 }],
+  ["flags.nightEntryLocalHours.1", "Flag", "Jam malam sampai (WIB)", "int", { min: 0, max: 24 }],
+  ["signal.bandOverrides.tokenAgeHours.lo", "PING", "Umur token min (jam)", "numnull", { min: 0 }],
+  ["signal.bandOverrides.tokenAgeHours.hi", "PING", "Umur token maks (jam)", "numnull", { min: 0 }],
+  ["signal.bandOverrides.mcapUsd.lo", "PING", "Mcap min ($)", "numnull", { min: 0 }],
+  ["signal.bandOverrides.mcapUsd.hi", "PING", "Mcap maks ($)", "numnull", { min: 0 }],
+  ["signal.bandOverrides.volume24hUsd.lo", "PING", "Volume 24h min ($)", "numnull", { min: 0 }],
+  ["signal.bandOverrides.totalFeesSol.lo", "PING", "Total fees pool min (SOL)", "numnull", { min: 0 }],
+  ["signal.blastTop", "PING", "Top N", "int", { min: 1, max: 50 }],
+  ["signal.blastSortBy", "PING", "Urut berdasarkan", "select", { options: ["volTvl1h", "feeTvl24h", "fees1hUsd", "prorated5m"] }],
+  ["signal.revival.mode", "PING", "Pool mati→hidup", "select", { options: ["gate", "flag", "off"] }],
+  ["exits.alertAtPnlPct", "Exit", "Alert kalau PnL ≤ (%)", "numnull", {}],
+  ["exits.alertBottomThirdOfRange", "Exit", "Alert di 1/3 bawah range", "bool", {}],
+  ["exits.closeBelowRangeAfterMin", "Exit", "Close setelah N menit di bawah range", "numnull", { min: 0 }],
+  ["exits.takeProfitPct", "Exit", "Take profit (%)", "numnull", {}],
+  ["exits.stopLossPct", "Exit", "Stop loss (%, negatif)", "numnull", {}],
+];
+const SETTING_KIND = {};
+SETTINGS_SCHEMA.forEach(([path, , , kind, ex]) => { SETTING_KIND[path] = [kind, ex]; });
+const segOf = k => (/^\d+$/.test(k) ? Number(k) : k);
+function getPath(obj, path) {
+  let cur = obj;
+  for (const k of path.split(".")) { if (cur == null || typeof cur !== "object") return null; cur = cur[segOf(k)]; }
+  return cur === undefined ? null : cur;
+}
+function setPath(obj, path, v) {
+  const parts = path.split(".").map(segOf);
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] == null || typeof cur[parts[i]] !== "object") cur[parts[i]] = typeof parts[i + 1] === "number" ? [] : {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = v;
+}
+// cfg changed in place with the saved overlay; unknown keys are ignored.
+function applySettings(cfg, overlay) {
+  Object.keys(overlay || {}).forEach(k => { if (SETTING_KIND[k]) setPath(cfg, k, overlay[k]); });
+  return cfg;
+}
+// A typed value from the screen, or {error}. A decimal comma counts as a point (0,5).
+function cleanSetting(path, raw) {
+  const ks = SETTING_KIND[path];
+  if (!ks) return { error: `${path}: nggak bisa diubah` };
+  const [kind, ex] = ks;
+  if (kind === "bool") return { value: !!raw };
+  if (kind === "select") return ex.options.includes(raw) ? { value: raw } : { error: `pilih salah satu: ${ex.options.join(", ")}` };
+  const t = String(raw == null ? "" : raw).trim().replace(/\s/g, "").replace(/^(-?\d*),(\d+)$/, "$1.$2");
+  if (t === "") return kind === "numnull" ? { value: null } : { error: "wajib diisi" };
+  if (!/^-?\d*\.?\d+$|^-?\d+\.?$/.test(t)) return { error: `"${raw}" bukan angka` };
+  let v = Number(t);
+  if (kind === "int") v = Math.round(v);
+  if ((ex.min != null && v < ex.min) || (ex.max != null && v > ex.max)) return { error: `harus ${ex.min != null ? ex.min : "-∞"} sampai ${ex.max != null ? ex.max : "∞"}` };
+  return { value: v };
+}
+// The ⚙ screen (Scriptable UI; only called on the phone). ctx: {base, overlay, save(overlay), title}.
+// base = makeConfig(MET Secrets) without the overlay. Resolves with the new overlay when closed.
+async function settingsScreen(ctx) {
+  let overlay = Object.assign({}, ctx.overlay || {});
+  const t = new UITable();
+  t.showSeparators = true;
+  const val = p => (Object.prototype.hasOwnProperty.call(overlay, p) ? overlay[p] : getPath(ctx.base, p));
+  const show = v => (v == null ? "off" : typeof v === "boolean" ? (v ? "on" : "off") : String(v));
+  const draw = () => {
+    t.removeAllRows();
+    const h = new UITableRow();
+    h.height = 60;
+    h.isHeader = true;
+    const hc = h.addText(ctx.title || "⚙ Settings", "Dipakai MET Pool + MET Portfolio. • = beda dari MET Secrets. Tap baris buat ubah.");
+    hc.titleFont = Font.boldSystemFont(18);
+    hc.subtitleFont = Font.systemFont(11);
+    t.addRow(h);
+    let group = null;
+    SETTINGS_SCHEMA.forEach(([path, g, label, kind, ex]) => {
+      if (g !== group) {
+        group = g;
+        const gr = new UITableRow();
+        gr.height = 30;
+        const gc = gr.addText(g.toUpperCase());
+        gc.titleFont = Font.boldSystemFont(12);
+        gc.titleColor = new Color("#F5A524");
+        t.addRow(gr);
+      }
+      const r = new UITableRow();
+      r.height = 40;
+      const changed = Object.prototype.hasOwnProperty.call(overlay, path);
+      const lc = r.addText(label + (changed ? " •" : ""));
+      lc.widthWeight = 65;
+      lc.titleFont = changed ? Font.semiboldSystemFont(13) : Font.systemFont(13);
+      const vc = r.addText(show(val(path)));
+      vc.widthWeight = 35;
+      vc.rightAligned();
+      vc.titleFont = Font.semiboldSystemFont(14);
+      r.dismissOnSelect = false;
+      r.onSelect = async () => {
+        const base = getPath(ctx.base, path);
+        let res;
+        if (kind === "bool") res = { value: !val(path) };
+        else {
+          const a = new Alert();
+          a.title = label;
+          a.message = `MET Secrets: ${show(base)}` + (kind === "numnull" ? "\nKosong = off / tanpa batas." : "");
+          if (kind === "select") {
+            ex.options.forEach(o => a.addAction((o === val(path) ? "● " : "") + o));
+          } else {
+            a.addTextField(label, val(path) == null ? "" : String(val(path)));
+            a.addAction("Simpan");
+          }
+          a.addAction("Balik ke MET Secrets");
+          a.addCancelAction("Batal");
+          const i = await a.presentAlert();
+          if (i < 0) return;
+          const nOpt = kind === "select" ? ex.options.length : 1;
+          if (i === nOpt) { delete overlay[path]; ctx.save(overlay); return draw(), t.reload(); }
+          res = kind === "select" ? { value: ex.options[i] } : cleanSetting(path, a.textFieldValue(0));
+        }
+        if (res.error) {
+          const e = new Alert();
+          e.title = "Nggak disimpan";
+          e.message = `${label}: ${res.error}`;
+          e.addCancelAction("OK");
+          await e.presentAlert();
+          return;
+        }
+        if (JSON.stringify(res.value) === JSON.stringify(getPath(ctx.base, path))) delete overlay[path];
+        else overlay[path] = res.value;
+        ctx.save(overlay);
+        draw();
+        t.reload();
+      };
+      t.addRow(r);
+    });
+    const rr = new UITableRow();
+    rr.height = 50;
+    const rb = rr.addButton("Reset semua ke MET Secrets");
+    rb.centerAligned();
+    rb.onTap = async () => {
+      const a = new Alert();
+      a.title = "Reset semua?";
+      a.addDestructiveAction("Reset");
+      a.addCancelAction("Batal");
+      if ((await a.presentAlert()) !== 0) return;
+      overlay = {};
+      ctx.save(overlay);
+      draw();
+      t.reload();
+    };
+    t.addRow(rr);
+  };
+  draw();
+  await t.present(false);
+  return overlay;
 }
 
 function maxPositionSol(cfg) {
@@ -463,7 +661,8 @@ const MATCH_DIMS = ["poolAgeHours", "mcapUsd", "fees24hUsd", "fees1hUsd"];
 const INFO_DIMS = ["priceChg1h", "priceChg6h", "holdMin", "pnlPct"];
 
 function fmtDim(d, v) {
-  if (d === "poolAgeHours") return v >= 1 ? pyFixed(v, 0) + "h" : pyFixed(v * 60, 0) + "m";
+  if (d.endsWith("Sol")) return v >= 10 ? `${commas(Math.round(v))} SOL` : `${pyFixed(v, 2)} SOL`;
+  if (d === "poolAgeHours" || d === "tokenAgeHours") return v >= 1 ? pyFixed(v, 0) + "h" : pyFixed(v * 60, 0) + "m";
   if (d.endsWith("Usd")) return v >= 1e6 ? `$${pyFixed(v / 1e6, 2)}M` : v >= 1e3 ? `$${pyFixed(v / 1e3, 1)}k` : `$${pyFixed(v, 0)}`;
   return String(v);
 }
@@ -485,19 +684,66 @@ function bandsFor(prof, overrides) {
   });
   return out;
 }
-const candidateDims = p => ({ fees1hUsd: ((p.fees || {})["1h"]) || 0, fees24hUsd: ((p.fees || {})["24h"]) || 0 });
+// Live layer-2 features, as benchmark.candidate_dims on the Mac. token = DexScreener over all the token's
+// pairs ({volume24hUsd, ageHours}); without it the pool's own volume and age stand in.
+function candidateDims(p, token, poolAgeH) {
+  const fees = p.fees || {};
+  const side = solSide(p) === "y" ? "y" : "x";                     // as the Mac: token_x when SOL is not Y
+  const solUsd = ((side === "y" ? p.token_y : p.token_x) || {}).price || 0;
+  const cum = (p.cumulative_metrics || {}).fees;
+  const t = token || {};
+  return {
+    fees1hUsd: fees["1h"] || 0, fees24hUsd: fees["24h"] || 0,
+    totalFeesSol: cum != null && solUsd ? pyRound(cum / solUsd, 2) : null,
+    volume24hUsd: t.volume24hUsd != null ? t.volume24hUsd : ((p.volume || {})["24h"]),
+    tokenAgeHours: t.ageHours != null ? t.ageHours : (poolAgeH != null ? poolAgeH : null),
+  };
+}
+// DexScreener token-pairs/v1 reply -> {volume24hUsd, ageHours, pairs} (blast.token_stats on the Mac).
+function tokenStats(pairs, nowMs) {
+  const seen = new Set();
+  let vol = 0, first = null;
+  (pairs || []).forEach(x => {
+    if (!x || seen.has(x.pairAddress)) return;
+    seen.add(x.pairAddress);
+    vol += ((x.volume || {}).h24) || 0;
+    const t = x.pairCreatedAt;
+    if (t && (first == null || t < first)) first = t;
+  });
+  if (!seen.size) return null;
+  return { volume24hUsd: pyRound(vol, 2), ageHours: first ? pyRound((nowMs - first) / 3600000, 2) : null, pairs: seen.size };
+}
+// "Filtered by: …  Top 10 of 12, sorted by 1h Vol/TVL." as the Mac's card footer.
+const SORT_NAMES = { volTvl1h: "1h Vol/TVL", feeTvl24h: "1d Fees/TVL", fees1hUsd: "1h fees", prorated5m: "prorated 5m Vol / 1h Vol" };
+const DIM_LABELS = { tokenAgeHours: "token age", poolAgeHours: "pool age", mcapUsd: "mcap", volume24hUsd: "vol 24h", totalFeesSol: "total fees", fees24hUsd: "fees 24h", fees1hUsd: "fees 1h" };
+function pingFilterText(cfg, n, total, revived) {
+  const sig = cfg.signal, g = cfg.gates, u = cfg.universe, ov = sig.bandOverrides || {};
+  const bands = (sig.matchDims || []).filter(d => ov[d] && typeof ov[d] === "object").map(d => {
+    const b = ov[d], f = v => fmtDim(d, v);
+    const txt = b.lo == null && b.hi == null ? "any" : b.hi == null ? `≥ ${f(b.lo)}` : b.lo == null ? `≤ ${f(b.hi)}` : `${f(b.lo)}–${f(b.hi)}`;
+    return `${DIM_LABELS[d] || d} ${txt}`;
+  });
+  return `Filtered by: SOL pair, bin ${u.binStepMin}-${u.binStepMax}, pool age ≥ ${g.minPoolAgeMinutes}m, fee APR 24h ≥ ${commas(g.minFeeApr24hPct)}%`
+    + (bands.length ? ", " + bands.join(", ") : "") + ". "
+    + (revived ? `Excluded ${revived} dead→alive pool(s). ` : "")
+    + `Top ${n} of ${total}, sorted by ${SORT_NAMES[sig.blastSortBy] || sig.blastSortBy}.`;
+}
 
 // Which habitat dims the pool sits inside, and a 0..1 score. c needs fees1hUsd / fees24hUsd (candidateDims).
-function matchBenchmark(c, prof, overrides) {
+// dims (config signal.matchDims) picks the features, default MATCH_DIMS; binSteps false skips the
+// benchmark's bin-step check (the Mac's one-layer PING filter: v1 gates + the owner's GMGN bands).
+function matchBenchmark(c, prof, overrides, dims, binSteps) {
   const hits = [], misses = [];
-  const steps = prof.binSteps || {};
+  const steps = (prof && prof.binSteps) || {};
   let good = Object.keys(steps).filter(s => steps[s].pnlSol > 0);
   if (!good.length) good = Object.keys(steps);
   const bs = c.binStep == null ? "None" : String(c.binStep);
-  if (good.includes(bs)) hits.push(`binStep ${bs}`);
-  else misses.push(`binStep ${bs} ∉ [${good.slice().sort((a, b) => parseFloat(a) - parseFloat(b)).map(s => `'${s}'`).join(", ")}]`);
-  const bands = bandsFor(prof, overrides);
-  MATCH_DIMS.forEach(d => {
+  if (binSteps !== false && good.length) {
+    if (good.includes(bs)) hits.push(`binStep ${bs}`);
+    else misses.push(`binStep ${bs} ∉ [${good.slice().sort((a, b) => parseFloat(a) - parseFloat(b)).map(s => `'${s}'`).join(", ")}]`);
+  }
+  const bands = bandsFor(prof || {}, overrides);
+  (dims && dims.length ? dims : MATCH_DIMS).forEach(d => {
     const b = bands[d], v = c[d];
     if (!b) return;
     if (v == null) misses.push(`${d} n/a`);
@@ -726,7 +972,8 @@ module.exports = {
   pyFixed, pyRound, commas, pyStr,
   makeConfig, maxPositionSol, plannedSizeSol,
   solSide, toTokenInSol, features, gates, flags, evaluate, recheck, verdict, nice,
-  fmtDim, bandTxt, bandsFor, candidateDims, matchBenchmark,
+  fmtDim, bandTxt, bandsFor, candidateDims, matchBenchmark, tokenStats, pingFilterText,
+  SETTINGS_SCHEMA, getPath, setPath, applySettings, cleanSetting, settingsScreen,
   activityFeatures, revived, describeActivity, applyRevival, signalCandidate,
   groupEntries, entryFeatures, profile, buildBenchmark,
 };
