@@ -101,7 +101,8 @@ Kalau Practice Mode udah lu coba dan hasilnya masuk akal:
 1. Pastiin wallet LP punya SOL: ukuran ladder + ±0.21 SOL buat rent 5 posisi (balik pas close) + sedikit reserve.
 2. Di `MET Secrets`, ubah `PRACTICE_MODE: true` jadi `false`, **Done**.
 3. Mulai dari **size kecil** (misal ◎0.5). Zap pool yang OPEN/CAREFUL → konfirmasi → ladder kebuka. Tiap slice jadi posisi sendiri; hasilnya kelihatan di `MET Portfolio`.
-4. Tutup posisi dari `MET Portfolio` (**Close**, atau **Exit → SOL** kalau exit rule nyala). **Close and swap to SOL** jual sisa token, nolak kalau harganya lebih dari 5% di bawah harga pool.
+4. **Re-enter** di `MET Portfolio` sekarang juga jalan saat harga udah masuk ladder (in range): posisi di-close, token yang keluar dijual ke SOL, lalu ladder dibuka lagi di harga sekarang. Catatan: di HP satu posisi maksimal 70 bin, jadi kalau range-nya butuh lebih, jumlah slice dinaikin dan konfirmasi zap kasih peringatan (Mac bisa buka 1 slice lebar).
+5. Tutup posisi dari `MET Portfolio` (**Close**, atau **Exit → SOL** kalau exit rule nyala). **Close and swap to SOL** jual sisa token, nolak kalau harganya lebih dari 5% di bawah harga pool.
 
 Aturan yang dipakai (sama dengan Mac): gate = pair SOL, bin step 20–250, umur pool ≥ 60 menit, fee APR 24h ≥ 1.000%. Flag (warning aja) = pump 1h ≥ 25%, drop 6h ≥ 17%, TVL < $25k, entry jam 00–09 WIB. Take-profit dan stop-loss otomatis **sengaja mati**: di data 133 posisi yang jadi dasarnya, semuanya bikin hasil lebih jelek dibanding exit manual.
 

@@ -3489,7 +3489,11 @@ function confirmText(row, preset, z) {
   }
   lines.push("");
   lines.push(`${fmtSol(preset.amount, 3)} SOL into ${n} ${n > 1 ? "slices" : "position"}`
-    + (plan.raised ? ` (raised from ${preset.slices}: 70 bins max each)` : "") + ".");
+    + (plan.raised ? ` (raised from ${preset.slices})` : "") + ".");
+  if (plan.raised) {
+    lines.push(`⚠️ You asked for ${preset.slices} slice${preset.slices > 1 ? "s" : ""}, but this pool's bin step makes the range ${plan.bins} bins and a position here holds 70 at most, so it opens as ${plan.raised}. `
+      + "Cancel if you want exactly " + preset.slices + ": the Mac terminal opens that as one wide position.");
+  }
   if (n > 1) {
     lines.push("");
     lines.push("Slices: " + plan.slices.map(x => (lamportsToSol(x.lamports)).toFixed(3)).join(" / "));

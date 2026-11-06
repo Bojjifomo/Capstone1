@@ -304,11 +304,11 @@ function openZap(r, size) {
     if (!p.ok) { $("#zLadder").innerHTML = `<span class="neg">${esc(p.error || "plan gagal")}</span>`; return; }
     const pl = p.plan, mx = Math.max(...pl.slices.map(s => s.sol));
     cur.plan = pl;
-    $("#zLadder").innerHTML = `<div class="muted">${pl.slices.length} slice · ${pl.bins} bin · harga → −${pl.realEnd.toFixed(1)}% · isi 1:2:…:${pl.slices.length} (paling dalam paling gede)${pl.raised ? ` · dinaikin ke ${pl.raised} slice (maks 70 bin/slice)` : ""}</div>
+    $("#zLadder").innerHTML = `<div class="muted">${pl.slices.length} slice · ${pl.bins} bin · harga → −${pl.realEnd.toFixed(1)}% · isi 1:2:…:${pl.slices.length} (paling dalam paling gede)${pl.wide ? ` · ${pl.wide} slice >70 bin = 1 posisi extended (rent lebih gede)` : ""}</div>
       <table class="ladder"><tr><th>#</th><th>range</th><th class="r">SOL</th><th></th></tr>
       ${pl.slices.map((s, i) => `<tr><td>${i + 1}</td><td>−${s.nearPct.toFixed(1)}% → −${s.farPct.toFixed(1)}% <span class="muted">(${s.width} bin)</span></td>
         <td class="r">${s.sol.toFixed(4)}</td><td><span class="lbar" style="width:${Math.round(s.sol / mx * 120)}px"></span></td></tr>`).join("")}</table>
-      <div class="muted">Rent ±${(0.042 * pl.slices.length).toFixed(3)} SOL buat ${pl.slices.length} posisi, balik pas close.</div>`;
+      <div class="muted">Rent ±${(0.042 * pl.slices.length + (pl.slices.reduce((a, s) => a + Math.max(0, s.width - 70), 0)) * 0.0006).toFixed(3)} SOL buat ${pl.slices.length} posisi, balik pas close.</div>`;
   }
   draw();
   ["#zSize", "#zBottom", "#zSlices"].forEach(s => { $(s).oninput = draw; });
@@ -352,6 +352,31 @@ async function closePosition(p, btn, rule) {
     const s = await trade.call("/api/trade/close", { pool: p.pool, position: p.position, symbol: p.symbol, rule: rule || null });
     const sig = (s.signatures || [])[(s.signatures || []).length - 1];
     cell.querySelector("[data-r]").innerHTML = s.ok ? `✓ closed ${sig ? solscan(sig) : ""}` : `✗ ${esc(s.error || "gagal")}`;
+    setTimeout(loadPortfolio, 4000);
+  } catch (e) {
+    const r = cell.querySelector("[data-r]");
+    if (r) r.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`;
+  } finally { btn.disabled = false; }
+}
+
+// Close every position of a pool, sell the token that came out to SOL, and optionally open the ladder again at the
+// current price (re-entry). Works in range too: the token that comes out is simply sold.
+async function reenterPool(p, btn, reopen) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  if (state.wallet !== trade.info.wallet) { alert(`Portfolio lagi nampilin wallet lain. Trading wallet: ${trade.info.wallet}`); return; }
+  const group = state.pf.rows.filter(x => x.pool === p.pool);
+  const slices = group.length, bottom = Math.abs(p.rangeBottomPct || 70);
+  const msg = reopen
+    ? `RE-ENTRY ${p.symbol}\n1) Close ${slices} posisi di pool ini (klaim fee)\n2) Jual sisa token ke SOL via Jupiter (batal kalau >5% di bawah harga pool)\n3) Buka ladder lagi di harga sekarang: ${slices} slice, sampai −${bottom.toFixed(0)}%, pakai semua SOL yang balik\n\nLanjut?`
+    : `CLOSE + SWAP ${p.symbol}\nClose ${slices} posisi, lalu jual sisa token ke SOL via Jupiter (batal kalau >5% di bawah harga pool).\n\nLanjut?`;
+  if (!confirm(msg)) return;
+  btn.disabled = true;
+  const cell = btn.parentElement;
+  cell.insertAdjacentHTML("beforeend", '<div class="res muted" data-r>jalan… (bisa 1-3 menit)</div>');
+  try {
+    const s = await trade.call("/api/trade/reenter", { pool: p.pool, symbol: p.symbol, positions: group.map(x => x.position), reopen, slices, bottom });
+    const r = cell.querySelector("[data-r]");
+    r.innerHTML = s.ok ? `✓ ${reopen ? `re-entry ◎${s.reopenSol}` : `closed, balik ◎${(s.solBack || 0).toFixed(3)}`}` : `✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}`;
     setTimeout(loadPortfolio, 4000);
   } catch (e) {
     const r = cell.querySelector("[data-r]");
@@ -405,6 +430,8 @@ function renderPortfolio() {
         <div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk" style="left:${pos}%"></div>` : ""}</div></td>
       <td>${status}</td>
       <td><button class="btn ${exit ? "danger" : ""}" data-close="${p.position}">${exit ? "Exit → close" : "Close"}</button>
+        <button class="btn" data-swap="${p.position}" title="Close semua posisi pool ini + jual token ke SOL">Close+swap</button>
+        <button class="btn go" data-reenter="${p.position}" title="Close + swap + buka ladder lagi di harga sekarang (juga kalau masih in range)">Re-entry</button>
         <a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
     </tr>`;
   }).join("");
@@ -462,6 +489,13 @@ $("#keyBtn").onclick = () => alert(trade.ready()
   ? `Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (DLMM_WEB_PIN)." : "\nTrading cuma dari Mac ini."}`
   : trade.why() + "\n\nDi dlmm_terminal/.env:\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\nSOLANA_RPC_URL=<Helius RPC>\nOpsional: DLMM_WEB_PIN=<PIN> buat trading dari HP.");
 $("#positions tbody").addEventListener("click", e => {
+  const sw = e.target.closest("[data-swap],[data-reenter]");
+  if (sw && state.pf) {
+    const key = sw.dataset.swap || sw.dataset.reenter;
+    const row = state.pf.rows.find(x => x.position === key);
+    if (row) reenterPool(row, sw, !!sw.dataset.reenter);
+    return;
+  }
   const b = e.target.closest("[data-close]");
   if (!b || !state.pf) return;
   const p = state.pf.rows.find(x => x.position === b.dataset.close);

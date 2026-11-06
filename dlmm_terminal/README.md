@@ -239,6 +239,21 @@ python3 -m dlmm_terminal open <POOL> --sol 8 --dry-run --owner <WALLET>   # simu
 
 Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keypair.json`) + `SOLANA_RPC_URL`. Opsi: `--slices`, `--bottom`, `--top`, `--strategy spot|curve|bidask`, `--force` (gate gagal), `--force-size` (lewat cap).
 
+### Jumlah slice = yang lu minta
+
+`--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
+
+### Close + swap dan Re-entry (juga saat masih in range)
+
+```bash
+# lihat dulu: posisi, in range atau nggak, token yang dipegang, harga jual Jupiter vs harga pool (nggak kirim apa-apa)
+python3 -m dlmm_terminal reenter <POOL> <POS1,POS2,...> --reopen --dry-run --owner <WALLET>
+python3 -m dlmm_terminal reenter <POOL> <POS1,POS2,...>            # close semua + jual token ke SOL
+python3 -m dlmm_terminal reenter <POOL> <POS1,POS2,...> --reopen   # + buka ladder lagi di harga sekarang
+```
+
+Urutannya: close semua posisi (klaim fee) → token yang keluar (selisih saldo, token lama di wallet nggak disentuh) dijual ke SOL via Jupiter, **batal kalau lebih dari `--maxloss` % (default 5) di bawah harga pool** → kalau `--reopen`, ladder dibuka lagi (default jumlah slice = jumlah posisi lama, `--bottom` dari config, SOL = semua yang balik dikurangi rent; atau `--sol`). Nggak ada bedanya harga udah lari di atas ladder (semua SOL) atau masih in range (sebagian token): token apa pun yang keluar dijual dulu. Kalau jual gagal atau ditolak, ladder nggak dibuka dan token tetap di wallet. Di web: tombol **Close+swap** dan **Re-entry** di tiap baris Portfolio (jalan di semua posisi pool itu). Dry-run dites ke posisi mainnet nyata yang in range; alur kirimnya (close, swap Jupiter, buka ulang) **belum dites kirim beneran**: coba dulu dengan ukuran kecil.
+
 Sisa memecoin setelah close **belum** di-swap otomatis ke SOL: jual di Jupiter / Cleanup di MET Portfolio.
 
 ## Kirim ke temen
