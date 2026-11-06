@@ -141,7 +141,7 @@ Flag dipromote jadi gate kalau (spec §7): ≥ 300 posisi closed di 50+ token (1
 | --- | --- | --- |
 | `MET Secrets` | `MET Secrets.example.js` | Key, RPC, ukuran, setting. Dibikin sekali, nggak ikut update. |
 | `DLMM Rules` | `DLMM Rules.js` | **Baru.** Gate v1, flag, verdict OPEN/CAREFUL/WAIT/SKIP, benchmark, revival. Nggak punya UI dan nggak pegang key. |
-| `MET Pool` | `MET Pool.js` | Daftar pool + ENTRY CHECK + SIGNAL + zap ladder. |
+| `MET Pool` | `MET Pool.js` | Daftar pool + ENTRY CHECK + 📡 PING (filter signal entry Mac) + ★ watchlist + ◎/$/Rp + ⚙ Settings + zap ladder. |
 | `MET Portfolio` | `MET Portfolio.js` | Posisi, PnL, exit rule, close. |
 
 **Fitur MET Pool (sama kayak web):**
@@ -242,6 +242,13 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 ### Jumlah slice = yang lu minta
 
 `--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
+
+### iPhone v5 (sama dengan web v5)
+
+- **⚙ Settings** di MET Pool dan MET Portfolio (UITable): knob yang sama dengan web, disimpan di HP (`dlmm_settings.json`) di atas `MET Secrets`. Ladder/gate/PING kepakai langsung di MET Pool; exit rules + max loss swap di MET Portfolio.
+- **📡 PING**: sekarang filter yang sama dengan Mac (v1 gates + umur token / mcap / vol 24h token / total fees, tanpa cek bin step benchmark, buang mati→hidup, top N urut 1h Vol/TVL). Umur token + vol 24h diambil dari DexScreener per token (cache 10 menit). Rank `📡n` juga muncul di MET Portfolio.
+- **★ watchlist** (`dlmm_watch.json`) dan **◎ SOL / $ USD / Rp** buat semua angka pool (TVL, vol, fees, mcap).
+- `DLMM Rules.js` di-stamp ulang dari `config.json` (fix tes `DEFAULTS == config.json`); tes: `node scriptable/tests/test_dlmm_rules.mjs` (92) + `node scriptable/test_rules.mjs`.
 
 ### Web v5: settings, SOL/USD, PING, watchlist
 

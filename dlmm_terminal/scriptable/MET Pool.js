@@ -88,9 +88,15 @@ const RULES = (() => {
   }
   throw new Error('Script "DLMM Rules" not found: add it to Scriptable (see the README).');
 })();
-const CFG = RULES.makeConfig(SECRETS);
-const SPEC_MAX_POSITION_SOL = CFG.position.bankrollSol > 0 ? RULES.maxPositionSol(CFG) : null;
-const PLANNED_SIZE = RULES.plannedSizeSol(CFG);
+// ⚙ Settings (shared with MET Portfolio): {path: value} on top of MET Secrets, in the library directory.
+const SETTINGS_FILE = "dlmm_settings.json";
+function readSettings() {
+  try { const f = FileManager.local(), p = f.joinPath(f.libraryDirectory(), SETTINGS_FILE); return f.fileExists(p) ? JSON.parse(f.readString(p)) || {} : {}; } catch (e) { return {}; }
+}
+function writeSettings(o) { try { const f = FileManager.local(); f.writeString(f.joinPath(f.libraryDirectory(), SETTINGS_FILE), JSON.stringify(o)); } catch (e) {} }
+const CFG = RULES.applySettings(RULES.makeConfig(SECRETS), readSettings());
+let SPEC_MAX_POSITION_SOL = CFG.position.bankrollSol > 0 ? RULES.maxPositionSol(CFG) : null;
+let PLANNED_SIZE = RULES.plannedSizeSol(CFG);
 
 // Zap presets, in SOL. Checked rather than trusted: a typo that reached the
 // planner would place a ladder nobody asked for, and on Solana every slice is
@@ -113,13 +119,15 @@ function normStrategy(s) {
 const MAX_SLICES = 20;
 const MIN_SLICE_SOL = 0.01;
 // Default = the Mac terminal's ladder: Spot, SOL-only, 5 slices down to -70%, half and full planned size.
-const ZAP_PRESETS_DEFAULT = (() => {
+const zapDefaults = () => {
   const slices = Math.max(1, Math.min(20, Math.floor(CFG.position.ladderSlices || 5)));
   const range = Math.abs(CFG.position.rangeBottomPct);
-  const mk = a => ({ amount: Math.round(a * 1000) / 1000, slices, top: 0, range, strategy: "spot" });
+  const strategy = normStrategy(CFG.position.strategy) || "spot";
+  const mk = a => ({ amount: Math.round(a * 1000) / 1000, slices, top: 0, range, strategy });
   return [mk(PLANNED_SIZE / 2), mk(PLANNED_SIZE)];
-})();
-const ZAP_PRESETS = (() => {
+};
+let ZAP_PRESETS_DEFAULT = zapDefaults();
+const zapPresets = () => {
   const raw = SECRETS.MET_ZAP_PRESETS;
   if (!Array.isArray(raw) || !raw.length) return ZAP_PRESETS_DEFAULT;
   const ok = raw.map(p => p && ({
@@ -129,7 +137,18 @@ const ZAP_PRESETS = (() => {
     && p.range > 0 && p.range < 100 && p.top >= 0 && p.top < p.range && p.strategy
     && p.amount / p.slices >= MIN_SLICE_SOL);
   return ok.length ? ok.slice(0, 3) : ZAP_PRESETS_DEFAULT;
-})();
+};
+let ZAP_PRESETS = zapPresets();
+// After ⚙ Settings: CFG again from MET Secrets + the new overlay, and everything worked out from it.
+function reloadConfig() {
+  const fresh = RULES.applySettings(RULES.makeConfig(SECRETS), readSettings());
+  Object.keys(CFG).forEach(k => delete CFG[k]);
+  Object.assign(CFG, fresh);
+  SPEC_MAX_POSITION_SOL = CFG.position.bankrollSol > 0 ? RULES.maxPositionSol(CFG) : null;
+  PLANNED_SIZE = RULES.plannedSizeSol(CFG);
+  ZAP_PRESETS_DEFAULT = zapDefaults();
+  ZAP_PRESETS = zapPresets();
+}
 
 // true  = work the whole thing out and simulate it, send nothing.
 // false = really open positions.
@@ -2122,6 +2141,15 @@ function fmtCompact(v) {
   return v >= 1 ? v.toFixed(0) : v.toPrecision(2);
 }
 const fmtShort = v => fmtCompact(v).replace(/\.0+(?=[KMB]$)/, "");
+// A pool-side dollar amount (TVL, volume, fees, mcap) in the display currency: SOL, USD or rupiah,
+// the same switch as the web's ◎ SOL / $ USD. POOL_SOLUSD is set by fillTable from the data.
+let POOL_SOLUSD = null;
+function fmtPoolAmt(usd) {
+  if (usd == null || isNaN(usd)) return "--";
+  if (DISPLAY.cur === "SOL" && POOL_SOLUSD > 0) return SOL_SIGN + fmtCompact(usd / POOL_SOLUSD);
+  if (DISPLAY.cur === "IDR" && DISPLAY.perUsd) return fmtFiat(usd * DISPLAY.perUsd, "IDR", false, true);
+  return "$" + fmtCompact(usd);
+}
 
 // ------------------------------------------------------------ display ---
 // Everything is counted in SOL. DISPLAY_CURRENCY in MET Secrets ("SOL",
@@ -2530,7 +2558,7 @@ function saveLadder(wallet, rec) {
 // How money is shown beside SOL (setDisplay in the UI part): what was picked
 // in MET Portfolio's "Show money in" row, else MET Secrets, else SOL.
 // Deposits and rent here are always SOL, since that is what a zap spends.
-const DISPLAY_CUR = loadDisplayChoice(SECRETS.DISPLAY_CURRENCY);
+let DISPLAY_CUR = loadDisplayChoice(SECRETS.DISPLAY_CURRENCY);
 
 // ----------------------------- keys and RPC ----------------------------------
 const RPCS = metRpcs(secret);
@@ -2828,28 +2856,72 @@ async function hourlyFor(ids) {
   writeLib(HOURLY_FILE, cache);
   return out;
 }
+// DexScreener over all the token's pairs (24h volume, age since its first pair), one request per
+// token, remembered for ten minutes: the PING bands are token-wide on the Mac too.
+const TOKEN_FILE = "met_tokens.json";
+async function tokenStatsFor(mints) {
+  const cache = readLib(TOKEN_FILE) || {}, now = Date.now(), out = new Map(), todo = [];
+  [...new Set(mints.filter(Boolean))].forEach(m => { const e = cache[m]; if (e && now - e.t < 600000) out.set(m, e.s); else todo.push(m); });
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      const m = todo[next++];
+      try {
+        const pairs = await MET.getJson(`https://api.dexscreener.com/token-pairs/v1/solana/${m}`, { timeout: 10 });
+        const st = RULES.tokenStats(pairs, now);
+        out.set(m, st);
+        cache[m] = { t: now, s: st };
+      } catch (e) {}
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, todo.length) }, worker));
+  Object.keys(cache).forEach(k => { if (now - cache[k].t > 3600000) delete cache[k]; });
+  writeLib(TOKEN_FILE, cache);
+  return out;
+}
+// PING = the Mac's signal filter: v1 gates + the owner's GMGN bands (signal.matchDims: token age,
+// mcap, 24h volume, total fees) + the benchmark's bin steps only if requireBenchmarkBinSteps, minus
+// dead-then-alive pools; then the top blastTop by blastSortBy, ranked 1..N (r.sig.rank).
+// Returns {total, revived} for the "Filtered by" line.
+const PING_SORT = {
+  volTvl1h: r => r.volTvl1h || 0,
+  feeTvl24h: r => (r.tvl > 0 ? (r.fees24 || 0) / r.tvl * 100 : 0),
+  fees1hUsd: r => r.fees1h || 0,
+  prorated5m: r => r.volTvl1h || 0,
+};
 async function signalPass(rows) {
-  const sig = CFG.signal, prof = loadProfile().profile;
-  if (!prof) return;
+  const sig = CFG.signal, prof = loadProfile().profile || { bands: {}, binSteps: {} };
+  const passed = rows.filter(r => r.c && !r.c.gatesFailed.length);
+  rows.forEach(r => { r.sig = null; });
+  const tok = await tokenStatsFor(passed.slice(0, 80).map(r => r.c.tokenMint)).catch(() => new Map());
   const cand = [];
-  rows.forEach(r => {
-    if (!r.c) return;
-    const m = RULES.matchBenchmark(r.c, prof, sig.bandOverrides);
+  passed.forEach(r => {
+    const p = RAW.get(r.id);
+    if (p) Object.assign(r.c, RULES.candidateDims(p, tok.get(r.c.tokenMint), r.c.poolAgeHours));
+    const m = RULES.matchBenchmark(r.c, prof, sig.bandOverrides, sig.matchDims, sig.requireBenchmarkBinSteps === true);
     r.sig = { score: m.score, hits: m.hits.length, dims: m.dims, hitTxt: m.hits, missTxt: m.misses, excluded: false, warn: null, act: null,
-      hit: r.c.gatesFailed.length === 0 && m.score >= sig.minMatchScore };
+      hit: m.score >= sig.minMatchScore, rank: null };
     if (r.sig.hit) cand.push(r);
   });
-  if ((sig.revival || {}).mode === "off" || !cand.length) return;
-  const hourly = await hourlyFor(cand.slice(0, 60).map(r => r.id));
-  cand.forEach(r => {
-    const h = hourly.get(r.id);
-    if (!h) return;                                  // request failed: keep the pool, as the Mac does
-    const cc = { poolAgeHours: r.c.poolAgeHours, gatesFailed: r.c.gatesFailed.slice(), flags: r.c.flags.slice(), decision: r.c.decision };
-    const keep = RULES.applyRevival(cc, h, CFG);
-    r.sig.act = cc.activity;
-    if (!keep) { r.sig.hit = false; r.sig.excluded = true; r.sig.why = cc.gatesFailed[cc.gatesFailed.length - 1]; }
-    else if (cc.flags.length > r.c.flags.length) r.sig.warn = cc.flags[cc.flags.length - 1];
-  });
+  let revived = 0;
+  if ((sig.revival || {}).mode !== "off" && cand.length) {
+    const hourly = await hourlyFor(cand.slice(0, 60).map(r => r.id));
+    cand.forEach(r => {
+      const h = hourly.get(r.id);
+      if (!h) return;                                  // request failed: keep the pool, as the Mac does
+      const cc = { poolAgeHours: r.c.poolAgeHours, gatesFailed: r.c.gatesFailed.slice(), flags: r.c.flags.slice(), decision: r.c.decision };
+      const keep = RULES.applyRevival(cc, h, CFG);
+      r.sig.act = cc.activity;
+      if (!keep) { r.sig.hit = false; r.sig.excluded = true; r.sig.why = cc.gatesFailed[cc.gatesFailed.length - 1]; revived++; }
+      else if (cc.flags.length > r.c.flags.length) r.sig.warn = cc.flags[cc.flags.length - 1];
+    });
+  }
+  const hits = rows.filter(r => r.sig && r.sig.hit);
+  const key = PING_SORT[sig.blastSortBy] || PING_SORT.volTvl1h;
+  const ranks = {};
+  hits.sort((a, b) => key(b) - key(a)).slice(0, Math.max(1, sig.blastTop || 10)).forEach((r, i) => { r.sig.rank = i + 1; ranks[r.id] = i + 1; });
+  writeLib("dlmm_ping.json", { t: Date.now(), ranks });         // MET Portfolio marks positions in a PING pool
+  return { total: hits.length, revived, t: Date.now() };
 }
 
 async function fetchBalance() {
@@ -2981,7 +3053,8 @@ async function main() {
     ]);
     const rows = withMarket(kept, market);
     rows.sort((a, b) => (b.feePctDay || 0) - (a.feePctDay || 0) || b.vol24 - a.vol24);
-    if (!config.runsInWidget) { try { await signalPass(rows); } catch (e) {} }
+    let ping = null;
+    if (!config.runsInWidget) { try { ping = await signalPass(rows); } catch (e) {} }
     const CHROME = 110, PITCH = 15.5;
     const rowBudget = config.widgetFamily === "small" ? 0
       : Math.max(0, Math.min(20, Math.floor((widgetSize().h - CHROME) / PITCH)));
@@ -2990,6 +3063,7 @@ async function main() {
       solUsd: (rows.find(r => r.solUsd > 0) || {}).solUsd || null,
       usdIdr,
       ranked: ranked.length,
+      ping,
     };
     saveJson(DATA_SUFFIX, { t: Date.now(), v: ROW_SCHEMA, data });
     if (!config.runsInWidget) specLogRows(rows);
@@ -3037,6 +3111,7 @@ function presetLabel(p) {
 
 function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol, sortMode, onSort, onZap, busy, progress, spec) {
   setDisplay(DISPLAY_CUR, d.solUsd, d.usdIdr);
+  POOL_SOLUSD = d.solUsd || null;
   t.removeAllRows();
   t.showSeparators = true;
   const top = d.rows[0];
@@ -3126,16 +3201,34 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
   if (spec && !spec.hideControls) {
     const mr = new UITableRow();
     mr.height = 44;
-    for (const [key, label] of [["all", "ALL"], ["v1", "V1 PASS"], ["signal", "SIGNAL"]]) {
+    for (const [key, label] of [["all", "ALL"], ["v1", "V1"], ["signal", "📡PING"], ["watch", "★"]]) {
       const on = spec.mode === key;
-      const b = mr.addButton(`${on ? "● " : ""}${label} ${spec.counts[key]}`);
-      b.widthWeight = 33;
+      const b = mr.addButton(`${on ? "●" : ""}${label} ${spec.counts[key]}`);
+      b.widthWeight = 25;
       b.centerAligned();
       b.titleFont = on ? Font.boldSystemFont(14) : Font.systemFont(14);
       b.titleColor = on ? COL.accent : COL.muted;
       b.onTap = () => spec.onMode(key);
     }
     t.addRow(mr);
+    // Currency (the web's ◎ SOL / $ USD) and ⚙ Settings.
+    const cr = new UITableRow();
+    cr.height = 36;
+    for (const [cur, label] of [["SOL", "◎ SOL"], ["USD", "$ USD"], ["IDR", "Rp"]]) {
+      const on = DISPLAY_CUR === cur;
+      const b = cr.addButton(on ? `● ${label}` : label);
+      b.widthWeight = 20;
+      b.centerAligned();
+      b.titleFont = on ? Font.boldSystemFont(13) : Font.systemFont(13);
+      b.titleColor = on ? COL.accent : COL.muted;
+      b.onTap = () => spec.onCur(cur);
+    }
+    const sb2 = cr.addButton("⚙ Settings");
+    sb2.widthWeight = 40;
+    sb2.rightAligned();
+    sb2.titleFont = Font.semiboldSystemFont(13);
+    sb2.onTap = () => spec.onSettings();
+    t.addRow(cr);
     const wr = new UITableRow();
     wr.height = 36;
     const wl = wr.addText("Fees window");
@@ -3156,9 +3249,13 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     const g = CFG.gates, u = CFG.universe, sg = CFG.signal;
     let line1, line2;
     if (spec.mode === "signal") {
-      const b = spec.bench;
-      line1 = `Signal = v1 gates + benchmark ${shortAddr(sg.benchmarkWallet)} ${sg.benchmarkDays}d (score ≥ ${sg.minMatchScore}) · revival ${(sg.revival || {}).mode}`;
-      line2 = b ? `Benchmark: ${b.entries} entries · built ${b.age}${b.own ? "" : " (bundled)"} · tap here to rebuild` : "No benchmark yet · tap here to build";
+      const pg = d.ping || {};
+      line1 = RULES.pingFilterText(CFG, spec.counts.signal, pg.total != null ? pg.total : spec.counts.signal, pg.revived || 0);
+      line2 = sg.requireBenchmarkBinSteps ? (spec.bench ? `+ bin steps of ${shortAddr(sg.benchmarkWallet)} · built ${spec.bench.age} · tap to rebuild` : "tap to build the benchmark")
+        : `Scan ulang: tap status di atas · ubah filter di ⚙ Settings`;
+    } else if (spec.mode === "watch") {
+      line1 = "★ Watchlist: pool pilihan lu. Tap baris ● verdict → ★ buat tambah / hapus.";
+      line2 = `${spec.counts.watch} pool · disimpan di HP (dlmm_watch.json)`;
     } else {
       line1 = `Gates: bin ${u.binStepMin}-${u.binStepMax} · age ≥ ${g.minPoolAgeMinutes}m · fee APR ≥ ${g.minFeeApr24hPct}%` + (g.maxPositionPctOfTvl != null ? ` · size ≤ ${g.maxPositionPctOfTvl}% TVL` : "");
       line2 = SPEC_MAX_POSITION_SOL != null ? `Max position ${fmtSol(SPEC_MAX_POSITION_SOL, 2)} SOL (bankroll ${CFG.position.bankrollSol} × ${CFG.position.lossBudgetPct}% ÷ 0.9) · ladder ${CFG.position.ladderSlices}× Spot to ${CFG.position.rangeBottomPct}%`
@@ -3169,12 +3266,19 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     nc.titleColor = COL.muted;
     nc.subtitleFont = Font.systemFont(10);
     nc.subtitleColor = COL.faint;
-    if (spec.mode === "signal") { nr.onSelect = spec.onBench; nr.dismissOnSelect = false; }
+    if (spec.mode === "signal" && sg.requireBenchmarkBinSteps) { nr.onSelect = spec.onBench; nr.dismissOnSelect = false; }
+    nr.height = spec.mode === "signal" ? 70 : 46;
     t.addRow(nr);
     if (spec.mode === "signal" && !spec.counts.signal) {
       const er = new UITableRow();
       er.height = 40;
-      er.addText("No pool is inside the signal right now.", "Gates + benchmark + no dead→alive. Check V1 PASS, or try again in a few minutes.").titleFont = Font.systemFont(12);
+      er.addText("Nggak ada pool yang lolos PING sekarang.", "Cek V1, atau tap status buat scan ulang beberapa menit lagi.").titleFont = Font.systemFont(12);
+      t.addRow(er);
+    }
+    if (spec.mode === "watch" && !spec.counts.watch) {
+      const er = new UITableRow();
+      er.height = 40;
+      er.addText("Watchlist kosong.", "Tap baris ● verdict di pool mana pun → ☆ Watchlist.").titleFont = Font.systemFont(12);
       t.addRow(er);
     }
   }
@@ -3217,7 +3321,9 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     row.height = 58;
     const sub = [`bin ${r.binStep}`, fmtAge(r.ageDays)];
     if (r.chg24 != null) sub.push(`${r.chg24 >= 0 ? "+" : ""}${r.chg24.toFixed(0)}% 24h`);
-    const name = row.addText((r.freezeOk ? "" : "❄️") + r.symbol, sub.join(" · "));
+    const watchedRow = spec && spec.isWatched && spec.isWatched(r.id);
+    const rk = r.sig && r.sig.rank ? ` 📡${r.sig.rank}` : "";
+    const name = row.addText((watchedRow ? "★" : "") + (r.freezeOk ? "" : "❄️") + r.symbol + rk, sub.join(" · "));
     name.widthWeight = 25;
     name.titleFont = Font.boldSystemFont(16);
     name.titleColor = COL.text;
@@ -3228,7 +3334,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     if (spark) { const sp = row.addImage(spark); sp.widthWeight = 18; sp.centerAligned(); }
     else { const sp = row.addText(""); sp.widthWeight = 18; }
 
-    const tv = row.addText(fmtCompact(r.tvl), `vol ${fmtCompact(r.vol24)}`);
+    const tv = row.addText(fmtPoolAmt(r.tvl), `vol ${fmtPoolAmt(r.vol24)}`);
     tv.widthWeight = 20;
     tv.rightAligned();
     tv.titleFont = Font.semiboldSystemFont(16);
@@ -3237,7 +3343,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
 
     const feeW = win === "1h" ? r.fees1h : win === "4h" ? r.fees4h : r.fees24;
     const pctW = r.feePctW ? r.feePctW[win] : r.feePctDay;
-    const fe = row.addText(fmtCompact(feeW), fmtPct(pctW) + "/day");
+    const fe = row.addText(fmtPoolAmt(feeW), fmtPct(pctW) + "/day");
     fe.widthWeight = 19;
     fe.rightAligned();
     fe.titleFont = Font.semiboldSystemFont(16);
@@ -3245,7 +3351,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     fe.subtitleFont = Font.systemFont(11);
     fe.subtitleColor = feeRateColor(pctW);
 
-    const mk = row.addText(r.mcap == null ? "--" : fmtCompact(r.mcap),
+    const mk = row.addText(r.mcap == null ? "--" : fmtPoolAmt(r.mcap),
       `1h ${fmtPct(r.feePctDay1h, r.feePctDay1h >= 100 ? 0 : 1)}/d`);
     mk.widthWeight = 18;
     mk.rightAligned();
@@ -3274,11 +3380,11 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
     }
     if (spec && spec.onDetail) { vr.onSelect = () => spec.onDetail(r); vr.dismissOnSelect = false; }
     t.addRow(vr);
-    if (spec && spec.mode === "signal" && r.sig) {
+    if (spec && (spec.mode === "signal" || spec.mode === "watch") && r.sig && r.sig.hit) {
       const sr2 = new UITableRow();
       sr2.height = 22;
       const act = r.sig.act;
-      const sc2 = sr2.addText(`🎯 ${r.sig.hits}/${r.sig.dims}  ·  🥩 ${fmtPct(r.volTvl1h, 1)} vol/TVL 1h` + (act ? `  ·  🫀 ${act.activeHours}/${act.hours}h` : "") + (r.sig.warn ? `  ·  ⚠️ ${RULES.nice("revival: " + r.sig.warn)}` : ""));
+      const sc2 = sr2.addText(`${r.sig.rank ? "📡 #" + r.sig.rank + "  ·  " : ""}🥩 ${fmtPct(r.volTvl1h, 1)} vol/TVL 1h` + (r.c && r.c.totalFeesSol != null ? `  ·  💰 ${fmtSol(r.c.totalFeesSol, 0)} fees` : "") + (act ? `  ·  🫀 ${act.activeHours}/${act.hours}h` : "") + (r.sig.warn ? `  ·  ⚠️ ${RULES.nice("revival: " + r.sig.warn)}` : ""));
       sc2.titleFont = Font.systemFont(10);
       sc2.titleColor = r.sig.warn ? COL.yellow : COL.muted;
       t.addRow(sr2);
@@ -3311,7 +3417,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, sortCol,
   if (d.more > 0) {
     const mo = new UITableRow();
     mo.height = 40;
-    const mc = mo.addText(`${d.more} more not drawn`, "The phone draws the first 120. Sort, search, or use V1 PASS / SIGNAL to narrow down.");
+    const mc = mo.addText(`${d.more} more not drawn`, "The phone draws the first 120. Sort, search, or use V1 / PING / ★ to narrow down.");
     mc.titleFont = Font.systemFont(12);
     mc.titleColor = COL.muted;
     mc.subtitleFont = Font.systemFont(10);
@@ -3585,7 +3691,14 @@ if (config.runsInWidget) {
   let sortCol = 2, sortMode = 2, sortTouched = false;
   // What the table shows, remembered between runs: ALL | V1 PASS | SIGNAL, and the fees window.
   const savedView = readLib("met_view.json") || {};
-  let mode = ["all", "v1", "signal"].includes(savedView.mode) ? savedView.mode : "v1";
+  let mode = ["all", "v1", "signal", "watch"].includes(savedView.mode) ? savedView.mode : "v1";
+  // ★ Watchlist: the pools you picked to play, kept in the library directory.
+  let watch = readLib("dlmm_watch.json") || [];
+  const isWatched = id => watch.some(w => w.pool === id);
+  const toggleWatch = r => {
+    watch = isWatched(r.id) ? watch.filter(w => w.pool !== r.id) : [...watch, { pool: r.id, symbol: r.symbol, t: Date.now() }];
+    writeLib("dlmm_watch.json", watch);
+  };
   let win = ["1h", "4h", "24h"].includes(savedView.win) ? savedView.win : "24h";
   const saveView = () => writeLib("met_view.json", { mode, win });
   // The Signal list is ordered like the Mac's top-10 card (signal.blastSortBy), until you sort a column yourself.
@@ -3621,13 +3734,15 @@ if (config.runsInWidget) {
         x.feePctSel = x.feePctW ? x.feePctW[win] : x.feePctDay;
       });
       const isV1 = x => x.v && (x.v.level === "OPEN" || x.v.level === "CAREFUL");
-      const isSig = x => x.sig && x.sig.hit;
-      const counts = { all: all.length, v1: all.filter(isV1).length, signal: all.filter(isSig).length };
+      const isSig = x => x.sig && x.sig.hit && x.sig.rank;
+      const isW = x => isWatched(x.id);
+      const counts = { all: all.length, v1: all.filter(isV1).length, signal: all.filter(isSig).length, watch: all.filter(isW).length };
       // A search always shows what it found; the mode applies to the ranked list.
-      let rows = tokenView ? all : mode === "v1" ? all.filter(isV1) : mode === "signal" ? all.filter(isSig) : all;
-      rows = sortRows(rows);
+      let rows = tokenView ? all : mode === "v1" ? all.filter(isV1) : mode === "signal" ? all.filter(isSig) : mode === "watch" ? all.filter(isW) : all;
+      rows = mode === "signal" && !sortTouched && !tokenView ? rows.sort((a, b) => a.sig.rank - b.sig.rank) : sortRows(rows);
       const more = Math.max(0, rows.length - MAX_TABLE_ROWS);
-      const spec = { mode, counts, win, hideControls: !!tokenView, bench: benchInfo(), onMode: onMode, onWin: onWin, onDetail: showDetail, onBench: () => runBench(true) };
+      const spec = { mode, counts, win, hideControls: !!tokenView, bench: benchInfo(), onMode: onMode, onWin: onWin, onDetail: showDetail, onBench: () => runBench(true),
+        isWatched, onCur, onSettings };
       fillTable(t, { ...base, rows: rows.slice(0, MAX_TABLE_ROWS), more }, r.stale, r.dataTime, refreshing, r.error, refresh,
         sortCol, sortMode, handleSort, ZAP_READY ? onZap : null, busy, progress, spec);
     } else {
@@ -3637,6 +3752,27 @@ if (config.runsInWidget) {
   };
   const onMode = m => { mode = m; sortTouched = false; saveView(); if (current && current.data) show(current, false); };
   const onWin = w => { win = w; saveView(); if (current && current.data) show(current, false); };
+  const onCur = async cur => {
+    DISPLAY_CUR = cur;
+    saveDisplayChoice(cur);                          // MET Portfolio and the widgets follow it too
+    if (cur === "IDR" && current && current.data && !current.data.usdIdr) current.data.usdIdr = await usdIdrRate().catch(() => null);
+    if (current && current.data) show(current, false);
+  };
+  // ⚙ Settings: the same knobs as the Mac's web panel; saved for MET Portfolio too. A change re-ranks the pools.
+  const onSettings = async () => {
+    if (busy) return;
+    const before = JSON.stringify(readSettings());
+    await RULES.settingsScreen({ base: RULES.makeConfig(SECRETS), overlay: readSettings(), save: writeSettings, title: "⚙ Settings · MET Pool" });
+    if (JSON.stringify(readSettings()) === before) return;
+    reloadConfig();
+    lastCustom = { amount: ZAP_PRESETS[0].amount, top: ZAP_PRESETS[0].top, range: ZAP_PRESETS[0].range, slices: ZAP_PRESETS[0].slices, strategy: ZAP_PRESETS[0].strategy };
+    if (current && current.data) {
+      current.data.rows.forEach(x => { x.v = null; evalRow(x); });
+      show(current, true);
+      try { current.data.ping = await signalPass(current.data.rows); } catch (e) {}
+      show(current, false);
+    }
+  };
   // Every reason behind one verdict, and the signal's hits and misses.
   const showDetail = async r => {
     const v = r.v;
@@ -3645,7 +3781,7 @@ if (config.runsInWidget) {
     v.reasons.forEach(x => L.push((x.ok ? "✓ " : x.flag ? "⚠ " : "✗ ") + RULES.nice(x.text)));
     v.info.forEach(x => L.push((x.ok ? "✓ " : "✗ ") + x.text + " (context)"));
     if (r.sig) {
-      L.push("", `Signal: ${r.sig.hit ? "INSIDE" : r.sig.excluded ? "excluded" : "outside"} the benchmark habitat (${r.sig.hits}/${r.sig.dims})`);
+      L.push("", `PING: ${r.sig.rank ? "#" + r.sig.rank : r.sig.hit ? "lolos (di luar top " + CFG.signal.blastTop + ")" : r.sig.excluded ? "dibuang" : "nggak lolos"} (${r.sig.hits}/${r.sig.dims})`);
       r.sig.hitTxt.forEach(x => L.push("✓ " + x));
       r.sig.missTxt.forEach(x => L.push("✗ " + x));
       if (r.sig.excluded) L.push("⛔ " + RULES.nice(r.sig.why));
@@ -3656,10 +3792,12 @@ if (config.runsInWidget) {
     a.message = L.join("\n");
     a.addAction("DexScreener");
     a.addAction("Meteora");
+    a.addAction(isWatched(r.id) ? "★ Hapus dari watchlist" : "☆ Tambah ke watchlist");
     a.addCancelAction("Close");
     const i = await a.presentAlert();
     if (i === 0) Safari.open(`${DEX_URL}/${r.id}`);
     if (i === 1) Safari.open(`${METEORA_URL}/${r.id}`);
+    if (i === 2) { toggleWatch(r); if (current && current.data) show(current, false); }
   };
   // Rebuild the benchmark habitat from the wallet's closed positions (about 100 Meteora requests, no RPC).
   const runBench = async ask => {
@@ -3683,7 +3821,7 @@ if (config.runsInWidget) {
       const out = await RULES.buildBenchmark(net, sg.benchmarkWallet, sg.benchmarkDays, undefined, m => rep.detail(si, String(m).trim().slice(0, 60)), 4);
       writeLib(BENCH_FILE, { profile: out.profile });
       rep.ok(si, `${out.entries.length} entries in ${out.profile.tokens} pools · win ${out.profile.winRatePct}%`);
-      if (current && current.data) { await signalPass(current.data.rows); saveJson(DATA_SUFFIX, { t: current.dataTime || Date.now(), v: ROW_SCHEMA, data: current.data }); }
+      if (current && current.data) { current.data.ping = await signalPass(current.data.rows); saveJson(DATA_SUFFIX, { t: current.dataTime || Date.now(), v: ROW_SCHEMA, data: current.data }); }
       progress.outcome = { ok: true, text: `Benchmark rebuilt: ${out.entries.length} entries, bin steps ${Object.keys(out.profile.binSteps).join(", ")}.` };
     } catch (e) {
       rep.fail(si, String((e && e.message) || e).slice(0, 80));

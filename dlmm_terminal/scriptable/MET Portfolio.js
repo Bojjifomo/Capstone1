@@ -71,11 +71,27 @@ const VERSION = "met-portfolio-v7+spec1";
 
 const PRACTICE_MODE = typeof SECRETS.PRACTICE_MODE === "boolean" ? SECRETS.PRACTICE_MODE : true;
 const DRY_RUN = PRACTICE_MODE;
-// The most a sale back to SOL may give up against the pool price, all in.
-const MAX_LOSS_PERCENT = (() => {
-  const v = Number(SECRETS.MAX_LOSS_PERCENT);
-  return v > 0 && v <= 50 ? v : 5;
+// "DLMM Rules" (optional here): the ⚙ Settings screen and config shared with MET Pool. Without it
+// the exit rules and the loss limit come from MET Secrets alone, as before.
+const RULES = (() => {
+  if (typeof importModule !== "function") return null;
+  for (const name of ["DLMM Rules", "DLMMRules"]) {
+    try { const m = importModule(name); if (m && typeof m.makeConfig === "function") return m; } catch (e) {}
+  }
+  return null;
 })();
+const SETTINGS_FILE = "dlmm_settings.json";
+function readSettings() {
+  try { const f = FileManager.local(), p = f.joinPath(f.libraryDirectory(), SETTINGS_FILE); return f.fileExists(p) ? JSON.parse(f.readString(p)) || {} : {}; } catch (e) { return {}; }
+}
+function writeSettings(o) { try { const f = FileManager.local(); f.writeString(f.joinPath(f.libraryDirectory(), SETTINGS_FILE), JSON.stringify(o)); } catch (e) {} }
+const settingsCfg = () => (RULES ? RULES.applySettings(RULES.makeConfig(SECRETS), readSettings()) : null);
+// The most a sale back to SOL may give up against the pool price, all in.
+const maxLossFrom = cfg => {
+  const v = cfg ? Number(cfg.trade.maxLossPct) : Number(SECRETS.MAX_LOSS_PERCENT);
+  return v > 0 && v <= 50 ? v : 5;
+};
+let MAX_LOSS_PERCENT = maxLossFrom(settingsCfg());
 // What Jupiter's route may slip between quote and fill. Kept inside the loss
 // budget rather than beside it, so the two cannot add up past it.
 const ROUTER_SLIPPAGE_PERCENT = 1;
@@ -97,7 +113,18 @@ const ROUTER_SLIPPAGE_PERCENT = 1;
 // The rules that read the range only apply to SOL-only positions (no token
 // deposited): a two-sided position sits partly above the price, and in the
 // wallet review one started below its range and still closed +19%.
-const EXIT = (() => {
+function exitFrom(cfg) {
+  if (cfg && cfg.exits) {
+    const x = cfg.exits;
+    return {
+      mode: x.mode === "auto" ? "auto" : "alert",
+      alertAtPnlPct: x.alertAtPnlPct == null ? null : Number(x.alertAtPnlPct),
+      alertBottomThird: x.alertBottomThirdOfRange !== false,
+      closeBelowRangeAfterMin: x.closeBelowRangeAfterMin == null ? null : Number(x.closeBelowRangeAfterMin),
+      takeProfitPct: x.takeProfitPct == null ? null : Number(x.takeProfitPct),
+      stopLossPct: x.stopLossPct == null ? null : Number(x.stopLossPct),
+    };
+  }
   const n = (k, d) => { const v = SECRETS[k]; if (v === null) return null; const x = Number(v); return v != null && v !== "" && Number.isFinite(x) ? x : d; };
   return {
     mode: String(SECRETS.EXIT_MODE || "alert").toLowerCase() === "auto" ? "auto" : "alert",
@@ -107,7 +134,23 @@ const EXIT = (() => {
     takeProfitPct: n("EXIT_TAKE_PROFIT_PCT", null),
     stopLossPct: n("EXIT_STOP_LOSS_PCT", null),
   };
-})();
+}
+const EXIT = exitFrom(settingsCfg());
+// After ⚙ Settings: the same objects, new values (everything holds a reference to EXIT).
+function reloadSettings() {
+  const cfg = settingsCfg();
+  Object.assign(EXIT, exitFrom(cfg));
+  MAX_LOSS_PERCENT = maxLossFrom(cfg);
+}
+// MET Pool's last PING ranks ({pool: rank}), to mark the positions you hold in a pool that is on it.
+function pingRanks() {
+  try {
+    const f = FileManager.local(), p = f.joinPath(f.libraryDirectory(), "dlmm_ping.json");
+    if (!f.fileExists(p)) return {};
+    const j = JSON.parse(f.readString(p));
+    return j && Date.now() - j.t < 3 * 3600000 ? j.ranks || {} : {};
+  } catch (e) { return {}; }
+}
 function exitStatePath() { const f = FileManager.local(); return f.joinPath(f.libraryDirectory(), "met_exit_state.json"); }
 function loadExitState() { try { const f = FileManager.local(); return f.fileExists(exitStatePath()) ? JSON.parse(f.readString(exitStatePath())) : {}; } catch (e) { return {}; } }
 function saveExitState(st) { try { FileManager.local().writeString(exitStatePath(), JSON.stringify(st)); } catch (e) {} }
@@ -3190,6 +3233,7 @@ function errorWidget(msg) {
 
 // ----------------------------- table -----------------------------------------
 function fillTable(t, d, stale, dataTime, refreshing, error, h) {
+  const PING_RANKS = pingRanks();
   setDisplay(DISPLAY_CUR, d.solUsd, d.usdIdr);
   t.removeAllRows();
   t.showSeparators = false;
@@ -3260,6 +3304,21 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
       if (!busy && !on) b.onTap = () => h.onCurrency(c);
     }
     t.addRow(cr);
+    if (RULES) {
+      const sr = new UITableRow();
+      sr.height = 34;
+      const ex = EXIT;
+      const sl = sr.addText(`Exit: alert PnL ≤ ${ex.alertAtPnlPct == null ? "off" : ex.alertAtPnlPct + "%"} · close ${ex.closeBelowRangeAfterMin == null ? "off" : ex.closeBelowRangeAfterMin + "m"} di bawah range · TP ${ex.takeProfitPct == null ? "off" : ex.takeProfitPct + "%"} · SL ${ex.stopLossPct == null ? "off" : ex.stopLossPct + "%"} · swap ≤ ${MAX_LOSS_PERCENT}%`);
+      sl.widthWeight = 70;
+      sl.titleFont = Font.systemFont(10);
+      sl.titleColor = COL.faint;
+      const sb = sr.addButton("⚙ Settings");
+      sb.widthWeight = 30;
+      sb.rightAligned();
+      sb.titleFont = Font.semiboldSystemFont(13);
+      if (!busy) sb.onTap = () => h.onSettings();
+      t.addRow(sr);
+    }
   }
   statusRow(t, refreshing ? "refreshing" : stale ? "stale" : "fresh", statusText(stale, dataTime, refreshing, error),
     () => h.refresh(), d.solUsd ? `SOL ${fmtMoney(d.solUsd)}` : null);
@@ -3377,7 +3436,8 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
     const row = new UITableRow();
     row.height = 54;
     const shape = r.strategy ? ` · ${STRATEGY_NAME[r.strategy] || r.strategy}` : "";
-    const name = row.addText(r.symbol,
+    const pr = PING_RANKS[r.mainPool];
+    const name = row.addText(r.symbol + (pr ? ` 📡${pr}` : ""),
       `${r.inRangeCount}/${r.posCount} in range${shape}   ${fmtAge(r.ageDays)}`);
     name.widthWeight = 28;
     name.titleFont = Font.boldSystemFont(16);
@@ -3402,7 +3462,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
     fee.subtitleFont = Font.systemFont(11);
     fee.subtitleColor = feeRateColor(r.feePctDay);
 
-    const mkt = row.addText(fmtCompact(r.mcap), r.poolFeePctDay1h != null ? `1h ${r.poolFeePctDay1h.toFixed(r.poolFeePctDay1h >= 100 ? 0 : 1)}%/d` : "--");
+    const mkt = row.addText(DISPLAY.cur === "SOL" && d.solUsd > 0 && r.mcap != null ? "◎" + fmtCompact(r.mcap / d.solUsd) : fmtCompact(r.mcap), r.poolFeePctDay1h != null ? `1h ${r.poolFeePctDay1h.toFixed(r.poolFeePctDay1h >= 100 ? 0 : 1)}%/d` : "--");
     mkt.widthWeight = 22;
     mkt.rightAligned();
     mkt.titleFont = Font.semiboldSystemFont(15);
@@ -3858,6 +3918,15 @@ if (config.runsInWidget) {
     show(current, false);
   };
   h.onRealisedToggle = () => { realisedOpen = !realisedOpen; redraw(); };
+  // ⚙ Settings (shared with MET Pool): exit rules and the swap's loss limit apply from the next check.
+  h.onSettings = async () => {
+    if (busy || !RULES) return;
+    const before = JSON.stringify(readSettings());
+    await RULES.settingsScreen({ base: RULES.makeConfig(SECRETS), overlay: readSettings(), save: writeSettings, title: "⚙ Settings · MET Portfolio" });
+    if (JSON.stringify(readSettings()) === before) return;
+    reloadSettings();
+    await h.refresh();
+  };
   // The "Show money in" row: saved for the widgets and MET Pool, redrawn
   // without a reload. Rupiah needs the dollar rate, read once if missing.
   h.onCurrency = async cur => {

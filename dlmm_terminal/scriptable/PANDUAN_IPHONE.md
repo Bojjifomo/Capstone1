@@ -2,7 +2,10 @@
 
 Versi iPhone dari DLMM Terminal jalan di **Scriptable** (app gratis di App Store). Isinya sama dengan versi web:
 
-- **Pilih pool**: semua pool Meteora DLMM pair SOL, dinilai filter v1 (OPEN / CAREFUL / WAIT / SKIP), mode **ALL / V1 PASS / SIGNAL**, fees 1h / 4h / 24h.
+- **Pilih pool**: semua pool Meteora DLMM pair SOL, dinilai filter v1 (OPEN / CAREFUL / WAIT / SKIP), mode **ALL / V1 / 📡 PING / ★ watchlist**, fees 1h / 4h / 24h.
+- **📡 PING** = filter signal entry yang sama dengan Mac: umur token 1h–250h, mcap $400k–$10M, vol 24h ≥ $50k, total fees ≥ 50 SOL, tanpa pool mati→hidup, top 10 urut 1h Vol/TVL.
+- **◎ SOL / $ USD / Rp**: semua angka (TVL, fees, mcap, posisi, PnL) bisa dibaca dalam SOL, dolar, atau rupiah.
+- **⚙ Settings** di dalam app: ladder, risk, gate, flag, filter PING, exit rules. Nggak perlu edit `MET Secrets` lagi.
 - **Buka posisi**: ladder **Spot SOL-only 5 slice** sampai −70% (isi 1:2:3:4:5).
 - **Portfolio**: PnL, alert exit, tombol close + swap ke SOL.
 - **Widget** di home screen.
@@ -72,8 +75,11 @@ Isi key **langsung di HP** supaya private key nggak pernah lewat komputer.
 ## Langkah 3 — Coba dalam Practice Mode
 
 - **Jalanin:** di Scriptable, **tap kartu `MET Pool`** (tap kartu = jalanin). Load pertama ±10–30 detik.
-- **Yang harus muncul:** header (jumlah pool, harga SOL, wallet lu + saldonya); tombol **ALL · V1 PASS · SIGNAL**; baris **Fees window** 1h · 4h · 24h; lalu daftar pool, tiap pool dengan badge **● OPEN / CAREFUL / WAIT / SKIP** + alasan. **Tap baris badge** buat lihat semua alasan.
-- **Coba SIGNAL:** tap mode **SIGNAL** buat lihat pool yang lolos gate v1, mirip pola wallet benchmark, dan bukan pool "mati lalu hidup". Pertama kali dia pakai profil bawaan; setelah ±24 jam dia bangun ulang sendiri (±100 request, tanpa key). Bisa juga dipaksa: tap baris info di mode SIGNAL → **Rebuild**.
+- **Yang harus muncul:** header (jumlah pool, harga SOL, wallet lu + saldonya); tombol **ALL · V1 · 📡PING · ★**; baris **◎ SOL · $ USD · Rp · ⚙ Settings**; baris **Fees window** 1h · 4h · 24h; lalu daftar pool, tiap pool dengan badge **● OPEN / CAREFUL / WAIT / SKIP** + alasan. **Tap baris badge** buat lihat semua alasan.
+- **Coba 📡PING:** tap **📡PING** buat lihat top 10 pool yang lolos filter signal entry (sama dengan Mac). Baris di atas tabel nulis filternya ("Filtered by: …"). Tiap pool PING dapat nomor `📡1`, `📡2`, … di namanya, juga di MET Portfolio kalau lu punya posisi di situ.
+- **★ Watchlist:** tap baris **● verdict** di bawah pool → **☆ Tambah ke watchlist**. Lihat semua di mode **★**.
+- **◎ SOL / $ USD / Rp:** tombol di bawah mode. Pilihan ini juga dipakai MET Portfolio dan widget.
+- **⚙ Settings:** tap **⚙ Settings** → tap baris yang mau diubah (size, slice, bottom, bentuk, bankroll, gate, flag, filter PING, exit rules) → isi → **Simpan**. Tanda • = beda dari `MET Secrets`. **Balik ke MET Secrets** / **Reset semua** buat balikin. Setting ini dipakai MET Pool dan MET Portfolio.
 - **Tes zap:** tap tombol **⚡** di satu pool → layar konfirmasi nunjukin gate, flag, cap loss budget, dan tabel slice → pilih bentuk **Practice · Spot ★**. Hasilnya cuma simulasi: nggak ada yang dikirim.
 - **Portfolio:** tap kartu **`MET Portfolio`** → harus nunjukin wallet lu (kosong kalau belum punya posisi).
 
@@ -116,7 +122,8 @@ Aturan yang dipakai (sama dengan Mac): gate = pair SOL, bin step 20–250, umur 
 | `Open buttons are off` (tombol ⚡ nggak ada) | `HELIUS_API_KEY` dan `SOLANA_PRIVATE_KEY` di `MET Secrets` belum keisi atau salah. Key Helius = cuma key-nya. |
 | Daftar kosong / `Couldn't load` | Cek internet, tap baris status buat refresh. Layar tetap nampilin data terakhir (ditandai "stale"). |
 | `V1 PASS 0` | Lagi nggak ada pool yang lolos. Cek `ALL` buat lihat alasannya. |
-| `SIGNAL 0` | Normal kalau nggak ada pool yang cocok saat ini. Coba lagi beberapa menit. |
+| `📡PING 0` | Normal kalau nggak ada pool yang cocok saat ini. Tap status buat scan ulang beberapa menit lagi, atau longgarin filter di ⚙ Settings. |
+| Setting nggak kepakai | Setting disimpan di HP (`dlmm_settings.json`). Kalau mau balik ke `MET Secrets`: ⚙ Settings → **Reset semua**. |
 | Widget "No data yet" | Buka `MET Pool` sekali di app biar ada data, baru widget keisi. |
 | "wallet holds X SOL, needs Y" | SOL di wallet kurang buat size + rent + reserve. |
 | Tombol ⚡ tampil `◎0.5 BA` / `3×` (preset lama) | Di `MET Secrets`, set `MET_ZAP_PRESETS: []`. |
