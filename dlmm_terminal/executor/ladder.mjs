@@ -3,14 +3,16 @@ const BINS_PER_POSITION = 70;
 // ---- plan: identical to MET.planLadder in "MET Pool" (RH ladder, weights 1..n) ----
 const binsForDrop = (pct, step) => { const f = Math.min(99.9, Math.max(0, pct)) / 100; return f <= 0 ? 0 : Math.log(1 / (1 - f)) / Math.log(1 + step / 10000); };
 const dropForBins = (bins, step) => (1 - Math.pow(1 + step / 10000, -bins)) * 100;
-export function planLadder({ activeId, binStep, solIsX, lamports, slices, top, range }) {
+// exact: keep the requested slice count even when a slice is wider than 70 bins (it is then opened as one
+// extended position). Without it the count is raised so each slice fits a standard position.
+export function planLadder({ activeId, binStep, solIsX, lamports, slices, top, range, exact = false }) {
   const topBins = Math.round(binsForDrop(top || 0, binStep));
   let endBins = Math.max(topBins, Math.round(binsForDrop(range, binStep)));
   const wanted = Math.max(1, Math.floor(slices || 1));
   const fit = wanted * BINS_PER_POSITION;
   if (endBins - topBins + 1 > fit && endBins - topBins + 1 - fit <= Math.max(2, Math.ceil(fit * 0.03))) endBins = topBins + fit - 1;
   const total = endBins - topBins + 1;
-  let n = Math.min(Math.max(wanted, Math.ceil(total / BINS_PER_POSITION)), total);
+  let n = exact ? Math.min(wanted, total) : Math.min(Math.max(wanted, Math.ceil(total / BINS_PER_POSITION)), total);
   const weights = Array.from({ length: n }, (_, i) => i + 1);
   const wsum = weights.reduce((a, b) => a + b, 0);
   const base = Math.floor(total / n), extra = total % n;
@@ -27,6 +29,6 @@ export function planLadder({ activeId, binStep, solIsX, lamports, slices, top, r
     spent += amount;
     res.push({ lo, hi, width: hi - lo + 1, lamports: amount, nearPct: dropForBins(nearD, binStep), farPct: dropForBins(farD, binStep), weight: weights[i] / wsum });
   }
-  return { slices: res.filter(s => s.lamports > 0n), raised: n > wanted ? n : 0, bins: total, realTop: dropForBins(topBins, binStep), realEnd: dropForBins(endBins, binStep) };
+  return { slices: res.filter(s => s.lamports > 0n), raised: n > wanted ? n : 0, wide: res.filter(s => s.width > BINS_PER_POSITION).length, bins: total, realTop: dropForBins(topBins, binStep), realEnd: dropForBins(endBins, binStep) };
 }
 
