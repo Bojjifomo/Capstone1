@@ -141,3 +141,31 @@ table.ladder tr { background: transparent; cursor: default; }
 .btn.danger { border-color: var(--red); color: var(--red); }
 .btn[disabled] { opacity: .5; cursor: default; }
 .res { font-size: 12px; margin-top: 6px; }
+
+/* v5: unit toggle, modes, PING, watchlist, settings */
+.seg.unit { border: 1px solid #2a3340; border-radius: 16px; padding: 1px; }
+.seg.unit button { border-radius: 14px; padding: 3px 10px; }
+.seg.unit button.on { background: #2a2414; color: var(--accent); }
+button.chip { background: transparent; cursor: pointer; font: inherit; }
+.seg.mode button { font-weight: 600; letter-spacing: .03em; }
+.seg .n { color: var(--faint); font-weight: 400; margin-left: 2px; }
+.seg button.on .n { color: inherit; }
+.pinginfo { font-size: 11.5px; color: var(--muted); background: #0f141a; }
+.pinginfo b { color: var(--text); }
+.rank { display: inline-block; border: 1px solid #275a88; color: var(--blue); border-radius: 4px; padding: 0 5px; font-size: 10.5px; margin-left: 6px; font-weight: 600; }
+.rank.new { border-color: var(--accent); color: var(--accent); }
+.star { background: transparent; border: 0; color: var(--faint); cursor: pointer; font-size: 15px; padding: 0 4px 0 0; }
+.star.on { color: var(--accent); }
+.star:hover { color: var(--accent); }
+.dh .star { font-size: 20px; }
+.toast { position: fixed; right: 16px; bottom: 16px; background: #1a222d; border: 1px solid var(--accent); border-radius: 8px; padding: 10px 14px; z-index: 20; max-width: 380px; }
+.card.wide { width: 760px; }
+.sgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; }
+.sgrid h4 { grid-column: 1 / -1; margin: 12px 0 2px; color: var(--accent); font-size: 12px; letter-spacing: .08em; }
+.sgrid label { justify-content: space-between; padding: 2px 0; font-size: 12px; }
+.sgrid label.chg { color: var(--text); }
+.sgrid input, .sgrid select { width: 120px; text-align: right; }
+.sgrid input[type=checkbox] { width: auto; }
+.pinfo { margin: 0 16px 6px; color: var(--muted); font-size: 12px; }
+.pinfo b { color: var(--text); }
+@media (max-width: 640px) { .sgrid { grid-template-columns: 1fr; } .seg.unit, #setBtn { display: flex; } }

@@ -243,6 +243,17 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 
 `--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
 
+### Web v5: settings, SOL/USD, PING, watchlist
+
+- **⚙ Settings** (top bar): semua angka yang dipakai terminal bisa diubah dari web: ladder (size, slice, bottom, bentuk), risk (bankroll, loss budget, max loss swap), gate v1, flag, filter PING, exit rules. Disimpan di `data/settings.json` (cuma yang beda dari `config.json`), dan dipakai juga sama `monitor`, `signal`, `open`, `reenter`. **Reset** = balik ke `config.json`.
+- **◎ SOL / $ USD** (top bar, shortcut `u`): semua nilai (TVL, fees, mcap, harga, posisi, PnL, wallet) dibaca dalam SOL atau USD. Angka kecil ditulis `0.0₆637` (6 nol).
+- **Mode pool**: `ALL` · `V1 PASS` · `📡 PING` · `★ WATCH` (shortcut `1`–`4`, `/` = cari).
+  - **PING** = filter signal entry: SOL pair, bin 20–250, umur pool ≥ 60m, fee APR 24h ≥ 1.000%, umur token 1h–250h, mcap $400k–$10M, vol 24h ≥ $50k, total fees pool ≥ 50 SOL, buang pool mati→hidup, top 10 urut 1h Vol/TVL (semua bisa diubah di ⚙). Scan ulang tiap 5 menit di background (20–60 detik). Pool yang masuk PING dapat badge `📡#rank` di semua mode dan di Portfolio; detail pool nunjukin angka PING-nya.
+  - **★ WATCH** = pool pilihan lu: klik ☆ di baris/detail. Disimpan di `data/watchlist.json` (kebaca juga dari HP via Tailscale).
+- **🔔** notifikasi browser: pool baru masuk PING, exit alert / exit rule kena (sekali per kejadian).
+- Top bar & Portfolio: **wallet bebas** (SOL yang belum di posisi), nilai dan fee per ladder, PnL % total.
+- Zap modal: pilih bentuk (Spot/Curve/BidAsk) + kesetaraan USD.
+
 ### Portfolio web: satu baris per ladder
 
 Ladder 3 slice tampil **satu baris** (PnL gabungan dalam % / SOL / $, range gabungan). Tombol: **Close** (semua slice, satu-satu), **Close+swap**, **Re-entry**, dan **Cleanup** di header kolom aksi (jual sisa token ≥ 0.005 SOL dengan price impact ≤ 5% + tutup token account kosong; `executor/cleanup.mjs`, `--dry-run --owner <WALLET>` buat lihat dulu). Cleanup menjual token apa pun di wallet, termasuk yang dibeli di luar terminal ini (kecuali SOL/USDC/USDT).

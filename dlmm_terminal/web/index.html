@@ -16,8 +16,12 @@
   <div class="stat" id="stNet">posisi <b>--</b></div>
   <div class="stat" id="stSol">SOL <b>--</b></div>
   <div class="stat" id="stFees">fees unclaimed <b>--</b></div>
+  <div class="stat" id="stWallet" title="SOL di wallet (bebas, belum di posisi)">wallet <b>--</b></div>
   <div class="spacer"></div>
-  <a class="chip" href="https://app.meteora.ag/dlmm" target="_blank" rel="noopener">○ Meteora</a>
+  <div class="seg unit" id="unit" title="Baca semua angka dalam SOL atau USD"><button data-u="sol">◎ SOL</button><button data-u="usd">$ USD</button></div>
+  <button class="chip" id="bellBtn" title="Notifikasi browser: pool baru masuk PING, exit alert">🔕</button>
+  <button class="chip" id="setBtn" title="Settings: ladder, risk, gate, flag, PING, exit">⚙</button>
+  <a class="chip" href="https://app.meteora.ag/dlmm" target="_blank" rel="noopener" title="Meteora">○ MET</a>
   <button class="chip key" id="keyBtn" title="Trading wallet">🔒 read-only</button>
   <div class="chip" id="stCap" title="max position = bankroll × loss budget ÷ 0.9">max --</div>
   <div class="chip live" id="stAge">● --</div>
@@ -27,7 +31,11 @@
   <section class="left" id="viewPools">
     <div class="bar">
       <span class="title">PRINTERS</span>
-      <span class="muted">pool SOL · fee per hari dari TVL · klik baris buat detail</span>
+      <div class="seg mode" id="mode">
+        <button data-m="all">ALL</button><button data-m="pass">V1 PASS</button>
+        <button data-m="ping">📡 PING <span class="n" id="nPing"></span></button>
+        <button data-m="watch">★ WATCH <span class="n" id="nWatch"></span></button>
+      </div>
       <span class="spacer"></span>
       <div class="seg" id="win">
         <button data-w="1h">1h</button><button data-w="4h">4h</button><button data-w="24h" class="on">24h</button>
@@ -39,10 +47,10 @@
         <option value="1000">$1.00k</option><option value="2000" selected>$2.00k</option>
         <option value="5000">$5.00k</option><option value="10000">$10.0k</option><option value="25000">$25.0k</option>
       </select></label>
-      <label><input type="checkbox" id="passOnly"> v1 pass only</label>
       <label><input type="checkbox" id="hideSkip" checked> hide SKIP</label>
       <span class="muted" id="count">--</span>
     </div>
+    <div class="bar pinginfo hidden" id="pingInfo"></div>
     <div class="tablewrap">
       <table id="pools">
         <thead><tr>
@@ -73,7 +81,7 @@
       <table id="positions">
         <thead><tr>
           <th>TOKEN<small>position · held</small></th>
-          <th class="r">PNL<small>SOL · peak</small></th>
+          <th class="r">PNL<small>nilai · fee · peak</small></th>
           <th>RANGE<small>price vs top · bottom</small></th>
           <th>EXIT CHECK<small>alerts · rules</small></th>
           <th><button class="btn" id="cleanupBtn" title="Jual sisa token + tutup token account kosong">Cleanup</button></th>
@@ -112,6 +120,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

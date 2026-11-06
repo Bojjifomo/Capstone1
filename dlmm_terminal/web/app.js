@@ -16,6 +16,7 @@ const $ = s => document.querySelector(s);
 const state = {
   view: "pools", win: "24h", sort: { key: "fees", desc: true }, data: null, sel: null,
   pf: null, cfg: null, wallet: "", loadedAt: 0,
+  unit: "sol", mode: "all", ping: null, watch: [], notify: false,
 };
 const store = {
   get(k, d) { try { const v = localStorage.getItem("dlmmweb." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -23,6 +24,14 @@ const store = {
 };
 
 // ---------- formatting ----------
+// 0.0000000637 -> 0.0₇637 (DexScreener style) so tiny token prices stay readable
+const SUB = "₀₁₂₃₄₅₆₇₈₉";
+const tiny = a => {
+  const z = Math.floor(-Math.log10(a));            // zeros after the point
+  if (z < 4) return a.toPrecision(3);
+  const digits = Math.round(a * Math.pow(10, z + 3)).toString().slice(0, 3);
+  return "0.0" + String(z).split("").map(d => SUB[+d]).join("") + digits;
+};
 const fmtUsd = v => {
   if (v == null || !isFinite(v)) return "--";
   const a = Math.abs(v);
@@ -31,10 +40,34 @@ const fmtUsd = v => {
   if (a >= 1e3) return "$" + (v / 1e3).toFixed(a >= 1e5 ? 1 : 2) + "k";
   if (a >= 1) return "$" + v.toFixed(2);
   if (a === 0) return "$0";
-  return "$" + v.toPrecision(3);
+  return (v < 0 ? "-$" : "$") + tiny(a);
 };
 const fmtPct = (v, d = 1, sign = false) => v == null || !isFinite(v) ? "--" : (sign && v > 0 ? "+" : "") + v.toFixed(d) + "%";
 const fmtSol = (v, d = 3) => v == null || !isFinite(v) ? "--" : "◎" + Number(v).toFixed(d);
+// ◎ with k/M for big numbers and enough digits for small ones (pool sizes, token prices in SOL).
+const fmtSolK = v => {
+  if (v == null || !isFinite(v)) return "--";
+  const a = Math.abs(v), sg = v < 0 ? "-" : "";
+  if (a >= 1e6) return sg + "◎" + (a / 1e6).toFixed(2) + "M";
+  if (a >= 1e4) return sg + "◎" + (a / 1e3).toFixed(1) + "k";
+  if (a >= 100) return sg + "◎" + a.toFixed(0);
+  if (a >= 1) return sg + "◎" + a.toFixed(2);
+  if (a === 0) return "◎0";
+  return sg + "◎" + tiny(a);
+};
+const solUsd = () => (state.data && state.data.solUsd) || null;
+// Every amount goes through one of these two, so the ◎ SOL / $ USD switch changes the whole page.
+const mU = usd => {                 // an amount the API gives in USD
+  if (usd == null || !isFinite(usd)) return "--";
+  return state.unit === "usd" || !solUsd() ? fmtUsd(usd) : fmtSolK(usd / solUsd());
+};
+const mS = (sol, d = 3) => {        // an amount the API gives in SOL
+  if (sol == null || !isFinite(sol)) return "--";
+  if (state.unit === "usd" && solUsd()) { const u = sol * solUsd(); return (u < 0 ? "-" : "") + fmtUsd(Math.abs(u)); }
+  return fmtSol(sol, d);
+};
+// the other unit, small, for context
+const mAlt = sol => sol == null || !solUsd() ? "" : state.unit === "usd" ? fmtSol(sol, 3) : (sol < 0 ? "-" : "") + fmtUsd(Math.abs(sol * solUsd()));
 const cls = v => v == null ? "muted" : v > 0 ? "pos" : v < 0 ? "neg" : "muted";
 const age = h => h == null ? "--" : h < 1 ? Math.round(h * 60) + "m" : h < 48 ? h.toFixed(1) + "h" : (h / 24).toFixed(1) + "d";
 const short = a => a ? a.slice(0, 4) + "…" + a.slice(-4) : "";
@@ -89,6 +122,7 @@ async function loadPools(force) {
     state.loadedAt = Date.now();
     renderTop();
     renderPools();
+    if (state.pf) renderPortfolio();
     if (state.sel) {
       const r = state.data.rows.find(x => x.pool === state.sel);
       if (r) renderDetail(r, true);
@@ -99,12 +133,68 @@ async function loadPools(force) {
   }
 }
 
+// PING = the signal filter (v1 gates + GMGN bands, minus dead→alive pools), top N. The server
+// rebuilds it in the background every 5 min; while it runs the last list stays up.
+async function loadPing(force) {
+  try {
+    const p = await getJson(`/api/ping${force ? "?force=1" : ""}`);
+    const fresh = p.t && (!state.ping || p.t !== state.ping.t);
+    state.ping = p;
+    if (fresh && (p.new || []).length) {
+      const names = p.rows.filter(r => p.new.includes(r.pool)).map(r => r.symbol);
+      toast(`📡 Baru masuk PING: ${names.join(", ")}`);
+      notify("📡 PING baru", names.join(", "));
+    }
+    if (state.data) renderPools();
+    if (p.running) setTimeout(() => loadPing(), 8000);
+  } catch (e) { state.ping = { error: e.message, rows: [] }; if (state.data) renderPools(); }
+}
+const pingOf = pool => state.ping && (state.ping.rows || []).find(r => r.pool === pool);
+async function loadWatch() {
+  try { state.watch = (await getJson("/api/watchlist")).rows || []; } catch (e) { state.watch = store.get("watch", []); }
+  if (state.data) renderPools();
+}
+const watched = pool => state.watch.some(w => w.pool === pool);
+async function toggleWatch(pool, symbol) {
+  const on = !watched(pool);
+  // optimistic, then the server's list (kept in data/watchlist.json, so the phone over Tailscale sees it too)
+  state.watch = on ? [...state.watch, { pool, symbol, addedAt: Date.now() / 1000 }] : state.watch.filter(w => w.pool !== pool);
+  store.set("watch", state.watch);
+  renderPools();
+  if (state.sel === pool) { const r = state.data.rows.find(x => x.pool === pool); if (r) renderDetail(r, true); }
+  try {
+    const res = await getJson("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
+      body: JSON.stringify({ pool, symbol, on, pin: trade.pin }) });
+    state.watch = res.rows || state.watch;
+  } catch (e) { toast("Watchlist cuma disimpan di browser ini: " + e.message); }
+}
+
+function toast(msg) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 7000);
+}
+function notify(title, body) {
+  if (!state.notify || !("Notification" in window) || Notification.permission !== "granted") return;
+  try { new Notification(title, { body }); } catch (e) {}
+}
+
 function rowsView() {
   const d = state.data;
   if (!d) return [];
   const q = $("#q").value.trim().toLowerCase();
+  const m = state.mode;
+  if (m === "ping") {
+    // the PING order (top N by the signal's sort), not the table's
+    return ((state.ping && state.ping.rows) || []).map(p => d.rows.find(r => r.pool === p.pool)).filter(Boolean)
+      .filter(r => !q || `${r.symbol} ${r.name} ${r.pool} ${r.tokenMint}`.toLowerCase().includes(q));
+  }
   let rows = d.rows.filter(r => {
-    if ($("#passOnly").checked && !["OPEN", "CAREFUL"].includes(r.verdict.level)) return false;
+    if (m === "pass" && !["OPEN", "CAREFUL"].includes(r.verdict.level)) return false;
+    if (m === "watch" && !watched(r.pool)) return false;
+    if (m === "watch") return !q || `${r.symbol} ${r.name} ${r.pool} ${r.tokenMint}`.toLowerCase().includes(q);
     if ($("#hideSkip").checked && r.verdict.level === "SKIP") return false;
     if (q && !(`${r.symbol} ${r.name} ${r.pool} ${r.tokenMint}`.toLowerCase().includes(q))) return false;
     return true;
@@ -129,14 +219,14 @@ function renderTop() {
   const d = state.data;
   if (d) {
     $("#stSol").innerHTML = `SOL <b>${fmtUsd(d.solUsd)}</b>`;
-    $("#stCap").textContent = `max ${fmtSol(d.maxPositionSol, 2)} / posisi`;
+    $("#stCap").textContent = `max ${mS(d.maxPositionSol, 2)} / posisi`;
   }
   const pf = state.pf;
   if (pf && !pf.error) {
-    const usd = d && d.solUsd;
-    $("#stNet").innerHTML = `posisi <b>${fmtSol(pf.valueSol, 2)}</b>${usd ? ` <span class="muted">${fmtUsd(pf.valueSol * usd)}</span>` : ""}`;
-    $("#stFees").innerHTML = `fees unclaimed <b>${fmtSol(pf.unclaimedSol, 3)}</b>`;
-    const n = pf.rows.length;
+    $("#stNet").innerHTML = `posisi <b>${mS(pf.valueSol, 2)}</b> <span class="muted">${mAlt(pf.valueSol)}</span>`;
+    $("#stFees").innerHTML = `fees unclaimed <b>${mS(pf.unclaimedSol, 3)}</b>`;
+    $("#stWallet").innerHTML = `wallet <b>${mS(pf.walletSol, 3)}</b>`;
+    const n = new Set(pf.rows.map(r => r.pool)).size;
     $("#posCount").textContent = n;
     $("#posCount").classList.toggle("hidden", !n);
   }
@@ -151,32 +241,58 @@ function tickAge() {
 }
 
 // ---------- render: pools ----------
+function posCfg() { return (state.cfg && state.cfg.cfg && state.cfg.cfg.position) || {}; }
+function ladderLabel() {
+  const p = posCfg();
+  return `${p.ladderSlices || 5}×${p.strategy || "Spot"} ${p.rangeBottomPct || -70}%`;
+}
+function renderPingInfo() {
+  const el = $("#pingInfo"), p = state.ping;
+  el.classList.toggle("hidden", state.mode !== "ping");
+  $("#nPing").textContent = p && p.rows ? p.rows.length : "";
+  $("#nWatch").textContent = state.watch.length || "";
+  if (state.mode !== "ping") return;
+  if (!p) { el.innerHTML = "📡 Scan PING… (pertama kali 20–60 detik)"; return; }
+  const ago = p.t ? Math.round((Date.now() / 1000 - p.t) / 60) : null;
+  const missing = (p.rows || []).filter(r => !state.data.rows.some(x => x.pool === r.pool));
+  el.innerHTML = `<span>📡 ${esc(p.filter || "")}</span>
+    ${(p.revived || []).length ? `<span class="warn">Dibuang (mati→hidup): ${p.revived.map(x => esc(x.symbol)).join(", ")}</span>` : ""}
+    ${missing.length ? `<span class="warn">${missing.length} pool PING di luar filter TVL: ${missing.map(x => esc(x.symbol)).join(", ")} (turunin TVL ≥)</span>` : ""}
+    <span class="spacer"></span><span>${p.running ? "scan jalan…" : ago != null ? `update ${ago}m lalu` : ""}${p.error ? ` · <span class="neg">${esc(p.error)}</span>` : ""}</span>
+    <button class="btn" id="pingRefresh">↻ scan ulang</button>`;
+  $("#pingRefresh").onclick = () => { loadPing(true); setTimeout(() => loadPing(), 3000); };
+}
 function renderPools() {
   const rows = rowsView(), w = state.win;
   const d = state.data;
+  renderPingInfo();
   $("#count").textContent = `${rows.length} of ${d.rows.length} pools · Meteora DLMM`;
   $("#poolsEmpty").classList.toggle("hidden", rows.length > 0);
-  if (!rows.length) $("#poolsEmpty").textContent = "No pool matches the filters.";
-  document.querySelectorAll("#pools th").forEach(th => th.classList.toggle("sorted", th.dataset.sort === state.sort.key));
+  if (!rows.length) $("#poolsEmpty").textContent = state.mode === "watch" ? "Belum ada pool di watchlist: klik ☆ di pool yang mau lu mainin."
+    : state.mode === "ping" ? (state.ping && state.ping.running ? "Scan PING jalan…" : "Nggak ada pool yang lolos filter PING sekarang.") : "No pool matches the filters.";
+  document.querySelectorAll("#pools th").forEach(th => th.classList.toggle("sorted", state.mode !== "ping" && th.dataset.sort === state.sort.key));
   document.querySelector("#pools th[data-sort=fees] .wl").textContent = w.toUpperCase();
   const size = d.sizeSol;
+  const fresh = new Set((state.ping && state.ping.new) || []);
   $("#pools tbody").innerHTML = rows.map(r => {
-    const v = r.verdict;
+    const v = r.verdict, pg = pingOf(r.pool);
     const reasons = [...v.reasons.filter(x => !x.ok), ...v.info].slice(0, 2).map(x => nice(x.text)).join(" · ")
       || v.reasons.filter(x => x.ok).map(x => "gates pass").join("");
     const fee1hPct = r.tvlUsd ? r.fees["1h"] / r.tvlUsd * 100 : null;
     const icon = r.icon ? `<img src="${esc(r.icon)}" alt="" loading="lazy">` : `<span class="ph"></span>`;
+    const rank = pg ? `<span class="rank ${fresh.has(r.pool) ? "new" : ""}" title="PING #${pg.rank} · 1h vol/TVL ${fmtPct(pg.volTvl1h, 1)}">📡#${pg.rank}</span>` : "";
+    const sub2 = pg ? ` · vol/TVL 1h ${fmtPct(pg.volTvl1h, 0)}` : "";
     return `<tr data-pool="${r.pool}" class="${r.pool === state.sel ? "sel" : ""}">
-      <td><span class="sym">${icon}${esc(r.symbol)}</span>
-        <span class="sub">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span> · …${r.pool.slice(-6)}</span></td>
-      <td class="r"><span class="big">${fmtUsd(r.tvlUsd)}</span><span class="sub">vol ${fmtUsd(r.vol24)}</span></td>
-      <td class="r"><span class="big pos">${fmtUsd(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/day</span></td>
-      <td class="r"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${fmtUsd(r.fees["1h"])} / jam</span></td>
-      <td class="r"><span class="big">${fmtUsd(r.mcapUsd)}</span><span class="sub">${spark(r)} <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)}</span></span></td>
+      <td><span class="sym"><button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>${icon}${esc(r.symbol)}${rank}</span>
+        <span class="sub">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2} · …${r.pool.slice(-6)}</span></td>
+      <td class="r"><span class="big">${mU(r.tvlUsd)}</span><span class="sub">vol ${mU(r.vol24)}</span></td>
+      <td class="r"><span class="big pos">${mU(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/day</span></td>
+      <td class="r"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${mU(r.fees["1h"])} / jam</span></td>
+      <td class="r"><span class="big">${mU(r.mcapUsd)}</span><span class="sub">${spark(r)} <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)}</span></span></td>
       <td><span class="badge ${v.level}">● ${v.level} ${v.score > 0 ? "+" : ""}${v.score}</span><span class="reasons">${esc(reasons)}</span></td>
       <td><div class="zap">
-        <button data-zap="${size / 2}">⚡◎${+(size / 2).toFixed(2)}</button>
-        <button data-zap="${size}">⚡◎${+size.toFixed(2)}</button>
+        <button data-zap="${size / 2}">⚡${mS(size / 2, 2)}</button>
+        <button data-zap="${size}">⚡${mS(size, 2)}</button>
         <button class="edit" data-zap="ask">✏️</button></div></td>
     </tr>`;
   }).join("");
@@ -194,29 +310,38 @@ function renderDetail(r, keepChart) {
   const chart = `https://dexscreener.com/solana/${r.pool}?embed=1&theme=dark&trades=0&info=0`;
   const old = keepChart ? $("#detail .chart") : null;
   $("#detail").innerHTML = `
-    <div class="dh"><span class="sym">${r.icon ? `<img src="${esc(r.icon)}" alt="">` : ""}<span class="name">${esc(r.symbol)}</span></span>
+    <div class="dh"><button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button><span class="sym">${r.icon ? `<img src="${esc(r.icon)}" alt="">` : ""}<span class="name">${esc(r.symbol)}</span></span>
       <span class="muted">${r.binStep} · ${r.baseFeePct}%</span>
       <span class="addr" title="copy pool address" data-copy="${r.pool}">${short(r.pool)} ⧉</span>
       <span class="spacer"></span>
       <a href="https://app.meteora.ag/dlmm/${r.pool}" target="_blank" rel="noopener">meteora ↗</a>
       <a href="https://dexscreener.com/solana/${r.pool}" target="_blank" rel="noopener">dex ↗</a></div>
     <div class="stats">
-      <div><label class="muted">harga</label><b>${fmtUsd(r.priceUsd)}</b><span class="${cls(r.priceChg1h)}">${fmtPct(r.priceChg1h, 1, true)} 1j</span></div>
-      <div><label class="muted">mcap</label><b>${fmtUsd(r.mcapUsd)}</b><span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24j</span></div>
-      <div><label class="muted">TVL</label><b>${fmtUsd(r.tvlUsd)}</b><span class="muted">umur ${age(r.poolAgeHours)}</span></div>
+      <div><label class="muted">harga</label><b>${mU(r.priceUsd)}</b><span class="${cls(r.priceChg1h)}">${fmtPct(r.priceChg1h, 1, true)} 1j</span></div>
+      <div><label class="muted">mcap</label><b>${mU(r.mcapUsd)}</b><span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24j</span></div>
+      <div><label class="muted">TVL</label><b>${mU(r.tvlUsd)}</b><span class="muted">umur ${age(r.poolAgeHours)}</span></div>
       <div><label class="muted">fee / hari</label><b class="pos">${fmtPct(r.feePctDay["24h"], 2)}</b><span class="muted">APR ${Math.round(r.feeApr24h).toLocaleString()}%</span></div>
     </div>
     <div class="vbox ${v.level}"><span class="lv">${v.level}</span>${label} <span class="muted">skor ${v.score > 0 ? "+" : ""}${v.score}</span></div>
     <ul class="rs">${li}</ul>
+    ${pingLine(r)}
     <div class="zapbig">
-      <button data-zap="${size / 2}">⚡ ◎${+(size / 2).toFixed(2)} · 5×Spot −70%</button>
-      <button data-zap="${size}">⚡ ◎${+size.toFixed(2)} · 5×Spot −70%</button>
+      <button data-zap="${size / 2}">⚡ ${mS(size / 2, 2)} · ${ladderLabel()}</button>
+      <button data-zap="${size}">⚡ ${mS(size, 2)} · ${ladderLabel()}</button>
       <button class="edit" data-zap="ask">✏️ custom</button>
     </div>
-    <div class="note">Zap = ladder Spot SOL-only 5 slice (RH), dibuka langsung pakai key di .env (simulasi dulu tiap slice). Key nggak pernah ke browser.
+    <div class="note">Zap = ladder ${esc(posCfg().strategy || "Spot")} SOL-only ${posCfg().ladderSlices || 5} slice (RH), dibuka langsung pakai key di .env (simulasi dulu tiap slice). Ubah bentuknya di ⚙ Settings. Key nggak pernah ke browser.
       Skor cuma konteks: spec nggak nemu sinyal entry yang tahan di token baru, jadi level ditentuin gate + flag aja.</div>
     <div class="chart"><iframe src="${chart}" title="chart" loading="lazy"></iframe></div>`;
   if (old && old.querySelector("iframe").src === chart) $("#detail .chart").replaceWith(old);
+}
+
+function pingLine(r) {
+  const p = pingOf(r.pool);
+  if (!p) return state.ping && state.ping.t ? `<div class="pinfo">📡 Nggak masuk PING sekarang.</div>` : "";
+  return `<div class="pinfo">📡 <b>PING #${p.rank}</b> · 1h vol/TVL <b>${fmtPct(p.volTvl1h, 1)}</b> · 1d fees/TVL <b>${fmtPct(p.feeTvl24h, 1)}</b>
+    · fees 1h <b>${mU(p.fees1hUsd)}</b> · total fees pool <b>${mS(p.totalFeesSol, 1)}</b>
+    · vol 24h token <b>${mU(p.volume24hUsd)}</b>${p.activeHours != null ? ` · aktif ${p.activeHours}/24 jam` : ""}${p.boost ? ` · ⚡boost ${p.boost}` : ""}</div>`;
 }
 
 // ---------- trading (key in .env on the server, like LP WEB) ----------
@@ -258,6 +383,7 @@ const solscan = sig => `<a href="https://solscan.io/tx/${sig}" target="_blank" r
 
 // ---------- zap modal: RH ladder, Spot, SOL-only ----------
 function openZap(r, size) {
+  $("#modalCard").classList.remove("wide");
   const d = state.data, maxSol = d.maxPositionSol, pos = (state.cfg && state.cfg.cfg && state.cfg.cfg.position) || {};
   const execMissing = state.cfg && state.cfg.executor;
   $("#modalCard").innerHTML = `
@@ -266,6 +392,8 @@ function openZap(r, size) {
       <label>SOL <input id="zSize" value="${+size.toFixed(4)}"></label>
       <label>slices <input id="zSlices" value="${pos.ladderSlices || 5}" style="width:50px"></label>
       <label>bottom −% <input id="zBottom" value="${Math.abs(pos.rangeBottomPct || 70)}" style="width:60px"></label>
+      <label>bentuk <select id="zStrat">${["Spot", "Curve", "BidAsk"].map(x => `<option ${x === (pos.strategy || "Spot") ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <span class="muted" id="zAlt"></span>
     </div>
     <div id="zBody" style="margin-top:10px"></div>
     <div id="zLadder" class="muted">Plan ladder…</div>
@@ -279,6 +407,8 @@ function openZap(r, size) {
   let cur = null, planTimer = null, planSeq = 0;
   const draw = () => {
     const sz = parseFloat($("#zSize").value) || 0, bottom = parseFloat($("#zBottom").value) || 70, slices = parseInt($("#zSlices").value, 10) || 5;
+    const strategy = $("#zStrat").value.toLowerCase();
+    $("#zAlt").textContent = solUsd() ? "≈ " + fmtUsd(sz * solUsd()) : "";
     const sizePct = r.tvlUsd ? sz * d.solUsd / r.tvlUsd * 100 : null;
     const gateFails = r.verdict.reasons.filter(x => !x.ok && !x.flag && !/^sizeVsTvl/.test(x.text)).map(x => nice(x.text));
     const maxTvlPct = state.cfg && state.cfg.cfg && state.cfg.cfg.gates.maxPositionPctOfTvl;
@@ -292,14 +422,14 @@ function openZap(r, size) {
         <span class="lv">${gateFails.length ? "GATE ✗" : flags.length ? "CAREFUL" : "OPEN"}</span>
         ${gateFails.length ? esc(gateFails.join(" · ")) : `Gates lolos · ${fmtPct(sizePct, 2)} of TVL`}</div>
       ${[...warn, ...flags].map(x => `<div class="warn">${esc(x)}</div>`).join("")}`;
-    cur = { sz, bottom, slices, gateFails, flags, over: sz > maxSol + 1e-9 };
+    cur = { sz, bottom, slices, strategy, gateFails, flags, over: sz > maxSol + 1e-9 };
     clearTimeout(planTimer);
     planTimer = setTimeout(loadPlan, 350);
   };
   async function loadPlan() {
     const seq = ++planSeq;
     $("#zLadder").innerHTML = '<span class="muted">Plan ladder…</span>';
-    const p = await post("/api/ladder/plan", { pool: r.pool, sol: cur.sz, slices: cur.slices, bottom: cur.bottom }).catch(e => ({ ok: false, error: e.message }));
+    const p = await post("/api/ladder/plan", { pool: r.pool, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, strategy: cur.strategy }).catch(e => ({ ok: false, error: e.message }));
     if (seq !== planSeq) return;
     if (!p.ok) { $("#zLadder").innerHTML = `<span class="neg">${esc(p.error || "plan gagal")}</span>`; return; }
     const pl = p.plan, mx = Math.max(...pl.slices.map(s => s.sol));
@@ -311,7 +441,7 @@ function openZap(r, size) {
       <div class="muted">Rent ±${(0.042 * pl.slices.length + (pl.slices.reduce((a, s) => a + Math.max(0, s.width - 70), 0)) * 0.0006).toFixed(3)} SOL buat ${pl.slices.length} posisi, balik pas close.</div>`;
   }
   draw();
-  ["#zSize", "#zBottom", "#zSlices"].forEach(s => { $(s).oninput = draw; });
+  ["#zSize", "#zBottom", "#zSlices", "#zStrat"].forEach(s => { $(s).oninput = draw; });
   $("#zClose").onclick = () => $("#modal").classList.add("hidden");
   $("#zSkip").onclick = async () => {
     const reason = prompt("Alasan skip?", "");
@@ -324,12 +454,12 @@ function openZap(r, size) {
     if (!trade.ready() || !cur.plan) return;
     const over = [...cur.gateFails, ...(cur.over ? ["di atas cap loss budget"] : [])];
     if (over.length && !confirm(`Spec v1 bilang jangan:\n${over.join("\n")}\n\nTetap buka? (dicatat sebagai override)`)) return;
-    if (!confirm(`Buka ladder ${r.symbol}?\n${cur.sz} SOL · ${cur.plan.slices.length} slice Spot · harga → −${cur.plan.realEnd.toFixed(1)}%\nWallet ${short(trade.info.wallet)}. Ini kirim transaksi beneran.`)) return;
+    if (!confirm(`Buka ladder ${r.symbol}?\n${cur.sz} SOL · ${cur.plan.slices.length} slice ${cur.strategy} · harga → −${cur.plan.realEnd.toFixed(1)}%\nWallet ${short(trade.info.wallet)}. Ini kirim transaksi beneran.`)) return;
     const btn = $("#zOpen");
     btn.disabled = true;
     try {
       $("#zMsg").textContent = "Simulasi + kirim slice satu-satu (bisa 1–2 menit)…";
-      const s = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, override: over.length > 0 });
+      const s = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, strategy: cur.strategy, override: over.length > 0 });
       const rows = (s.results || []).map(x => `slice ${x.slice}: ${x.ok ? "✓ " : "✗ "}${x.signature ? solscan(x.signature) : ""} ${x.error ? esc(x.error) : ""}`);
       $("#zMsg").innerHTML = rows.join("<br>") + (s.error ? `<br><span class="neg">✗ ${esc(s.error)}</span>` : "")
         + `<br>${s.ok ? "✓ Ladder kebuka." : `Kebuka ${(s.results || []).filter(x => x.ok).length} slice; sisanya tetap SOL di wallet.`}`;
@@ -444,11 +574,12 @@ function renderPortfolio() {
   const pf = state.pf;
   if (!pf) return;
   if (pf.error) { $("#pfEmpty").textContent = "Couldn't load: " + pf.error; $("#positions tbody").innerHTML = ""; return; }
-  const usd = state.data && state.data.solUsd;
-  $("#pfSummary").innerHTML = `<span>nilai <b>${fmtSol(pf.valueSol, 3)}</b>${usd ? ` (${fmtUsd(pf.valueSol * usd)})` : ""}</span>
-    <span>fees unclaimed <b>${fmtSol(pf.unclaimedSol, 4)}</b></span>
-    <span>PnL <b class="${cls(pf.pnlSol)}">${fmtSol(pf.pnlSol, 3)}</b></span>
-    <span>deposit <b>${fmtSol(pf.depositSol, 3)}</b></span>
+  const pnlPct = pf.depositSol ? pf.pnlSol / pf.depositSol * 100 : null;
+  $("#pfSummary").innerHTML = `<span>nilai <b>${mS(pf.valueSol, 3)}</b> <span class="muted">${mAlt(pf.valueSol)}</span></span>
+    <span>fees unclaimed <b>${mS(pf.unclaimedSol, 4)}</b></span>
+    <span>PnL <b class="${cls(pf.pnlSol)}">${mS(pf.pnlSol, 3)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span> <span class="muted">${mAlt(pf.pnlSol)}</span></span>
+    <span>deposit <b>${mS(pf.depositSol, 3)}</b></span>
+    <span>wallet bebas <b>${mS(pf.walletSol, 3)}</b></span>
     <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>`;
   $("#pfEmpty").classList.toggle("hidden", pf.rows.length > 0);
   if (!pf.rows.length) $("#pfEmpty").textContent = "Nggak ada posisi DLMM SOL yang terbuka di wallet ini.";
@@ -474,11 +605,11 @@ function renderPortfolio() {
     const pnlPct = dep ? pnlSol / dep * 100 : p.pnlPct;
     const peak = Math.max(...rows.map(r => r.peakPnlPct || 0));
     const held = Math.max(...rows.map(r => r.heldMin || 0));
-    const usdv = usd ? ` · ${pnlSol < 0 ? "-" : ""}${fmtUsd(Math.abs(pnlSol) * usd)}` : "";
     const ids = rows.map(r => r.position).join(",");
+    const val = p.poolBalancesSol, fee = p.poolUnclaimedSol;
     return `<tr>
-      <td><span class="sym">${esc(p.symbol)}</span><span class="sub">${n} slice · ${held ? age(held / 60) : "--"}${holdsToken ? " · pegang token" : ""}</span></td>
-      <td class="r"><span class="big ${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span><span class="sub">${fmtSol(pnlSol, 4)}${usdv} · peak ${fmtPct(peak, 2, true)}</span></td>
+      <td><span class="sym">${esc(p.symbol)}${pingOf(p.pool) ? `<span class="rank">📡#${pingOf(p.pool).rank}</span>` : ""}</span><span class="sub">${n} slice · ${held ? age(held / 60) : "--"}${holdsToken ? " · pegang token" : ""}</span></td>
+      <td class="r"><span class="big ${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span><span class="sub">${mS(pnlSol, 4)} <span class="muted">${mAlt(pnlSol)}</span></span><span class="sub">nilai ${mS(val, 3)} · fee ${mS(fee, 4)} · peak ${fmtPct(peak, 2, true)}</span></td>
       <td><span class="${cls(pv)}">${fmtPct(pv, 1, true)}</span> <span class="muted">· bottom ${fmtPct(bot, 0)}</span>
         <div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk" style="left:${pos}%"></div>` : ""}</div></td>
       <td>${status}</td>
@@ -488,9 +619,91 @@ function renderPortfolio() {
         <a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
     </tr>`;
   }).join("");
+  // browser notification once per new exit/alert message
+  const seen = store.get("seenAlerts", {});
+  for (const r of pf.rows) for (const e of r.events || []) {
+    const k = r.position + "|" + e.rule;
+    if (!seen[k]) { seen[k] = Date.now(); notify(`${e.kind === "close" ? "🔴 EXIT" : "⚠️ ALERT"} ${r.symbol}`, e.msg); }
+  }
+  for (const k of Object.keys(seen)) if (Date.now() - seen[k] > 3 * 864e5) delete seen[k];
+  store.set("seenAlerts", seen);
   const x = pf.exitsCfg || {};
   $("#pfRules").textContent = `Exit rules: alert PnL ≤ ${x.alertAtPnlPct}% · alert 1/3 bawah range · close kalau ${x.closeBelowRangeAfterMin} menit di bawah range (SOL-only) · `
     + `TP ${x.takeProfitPct != null ? x.takeProfitPct : "off"} · SL ${x.stopLossPct != null ? x.stopLossPct : "off"}. Close di sini pakai key di .env (lu konfirmasi). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
+}
+
+// ---------- settings (⚙): everything the terminal decides with, saved in data/settings.json ----------
+async function openSettings() {
+  let st;
+  try { st = await getJson("/api/settings"); } catch (e) { alert("Gagal ambil settings: " + e.message); return; }
+  const fieldHtml = f => {
+    const id = "s_" + f.path.replace(/\./g, "_");
+    const chg = JSON.stringify(f.value) !== JSON.stringify(f.base);
+    const title = `config.json: ${f.base == null ? "kosong" : f.base}`;
+    let input;
+    if (f.kind === "bool") input = `<input type="checkbox" id="${id}" ${f.value ? "checked" : ""}>`;
+    else if (f.kind === "select") input = `<select id="${id}">${f.options.map(o => `<option ${o === f.value ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+    else input = `<input id="${id}" value="${f.value == null ? "" : f.value}" placeholder="${f.kind === "numnull" ? "off" : ""}" inputmode="decimal">`;
+    return `<label class="${chg ? "chg" : ""}" title="${esc(title)}">${esc(f.label)}${chg ? " •" : ""} ${input}</label>`;
+  };
+  const groups = [...new Set(st.form.map(f => f.group))];
+  $("#modalCard").classList.add("wide");
+  $("#modalCard").innerHTML = `<h3>⚙ Settings <span class="muted">dipakai web + terminal (monitor, signal, open)</span></h3>
+    <div class="sgrid">${groups.map(g => `<h4>${esc(g.toUpperCase())}</h4>` + st.form.filter(f => f.group === g).map(fieldHtml).join("")).join("")}</div>
+    <div class="note" style="padding:8px 0 0">• = beda dari config.json (hover buat lihat nilai asal). Kosong di kolom "off" = mati / tanpa batas.
+      TP/SL otomatis sengaja mati di spec: di data 133 posisi semuanya lebih jelek dari exit manual.</div>
+    <div class="acts"><button class="btn go" id="sSave">Simpan</button><button class="btn" id="sReset">Reset ke config.json</button>
+      <span class="spacer"></span><button class="btn" id="sClose">Tutup</button></div><div class="res" id="sMsg"></div>`;
+  $("#modal").classList.remove("hidden");
+  const close = () => { $("#modal").classList.add("hidden"); $("#modalCard").classList.remove("wide"); };
+  $("#sClose").onclick = close;
+  const send = async body => {
+    try {
+      const res = await getJson("/api/settings", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
+        body: JSON.stringify(Object.assign(body, { pin: trade.pin })) });
+      if (!res.ok) throw new Error(res.error);
+      $("#sMsg").innerHTML = `<span class="pos">✓ Tersimpan.</span> Pool + PING di-scan ulang…`;
+      try { state.cfg = await getJson("/api/config"); } catch (e) {}
+      loadPools(true);
+      loadPing(true);
+      setTimeout(() => loadPing(), 3000);
+      if (state.wallet) loadPortfolio();
+      setTimeout(close, 900);
+    } catch (e) { $("#sMsg").innerHTML = `<span class="neg">✗ ${esc(e.message)}</span>`; }
+  };
+  $("#sSave").onclick = () => {
+    const changes = {};
+    for (const f of st.form) {
+      const el = document.getElementById("s_" + f.path.replace(/\./g, "_"));
+      const v = f.kind === "bool" ? el.checked : el.value.trim();
+      const cur = f.kind === "bool" || f.kind === "select" ? f.value : f.value == null ? "" : String(f.value);
+      if (String(v) !== String(cur)) changes[f.path] = v;
+    }
+    if (!Object.keys(changes).length) return close();
+    send({ changes });
+  };
+  $("#sReset").onclick = () => { if (confirm("Balikin semua ke config.json?")) send({ reset: true }); };
+}
+function setUnit(u) {
+  state.unit = u;
+  store.set("unit", u);
+  document.querySelectorAll("#unit button").forEach(b => b.classList.toggle("on", b.dataset.u === u));
+  renderTop();
+  if (state.data) renderPools();
+  if (state.pf) renderPortfolio();
+  if (state.sel && state.data) { const r = state.data.rows.find(x => x.pool === state.sel); if (r) renderDetail(r, true); }
+}
+function setMode(m) {
+  state.mode = m;
+  store.set("mode", m);
+  document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === m));
+  if (m === "ping" && !state.ping) loadPing();
+  if (state.data) renderPools();
+}
+function paintBell() {
+  const b = $("#bellBtn");
+  b.textContent = state.notify ? "🔔" : "🔕";
+  b.title = state.notify ? "Notifikasi nyala (PING baru, exit alert). Klik buat matiin." : "Nyalain notifikasi browser: PING baru + exit alert";
 }
 
 // ---------- wiring ----------
@@ -515,8 +728,27 @@ document.querySelectorAll("#pools th[data-sort]").forEach(th => th.onclick = () 
   store.set("sort", state.sort);
   renderPools();
 });
-["#q", "#passOnly", "#hideSkip"].forEach(s => $(s).addEventListener("input", () => {
-  store.set("filters", { pass: $("#passOnly").checked, skip: $("#hideSkip").checked });
+document.querySelectorAll("#mode button").forEach(b => b.onclick = () => setMode(b.dataset.m));
+document.querySelectorAll("#unit button").forEach(b => b.onclick = () => setUnit(b.dataset.u));
+$("#setBtn").onclick = openSettings;
+$("#bellBtn").onclick = async () => {
+  if (!state.notify && "Notification" in window && Notification.permission !== "granted") {
+    const p = await Notification.requestPermission().catch(() => "denied");
+    if (p !== "granted") { alert("Browser nolak notifikasi. Izinin di setting browser buat localhost."); return; }
+  }
+  state.notify = !state.notify;
+  store.set("notify", state.notify);
+  paintBell();
+};
+document.addEventListener("click", e => {
+  const st = e.target.closest("[data-star]");
+  if (!st || !state.data) return;
+  e.stopPropagation();
+  const r = state.data.rows.find(x => x.pool === st.dataset.star);
+  toggleWatch(st.dataset.star, r ? r.symbol : "");
+}, true);
+["#q", "#hideSkip"].forEach(s => $(s).addEventListener("input", () => {
+  store.set("filters", { skip: $("#hideSkip").checked });
   if (state.data) renderPools();
 }));
 $("#tvl").onchange = () => { store.set("tvl", $("#tvl").value); loadPools(); };
@@ -535,8 +767,15 @@ $("#detail").addEventListener("click", async e => {
   const c = e.target.closest("[data-copy]");
   if (c) { try { await navigator.clipboard.writeText(c.dataset.copy); c.textContent = "copied ✓"; } catch (err) {} }
 });
-$("#modal").addEventListener("click", e => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").classList.add("hidden"); });
+const closeModal = () => { $("#modal").classList.add("hidden"); $("#modalCard").classList.remove("wide"); };
+$("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") return closeModal();
+  if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return;
+  if (e.key === "/") { e.preventDefault(); setView("pools"); $("#q").focus(); }        // search
+  else if (e.key === "u") setUnit(state.unit === "sol" ? "usd" : "sol");                // unit
+  else if (e.key >= "1" && e.key <= "4") setMode(["all", "pass", "ping", "watch"][+e.key - 1]);
+});
 $("#stAge").onclick = () => loadPools(true);
 $("#keyBtn").onclick = () => alert(trade.ready()
   ? `Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (DLMM_WEB_PIN)." : "\nTrading cuma dari Mac ini."}`
@@ -562,7 +801,14 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);
   const f = store.get("filters", null);
-  if (f) { $("#passOnly").checked = !!f.pass; $("#hideSkip").checked = f.skip !== false; }
+  if (f) $("#hideSkip").checked = f.skip !== false;
+  state.unit = store.get("unit", "sol");
+  document.querySelectorAll("#unit button").forEach(b => b.classList.toggle("on", b.dataset.u === state.unit));
+  state.mode = store.get("mode", f && f.pass ? "pass" : "all");
+  document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === state.mode));
+  state.notify = store.get("notify", false) && "Notification" in window && Notification.permission === "granted";
+  paintBell();
+  state.watch = store.get("watch", []);
   $("#tvl").value = store.get("tvl", "2000");
   $("#poolsEmpty").classList.remove("hidden");
   const pools = loadPools();                       // don't wait on anything else first
@@ -573,7 +819,10 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
   trade.info = state.cfg && state.cfg.trade;
   paintWallet();
   await pools;
+  loadWatch();
+  loadPing();
   if ($("#wallet").value.trim()) loadPortfolio();
+  setInterval(() => loadPing(), 5 * 60000);                    // PING: server rebuilds every 5 min
   setInterval(() => loadPools(), 60000);                       // pools: every minute (server caches 60s)
   setInterval(() => { if (state.wallet) loadPortfolio(); }, 300000);   // positions + exit rules: every 5 min
   setInterval(tickAge, 5000);
