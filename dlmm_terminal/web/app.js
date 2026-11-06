@@ -359,13 +359,53 @@ async function closePosition(p, btn, rule) {
   } finally { btn.disabled = false; }
 }
 
+// Close every slice of a ladder (one after another), no swap.
+async function closeGroup(p, btn, group, rule) {
+  if (group.length === 1) return closePosition(p, btn, rule);
+  if (!trade.ready()) { alert(trade.why()); return; }
+  if (state.wallet !== trade.info.wallet) { alert(`Portfolio lagi nampilin wallet lain. Trading wallet: ${trade.info.wallet}`); return; }
+  if (!confirm(`Close ${p.symbol}: ${group.length} slice?\nTarik 100% likuiditas + klaim fee + tutup akun (rent balik).\nSisa token TIDAK di-swap (pakai Close+swap kalau mau dijual).`)) return;
+  btn.disabled = true;
+  const cell = btn.parentElement;
+  cell.insertAdjacentHTML("beforeend", '<div class="res muted" data-r>closing…</div>');
+  const r = cell.querySelector("[data-r]");
+  let done = 0;
+  try {
+    for (const g of group) {
+      r.textContent = `closing ${done + 1}/${group.length}…`;
+      const s = await trade.call("/api/trade/close", { pool: g.pool, position: g.position, symbol: g.symbol, rule: rule || null });
+      if (!s.ok) { r.innerHTML = `<span class="neg">✗ slice ${done + 1}: ${esc(s.error || "gagal")}</span>`; return; }
+      done++;
+    }
+    r.innerHTML = `✓ ${done} slice closed`;
+    setTimeout(loadPortfolio, 4000);
+  } catch (e) { r.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`; }
+  finally { btn.disabled = false; }
+}
+
+// Cleanup: sell leftover tokens (worth >= 0.005 SOL, price impact <= 5%) and close empty token accounts for their rent.
+async function cleanupWallet(btn) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  if (!confirm("CLEANUP wallet\n1) Jual semua sisa token yang nilainya ≥ 0.005 SOL ke SOL via Jupiter (batal per token kalau price impact > 5%). USDC/USDT/SOL nggak dijual.\n2) Tutup token account yang kosong (rent balik).\n\nToken yang kebeli di luar terminal ini juga ikut kejual. Lanjut?")) return;
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = "cleanup…";
+  try {
+    const s = await trade.call("/api/trade/cleanup", {});
+    const sold = (s.tokens || []).filter(t => t.status === "sold").length;
+    alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n` + (s.tokens || []).map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`).join("\n") : "Gagal: " + (s.error || "?"));
+    loadPortfolio();
+  } catch (e) { alert("Gagal: " + (e.message || e)); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
 // Close every position of a pool, sell the token that came out to SOL, and optionally open the ladder again at the
 // current price (re-entry). Works in range too: the token that comes out is simply sold.
 async function reenterPool(p, btn, reopen) {
   if (!trade.ready()) { alert(trade.why()); return; }
   if (state.wallet !== trade.info.wallet) { alert(`Portfolio lagi nampilin wallet lain. Trading wallet: ${trade.info.wallet}`); return; }
   const group = state.pf.rows.filter(x => x.pool === p.pool);
-  const slices = group.length, bottom = Math.abs(p.rangeBottomPct || 70);
+  const slices = group.length, bottom = Math.abs(Math.min(...group.map(x => x.rangeMin)) / Math.max(...group.map(x => x.rangeMax)) * 100 - 100) || 70;
   const msg = reopen
     ? `RE-ENTRY ${p.symbol}\n1) Close ${slices} posisi di pool ini (klaim fee)\n2) Jual sisa token ke SOL via Jupiter (batal kalau >5% di bawah harga pool)\n3) Buka ladder lagi di harga sekarang: ${slices} slice, sampai −${bottom.toFixed(0)}%, pakai semua SOL yang balik\n\nLanjut?`
     : `CLOSE + SWAP ${p.symbol}\nClose ${slices} posisi, lalu jual sisa token ke SOL via Jupiter (batal kalau >5% di bawah harga pool).\n\nLanjut?`;
@@ -412,26 +452,39 @@ function renderPortfolio() {
     <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>`;
   $("#pfEmpty").classList.toggle("hidden", pf.rows.length > 0);
   if (!pf.rows.length) $("#pfEmpty").textContent = "Nggak ada posisi DLMM SOL yang terbuka di wallet ini.";
-  $("#positions tbody").innerHTML = pf.rows.map(p => {
-    const pv = p.priceVsTopPct, bot = p.rangeBottomPct;
-    // range bar: left = bottom of the range, right = top (entry); marker = price
+  // One row per pool: a ladder of N slices is one position to look at, close and re-enter.
+  const groups = new Map();
+  for (const r of pf.rows) (groups.get(r.pool) || groups.set(r.pool, []).get(r.pool)).push(r);
+  $("#positions tbody").innerHTML = [...groups.values()].map(rows => {
+    const p = rows[0], n = rows.length;
+    const top = Math.max(...rows.map(r => r.rangeMax || 0)), low = Math.min(...rows.map(r => r.rangeMin || Infinity));
+    const price = p.price;
+    const pv = top && price ? (price / top - 1) * 100 : null, bot = top && isFinite(low) ? (low / top - 1) * 100 : null;
     const pos = pv != null && bot ? Math.max(-4, Math.min(104, (1 - pv / bot) * 100)) : null;
-    const ev = p.events || [];
+    const ev = rows.flatMap(r => r.events || []);
     const exit = ev.find(e => e.kind === "close");
-    const alerts = ev.filter(e => e.kind === "alert").map(e => e.msg);
+    const alerts = [...new Set(ev.filter(e => e.kind === "alert").map(e => e.msg))];
+    const inRange = rows.some(r => r.inRange), allAbove = rows.every(r => r.price > r.rangeMax), below = rows.every(r => r.below);
+    const holdsToken = rows.some(r => !r.solOnly) || inRange || below;
     const status = exit ? `<span class="badge WAIT">EXIT</span> <span class="neg">${esc(exit.msg)}</span>`
       : alerts.length ? `<span class="badge CAREFUL">ALERT</span> <span class="warn">${esc(alerts.join(" · "))}</span>`
-      : p.below ? `<span class="badge CAREFUL">OUT</span> <span class="muted">di bawah range</span>`
-      : `<span class="badge OPEN">OK</span> <span class="muted">${p.inRange ? "in range, earning" : "di atas range (masih SOL)"}</span>`;
+      : below ? `<span class="badge CAREFUL">OUT</span> <span class="muted">di bawah range</span>`
+      : `<span class="badge OPEN">OK</span> <span class="muted">${inRange ? "in range, earning" : "di atas range (masih SOL)"}</span>`;
+    const dep = p.poolDepositSol || 0, pnlSol = p.poolPnlSol != null ? p.poolPnlSol : rows.reduce((a, r) => a + (r.pnlSol || 0), 0);
+    const pnlPct = dep ? pnlSol / dep * 100 : p.pnlPct;
+    const peak = Math.max(...rows.map(r => r.peakPnlPct || 0));
+    const held = Math.max(...rows.map(r => r.heldMin || 0));
+    const usdv = usd ? ` · ${pnlSol < 0 ? "-" : ""}${fmtUsd(Math.abs(pnlSol) * usd)}` : "";
+    const ids = rows.map(r => r.position).join(",");
     return `<tr>
-      <td><span class="sym">${esc(p.symbol)}</span><span class="sub">${short(p.position)} · ${p.heldMin != null ? age(p.heldMin / 60) : "--"}${p.solOnly ? "" : " · two-sided"}</span></td>
-      <td class="r"><span class="big ${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span><span class="sub">${fmtSol(p.pnlSol, 4)} · peak ${fmtPct(p.peakPnlPct, 2, true)}</span></td>
+      <td><span class="sym">${esc(p.symbol)}</span><span class="sub">${n} slice · ${held ? age(held / 60) : "--"}${holdsToken ? " · pegang token" : ""}</span></td>
+      <td class="r"><span class="big ${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span><span class="sub">${fmtSol(pnlSol, 4)}${usdv} · peak ${fmtPct(peak, 2, true)}</span></td>
       <td><span class="${cls(pv)}">${fmtPct(pv, 1, true)}</span> <span class="muted">· bottom ${fmtPct(bot, 0)}</span>
         <div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk" style="left:${pos}%"></div>` : ""}</div></td>
       <td>${status}</td>
-      <td><button class="btn ${exit ? "danger" : ""}" data-close="${p.position}">${exit ? "Exit → close" : "Close"}</button>
-        <button class="btn" data-swap="${p.position}" title="Close semua posisi pool ini + jual token ke SOL">Close+swap</button>
-        <button class="btn go" data-reenter="${p.position}" title="Close + swap + buka ladder lagi di harga sekarang (juga kalau masih in range)">Re-entry</button>
+      <td><button class="btn ${exit ? "danger" : ""}" data-close="${ids}">${exit ? "Exit → close" : "Close"}</button>
+        <button class="btn" data-swap="${ids}" title="Close semua slice + jual token ke SOL">Close+swap</button>
+        <button class="btn go" data-reenter="${ids}" title="Close + jual token + buka ladder lagi di harga sekarang (juga kalau masih in range)">Re-entry</button>
         <a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
     </tr>`;
   }).join("");
@@ -490,17 +543,16 @@ $("#keyBtn").onclick = () => alert(trade.ready()
   : trade.why() + "\n\nDi dlmm_terminal/.env:\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\nSOLANA_RPC_URL=<Helius RPC>\nOpsional: DLMM_WEB_PIN=<PIN> buat trading dari HP.");
 $("#positions tbody").addEventListener("click", e => {
   const sw = e.target.closest("[data-swap],[data-reenter]");
-  if (sw && state.pf) {
-    const key = sw.dataset.swap || sw.dataset.reenter;
-    const row = state.pf.rows.find(x => x.position === key);
-    if (row) reenterPool(row, sw, !!sw.dataset.reenter);
-    return;
-  }
-  const b = e.target.closest("[data-close]");
+  const cl = e.target.closest("[data-close]");
+  const b = sw || cl;
   if (!b || !state.pf) return;
-  const p = state.pf.rows.find(x => x.position === b.dataset.close);
-  if (p) closePosition(p, b, (p.events || []).some(e => e.kind === "close") ? "exit" : null);
+  const ids = (b.dataset.swap || b.dataset.reenter || b.dataset.close).split(",");
+  const row = state.pf.rows.find(x => x.position === ids[0]);
+  if (!row) return;
+  if (sw) return reenterPool(row, sw, !!sw.dataset.reenter);
+  closeGroup(row, b, state.pf.rows.filter(x => x.pool === row.pool), (row.events || []).some(e => e.kind === "close") ? "exit" : null);
 });
+$("#cleanupBtn").onclick = () => cleanupWallet($("#cleanupBtn"));
 $("#loadWallet").onclick = loadPortfolio;
 $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortfolio(); });
 

@@ -243,6 +243,10 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 
 `--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
 
+### Portfolio web: satu baris per ladder
+
+Ladder 3 slice tampil **satu baris** (PnL gabungan dalam % / SOL / $, range gabungan). Tombol: **Close** (semua slice, satu-satu), **Close+swap**, **Re-entry**, dan **Cleanup** di header kolom aksi (jual sisa token ≥ 0.005 SOL dengan price impact ≤ 5% + tutup token account kosong; `executor/cleanup.mjs`, `--dry-run --owner <WALLET>` buat lihat dulu). Cleanup menjual token apa pun di wallet, termasuk yang dibeli di luar terminal ini (kecuali SOL/USDC/USDT).
+
 ### Close + swap dan Re-entry (juga saat masih in range)
 
 ```bash
