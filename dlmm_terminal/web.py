@@ -248,6 +248,118 @@ def wallet_sol(wallet: str) -> float | None:
         return None
 
 
+# ---------- auto exit (take profit per ladder, you switch it on per position) ----------
+# data/auto_exit.json: {pool: {"pct": 5, "symbol", "armedAt", "status": armed|firing|done|failed, "msg", "pnlPct"}}
+# While the web server runs, a thread checks the armed ladders every web.autoExitCheckMin minutes
+# (Meteora's data API only, no RPC). When the ladder's PnL % (PnL SOL / deposit, the number on the
+# row) reaches the target, it closes every slice of that pool and sells the token to SOL (reenter.mjs
+# without --reopen, the Close+swap button). Spec v1 found fixed take-profits lost SOL vs. manual
+# exits; this is off until you arm it.
+_auto_lock = threading.Lock()
+TP_CHOICES = (3, 5, 10)
+
+
+def _auto_file():
+    from .cli import DATA
+    return DATA / "auto_exit.json"
+
+
+def auto_load() -> dict:
+    try:
+        return json.loads(_auto_file().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def auto_save(d: dict) -> None:
+    f = _auto_file()
+    f.parent.mkdir(exist_ok=True)
+    f.write_text(json.dumps(d, indent=1))
+
+
+def auto_set(pool: str, symbol: str, pct: float | None) -> dict:
+    with _auto_lock:
+        d = auto_load()
+        if not pct:
+            d.pop(pool, None)
+        else:
+            d[pool] = {"pct": float(pct), "symbol": symbol, "armedAt": time.time(), "status": "armed"}
+        auto_save(d)
+        return d
+
+
+def _ladders(wallet: str) -> dict:
+    """{pool: {"symbol", "positions": [...], "pnlSol", "depositSol", "pnlPct"}} from Meteora's data API."""
+    from .cli import ticks_for_wallet
+    meta = {p["poolAddress"]: p for p in api.open_portfolio(wallet)}
+    out: dict = {}
+    for t in ticks_for_wallet(wallet, time.time()):
+        g = out.setdefault(t.pool, {"symbol": t.symbol, "positions": []})
+        g["positions"].append(t.position)
+    for pool, g in out.items():
+        m = meta.get(pool, {})
+        pnl, dep = float(m.get("pnlSol") or 0), float(m.get("totalDepositSol") or 0)
+        g.update(pnlSol=pnl, depositSol=dep, pnlPct=pnl / dep * 100 if dep else None)
+    return out
+
+
+def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
+    """One pass: fire every armed ladder at or over its target. Returns what fired."""
+    from .cli import append, notify
+    with _auto_lock:
+        armed = {k: v for k, v in auto_load().items() if v.get("status") == "armed"}
+    if not armed:
+        return []
+    ladders = _ladders(wallet)
+    fired = []
+    for pool, a in armed.items():
+        g = ladders.get(pool)
+        with _auto_lock:
+            d = auto_load()
+            if pool not in d:
+                continue
+            if not g:                                        # closed some other way
+                d[pool].update(status="done", msg="posisi sudah nggak ada")
+                auto_save(d)
+                continue
+            d[pool]["pnlPct"] = g["pnlPct"]
+            d[pool]["checkedAt"] = time.time()
+            hit = g["pnlPct"] is not None and g["pnlPct"] >= a["pct"]
+            if hit:
+                d[pool]["status"] = "firing"
+            auto_save(d)
+        if not hit:
+            continue
+        notify(f"🎯 AUTO EXIT {g['symbol']}: PnL {g['pnlPct']:+.2f}% ≥ +{a['pct']:g}% → close + swap {len(g['positions'])} slice")
+        res = node.run("reenter.mjs", ["--pool", pool, "--positions", ",".join(g["positions"]),
+                                       "--maxloss", str(cfg["trade"]["maxLossPct"])], timeout=900)
+        ok = bool(res.get("ok"))
+        msg = (f"closed, ◎{res.get('solBack', 0):.4f} balik" if ok else f"{res.get('step') or ''} {res.get('error') or 'gagal'}")[:200]
+        with _auto_lock:
+            d = auto_load()
+            if pool in d:
+                d[pool].update(status="done" if ok else "failed", msg=msg, firedAt=time.time(), pnlPct=g["pnlPct"])
+                auto_save(d)
+        append("closes.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "auto-exit", "pool": pool,
+                                "symbol": g["symbol"], "positions": g["positions"], "rule": f"takeProfit {a['pct']:g}%",
+                                "pnlPct": g["pnlPct"], **{k: res.get(k) for k in ("ok", "error", "step", "solBack")}})
+        notify(f"{'✅' if ok else '❌'} AUTO EXIT {g['symbol']}: {msg}")
+        fired.append({"pool": pool, "ok": ok, "msg": msg})
+    return fired
+
+
+def _auto_loop(cfg: dict) -> None:
+    import sys
+    while True:
+        try:
+            tw = node.trade_wallet()
+            if tw.get("ok") and auto_load():
+                auto_exit_once(cfg, tw["pubkey"])
+        except Exception as exc:
+            print(f"[auto-exit] {exc}", file=sys.stderr, flush=True)
+        time.sleep(max(1, float((cfg.get("web") or {}).get("autoExitCheckMin", 2))) * 60)
+
+
 def portfolio(wallet: str, cfg: dict) -> dict:
     from .cli import DATA, ticks_for_wallet
     now = time.time()
@@ -285,7 +397,8 @@ def portfolio(wallet: str, cfg: dict) -> dict:
     f = lambda k: sum(float(p.get(k) or 0) for p in pools)
     return {"wallet": wallet, "t": now, "rows": rows, "valueSol": f("balancesSol"), "unclaimedSol": f("unclaimedFeesSol"),
             "pnlSol": f("pnlSol"), "depositSol": f("totalDepositSol"), "exitsCfg": cfg["exits"],
-            "walletSol": wallet_sol(wallet)}
+            "walletSol": wallet_sol(wallet), "autoExit": auto_load(), "tpChoices": TP_CHOICES,
+            "autoExitCheckMin": (cfg.get("web") or {}).get("autoExitCheckMin", 2)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -418,6 +531,17 @@ class Handler(BaseHTTPRequestHandler):
                 append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
                                         "position": body.get("position"), "rule": body.get("rule"), **res})
                 return self._json(res)
+            if self.path == "/api/autoexit":
+                why = self._trade_refused(body)
+                if why:
+                    return self._json({"ok": False, "error": why}, 403)
+                if not node.trade_wallet().get("ok"):
+                    return self._json({"ok": False, "error": "auto exit butuh key di .env (DLMM_PRIVATE_KEY)"}, 400)
+                pct = body.get("pct")
+                pct = float(pct) if pct not in (None, "", 0, "0", "off") else None
+                if pct is not None and not 0.5 <= pct <= 100:
+                    return self._json({"ok": False, "error": "target 0.5–100%"}, 400)
+                return self._json({"ok": True, "autoExit": auto_set(str(body["pool"]), str(body.get("symbol") or ""), pct)})
             if self.path in ("/api/settings", "/api/watchlist"):
                 why = self._trade_refused(body)
                 if why:
@@ -452,6 +576,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8790, config_path: str | None = None) -> None:
     Handler.cfg = cfg
     Handler.config_path = config_path
+    threading.Thread(target=_auto_loop, args=(cfg,), daemon=True).start()   # auto exit (TP) for armed ladders
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"DLMM terminal web → http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}  (Ctrl+C to stop)")
     try:

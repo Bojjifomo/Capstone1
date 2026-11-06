@@ -46,9 +46,11 @@ SCHEMA = [
     ("exits.closeBelowRangeAfterMin", "Exit", "Close setelah N menit di bawah range (kosong = off)", "numnull", {"min": 0}),
     ("exits.takeProfitPct", "Exit", "Take profit (%) (kosong = off)", "numnull", {}),
     ("exits.stopLossPct", "Exit", "Stop loss (%, negatif) (kosong = off)", "numnull", {}),
+    ("web.refreshMin", "Web", "Refresh pool + portfolio tiap (menit)", "int", {"min": 1, "max": 120}),
+    ("web.autoExitCheckMin", "Web", "Cek auto exit (TP) tiap (menit, tanpa RPC)", "int", {"min": 1, "max": 60}),
 ]
 KEYS = {p: (kind, extra) for p, _, _, kind, extra in SCHEMA}
-DEFAULTS = {"trade": {"maxLossPct": 5}}
+DEFAULTS = {"trade": {"maxLossPct": 5}, "web": {"refreshMin": 15, "autoExitCheckMin": 2}}
 
 
 def _seg(k: str):

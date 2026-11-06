@@ -243,6 +243,12 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 
 `--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
 
+### Web v6: PnL dalam ◎/$, refresh 15 menit, 🎯 auto exit per ladder
+
+- Angka besar PnL di Portfolio sekarang **nominal** (◎ atau $, ikut toggle), % di bawahnya.
+- Pool, PING, dan Portfolio di-refresh tiap **15 menit** (⚙ Settings → Web → `web.refreshMin`) supaya hemat RPC.
+- **🎯 Auto exit (take profit)** per ladder: dropdown di tiap baris Portfolio, `off / TP +3% / +5% / +10%`. Server DLMM Web ngecek ladder yang nyala tiap `web.autoExitCheckMin` menit (default 2, cuma Meteora data API, **tanpa RPC**). Kalau PnL ladder (PnL ◎ ÷ deposit, angka % di baris) ≥ target: close semua slice + jual token ke SOL (= Close+swap, batal jual kalau > max loss swap), lapor ke Telegram kalau di-set, dicatat di `data/closes.jsonl`. Status di baris: nyala / lagi jalan / ✓ selesai / ✗ gagal. Disimpan di `data/auto_exit.json`. **Cuma jalan selama DLMM Web nyala di Mac.** Belum dites kirim beneran. Catatan spec v1: TP tetap rata-rata lebih jelek dari exit manual.
+
 ### iPhone v5 (sama dengan web v5)
 
 - **⚙ Settings** di MET Pool dan MET Portfolio (UITable): knob yang sama dengan web, disimpan di HP (`dlmm_settings.json`) di atas `MET Secrets`. Ladder/gate/PING kepakai langsung di MET Pool; exit rules + max loss swap di MET Portfolio.
