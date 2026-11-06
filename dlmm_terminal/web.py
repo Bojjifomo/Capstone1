@@ -179,6 +179,8 @@ def portfolio(wallet: str, cfg: dict) -> dict:
             "heldMin": (now - t.created_at) / 60 if t.created_at else None,
             "events": ev, "binStep": p.get("binStep"),
             "poolBalancesSol": p.get("balancesSol"), "poolUnclaimedSol": p.get("unclaimedFeesSol"),
+            "poolPnlSol": p.get("pnlSol"), "poolDepositSol": p.get("totalDepositSol"),
+            "rangeMax": t.range_max, "rangeMin": t.range_min, "price": t.price,
         })
     for gone in set(states) - seen:
         states.pop(gone)
@@ -259,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         try:
-            if self.path in ("/api/trade/open", "/api/trade/close", "/api/trade/reenter"):
+            if self.path in ("/api/trade/open", "/api/trade/close", "/api/trade/reenter", "/api/trade/cleanup"):
                 why = self._trade_refused(body)
                 if why:
                     return self._json({"ok": False, "error": why}, 403)
@@ -278,6 +280,10 @@ class Handler(BaseHTTPRequestHandler):
                                                "decision": "enter", "sizeSol": sol, "override": bool(body.get("override")),
                                                "positions": [r.get("position") for r in res.get("results", [])], "ok": res.get("ok"),
                                                "error": res.get("error")})
+                    return self._json(res)
+                if self.path.endswith("cleanup"):
+                    res = node.run("cleanup.mjs", ["--maxloss", str(float(body.get("maxloss") or 5))], timeout=600)
+                    append("closes.jsonl", {"ts": ts, "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "emptyAccounts", "closed")}})
                     return self._json(res)
                 if self.path.endswith("reenter"):
                     pos = self.cfg["position"]
