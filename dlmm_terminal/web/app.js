@@ -522,7 +522,7 @@ async function cleanupWallet(btn) {
   btn.textContent = "cleanup…";
   try {
     const s = await trade.call("/api/trade/cleanup", {});
-    const sold = (s.tokens || []).filter(t => t.status === "sold").length;
+    const sold = (s.tokens || []).filter(t => /^sold/.test(t.status)).length;
     alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n` + (s.tokens || []).map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`).join("\n") : "Gagal: " + (s.error || "?"));
     loadPortfolio();
   } catch (e) { alert("Gagal: " + (e.message || e)); }
