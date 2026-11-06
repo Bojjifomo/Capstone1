@@ -184,6 +184,18 @@ def layer2(sig: dict) -> str:
     return ", ".join(parts) if parts else "no GMGN bands"
 
 
+def filter_text(cfg: dict, prof: dict, n: int, total: int, revived: int = 0) -> str:
+    """'Filtered by: SOL pair, bin 20-250, ... Top 10 of 12, sorted by 1h Vol/TVL.'"""
+    sig, g, u = cfg["signal"], cfg["gates"], cfg["universe"]
+    wallet = prof.get("wallet") or ""
+    return (f"Filtered by: SOL pair, bin {u['binStepMin']}-{u['binStepMax']}, pool age ≥ {g['minPoolAgeMinutes']:g}m, "
+            f"fee APR 24h ≥ {g['minFeeApr24hPct']:,.0f}%, {layer2(sig)}"
+            + (f", bin steps of {wallet[:6]}…{wallet[-4:]} {prof['days']:g}d" if sig.get("requireBenchmarkBinSteps") and wallet else "")
+            + ". "
+            + (f"Excluded {revived} dead→alive pool(s). " if revived else "")
+            + f"Top {n} of {total}, sorted by {SORT_KEYS.get(sig.get('blastSortBy'), sig.get('blastSortBy'))}.")
+
+
 def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool, revived: int = 0) -> str:
     """The card. html_mode=True for Telegram (parse_mode=HTML), False for the terminal."""
     sig, g, u = cfg["signal"], cfg["gates"], cfg["universe"]
@@ -194,11 +206,5 @@ def message(rows: list[dict], total: int, cfg: dict, prof: dict, html_mode: bool
     head = f"MEME - {lead['name']} {_pct(lead['feeTvl24h'])}"
     legend = "\n".join(f"{icon} {label}" for icon, label in LEGEND)
     body = "\n\n".join(_line(r, html_mode) for r in rows)
-    wallet = prof["wallet"]
-    foot = (f"Filtered by: SOL pair, bin {u['binStepMin']}-{u['binStepMax']}, pool age ≥ {g['minPoolAgeMinutes']}m, "
-            f"fee APR 24h ≥ {g['minFeeApr24hPct']:,}%, {layer2(sig)}"
-            + (f", bin steps of {wallet[:6]}…{wallet[-4:]} {prof['days']:g}d" if sig.get("requireBenchmarkBinSteps") else "")
-            + ". "
-            + (f"Excluded {revived} dead→alive pool(s). " if revived else "")
-            + f"Top {len(rows)} of {total}, sorted by {SORT_KEYS.get(sig.get('blastSortBy'), sig.get('blastSortBy'))}.")
+    foot = filter_text(cfg, prof, len(rows), total, revived)
     return "\n\n".join([head, b(f"DLMM Top {len(rows)} MEME Fees Opportunities"), legend, body, b(foot) if html_mode else foot])

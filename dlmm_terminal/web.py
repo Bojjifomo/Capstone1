@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import api, exits, filters, node
+from . import api, exits, filters, node, settings
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "web"
@@ -154,6 +154,100 @@ def pool_rows(cfg: dict, min_tvl: float, force: bool = False) -> dict:
     return data
 
 
+# ---------- PING: the signal filter (v1 gates + GMGN bands - dead→alive), top N ----------
+_ping = {"t": 0.0, "running": False, "data": None, "error": None, "cfgKey": None}
+PING_TTL = 5 * 60
+
+
+def _ping_key(cfg: dict) -> str:
+    keep = {k: cfg.get(k) for k in ("universe", "gates", "signal", "scan")}
+    return json.dumps(keep, sort_keys=True, default=str)
+
+
+def _benchmark_profile() -> dict:
+    """data/benchmark.json if the signal command built one; the filter itself only needs the owner's bands."""
+    from .cli import DATA
+    try:
+        return json.loads((DATA / "benchmark.json").read_text())
+    except (OSError, ValueError):
+        return {"wallet": "", "days": 0, "bands": {}, "binSteps": {}}
+
+
+def _ping_run(cfg: dict) -> None:
+    from . import blast
+    from .cli import scan_hits
+    try:
+        now = time.time()
+        prof = _benchmark_profile()
+        state = {"lastLog": now}                      # the signal command logs candidates; the web doesn't
+        hits = scan_hits(cfg, prof, state, now)
+        dx = blast.dex_5m([c["pool"] for c, _, _ in hits])
+        rows = [blast.row(c, snap, m, dx.get(c["pool"]), now) for c, m, snap in hits]
+        sig = cfg["signal"]
+        best = blast.top(rows, int(sig.get("blastTop", 10)), sig.get("blastSortBy", "volTvl1h"))
+        for i, r in enumerate(best, 1):
+            r["rank"] = i
+            r.pop("hours", None)
+        revived = state.get("revivedExcluded") or []
+        prev = {r["pool"] for r in ((_ping.get("data") or {}).get("rows") or [])}
+        data = {"t": now, "rows": best, "total": len(rows), "revived": [{"pool": x["pool"], "symbol": x["symbol"]} for x in revived],
+                "filter": blast.filter_text(cfg, prof, len(best), len(rows), len(revived)),
+                "new": [r["pool"] for r in best if prev and r["pool"] not in prev]}
+        with _lock:
+            _ping.update(t=now, data=data, error=None, cfgKey=_ping_key(cfg))
+    except Exception as exc:
+        with _lock:
+            _ping.update(t=time.time(), error=str(exc)[:300])
+    finally:
+        with _lock:
+            _ping["running"] = False
+
+
+def ping_rows(cfg: dict, force: bool = False) -> dict:
+    """Cached PING list; a stale or forced one is rebuilt in the background (it takes 20-60 s:
+    one DexScreener request per token that passes the gates, one history request per hit)."""
+    with _lock:
+        stale = force or time.time() - _ping["t"] > PING_TTL or _ping["cfgKey"] not in (None, _ping_key(cfg))
+        if stale and not _ping["running"]:
+            _ping["running"] = True
+            threading.Thread(target=_ping_run, args=(cfg,), daemon=True).start()
+        return {"running": _ping["running"], "error": _ping["error"], **(_ping["data"] or {"rows": [], "t": 0})}
+
+
+# ---------- watchlist: the pools you picked to play ----------
+def _watch_file():
+    from .cli import DATA
+    return DATA / "watchlist.json"
+
+
+def watchlist() -> list[dict]:
+    try:
+        return json.loads(_watch_file().read_text())
+    except (OSError, ValueError):
+        return []
+
+
+def watch_set(pool: str, symbol: str, on: bool, note: str | None = None) -> list[dict]:
+    cur = [w for w in watchlist() if w.get("pool") != pool]
+    if on:
+        cur.append({"pool": pool, "symbol": symbol, "addedAt": time.time(), **({"note": note} if note else {})})
+    f = _watch_file()
+    f.parent.mkdir(exist_ok=True)
+    f.write_text(json.dumps(cur, indent=1))
+    return cur
+
+
+def wallet_sol(wallet: str) -> float | None:
+    """SOL balance on the public node (reads never spend the Helius quota)."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [wallet, {"commitment": "confirmed"}]}).encode()
+    req = urllib.request.Request(node.PUBLIC_RPC, data=body, headers={"Content-Type": "application/json", "User-Agent": "dlmm-terminal/1"})
+    try:
+        with api.urlopen(req, timeout=10) as r:
+            return json.load(r)["result"]["value"] / 1e9
+    except Exception:
+        return None
+
+
 def portfolio(wallet: str, cfg: dict) -> dict:
     from .cli import DATA, ticks_for_wallet
     now = time.time()
@@ -180,6 +274,7 @@ def portfolio(wallet: str, cfg: dict) -> dict:
             "events": ev, "binStep": p.get("binStep"),
             "poolBalancesSol": p.get("balancesSol"), "poolUnclaimedSol": p.get("unclaimedFeesSol"),
             "poolPnlSol": p.get("pnlSol"), "poolDepositSol": p.get("totalDepositSol"),
+            "poolPnlPct": p.get("pnlSolPctChange") if p.get("pnlSolPctChange") is not None else p.get("pnlPctChange"),
             "rangeMax": t.range_max, "rangeMin": t.range_min, "price": t.price,
         })
     for gone in set(states) - seen:
@@ -189,7 +284,8 @@ def portfolio(wallet: str, cfg: dict) -> dict:
     pools = list(meta.values())
     f = lambda k: sum(float(p.get(k) or 0) for p in pools)
     return {"wallet": wallet, "t": now, "rows": rows, "valueSol": f("balancesSol"), "unclaimedSol": f("unclaimedFeesSol"),
-            "pnlSol": f("pnlSol"), "depositSol": f("totalDepositSol"), "exitsCfg": cfg["exits"]}
+            "pnlSol": f("pnlSol"), "depositSol": f("totalDepositSol"), "exitsCfg": cfg["exits"],
+            "walletSol": wallet_sol(wallet)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -222,6 +318,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not wallet:
                     return self._json({"error": "no wallet: pass ?wallet= or set DLMM_WALLET"}, 400)
                 return self._json(portfolio(wallet, self.cfg))
+            if u.path == "/api/ping":
+                return self._json(ping_rows(self.cfg, q.get("force") == "1"))
+            if u.path == "/api/watchlist":
+                return self._json({"rows": watchlist()})
+            if u.path == "/api/settings":
+                return self._json({"form": settings.form(self.cfg, self.base_cfg()), "overlay": settings.load()})
             if u.path == "/api/config":
                 tw = node.trade_wallet() if not node.ready() else {"ok": False}
                 return self._json({"cfg": self.cfg, "wallet": tw.get("pubkey") or os.environ.get("DLMM_WALLET"),
@@ -244,6 +346,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, b"not found", "text/plain")
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}.get(f.suffix, "application/octet-stream")
         self._send(200, f.read_bytes(), ctype)
+
+    config_path = None
+
+    def base_cfg(self) -> dict:
+        from .cli import load_config
+        return load_config(self.config_path, overlay=False)
+
+    def reload_cfg(self) -> None:
+        """Settings changed: the same cfg object (every request holds it) gets the new values; caches drop."""
+        from .cli import load_config
+        new = load_config(self.config_path)
+        self.cfg.clear()
+        self.cfg.update(new)
+        with _lock:
+            _cache.clear()
 
     def _is_local(self) -> bool:
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
@@ -282,13 +399,13 @@ class Handler(BaseHTTPRequestHandler):
                                                "error": res.get("error")})
                     return self._json(res)
                 if self.path.endswith("cleanup"):
-                    res = node.run("cleanup.mjs", ["--maxloss", str(float(body.get("maxloss") or 5))], timeout=600)
+                    res = node.run("cleanup.mjs", ["--maxloss", str(float(body.get("maxloss") or self.cfg["trade"]["maxLossPct"]))], timeout=600)
                     append("closes.jsonl", {"ts": ts, "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "emptyAccounts", "closed")}})
                     return self._json(res)
                 if self.path.endswith("reenter"):
                     pos = self.cfg["position"]
                     positions = [str(x) for x in body["positions"]]
-                    args = ["--pool", str(body["pool"]), "--positions", ",".join(positions), "--maxloss", str(float(body.get("maxloss") or 5))]
+                    args = ["--pool", str(body["pool"]), "--positions", ",".join(positions), "--maxloss", str(float(body.get("maxloss") or self.cfg["trade"]["maxLossPct"]))]
                     if body.get("reopen"):
                         args += ["--reopen", "--slices", str(int(body.get("slices") or len(positions) or pos.get("ladderSlices", 5))),
                                  "--bottom", str(abs(float(body.get("bottom") or pos["rangeBottomPct"]))), "--top", str(float(body.get("top") or 0)),
@@ -301,6 +418,18 @@ class Handler(BaseHTTPRequestHandler):
                 append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
                                         "position": body.get("position"), "rule": body.get("rule"), **res})
                 return self._json(res)
+            if self.path in ("/api/settings", "/api/watchlist"):
+                why = self._trade_refused(body)
+                if why:
+                    return self._json({"ok": False, "error": why}, 403)
+                if self.path == "/api/watchlist":
+                    return self._json({"ok": True, "rows": watch_set(str(body["pool"]), str(body.get("symbol") or ""), bool(body.get("on")), body.get("note"))})
+                if body.get("reset"):
+                    settings.reset()
+                else:
+                    settings.save(self.base_cfg(), body.get("changes") or {})
+                self.reload_cfg()
+                return self._json({"ok": True, "form": settings.form(self.cfg, self.base_cfg()), "overlay": settings.load()})
             if self.path == "/api/ladder/plan":
                 pos = self.cfg["position"]
                 args = node.ladder_args(str(body["pool"]), float(body["sol"]), int(body.get("slices") or pos.get("ladderSlices", 5)),
@@ -308,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
                                         str(body.get("strategy") or "spot"))
                 return self._json(node.run("open_ladder.mjs", args + ["--plan"]))
         except (KeyError, ValueError) as exc:
-            return self._json({"ok": False, "error": f"bad request: {exc}"}, 400)
+            return self._json({"ok": False, "error": f"{exc}"}, 400)
         except Exception as exc:
             return self._json({"ok": False, "error": str(exc)[:300]}, 502)
         if self.path != "/api/decide":
@@ -320,8 +449,9 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "logged": row})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8790) -> None:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8790, config_path: str | None = None) -> None:
     Handler.cfg = cfg
+    Handler.config_path = config_path
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"DLMM terminal web → http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}  (Ctrl+C to stop)")
     try:

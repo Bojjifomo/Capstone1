@@ -45,7 +45,9 @@ def load_env() -> None:
                         os.environ[k] = v
 
 
-def load_config(path: str | None) -> dict:
+def load_config(path: str | None, overlay: bool = True) -> dict:
+    """config.json, then sizing from .env, then what you set in the web (⚙, data/settings.json)."""
+    from . import settings
     cfg = json.loads(Path(path or HERE / "config.json").read_text())
     # Per-person sizing from .env, so nobody has to edit config.json.
     for env, key in (("DLMM_BANKROLL_SOL", "bankrollSol"), ("DLMM_SIZE_SOL", "defaultSizeSol"), ("DLMM_LOSS_BUDGET_PCT", "lossBudgetPct")):
@@ -55,7 +57,7 @@ def load_config(path: str | None) -> dict:
                 cfg["position"][key] = float(v)
             except ValueError:
                 print(f"{env}={v!r} bukan angka; pakai config.json", file=sys.stderr)
-    return cfg
+    return settings.apply(cfg, None if overlay else {})
 
 
 def append(name: str, row: dict) -> None:
@@ -212,7 +214,7 @@ def cmd_reenter(a, cfg):
     from . import node
     pos = cfg["position"]
     positions = [x for x in a.positions.split(",") if x]
-    args = ["--pool", a.pool, "--positions", ",".join(positions), "--maxloss", str(a.maxloss)]
+    args = ["--pool", a.pool, "--positions", ",".join(positions), "--maxloss", str(a.maxloss if a.maxloss is not None else cfg["trade"]["maxLossPct"])]
     if a.reopen:
         args += ["--reopen", "--slices", str(a.slices or len(positions)), "--bottom", str(abs(a.bottom if a.bottom is not None else pos["rangeBottomPct"])),
                  "--top", str(a.top), "--strategy", a.strategy] + (["--sol", str(a.sol)] if a.sol else [])
@@ -751,7 +753,7 @@ def main(argv=None):
     re_.add_argument("--top", type=float, default=0)
     re_.add_argument("--sol", type=float, help="re-open with this much SOL (default: all that came back)")
     re_.add_argument("--strategy", default="spot")
-    re_.add_argument("--maxloss", type=float, default=5, help="refuse to sell when the swap pays this %% under the pool price")
+    re_.add_argument("--maxloss", type=float, help="refuse to sell when the swap pays this %% under the pool price (default: settings trade.maxLossPct)")
     re_.add_argument("--dry-run", action="store_true")
     re_.add_argument("--owner")
     re_.add_argument("-y", "--yes", action="store_true")
@@ -785,7 +787,7 @@ def main(argv=None):
     cfg = load_config(a.config)
     if a.cmd == "web":
         from . import web
-        return web.serve(cfg, a.host, a.port)
+        return web.serve(cfg, a.host, a.port, config_path=a.config)
     {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open, "reenter": cmd_reenter,
      "benchmark": cmd_benchmark, "signal": cmd_signal, "rpc": cmd_rpc}[a.cmd](a, cfg)
 
