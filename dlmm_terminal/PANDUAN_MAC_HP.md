@@ -97,6 +97,8 @@ Tailscale = jaringan pribadi gratis antara Mac dan HP lu, jalan dari mana aja (4
 4. Di **Safari HP** buka: **http://mac-mini:8891** (atau **http://100.x.y.z:8891**). Ganti 8891 kalau lu ubah `DLMM_WEB_PORT`.
 5. Biar kayak app: tombol **Share → Add to Home Screen** → muncul ikon **DLMM Web**.
 
+Di HP tampilannya versi HP: tab bar di bawah (**Pool · V1 · PING · Watch · Portfolio**), tiap pool/ladder jadi kartu, tap kartu = detail + chart layar penuh (**✕ Tutup** buat balik).
+
 Pertama kali lu ngubah sesuatu dari HP (zap, close, ★, ⚙, auto exit), HP **nanya PIN** (`DLMM_WEB_PIN`). Sekali per sesi.
 
 ---
