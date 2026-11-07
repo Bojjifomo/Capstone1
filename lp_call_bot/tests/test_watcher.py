@@ -493,14 +493,20 @@ class AutoCallTest(unittest.TestCase):
         self.bot.owner_wallets = [WALLET]
         self.store.add_wallet(OTHER, "Aan")
         self.bot.auto_call({"action": "open", "wallet": WALLET, "pos": dict(self.pos)})
-        self.assertIn("OPEN LP — HYDX</b>", self.tg.to(FAN)[-1])  # punya lu: tanpa nama
+        self.assertTrue(self.tg.to(FAN)[-1].startswith("🟢 <b>OPEN LP — HYDX</b>"))  # punya lu: kayak biasa
         self.bot.auto_call({"action": "open", "wallet": OTHER, "pos": dict(self.pos, range=["-70"])})
-        self.assertIn("OPEN LP — HYDX · Aan</b>", self.tg.to(FAN)[-1])
+        text = self.tg.to(FAN)[-1]
+        self.assertTrue(text.startswith("👀 <b>PANTAUAN WALLET: AAN</b>"))
+        self.assertIn("🔵 <b>OPEN LP — HYDX</b>", text)
+        self.assertNotIn("🟢", text)
         self.assertEqual(self.store.get("hydx")["range"], ["-65"])  # nggak ketimpa
         self.assertEqual(self.store.get("hydx@aan")["range"], ["-70"])
 
         self.bot.auto_call({"action": "close", "wallet": OTHER, "pos": {"coin": "hydx", "ca": self.pos["ca"]}})
-        self.assertIn("CLOSE LP — HYDX · Aan", self.tg.to(FAN)[-1])
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("PANTAUAN WALLET: AAN", text)
+        self.assertIn("🟠 <b>CLOSE LP — HYDX</b>", text)
+        self.assertNotIn("🔴", text)
         self.assertEqual(self.store.get("hydx")["status"], "open")
         self.assertEqual(self.store.get("hydx@aan")["status"], "closed")
 
@@ -515,7 +521,7 @@ class AutoCallTest(unittest.TestCase):
         self.assertTrue(self.bot.send_recap())
         text = self.tg.to(FAN)[-1]
         self.assertIn("(2)", text)
-        self.assertIn("HYDX · Aan", text)
+        self.assertIn("HYDX · 👀 Aan", text)
 
     def test_second_bot_instance_warns_once(self):
         self.tg.call = mock.Mock(return_value={"ok": False, "error_code": 409, "description": "Conflict"})

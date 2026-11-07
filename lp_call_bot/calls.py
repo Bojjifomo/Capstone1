@@ -71,13 +71,20 @@ def _ca_line(ca):
 
 
 def _by(pos):
-    """' · Aan' buat posisi wallet tambahan; kosong buat posisi owner."""
-    return f" · {html.escape(pos['by'])}" if pos.get("by") else ""
+    """' · 👀 degen' buat posisi wallet tambahan (di daftar / rekap); kosong buat posisi owner."""
+    return f" · 👀 {html.escape(pos['by'])}" if pos.get("by") else ""
+
+
+def _watched_header(pos):
+    """Baris pembuka call wallet tambahan, biar beda jelas dari call owner."""
+    return [f"👀 <b>PANTAUAN WALLET: {html.escape(pos['by'].upper())}</b>",
+            "<i>bukan call dari admin, cuma info pergerakan wallet ini</i>", ""]
 
 
 def render_open(pos):
-    return "\n".join([
-        f"🟢 <b>OPEN LP — {html.escape(pos['coin'].upper())}{_by(pos)}</b>",
+    coin = html.escape(pos["coin"].upper())
+    head = _watched_header(pos) + [f"🔵 <b>OPEN LP — {coin}</b>"] if pos.get("by") else [f"🟢 <b>OPEN LP — {coin}</b>"]
+    return "\n".join(head + [
         "",
         _ca_line(pos["ca"]),
         f"Pool: <b>{pos['fee']}%</b>",
@@ -88,7 +95,10 @@ def render_open(pos):
 def render_close(positions):
     if len(positions) == 1:
         pos = positions[0]
-        return f"🔴 <b>CLOSE LP — {html.escape(pos['coin'].upper())}{_by(pos)}</b>\n\n{_ca_line(pos['ca'])}"
+        coin = html.escape(pos["coin"].upper())
+        if pos.get("by"):
+            return "\n".join(_watched_header(pos) + [f"🟠 <b>CLOSE LP — {coin}</b>", "", _ca_line(pos["ca"])])
+        return f"🔴 <b>CLOSE LP — {coin}</b>\n\n{_ca_line(pos['ca'])}"
     lines = ["🔴 <b>CLOSE LP</b>", ""]
     for pos in positions:
         lines.append(f"• <b>{html.escape(pos['coin'].upper())}{_by(pos)}</b> — <code>{html.escape(pos['ca'])}</code>")
