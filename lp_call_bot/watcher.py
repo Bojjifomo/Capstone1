@@ -76,8 +76,8 @@ def _pad(addr):
 # ---- watcher ---------------------------------------------------------------
 class Watcher:
     """poll() -> call baru sejak poll sebelumnya:
-        {"action": "open",  "pos": {coin, ca, fee, range}, "token_ids", "tx"}
-        {"action": "close", "pos": {coin, ca},             "token_ids", "tx"}
+        {"action": "open",  "pos": {coin, ca, fee, range}, "token_ids", "tx", "wallet"}
+        {"action": "close", "pos": {coin, ca},             "token_ids", "tx", "wallet"}
         {"action": "skip",  "text": alasan}    (buat dikabarin ke owner, nggak di-blast)
     Poll pertama cuma nyatet block sekarang. Kalau bot mati lebih lama dari `catchup_minutes`, aktivitas yang
     lebih lama dari itu dilewatin (daripada ngirim call basi ke follower) dan owner dikabarin."""
@@ -92,10 +92,14 @@ class Watcher:
         self.chunk = chunk
         with store.lock:
             st = store.data.setdefault("watch", {})
-            if st.get("wallets") != self.wallets or st.get("v") != STATE_VERSION:  # ganti wallet / versi = dari awal
+            if st.get("v") != STATE_VERSION:  # versi state beda = mulai dari "sekarang" lagi
                 st.clear()
-                st.update(v=STATE_VERSION, wallets=self.wallets, cursor=None, pools={})
+                st.update(v=STATE_VERSION, cursor=None, pools={})
                 store.save()
+
+    def set_wallets(self, wallets):
+        """Ganti daftar wallet sambil jalan: wallet baru dipantau mulai poll berikutnya (aktivitas lamanya nggak)."""
+        self.wallets = list(dict.fromkeys(w.lower() for w in wallets))
 
     @property
     def state(self):
@@ -115,7 +119,8 @@ class Watcher:
                 out.append({"action": "skip", "text": "Bot sempat mati lebih dari "
                             f"{self.catchup_blocks // BLOCKS_PER_MINUTE} menit: aktivitas wallet sebelum itu dilewatin, "
                             "nggak di-blast."})
-            out += self._scan(start, head)
+            if self.wallets:
+                out += self._scan(start, head)
         with self.store.lock:
             self.state["cursor"] = max(head, cursor or 0)
             self.store.save()
@@ -135,12 +140,14 @@ class Watcher:
                     seen.add((d["block"], d["log_index"]))
                     transfers.append(d)
 
-        txs = {}  # tx -> {"block", "li", "mint": {id}, "burn": {id}}
+        txs = {}  # tx -> {"block", "li", "wallet", "mint": {id}, "burn": {id}}
         for d in sorted(transfers, key=lambda d: (d["block"], d["log_index"])):
             kind = ("mint" if d["from"] == RH.ZERO and d["to"] in self.wallets
                     else "burn" if d["to"] == RH.ZERO and d["from"] in self.wallets else None)
             if kind:
-                t = txs.setdefault(d["tx"], {"block": d["block"], "li": d["log_index"], "mint": set(), "burn": set()})
+                wallet = d["to"] if kind == "mint" else d["from"]
+                t = txs.setdefault(d["tx"], {"block": d["block"], "li": d["log_index"], "wallet": wallet,
+                                             "mint": set(), "burn": set()})
                 t[kind].add(d["token_id"])
         out = []
         for tx, t in sorted(txs.items(), key=lambda kv: (kv[1]["block"], kv[1]["li"])):
@@ -168,6 +175,8 @@ class Watcher:
             out += self._close(tx, pool, rungs)
         for pool, rungs in opens.items():
             out += self._open(tx, pool, t["block"], rungs)
+        for ev in out:
+            ev["wallet"] = t["wallet"]
         return out
 
     def _close(self, tx, pool, rungs):
