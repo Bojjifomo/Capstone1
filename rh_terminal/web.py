@@ -6,7 +6,8 @@ watchlist, ladder zap, and your wallet's ladders with exits, close, claim, re-en
 
 Trading: the key in .env (RH_PRIVATE_KEY) or in RH Secrets (iCloud Scriptable) stays in the Node
 executor; the browser only sees the address. Who may trade:
-  * without RH_WEB_PIN: this Mac, plus devices on the home network or Tailscale, no PIN
+  * only this Mac and Tailscale devices reach the page at all (plain Wi-Fi: RH_WEB_ALLOW_LAN=true)
+  * without RH_WEB_PIN: all of those trade, no PIN
   * with RH_WEB_PIN: this Mac without it, every other device with the PIN
 Trade requests also need the X-RH-Trade header, which another website open in your browser
 cannot add without a CORS preflight this server never answers.
@@ -249,20 +250,27 @@ def cleanup_list(wallet: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------- handler ----
-_TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
+_TAILSCALE = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 
 
-def is_home_address(addr: str) -> bool:
-    """Loopback, private LAN (192.168/10/172.16, fe80/fc00) or a Tailscale address."""
+def lan_allowed() -> bool:
+    return os.environ.get("RH_WEB_ALLOW_LAN", "").strip().lower() in ("1", "true", "yes")
+
+
+def is_allowed_address(addr: str) -> bool:
+    """This Mac or a Tailscale device. Plain Wi-Fi / LAN only with RH_WEB_ALLOW_LAN=true; never public IPs."""
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
     if getattr(ip, "ipv4_mapped", None):
         ip = ip.ipv4_mapped
-    if ip.version == 4 and ip in _TAILSCALE:
+    if ip.is_loopback or any(ip.version == n.version and ip in n for n in _TAILSCALE):
         return True
-    return ip.is_loopback or (ip.is_private and not ip.is_global)
+    return lan_allowed() and ip.is_private and not ip.is_global
+
+_REFUSED_PAGE = ("RH Terminal cuma bisa dibuka dari Mac ini atau lewat Tailscale.\n"
+                 "Nyalain Tailscale di device ini, lalu buka http://<nama-mac>:8892\n").encode()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -285,22 +293,30 @@ class Handler(BaseHTTPRequestHandler):
     def _is_local(self) -> bool:
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
-    def _is_home(self) -> bool:
-        return is_home_address(self.client_address[0])
+    def _is_allowed(self) -> bool:
+        return is_allowed_address(self.client_address[0])
+
+    def _refuse_outsider(self) -> bool:
+        if self._is_allowed():
+            return False
+        print(f"[{datetime.now():%H:%M:%S}] ditolak: {self.client_address[0]} (bukan Mac ini / Tailscale)",
+              file=sys.stderr, flush=True)
+        self._send(403, _REFUSED_PAGE, "text/plain; charset=utf-8")
+        return True
 
     def _trade_refused(self, body: dict) -> str | None:
         if self.headers.get("X-RH-Trade") != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
             return "missing trade header"
-        # The Mac running the server never needs the PIN. Without RH_WEB_PIN, devices on the home
-        # network or Tailscale trade without one too; anything else (a public address) never trades.
+        # The Mac running the server never needs the PIN. Without RH_WEB_PIN, Tailscale devices
+        # trade without one too; anything else never got past _refuse_outsider.
+        if not self._is_allowed():
+            return "cuma dari Mac ini atau Tailscale"
         if self._is_local():
             return None
         pin = os.environ.get("RH_WEB_PIN")
         if pin:
             return None if hmac.compare_digest(str(body.get("pin") or ""), pin) else "PIN salah"
-        if self._is_home():
-            return None
-        return "trading cuma dari Mac ini, Wi-Fi rumah, atau Tailscale"
+        return None
 
     def reload_cfg(self) -> None:
         new = load_config()
@@ -310,6 +326,8 @@ class Handler(BaseHTTPRequestHandler):
             _cache.clear()
 
     def do_GET(self):
+        if self._refuse_outsider():
+            return
         u = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         try:
@@ -336,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("address"),
                                              "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
                                              "pin": bool(os.environ.get("RH_WEB_PIN")), "local": self._is_local(),
-                                             "trusted": self._is_local() or (not os.environ.get("RH_WEB_PIN") and self._is_home()),
+                                             "trusted": self._is_local() or (not os.environ.get("RH_WEB_PIN") and self._is_allowed()),
                                              "practice": practice_mode(),
                                              "envCheck": None if tw.get("ok") or not self._is_local() else env_report()},
                                    "wallet": os.environ.get("RH_WALLET")})
@@ -366,6 +384,8 @@ class Handler(BaseHTTPRequestHandler):
         return res
 
     def do_POST(self):
+        if self._refuse_outsider():
+            return
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         except ValueError:

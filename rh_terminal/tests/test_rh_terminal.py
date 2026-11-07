@@ -243,11 +243,19 @@ class TradeAccess(unittest.TestCase):
         h.headers = {"X-RH-Trade": "1", "Content-Type": "application/json"}
         return h
 
-    def test_no_pin_home_and_tailscale_trade(self):
-        with mock.patch.dict("os.environ", {"RH_WEB_PIN": ""}):
-            for a in ("127.0.0.1", "192.168.1.20", "10.0.0.5", "100.101.5.9", "::ffff:192.168.0.3"):
+    def test_only_mac_and_tailscale(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "", "RH_WEB_ALLOW_LAN": ""}):
+            for a in ("127.0.0.1", "::1", "100.101.5.9", "fd7a:115c:a1e0::1234"):
+                self.assertTrue(self._h(a)._is_allowed(), a)
                 self.assertIsNone(self._h(a)._trade_refused({}), a)
-            self.assertIsNotNone(self._h("8.8.8.8")._trade_refused({}))
+            for a in ("192.168.1.20", "10.0.0.5", "::ffff:192.168.0.3", "8.8.8.8"):
+                self.assertFalse(self._h(a)._is_allowed(), a)
+                self.assertIsNotNone(self._h(a)._trade_refused({}), a)
+
+    def test_lan_opt_in(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "", "RH_WEB_ALLOW_LAN": "true"}):
+            self.assertTrue(self._h("192.168.1.20")._is_allowed())
+            self.assertFalse(self._h("8.8.8.8")._is_allowed())
 
     def test_pin_set_local_skips_others_need_it(self):
         with mock.patch.dict("os.environ", {"RH_WEB_PIN": "4829"}):

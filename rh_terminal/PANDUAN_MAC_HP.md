@@ -10,7 +10,7 @@ MacBook ┘                     └── key cuma di sini
 
 Semua yang lu atur kesimpen di Mac mini, jadi tiga-tiganya sama persis: ⚙ Settings, ★ watchlist, 🎯 auto exit, dan tampilan ($ / Ξ, mode, window fee, sort, TVL).
 
-**Private key cuma ada di Mac mini.** iPhone dan MacBook nggak pernah lihat key. Mereka cuma kirim perintah ke Mac mini, dan ditanya **PIN** sebelum boleh transaksi.
+**Private key cuma ada di Mac mini.** iPhone dan MacBook nggak pernah lihat key. Mereka cuma kirim perintah ke Mac mini, dan cuma bisa nyambung lewat **Tailscale** (Wi-Fi doang ditolak).
 
 > ⚠️ **Uang beneran.** Pakai wallet khusus LP yang isinya cuma yang siap lu risikoin. **Auto exit cuma jalan selama Mac mini nyala dan servernya jalan.**
 
@@ -98,7 +98,8 @@ Pertama kali dia bikin **`rh_terminal/.env`** dan buka di TextEdit. Isi:
 | `RH_PRIVATE_KEY=` | **Opsi A:** biarin kosong. **Opsi B:** private key wallet LP (64 hex, boleh pakai `0x`). |
 | `ALCHEMY_API_KEY=` | Opsi A: kosong. Opsi B: key Alchemy (chain Robinhood). |
 | `RH_PRACTICE_MODE=` | Biarin **`true`** dulu: semua tombol cuma simulasi di chain, nggak ada yang dikirim. |
-| `RH_WEB_PIN=` | **Biarin kosong** = iPhone & MacBook (Wi-Fi rumah / Tailscale) langsung bisa trading tanpa PIN. Isi PIN cuma kalau mau dikunci. |
+| `RH_WEB_PIN=` | **Biarin kosong** = iPhone & MacBook lewat Tailscale langsung bisa trading tanpa PIN. Isi PIN cuma kalau mau dikunci. |
+| `RH_WEB_ALLOW_LAN=` | **Biarin kosong.** Device yang cuma nyambung Wi-Fi rumah (tanpa Tailscale) ditolak. `true` = boleh. |
 | `RH_WEB_PORT=` | Kosong = **8892**. Isi angka lain cuma kalau 8892 kepake app lain. |
 | `RH_BANKROLL_USD=` | Modal LP lu dalam dolar. Maks per posisi = bankroll × 5% ÷ 0.9. |
 | `RH_SIZE_USD=` | Size default per ladder (contoh `400`). |
@@ -167,9 +168,9 @@ MacBook **nggak jalanin server sendiri**. Dia cuma buka halaman dari Mac mini, s
 1. Install **Tailscale** di MacBook (tailscale.com/download), login **akun yang sama**, nyalain.
 2. Browser → **http://mac-mini:8892** (atau `http://100.x.y.z:8892`).
 3. Biar ada di Dock: Safari → **File → Add to Dock**. Chrome: ⋮ → **Cast, save, and share → Install page as app**.
-4. Pertama kali ngubah sesuatu, MacBook nanya **PIN**.
+4. Tanpa `RH_WEB_PIN` nggak ada PIN; langsung bisa transaksi.
 
-Di Wi-Fi rumah yang sama, `http://Mac-mini.local:8892` juga bisa tanpa Tailscale. Di luar rumah tetap pakai Tailscale.
+Selalu buka lewat Tailscale, di rumah juga. `http://Mac-mini.local:8892` atau IP Wi-Fi (`192.168.x.x`) bakal ditolak: "cuma bisa dibuka dari Mac ini atau lewat Tailscale".
 
 > ⛔ **Jangan double-click `Buka RH Terminal.command` di MacBook** buat wallet yang sama. Dua server = dua pengecek auto exit yang bisa nyoba nutup posisi yang sama dua kali, dan setting/watchlist-nya kepisah. **Satu server di Mac mini aja.**
 
@@ -228,7 +229,7 @@ Double-click `Buka RH Terminal.command` lagi. Di iPhone/MacBook: refresh halaman
 |---|---|
 | "Gagal baca: … Connection refused / HTTP 403 / alchemy HTTP 400", chip ⛓ merah "0 pool" | Jaringan lu (biasanya DNS provider internet) ngeblok RPC resmi Robinhood dan PublicNode. Versi terbaru otomatis pindah ke RPC cadangan (Daybreak, dRPC) dan nyari posisi lewat ownerOf: update (langkah 11). Biar normal lagi: System Settings → Network → Wi-Fi/Ethernet → **Details → DNS** → ganti ke `1.1.1.1` dan `8.8.8.8`, restart RH Terminal. `python3 -m rh_terminal doctor` nunjukin RPC mana yang kejangkau. (Alchemy gratis cuma bisa baca log 10 block, jadi bukan cadangan buat itu.) |
 | iPhone / MacBook: halaman nggak kebuka | Tailscale nyala di dua-duanya, akun sama? Server di Mac mini jalan (jendela Terminal kebuka)? Coba pakai IP `http://100.x.y.z:8892`. |
-| iPhone / MacBook: "trading cuma dari Mac ini, Wi-Fi rumah, atau Tailscale" | Device-nya lewat internet publik. Buka lewat Tailscale (`http://<nama-mac>:8892`). |
+| "RH Terminal cuma bisa dibuka dari Mac ini atau lewat Tailscale" | Device-nya nggak lewat Tailscale (cuma Wi-Fi). Nyalain Tailscale, buka `http://<nama-mac>:8892`. Terminal Mac mini nyatet IP yang ditolak. |
 | "PIN salah" padahal nggak mau PIN | Hapus isi `RH_WEB_PIN=` di `.env`, tutup Terminal, double-click lagi. |
 | "PIN salah" | Ketik ulang PIN yang ada di `.env`. |
 | 🔒 read-only | Klik chip 🔒: dia nulis kenapa (`.env` kosong, key bukan 64 hex, RH Secrets nggak ketemu di iCloud, file RTF). Atau `python3 -m rh_terminal doctor`. |
@@ -244,6 +245,5 @@ Double-click `Buka RH Terminal.command` lagi. Di iPhone/MacBook: refresh halaman
 ## Keamanan
 
 - Key (`.env` / RH Secrets) cuma di Mac mini. Jangan dikirim ke siapa pun. Curiga bocor → pindahin dana ke wallet baru.
-- Pakai PIN yang nggak gampang ditebak. Siapa pun di Wi-Fi rumah lu bisa **lihat** halaman, tapi nggak bisa transaksi tanpa PIN.
-- Jangan share akun Tailscale / PIN.
+- Device yang cuma nyambung Wi-Fi rumah lu nggak bisa buka sama sekali; yang bisa cuma Mac mini dan device di akun Tailscale lu. Jangan share akun Tailscale; kalau perlu, isi `RH_WEB_PIN`.
 - Semua transaksi disimulasikan dulu. Yang bakal gagal nggak pernah dikirim.
