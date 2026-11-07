@@ -13,6 +13,7 @@ window.addEventListener("error", e => showFatal(e.message + (e.filename ? ` (${e
 window.addEventListener("unhandledrejection", e => showFatal((e.reason && e.reason.message) || e.reason));
 
 const $ = s => document.querySelector(s);
+const isPhone = () => window.matchMedia("(max-width: 760px)").matches;
 const state = {
   view: "pools", win: "24h", sort: { key: "fees", desc: true }, data: null, sel: null,
   pf: null, cfg: null, wallet: "", loadedAt: 0,
@@ -287,6 +288,7 @@ function renderPools() {
   document.querySelector("#pools th[data-sort=fees] .wl").textContent = w.toUpperCase();
   const size = d.sizeSol;
   const fresh = new Set((state.ping && state.ping.new) || []);
+  const cards = [];
   $("#pools tbody").innerHTML = rows.map(r => {
     const v = r.verdict, pg = pingOf(r.pool);
     const reasons = [...v.reasons.filter(x => !x.ok), ...v.info].slice(0, 2).map(x => nice(x.text)).join(" · ")
@@ -295,6 +297,16 @@ function renderPools() {
     const icon = r.icon ? `<img src="${esc(r.icon)}" alt="" loading="lazy">` : `<span class="ph"></span>`;
     const rank = pg ? `<span class="rank ${fresh.has(r.pool) ? "new" : ""}" title="PING #${pg.rank} · 1h vol/TVL ${fmtPct(pg.volTvl1h, 1)}">📡#${pg.rank}</span>` : "";
     const sub2 = pg ? ` · vol/TVL 1h ${fmtPct(pg.volTvl1h, 0)}` : "";
+    const star = `<button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>`;
+    // phone: one card per pool, everything readable without scrolling sideways
+    cards.push(`<div class="pcard ${r.pool === state.sel ? "sel" : ""}" data-pool="${r.pool}">
+      <div class="pc1">${star}${icon}<b class="psym">${esc(r.symbol)}</b>${rank}<span class="spacer"></span><span class="badge ${v.level}">${v.level}</span></div>
+      <div class="pc2"><span><small>TVL</small>${mU(r.tvlUsd)}</span><span><small>fee ${w}</small><b class="pos">${fmtPct(r.feePctDay[w], 1)}</b>/d</span>
+        <span><small>1 jam</small>${fmtPct(fee1hPct, 2)}</span><span><small>mcap</small>${mU(r.mcapUsd)}</span></div>
+      <div class="pc3">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2}</div>
+      ${reasons ? `<div class="pc3 muted">${esc(reasons)}</div>` : ""}
+      <div class="zap"><button data-zap="${size / 2}">⚡${mS(size / 2, 2)}</button><button data-zap="${size}">⚡${mS(size, 2)}</button><button class="edit" data-zap="ask">✏️</button></div>
+    </div>`);
     return `<tr data-pool="${r.pool}" class="${r.pool === state.sel ? "sel" : ""}">
       <td><span class="sym"><button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>${icon}${esc(r.symbol)}${rank}</span>
         <span class="sub">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2} · …${r.pool.slice(-6)}</span></td>
@@ -309,12 +321,14 @@ function renderPools() {
         <button class="edit" data-zap="ask">✏️</button></div></td>
     </tr>`;
   }).join("");
+  $("#poolCards").innerHTML = cards.join("");
 }
 
 // ---------- render: detail ----------
 function renderDetail(r, keepChart) {
   state.sel = r.pool;
-  document.querySelectorAll("#pools tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.pool === r.pool));
+  document.querySelectorAll("#pools tr, .pcard").forEach(tr => tr.classList.toggle("sel", tr.dataset.pool === r.pool));
+  if (!keepChart && isPhone()) document.body.classList.add("sheet");
   const v = r.verdict, d = state.data, size = d.sizeSol;
   const label = { OPEN: "Semua gate lolos, nggak ada flag.", CAREFUL: "Gate lolos, tapi ada flag: cek dulu.",
     WAIT: "Belum: ada gate yang belum lolos (bisa berubah).", SKIP: "Di luar universe spec (bin step / bukan SOL)." }[v.level];
@@ -323,6 +337,7 @@ function renderDetail(r, keepChart) {
   const chart = `https://dexscreener.com/solana/${r.pool}?embed=1&theme=dark&trades=0&info=0`;
   const old = keepChart ? $("#detail .chart") : null;
   $("#detail").innerHTML = `
+    <div class="sheetbar"><button class="btn" data-closesheet>✕ Tutup</button><span class="spacer"></span><b>${esc(r.symbol)}</b></div>
     <div class="dh"><button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button><span class="sym">${r.icon ? `<img src="${esc(r.icon)}" alt="">` : ""}<span class="name">${esc(r.symbol)}</span></span>
       <span class="muted">${r.binStep} · ${r.baseFeePct}%</span>
       <span class="addr" title="copy pool address" data-copy="${r.pool}">${short(r.pool)} ⧉</span>
@@ -626,6 +641,7 @@ function renderPortfolio() {
   // One row per pool: a ladder of N slices is one position to look at, close and re-enter.
   const groups = new Map();
   for (const r of pf.rows) (groups.get(r.pool) || groups.set(r.pool, []).get(r.pool)).push(r);
+  const lcards = [];
   $("#positions tbody").innerHTML = [...groups.values()].map(rows => {
     const p = rows[0], n = rows.length;
     const top = Math.max(...rows.map(r => r.rangeMax || 0)), low = Math.min(...rows.map(r => r.rangeMin || Infinity));
@@ -647,6 +663,17 @@ function renderPortfolio() {
     const held = Math.max(...rows.map(r => r.heldMin || 0));
     const ids = rows.map(r => r.position).join(",");
     const val = p.poolBalancesSol, fee = p.poolUnclaimedSol;
+    const rbar = `<div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk" style="left:${pos}%"></div>` : ""}</div>`;
+    lcards.push(`<div class="lcard">
+      <div class="lc1"><div><b class="psym">${esc(p.symbol)}</b>${pingOf(p.pool) ? `<span class="rank">📡#${pingOf(p.pool).rank}</span>` : ""}
+        <div class="sub">${n} slice · ${held ? age(held / 60) : "--"}${holdsToken ? " · pegang token" : ""}</div></div>
+        <div class="r"><div class="pnlbig ${cls(pnlSol)}">${pnlSol > 0 ? "+" : ""}${mS(pnlSol, 4)}</div><div class="sub"><span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span> · ${mAlt(pnlSol)}</div></div></div>
+      <div class="lc2"><span><small>nilai</small>${mS(val, 3)}</span><span><small>fee</small>${mS(fee, 4)}</span><span><small>peak</small>${fmtPct(peak, 2, true)}</span><span><small>harga vs top</small><b class="${cls(pv)}">${fmtPct(pv, 1, true)}</b></span></div>
+      ${rbar}<div class="sub">bottom ${fmtPct(bot, 0)}</div>
+      <div class="lc3">${status}</div>
+      <div class="lbtns"><button class="btn ${exit ? "danger" : ""}" data-close="${ids}">${exit ? "Exit" : "Close"}</button><button class="btn" data-swap="${ids}">Close+swap</button><button class="btn go" data-reenter="${ids}">Re-entry</button></div>
+      ${autoExitCell(p, pnlPct)}
+    </div>`);
     return `<tr>
       <td><span class="sym">${esc(p.symbol)}${pingOf(p.pool) ? `<span class="rank">📡#${pingOf(p.pool).rank}</span>` : ""}</span><span class="sub">${n} slice · ${held ? age(held / 60) : "--"}${holdsToken ? " · pegang token" : ""}</span></td>
       <td class="r"><span class="big ${cls(pnlSol)}">${pnlSol > 0 ? "+" : ""}${mS(pnlSol, 4)}</span><span class="sub"><span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span> · <span class="muted">${mAlt(pnlSol)}</span></span><span class="sub">nilai ${mS(val, 3)} · fee ${mS(fee, 4)} · peak ${fmtPct(peak, 2, true)}</span></td>
@@ -660,6 +687,7 @@ function renderPortfolio() {
         <a href="https://app.meteora.ag/dlmm/${p.pool}" target="_blank" rel="noopener">meteora ↗</a></td>
     </tr>`;
   }).join("");
+  $("#pfCards").innerHTML = lcards.join("");
   // browser notification once per new exit/alert message
   const seen = store.get("seenAlerts", {});
   for (const r of pf.rows) for (const e of r.events || []) {
@@ -736,6 +764,7 @@ function setUnit(u) {
 function setMode(m) {
   state.mode = m;
   store.set("mode", m);
+  if (typeof paintBottom === "function") paintBottom();
   document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === m));
   if (m === "ping" && !state.ping) loadPing();
   if (state.data) renderPools();
@@ -753,6 +782,7 @@ function setView(v) {
   $("#viewPools").classList.toggle("hidden", v !== "pools");
   $("#viewPortfolio").classList.toggle("hidden", v !== "portfolio");
   store.set("view", v);
+  if (typeof paintBottom === "function") paintBottom();
   if (v === "portfolio" && !state.pf && $("#wallet").value.trim()) loadPortfolio();
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setView(b.dataset.view));
@@ -792,15 +822,18 @@ document.addEventListener("click", e => {
   if (state.data) renderPools();
 }));
 $("#tvl").onchange = () => { store.set("tvl", $("#tvl").value); loadPools(); };
-$("#pools tbody").addEventListener("click", e => {
-  const tr = e.target.closest("tr");
+const onPoolClick = e => {
+  const tr = e.target.closest("tr, .pcard");
   if (!tr || !state.data) return;
   const r = state.data.rows.find(x => x.pool === tr.dataset.pool);
   const z = e.target.closest("[data-zap]");
   if (z) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeSol : parseFloat(z.dataset.zap));
   renderDetail(r);
-});
+};
+$("#pools tbody").addEventListener("click", onPoolClick);
+$("#poolCards").addEventListener("click", onPoolClick);
 $("#detail").addEventListener("click", async e => {
+  if (e.target.closest("[data-closesheet]")) { document.body.classList.remove("sheet"); return; }
   const z = e.target.closest("[data-zap]");
   const r = state.data && state.data.rows.find(x => x.pool === state.sel);
   if (z && r) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeSol : parseFloat(z.dataset.zap));
@@ -829,7 +862,7 @@ $("#keyBtn").onclick = async () => {
   alert(trade.why() + (chk.length ? "\n\nCek .env:\n• " + chk.join("\n• ") : "")
     + "\n\nDi dlmm_terminal/.env (satu baris, tanpa spasi, tanpa kutip):\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\n\nSave, lalu klik chip ini lagi (nggak perlu restart). Di Terminal: python3 -m dlmm_terminal doctor");
 };
-$("#positions tbody").addEventListener("click", e => {
+const onPfClick = e => {
   const sw = e.target.closest("[data-swap],[data-reenter]");
   const cl = e.target.closest("[data-close]");
   const b = sw || cl;
@@ -839,7 +872,22 @@ $("#positions tbody").addEventListener("click", e => {
   if (!row) return;
   if (sw) return reenterPool(row, sw, !!sw.dataset.reenter);
   closeGroup(row, b, state.pf.rows.filter(x => x.pool === row.pool), (row.events || []).some(e => e.kind === "close") ? "exit" : null);
+};
+$("#positions tbody").addEventListener("click", onPfClick);
+$("#pfCards").addEventListener("click", onPfClick);
+$("#pfCards").addEventListener("change", e => { const s = e.target.closest("[data-tp]"); if (s) setAutoExit(s); });
+$("#cleanupBtn2").onclick = () => cleanupWallet($("#cleanupBtn2"));
+// phone bottom bar: pools (ALL / V1 / PING / WATCH) and portfolio
+document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
+  document.body.classList.remove("sheet");
+  if (b.dataset.view === "portfolio") return setView("portfolio");
+  setView("pools");
+  setMode(b.dataset.m);
 });
+function paintBottom() {
+  document.querySelectorAll("#bottomnav button").forEach(b => b.classList.toggle("on",
+    b.dataset.view === "portfolio" ? state.view === "portfolio" : state.view === "pools" && state.mode === b.dataset.m));
+}
 $("#cleanupBtn").onclick = () => cleanupWallet($("#cleanupBtn"));
 $("#positions tbody").addEventListener("change", e => { const s = e.target.closest("[data-tp]"); if (s) setAutoExit(s); });
 $("#loadWallet").onclick = loadPortfolio;

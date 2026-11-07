@@ -71,6 +71,7 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div class="cards" id="poolCards"></div>
       <div class="empty" id="poolsEmpty">Loading pools… (pertama kali ±10–30 detik)</div>
     </div>
   </section>
@@ -95,6 +96,8 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div class="cards" id="pfCards"></div>
+      <div class="phoneonly cleanrow"><button class="btn" id="cleanupBtn2">🧹 Cleanup wallet</button></div>
       <div class="empty" id="pfEmpty">Isi wallet lalu Load. Tanpa private key: cuma baca.</div>
     </div>
     <div class="note" id="pfRules"></div>
@@ -105,6 +108,13 @@
   </aside>
 </main>
 
+<nav class="bottomnav" id="bottomnav">
+  <button data-view="pools" data-m="all">☄️<span>Pool</span></button>
+  <button data-view="pools" data-m="pass">✅<span>V1</span></button>
+  <button data-view="pools" data-m="ping">📡<span>PING</span></button>
+  <button data-view="pools" data-m="watch">★<span>Watch</span></button>
+  <button data-view="portfolio">💼<span>Portfolio</span></button>
+</nav>
 <div class="modal hidden" id="modal"><div class="card" id="modalCard"></div></div>
 <script>
   // Separate from app.js on purpose: if app.js can't even be parsed (old browser,
@@ -127,6 +137,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
