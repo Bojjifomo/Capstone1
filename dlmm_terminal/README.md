@@ -186,10 +186,10 @@ python3 dlmm_terminal/scriptable/tests/make_golden.py       # rekam ulang jawaba
 
 ## Versi web (kayak LP WEB, buat Solana)
 
-Di Mac mini: double-click **`dlmm_terminal/Buka DLMM Web.command`** di Finder (browser kebuka sendiri ke `http://localhost:8790`, biarin jendela Terminal-nya kebuka). Dari HP lewat Tailscale: `http://<nama-mac-mini>:8790`. Pertama kali, macOS mungkin nolak file-nya: klik kanan → Open → Open.
+Di Mac mini: double-click **`dlmm_terminal/Buka DLMM Web.command`** di Finder (browser kebuka sendiri ke `http://localhost:8891`, biarin jendela Terminal-nya kebuka). Dari HP / MacBook lewat Tailscale: `http://<nama-mac-mini>:8891`. Port bisa diganti: `DLMM_WEB_PORT` di `.env` (kalau 8891 kepake app lain, launcher-nya bilang). Pertama kali, macOS mungkin nolak file-nya: klik kanan → Open → Open.
 
 ```bash
-python3 -m dlmm_terminal web                      # http://localhost:8790
+python3 -m dlmm_terminal web                      # http://localhost:8891
 python3 -m dlmm_terminal web --host 0.0.0.0       # buka dari HP lewat Tailscale
 ```
 
@@ -245,7 +245,7 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 
 ### Mac + HP dengan setup yang sama
 
-Panduan lengkap: **[PANDUAN_MAC_HP.md](PANDUAN_MAC_HP.md)** (juga `Panduan Mac + HP.pdf`). Satu server di Mac, dibuka dari Mac (`localhost:8790`) dan HP (Tailscale, `http://<nama-mac>:8790`, bisa Add to Home Screen). Settings, watchlist, auto exit, dan pilihan tampilan (◎/$, mode, window, sort, TVL: `data/ui_prefs.json`) kesimpen di Mac, jadi sama di dua-duanya. Dari HP, perubahan (zap, close, ★, ⚙, auto exit) nanya `DLMM_WEB_PIN` sekali per sesi.
+Panduan lengkap: **[PANDUAN_MAC_HP.md](PANDUAN_MAC_HP.md)** (juga `Panduan Mac + HP.pdf`). Satu server di Mac, dibuka dari Mac (`localhost:8891`) dan HP (Tailscale, `http://<nama-mac>:8891`, bisa Add to Home Screen). Settings, watchlist, auto exit, dan pilihan tampilan (◎/$, mode, window, sort, TVL: `data/ui_prefs.json`) kesimpen di Mac, jadi sama di dua-duanya. Dari HP, perubahan (zap, close, ★, ⚙, auto exit) nanya `DLMM_WEB_PIN` sekali per sesi.
 
 ### Jual token: Jupiter, kalau gagal langsung ke pool Meteora
 

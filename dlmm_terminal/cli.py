@@ -5,7 +5,7 @@
   python -m dlmm_terminal decide ADDR enter|skip --reason "..."
   python -m dlmm_terminal monitor --wallet W     # every 5 min: log PnL, alerts, exit rules (auto TP/SL)
   python -m dlmm_terminal followup               # fill price 1h/6h/24h after each candidate
-  python -m dlmm_terminal web                    # browser terminal on http://localhost:8790
+  python -m dlmm_terminal web                    # browser terminal on http://localhost:8891 (DLMM_WEB_PORT)
   python -m dlmm_terminal open POOL --sol 8      # open a 5-slice Spot SOL-only ladder (RH style), you confirm
   python -m dlmm_terminal benchmark              # benchmark wallet's last 20 days -> habitat profile
   python -m dlmm_terminal signal                 # every 5 min: ping pools that pass gates + match the benchmark
@@ -782,7 +782,8 @@ def main(argv=None):
     r.add_argument("--days", type=float, default=30)
     w = sub.add_parser("web", help="browser terminal: pools + entry check + chart + portfolio exits")
     w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to open it from the phone over Tailscale")
-    w.add_argument("--port", type=int, default=8790)
+    w.add_argument("--port", type=int, default=int(os.environ.get("DLMM_WEB_PORT") or 8891),
+                   help="default: DLMM_WEB_PORT in .env, else 8891")
     a = ap.parse_args(argv)
     cfg = load_config(a.config)
     if a.cmd == "web":

@@ -17,7 +17,7 @@ if not exist "dlmm_terminal\.env" (
   echo dlmm_terminal\.env dibuka di Notepad. Isi ^(lihat PANDUAN^), save, tutup Notepad.
   notepad "dlmm_terminal\.env"
 )
-echo DLMM Terminal jalan di http://localhost:8790 - biarin jendela ini kebuka. Ctrl+C buat stop.
-start "" http://localhost:8790
-%PY% -m dlmm_terminal web --port 8790
+echo DLMM Terminal jalan di http://localhost:8891 - biarin jendela ini kebuka. Ctrl+C buat stop.
+start "" http://localhost:8891
+%PY% -m dlmm_terminal web --port 8891
 pause

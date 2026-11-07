@@ -65,7 +65,7 @@ Daftar di https://dashboard.helius.dev → copy **RPC URL** mainnet, bentuknya:
 
 4. **Save** (Mac: Cmd+S; Windows: Ctrl+S, lalu tutup Notepad). Kalau di Mac, balik ke jendela Terminal dan tekan **Enter**.
 
-5. Browser kebuka sendiri ke **http://localhost:8790**. Biarin jendela Terminal / Command Prompt-nya **tetap kebuka** selama dipakai.
+5. Browser kebuka sendiri ke **http://localhost:8891**. Biarin jendela Terminal / Command Prompt-nya **tetap kebuka** selama dipakai.
 
 Chip di kanan atas harus nunjukin **🔑 address wallet lu**. Kalau tulisannya **🔒 read-only**, klik chip-nya buat lihat apa yang kurang.
 
