@@ -88,7 +88,11 @@ def load_env(reload: bool = False) -> None:
         for src, dst in (("PRIVATE_KEY", "RH_PRIVATE_KEY"), ("ALCHEMY_API_KEY", "ALCHEMY_API_KEY"),
                          ("PRACTICE_MODE", "RH_PRACTICE_MODE")):
             v = (sec.get(src) or "").strip()
-            if v and (not os.environ.get(dst) or (reload and _FROM_FILE.get(dst) == os.environ.get(dst))):
+            # .env wins over RH Secrets, and the shell wins over both: a value from Secrets only
+            # fills what nothing else set (or replaces what Secrets itself set on an earlier read).
+            if dst in seen or (os.environ.get(dst) and _FROM_FILE.get(dst) != os.environ.get(dst)):
+                continue
+            if v and (not os.environ.get(dst) or reload):
                 os.environ[dst] = v
                 _FROM_FILE[dst] = v
                 _SECRETS_NOTE.append(f"{dst} dari {sf.name}")

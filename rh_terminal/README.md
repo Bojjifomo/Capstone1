@@ -16,6 +16,8 @@ server di Mac, dibuka dari browser Mac dan HP (Tailscale), dengan semua utility-
 
 ## Buka di Mac
 
+> **Mac mini sebagai server + iPhone & MacBook Pro:** ikutin **[PANDUAN_MAC_HP.md](PANDUAN_MAC_HP.md)** (juga `Panduan Mac + HP.pdf`): Tailscale, PIN, Mac nggak tidur, nyala sendiri, coba practice dulu.
+
 1. Sekali aja: `brew install node` (buat tombol transaksi; tanpa Node tabel tetap jalan).
 2. Double-click **`rh_terminal/Buka RH Terminal.command`** di Finder (pertama kali: klik kanan → Open → Open).
    Browser kebuka ke **http://localhost:8892**. Biarin jendela Terminal-nya kebuka.

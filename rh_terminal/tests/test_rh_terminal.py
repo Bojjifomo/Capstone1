@@ -187,3 +187,34 @@ class SwapIndex(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnvPrecedence(unittest.TestCase):
+    """.env beats RH Secrets, also when the web re-reads both (practice mode must not flip off)."""
+
+    def test_env_beats_secrets_on_reload(self):
+        import os
+        from rh_terminal import cli
+        with tempfile.TemporaryDirectory() as d:
+            env, sec = Path(d) / ".env", Path(d) / "RH Secrets.js"
+            env.write_text("RH_PRACTICE_MODE=true\n")
+            sec.write_text('module.exports = { PRACTICE_MODE: false, ALCHEMY_API_KEY: "k1" };\n')
+            keys = ("RH_PRACTICE_MODE", "ALCHEMY_API_KEY", "RH_PRIVATE_KEY")
+            saved = {k: os.environ.pop(k, None) for k in keys}
+            try:
+                with mock.patch.object(cli, "env_files", return_value=(env, Path(d) / "none")), \
+                        mock.patch.object(cli, "secrets_file", return_value=sec):
+                    cli._FROM_FILE.clear()
+                    for reload in (False, True, True):
+                        cli.load_env(reload=reload)
+                        self.assertEqual(os.environ["RH_PRACTICE_MODE"], "true")
+                        self.assertEqual(os.environ["ALCHEMY_API_KEY"], "k1")     # Secrets fills the gap
+                    sec.write_text('module.exports = { PRACTICE_MODE: false, ALCHEMY_API_KEY: "k2" };\n')
+                    cli.load_env(reload=True)
+                    self.assertEqual(os.environ["ALCHEMY_API_KEY"], "k2")         # a changed Secrets is picked up
+                    self.assertTrue(cli.practice_mode())
+            finally:
+                for k, v in saved.items():
+                    os.environ.pop(k, None)
+                    if v is not None:
+                        os.environ[k] = v
