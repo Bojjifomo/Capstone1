@@ -33,7 +33,8 @@ DATA = HERE / "data"
 # ---------- plumbing ----------
 
 _FROM_FILE: dict[str, str] = {}      # keys this process took from a .env file (so a re-read may replace them)
-ENV_FILES = (HERE / ".env", HERE.parent / ".env")
+def env_files() -> tuple[Path, Path]:
+    return (HERE / ".env", HERE.parent / ".env")
 
 
 def _env_lines(p: Path):
@@ -48,7 +49,7 @@ def load_env(reload: bool = False) -> None:
     reload=True (the web server, on every config read): values that came from a file are read
     again, so a key pasted into .env works without restarting."""
     seen = set()
-    for p in ENV_FILES:
+    for p in env_files():
         if not p.exists():
             continue
         for k, v in _env_lines(p):
@@ -72,7 +73,7 @@ def env_report() -> list[str]:
     """Why DLMM_PRIVATE_KEY is or is not read, without ever showing it: which .env files exist,
     and what the key line looks like (length, characters that are not base58, RTF, a key on the next line)."""
     out = []
-    for p in ENV_FILES:
+    for p in env_files():
         if not p.exists():
             out.append(f"{p}: nggak ada")
             continue
