@@ -33,7 +33,7 @@ Command follower: `/start` (langganan), `/stop`, `/posisi`.
 
 ## Auto call dari wallet (tanpa ngetik)
 
-Bot baca transaksi wallet lu di Uniswap V4 (Robinhood Chain) **real time** (tiap 15 detik, cuma block baru, nggak
+Bot baca transaksi wallet lu di Uniswap V4 (Robinhood Chain) **real time** (tiap `AUTO_POLL_SECONDS`, default 20 detik, cuma block baru, nggak
 ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
 
 | Yang kebaca di chain | Yang nyampe ke follower |
@@ -56,6 +56,9 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
   posisi tanpa burn, itu nggak kebaca.
 * Bot mati lebih dari `AUTO_CATCHUP_MINUTES` (30)? Aktivitas yang lebih lama dari itu dilewatin (daripada ngirim call
   basi ke follower) dan lu dikabarin. Yang lebih baru dari itu tetep dikirim begitu bot nyala lagi.
+* **Hemat RPC:** tiap cek cuma 2 panggilan (nomor block + satu `eth_getLogs` buat mint dan burn semua wallet yang
+  dipantau, berapa pun jumlah wallet-nya), plus 1 per transaksi buka/tutup. Default 20 detik = ±8.700 panggilan/hari,
+  muat kuota SolidRPC 10k/hari; `AUTO_POLL_SECONDS=30` = ±5.800. `/auto` nunjukin pemakaian aslinya.
 * **Wallet lain:** `/wallet add 0x… nama` di DM bot = wallet itu ikut dipantau mulai saat itu, tanpa restart. Call-nya
   bertanda nama itu (`🟢 OPEN LP — FOREVER · Aan`), di rekap juga, dan posisinya dicatat terpisah dari punya lu
   (koin sama nggak saling nimpa). `/wallet` = daftar, `/wallet hapus nama` = berhenti mantau. Wallet lu sendiri tetep

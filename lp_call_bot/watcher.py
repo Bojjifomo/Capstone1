@@ -127,18 +127,11 @@ class Watcher:
         return out
 
     def _scan(self, start, end):
-        pads = [_pad(w) for w in self.wallets]
-        transfers, seen = [], set()
-        for topics in ([C.TRANSFER, pads, None], [C.TRANSFER, None, pads]):
-            logs, self.chunk = self.rpc.get_logs(
-                {"address": [RH.POSITION_MANAGER], "topics": topics}, start, end, self.chunk)
-            for lg in logs:
-                if len(lg["topics"]) != 4:
-                    continue
-                d = C.decode_nft_transfer(lg)
-                if (d["block"], d["log_index"]) not in seen:
-                    seen.add((d["block"], d["log_index"]))
-                    transfers.append(d)
+        # Satu eth_getLogs: dari {0x0, wallet} ke {0x0, wallet} = mint ke wallet + burn dari wallet (hemat kuota RPC)
+        ends = [_pad(RH.ZERO)] + [_pad(w) for w in self.wallets]
+        logs, self.chunk = self.rpc.get_logs(
+            {"address": [RH.POSITION_MANAGER], "topics": [C.TRANSFER, ends, ends]}, start, end, self.chunk)
+        transfers = [C.decode_nft_transfer(lg) for lg in logs if len(lg["topics"]) == 4]
 
         txs = {}  # tx -> {"block", "li", "wallet", "mint": {id}, "burn": {id}}
         for d in sorted(transfers, key=lambda d: (d["block"], d["log_index"])):
