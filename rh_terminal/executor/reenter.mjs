@@ -5,7 +5,7 @@
 //    to the pool's quote, refused if it would land > maxloss % under the pool price
 // 3) --reopen: a fresh ladder at today's price with all the quote that came back (ETH keeps gas)
 // If the sale fails or is refused, nothing is re-opened and the token stays in the wallet.
-import { args, done, fail, tradeProvider, loadSigner, quoteSide, slot0, planLadder, openCalldata, approvalTxs, sendTx,
+import { args, done, fail, pickTradeProvider, loadSigner, quoteSide, slot0, planLadder, openCalldata, approvalTxs, sendTx,
   deadline, mintedIds, POSITION_MANAGER, ZERO } from "./lib.mjs";
 import { closePositions } from "./close.mjs";
 import { sellToken } from "./swap.mjs";
@@ -14,7 +14,7 @@ const a = args();
 const out = { ok: false, steps: [] };
 try {
   const dry = !!a["dry-run"];
-  const signer = dry ? null : loadSigner(tradeProvider());
+  const signer = dry ? null : loadSigner((await pickTradeProvider()));
   if (!dry && !signer) throw new Error("no RH_PRIVATE_KEY in .env");
   const owner = (dry ? String(a.owner || "") : signer.address).toLowerCase();
   const ids = String(a.ids || "").split(",").filter(Boolean).map(x => BigInt(x));

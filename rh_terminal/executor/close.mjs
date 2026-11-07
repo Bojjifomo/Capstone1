@@ -1,13 +1,13 @@
 // Close (burn: withdraw 100% + collect fees) or claim fees from positions, one transaction.
 //   node close.mjs --ids 123,124 [--claim] [--dry-run --owner 0x..]
 import { pathToFileURL } from "node:url";
-import { args, done, fail, tradeProvider, loadSigner, positionInfo, closeCalldata, sendTx, deadline, balanceOf, POSITION_MANAGER, ZERO } from "./lib.mjs";
+import { args, done, fail, pickTradeProvider, loadSigner, positionInfo, closeCalldata, sendTx, deadline, balanceOf, POSITION_MANAGER, ZERO } from "./lib.mjs";
 
 export async function closePositions({ ids, claim = false, dry = false, owner }) {
-  const signer = dry ? null : loadSigner(tradeProvider());
+  const signer = dry ? null : loadSigner((await pickTradeProvider()));
   if (!dry && !signer) throw new Error("no RH_PRIVATE_KEY in .env");
   const who = (dry ? owner : signer.address).toLowerCase();
-  const pr = signer ? signer.provider : tradeProvider();
+  const pr = signer ? signer.provider : (await pickTradeProvider());
   const ps = [];
   for (const id of ids) {
     const p = await positionInfo(pr, id);

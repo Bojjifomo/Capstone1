@@ -218,3 +218,18 @@ class EnvPrecedence(unittest.TestCase):
                     os.environ.pop(k, None)
                     if v is not None:
                         os.environ[k] = v
+
+
+class RpcFallback(unittest.TestCase):
+    def test_range_limits_from_real_errors(self):
+        f = chain._range_limit
+        self.assertEqual(f("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range."), 10)
+        self.assertEqual(f("query exceeds max block range 2000"), 2000)
+        self.assertEqual(f("eth_getLogs block range exceeds 100 blocks"), 100)
+        self.assertIsNone(f("logs matched by query exceeds limit of 10000"))     # too many logs: halve instead
+
+    def test_logs_never_go_to_alchemy(self):
+        with mock.patch.dict("os.environ", {"ALCHEMY_API_KEY": "abc"}):
+            eps = dict(chain.endpoints())
+        self.assertEqual(eps["https://robinhood-mainnet.g.alchemy.com/v2/abc"], 10)
+        self.assertGreaterEqual(chain.max_log_span(), 2000)

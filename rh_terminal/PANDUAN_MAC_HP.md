@@ -226,6 +226,7 @@ Double-click `Buka RH Terminal.command` lagi. Di iPhone/MacBook: refresh halaman
 
 | Masalah | Coba |
 |---|---|
+| "Gagal baca: … Connection refused / HTTP 403 / alchemy HTTP 400", chip ⛓ merah "0 pool" | Jaringan lu (biasanya DNS provider internet) ngeblok RPC resmi Robinhood dan PublicNode. Versi terbaru otomatis pindah ke RPC cadangan (Daybreak, dRPC) dan nyari posisi lewat ownerOf: update (langkah 11). Biar normal lagi: System Settings → Network → Wi-Fi/Ethernet → **Details → DNS** → ganti ke `1.1.1.1` dan `8.8.8.8`, restart RH Terminal. `python3 -m rh_terminal doctor` nunjukin RPC mana yang kejangkau. (Alchemy gratis cuma bisa baca log 10 block, jadi bukan cadangan buat itu.) |
 | iPhone / MacBook: halaman nggak kebuka | Tailscale nyala di dua-duanya, akun sama? Server di Mac mini jalan (jendela Terminal kebuka)? Coba pakai IP `http://100.x.y.z:8892`. |
 | iPhone / MacBook: "trading cuma dari Mac ini" | `RH_WEB_PIN` belum diisi. Isi di `.env`, tutup Terminal, double-click lagi. |
 | "PIN salah" | Ketik ulang PIN yang ada di `.env`. |

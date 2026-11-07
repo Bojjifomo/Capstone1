@@ -215,6 +215,11 @@ function rowsView() {
   return rows;
 }
 
+// RPCs refused / blocked on this network: say what to do instead of only the raw error.
+const rpcHint = err => /refused|HTTP 403|nodename|getaddrinfo|Name or service/i.test(String(err || ""))
+  ? " — RPC diblokir jaringan ini (biasanya DNS provider internet). Ganti DNS Mac ke 1.1.1.1 / 8.8.8.8, atau jalanin `python3 -m rh_terminal doctor` buat lihat RPC mana yang bisa."
+  : "";
+
 // ---------- render: top ----------
 function renderTop() {
   const d = state.data;
@@ -225,9 +230,9 @@ function renderTop() {
     const chip = $("#idxChip");
     chip.textContent = `⛓ ${ix.pools || 0} pool · ${(ix.coverageHours || 0).toFixed(1)}h`;
     chip.classList.toggle("err", !!ix.error);
-    chip.title = ix.error ? `Index error: ${ix.error}` : `Index swap: ${ix.pools} pool USDG/ETH yang trading, histori ${ix.coverageHours} jam, block ${ix.head || "?"}. Klik = refresh.`;
+    chip.title = ix.error ? `Index error: ${ix.error}${rpcHint(ix.error)}` : `Index swap: ${ix.pools} pool USDG/ETH yang trading, histori ${ix.coverageHours} jam, block ${ix.head || "?"}. Klik = refresh.`;
     $("#idxLine").textContent = `Index swap dari chain: ${ix.pools || 0} pool aktif · histori ${(ix.coverageHours || 0).toFixed(1)} jam (makin lama server nyala, makin lengkap sampai 24 jam) · `
-      + `poll terakhir ${ix.lastPoll ? Math.round(Date.now() / 1000 - ix.lastPoll) + " detik lalu" : "--"}${ix.error ? " · error: " + ix.error : ""}`;
+      + `poll terakhir ${ix.lastPoll ? Math.round(Date.now() / 1000 - ix.lastPoll) + " detik lalu" : "--"}${ix.error ? " · error: " + ix.error + rpcHint(ix.error) : ""}`;
   }
   const pf = state.pf;
   if (pf && !pf.error) {
@@ -564,14 +569,15 @@ function rangeStrip(p) {
 function renderPortfolio() {
   const pf = state.pf;
   if (!pf) return;
-  if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error; $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
+  if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error + rpcHint(pf.error); $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
   const pnlPct = pf.depositUsd ? pf.pnlUsd / pf.depositUsd * 100 : null, b = pf.balances || {};
   $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b></span>
     <span>fees unclaimed <b class="pos">${mU(pf.feesUsd)}</b></span>
     <span>PnL <b class="big ${cls(pf.pnlUsd)}">${pf.pnlUsd > 0 ? "+" : ""}${mU(pf.pnlUsd)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span></span>
     <span>deposit <b>${mU(pf.depositUsd)}</b></span>
     <span>wallet <b>${b.usdg != null ? b.usdg.toFixed(2) : "--"} USDG · ${b.eth != null ? fmtEth(b.eth) : "--"}</b></span>
-    <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>`;
+    <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>
+    ${pf.note ? `<span class="warn">⏳ ${esc(pf.note)}</span>` : ""}`;
   $("#pfEmpty").classList.toggle("hidden", pf.rows.length > 0);
   if (!pf.rows.length) $("#pfEmpty").textContent = "Nggak ada posisi Uniswap V4 terbuka di wallet ini.";
   const cards = [];
