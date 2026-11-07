@@ -11,6 +11,15 @@ if [ ! -f dlmm_terminal/.env ]; then
   echo "dlmm_terminal/.env dibuat dan dibuka di TextEdit. Isi, save (Cmd+S), lalu tekan Enter di sini."
   read -r _
 fi
+# Node + the Meteora SDK (needed to sign and send): installed here once if missing.
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js belum ada: jalanin 'brew install node' (atau install LTS dari https://nodejs.org), lalu double-click file ini lagi."
+  read -r -p "Enter buat tutup." _; exit 1
+fi
+if [ ! -d dlmm_terminal/executor/node_modules/@meteora-ag/dlmm ]; then
+  echo "Install Meteora SDK (sekali aja, ±1 menit)…"
+  (cd dlmm_terminal/executor && npm install --no-audit --no-fund) || { read -r -p "npm install gagal (lihat error di atas). Enter buat tutup." _; exit 1; }
+fi
 PORT=$(grep -E '^DLMM_WEB_PORT=[0-9]+' dlmm_terminal/.env | tail -1 | cut -d= -f2 | tr -d '[:space:]')
 PORT=${PORT:-8891}
 URL="http://localhost:$PORT"

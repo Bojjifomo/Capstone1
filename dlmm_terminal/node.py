@@ -27,7 +27,8 @@ def ready() -> str | None:
     if not shutil.which("node"):
         return "Node.js belum ada (brew install node)"
     if not (EXECUTOR / "node_modules" / "@meteora-ag" / "dlmm").exists():
-        return f"jalanin sekali: cd {EXECUTOR} && npm install"
+        import shlex
+        return f"jalanin sekali: cd {shlex.quote(str(EXECUTOR))} && npm install"
     return None
 
 
