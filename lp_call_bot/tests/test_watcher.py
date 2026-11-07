@@ -71,6 +71,7 @@ class FakeChain:
         c0, c1 = (COIN, usdg) if usdg_token1 else (usdg, COIN)
         self.keys = {POOL[2:52]: (c0, c1, FEE), POOL2[2:52]: (RH.WETH, COIN, 3000)}  # POOL2: tanpa USDG
         self.missing_receipts = set()
+        self.burned, self.owners, self.down = set(), {}, False
         self.calls = []
 
     def call(self, method, params):
@@ -92,6 +93,13 @@ class FakeChain:
             if not self.archive and params[1] != "latest":
                 raise W.R.RPCError("missing trie node")
             return "0x" + C.word(1 << 96) + C.word(self.ticks["0x" + arg[:64]]) + C.word(0) + C.word(FEE)
+        if tx["to"] == RH.POSITION_MANAGER and sel == W.SEL_OWNER_OF:
+            tid = int(arg, 16)
+            if tid in self.burned:
+                raise W.R.RPCError("eth_call: execution reverted")
+            if self.down:
+                raise W.R.TransportError("rpc down")
+            return "0x" + C.addr_word(self.owners.get(tid, WALLET))
         if sel == C.SEL_SYMBOL:
             return abi_string("HYDX")
         raise AssertionError(tx)
@@ -413,6 +421,41 @@ class AutoCallTest(unittest.TestCase):
     def test_close_of_unknown_coin_still_blasted(self):
         self.bot.auto_call({"action": "close", "pos": {"coin": "worm", "ca": self.pos["ca"]}})
         self.assertIn("CLOSE LP — WORM", self.tg.to(FAN)[-1])
+
+    def test_recap_drops_positions_closed_while_the_bot_missed_it(self):
+        chain = FakeChain()
+        self.bot.watcher = W.Watcher(chain, chain, [WALLET], self.store)
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [11, 12], "pos": dict(self.pos)})
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [21],
+                            "pos": dict(self.pos, coin="worm", range=["-60"])})
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [31],
+                            "pos": dict(self.pos, coin="raeto")})
+        chain.burned.add(11)            # HYDX ditutup, CLOSE-nya kelewat
+        chain.owners[31] = OTHER        # RAETO dipindah ke wallet lain
+        self.assertTrue(self.bot.send_recap())
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("(1)", text)
+        self.assertIn("WORM", text)
+        self.assertNotIn("HYDX", text)
+        self.assertNotIn("RAETO", text)
+        self.assertEqual(self.store.get("hydx")["status"], "closed")
+
+    def test_recap_keeps_positions_when_rpc_is_down_and_drops_stale_manual_calls(self):
+        chain = FakeChain()
+        self.bot.watcher = W.Watcher(chain, chain, [WALLET], self.store)
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [11], "pos": dict(self.pos)})
+        self.store.open_position({"coin": "dark", "ca": self.pos["ca"], "fee": "3", "range": ["-65"]})  # call manual
+        chain.down = True
+        self.bot.prune_closed(now=B.time.time() + 25 * 3600)
+        self.assertEqual(self.store.get("hydx")["status"], "open")   # RPC error: dibiarin
+        self.assertEqual(self.store.get("dark")["status"], "closed")  # manual > 24 jam: basi
+
+    def test_bersih_clears_old_entries_without_nft_data(self):
+        self.store.open_position({"coin": "wofl", "ca": self.pos["ca"], "fee": "4.7915", "range": ["-60"]})
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [11], "pos": dict(self.pos)})
+        self.assertEqual(self.bot.clear_unverifiable(), 1)
+        self.assertEqual(self.store.get("wofl")["status"], "closed")
+        self.assertEqual(self.store.get("hydx")["status"], "open")
 
     def test_hourly_recap(self):
         self.bot.recap_seconds = 3600

@@ -18,6 +18,7 @@ import calls  # noqa: E402
 from store import Store  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+STALE_MANUAL_HOURS = 24  # call ketik manual yang segini lama nggak di-update nggak ikut rekap lagi
 
 HELP_OWNER = """<b>Format call</b>
 
@@ -39,6 +40,7 @@ Command:
 /wallet add 0x… nama: pantau wallet lain, call-nya dikasih nama itu
 /wallet hapus nama: berhenti mantau
 /rekap: kirim rekap posisi kebuka sekarang
+/bersih: buang posisi lama yang nggak bisa dicek ke chain dari rekap
 /stats: jumlah penerima
 /blast &lt;teks&gt;: kirim pesan bebas
 /hapus &lt;koin&gt;: hapus koin dari daftar (salah ketik)"""
@@ -213,6 +215,10 @@ class Bot:
             self.reply(chat_id, self.auto_status())
         elif cmd == "/wallet":
             self.reply(chat_id, self.wallet_command(arg.strip()))
+        elif cmd == "/bersih":
+            n = self.clear_unverifiable()
+            self.reply(chat_id, f"🧹 {n} posisi lama (tanpa data NFT, nggak bisa dicek ke chain) dibuang dari rekap. "
+                                "Posisi yang dibuka setelah ini kecatet lengkap dan dicek otomatis.")
         elif cmd == "/rekap":
             if not self.send_recap():
                 self.reply(chat_id, "Lagi nggak ada LP yang kebuka, nggak ada yang di-blast.")
@@ -359,7 +365,8 @@ class Bot:
         pos = dict(ev["pos"], by=by) if by else dict(ev["pos"])
         key = f"{pos['coin']}@{by.lower()}" if by else pos["coin"]  # posisi wallet lain nggak nimpa punya lu
         if ev["action"] == "open":
-            text = calls.render_open(self.store.open_position(dict(pos, key=key)))
+            text = calls.render_open(self.store.open_position(
+                dict(pos, key=key, token_ids=ev.get("token_ids"), wallet=ev.get("wallet"))))
         else:
             known = self.store.get(key)
             text = calls.render_close([self.store.set_status(key, "closed") if known else pos])
@@ -390,8 +397,33 @@ class Bot:
             time.sleep(self.watch_seconds)
 
     # rekap per jam
+    def prune_closed(self, now=None):
+        """Sebelum rekap: buang posisi yang ternyata udah ditutup (CLOSE-nya kelewat pas RPC error / bot mati).
+
+        Posisi dari auto call dicek ke chain: NFT-nya masih di wallet? Posisi tanpa NFT (call ketik manual) dianggap
+        basi kalau lebih dari STALE_MANUAL_HOURS nggak di-update. Kalau RPC lagi error, posisinya dibiarin."""
+        now = now or time.time()
+        for key, pos in self.store.items():
+            if pos["status"] != "open":
+                continue
+            if pos.get("token_ids") and pos.get("wallet") and self.watcher:
+                if self.watcher.position_alive(pos["token_ids"][0], pos["wallet"]) is False:
+                    self.store.set_status(key, "closed")
+            elif not pos.get("token_ids") and now - pos.get("updated", 0) > STALE_MANUAL_HOURS * 3600:
+                self.store.set_status(key, "closed")
+
+    def clear_unverifiable(self):
+        """/bersih: tutup semua posisi kebuka yang nggak punya data NFT (catatan versi lama / call manual)."""
+        n = 0
+        for key, pos in self.store.items():
+            if pos["status"] == "open" and not pos.get("token_ids"):
+                self.store.set_status(key, "closed")
+                n += 1
+        return n
+
     def send_recap(self):
         """Blast daftar posisi yang masih kebuka (tanpa nilai). False kalau nggak ada yang kebuka."""
+        self.prune_closed()
         if not any(p["status"] == "open" for p in self.store.positions()):
             return False
         text = calls.render_list(self.store.positions(), title="Rekap posisi LP yang masih kebuka")
