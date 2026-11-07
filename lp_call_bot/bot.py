@@ -154,6 +154,7 @@ class Bot:
         self.watch_fails = 0
         self.recap_seconds = recap_minutes * 60
         self.started = time.time()
+        self.conflict_warned = False
         self.owner_wallets = [w.lower() for w in owner_wallets]
         if self.watcher:
             self.watcher.set_wallets(self.all_wallets())
@@ -436,9 +437,17 @@ class Bot:
         res = self.tg.call("getUpdates", http_timeout=60, timeout=50, offset=self.store.offset,
                            allowed_updates=["message"])
         if not res.get("ok"):
-            print("getUpdates gagal:", res, flush=True)
+            if res.get("error_code") == 409:  # bot ini jalan dua kali: rebutan pesan + RPC kepake dobel
+                if not self.conflict_warned:
+                    self.conflict_warned = True
+                    print("⚠️ Ada bot lain yang jalan pakai token yang sama (Terminal lain atau launchd). Matiin salah satu: "
+                          "pkill -f lp_call_bot/bot.py  atau  launchctl bootout gui/$(id -u)/com.bojjifomo.lp-call-bot",
+                          flush=True)
+            else:
+                print("getUpdates gagal:", res, flush=True)
             time.sleep(5)
             return False
+        self.conflict_warned = False
         self.beat()
         for update in res["result"]:
             self.store.offset = update["update_id"] + 1
