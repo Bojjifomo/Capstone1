@@ -35,6 +35,9 @@ Reentry (range &amp; fee sama kayak open terakhir):
 Command:
 /posisi: LP yang lagi kebuka
 /auto: status auto call dari wallet
+/wallet: wallet yang dipantau
+/wallet add 0x… nama: pantau wallet lain, call-nya dikasih nama itu
+/wallet hapus nama: berhenti mantau
 /rekap: kirim rekap posisi kebuka sekarang
 /stats: jumlah penerima
 /blast &lt;teks&gt;: kirim pesan bebas
@@ -78,14 +81,22 @@ def build_rpcs(watcher):
     return pool, pool
 
 
-def build_watcher(store):
-    """Auto call dari wallet, atau None kalau WALLET_ADDRESSES belum diisi."""
+def env_wallets():
+    """Wallet owner dari WALLET_ADDRESSES di .env (call-nya tanpa nama)."""
     wallets = [w.strip().lower() for w in os.environ.get("WALLET_ADDRESSES", "").split(",") if w.strip()]
-    if not wallets:
-        return None
-    bad = [w for w in wallets if not (w.startswith("0x") and len(w) == 42)]
+    bad = [w for w in wallets if not is_address(w)]
     if bad:
         sys.exit(f"WALLET_ADDRESSES salah (harus 0x + 40 karakter): {bad}")
+    return wallets
+
+
+def is_address(text):
+    t = text.lower()
+    return len(t) == 42 and t.startswith("0x") and all(c in "0123456789abcdef" for c in t[2:])
+
+
+def build_watcher(store, wallets):
+    """Auto call dari wallet. Selalu nyala biar wallet bisa ditambah lewat /wallet; tanpa wallet cuma baca nomor block."""
     import watcher
     logs_rpc, calls_rpc = build_rpcs(watcher)
     return watcher.Watcher(logs_rpc, calls_rpc, wallets, store,
@@ -128,7 +139,7 @@ class Telegram:
 
 class Bot:
     def __init__(self, tg, store, owners, channels, default_range="-65", heartbeat=None,
-                 watcher=None, watch_seconds=15, dry_run=False, recap_minutes=60):
+                 watcher=None, watch_seconds=15, dry_run=False, recap_minutes=60, owner_wallets=()):
         self.tg = tg
         self.store = store
         self.owners = set(owners)
@@ -142,6 +153,9 @@ class Bot:
         self.watch_err = None
         self.watch_fails = 0
         self.recap_seconds = recap_minutes * 60
+        self.owner_wallets = [w.lower() for w in owner_wallets]
+        if self.watcher:
+            self.watcher.set_wallets(self.all_wallets())
 
     # kirim
     def reply(self, chat_id, text):
@@ -195,6 +209,8 @@ class Bot:
             self.reply(chat_id, HELP_OWNER.format(default_range=self.default_range))
         elif cmd == "/auto":
             self.reply(chat_id, self.auto_status())
+        elif cmd == "/wallet":
+            self.reply(chat_id, self.wallet_command(arg.strip()))
         elif cmd == "/rekap":
             if not self.send_recap():
                 self.reply(chat_id, "Lagi nggak ada LP yang kebuka, nggak ada yang di-blast.")
@@ -258,9 +274,10 @@ class Bot:
 
     def auto_status(self):
         if not self.watcher:
-            return "Auto call mati: WALLET_ADDRESSES / RPC_URL belum diisi di .env."
+            return "Auto call mati."
         st = self.watcher.status()
-        wallets = "\n".join(f"<code>{w}</code>" for w in st["wallets"])
+        wallets = "\n".join(f"<code>{w}</code>" + (f" ({html.escape(self.wallet_name(w))})" if self.wallet_name(w) else "")
+                            for w in st["wallets"]) or "(belum ada wallet: /wallet add 0x… nama)"
         mode = "DRY RUN (cuma ke lu)" if self.dry_run else "LIVE (ke follower)"
         return (f"🤖 Auto call nyala: {mode}\n{wallets}\nBlock terakhir dibaca: {st['cursor']}\n"
                 + self.watch_health())
@@ -270,17 +287,72 @@ class Bot:
             return f"Terakhir sehat: {int(time.time() - self.watch_ok)} detik lalu"
         return "Belum pernah berhasil baca chain" + (f"\nError terakhir: <code>{html.escape(self.watch_err)}</code>" if self.watch_err else "")
 
+    # wallet yang dipantau
+    def all_wallets(self):
+        return list(dict.fromkeys(self.owner_wallets + list(self.store.wallets())))
+
+    def wallet_name(self, address):
+        """Nama wallet tambahan; None buat wallet owner (call-nya kayak biasa)."""
+        if not address or address.lower() in self.owner_wallets:
+            return None
+        return self.store.wallets().get(address.lower())
+
+    def wallet_command(self, arg):
+        sub, _, rest = arg.partition(" ")
+        sub, rest = sub.lower(), rest.strip()
+        if sub in ("add", "tambah"):
+            address, _, name = rest.partition(" ")
+            name = name.strip()
+            if not is_address(address) or not name:
+                return "Format: <code>/wallet add 0x… nama</code>"
+            if address.lower() in self.owner_wallets:
+                return "Itu wallet lu sendiri (WALLET_ADDRESSES), udah dipantau."
+            taken = [a for a, n in self.store.wallets().items() if n.lower() == name.lower() and a != address.lower()]
+            if taken:
+                return f"Nama {html.escape(name)} udah dipakai wallet lain, pilih nama lain."
+            self.store.add_wallet(address, name)
+            self.refresh_wallets()
+            return (f"✅ Mantau wallet <b>{html.escape(name)}</b> <code>{address.lower()}</code> mulai sekarang. "
+                    f"Call-nya bertanda · {html.escape(name)}.")
+        if sub in ("hapus", "del", "remove"):
+            target = rest.lower()
+            match = [a for a, n in self.store.wallets().items() if target in (a, n.lower())]
+            if not match:
+                if target in self.owner_wallets:
+                    return "Wallet lu sendiri diatur di WALLET_ADDRESSES (.env), bukan lewat /wallet."
+                return "Wallet itu nggak ada di daftar. Cek /wallet."
+            name = self.store.remove_wallet(match[0])
+            self.refresh_wallets()
+            return f"🗑 Berhenti mantau <b>{html.escape(name)}</b>."
+        if sub:
+            return "Pakai <code>/wallet</code>, <code>/wallet add 0x… nama</code>, atau <code>/wallet hapus nama</code>."
+        return self.wallet_list()
+
+    def wallet_list(self):
+        lines = ["👛 <b>Wallet yang dipantau</b>", ""]
+        lines += [f"• <code>{w}</code> (lu)" for w in self.owner_wallets]
+        lines += [f"• <b>{html.escape(n)}</b> <code>{a}</code>" for a, n in self.store.wallets().items()]
+        if len(lines) == 2:
+            lines.append("Belum ada. Tambah: <code>/wallet add 0x… nama</code>")
+        return "\n".join(lines)
+
+    def refresh_wallets(self):
+        if self.watcher:
+            self.watcher.set_wallets(self.all_wallets())
+
     def auto_call(self, ev):
         """Satu call dari watcher: sama kayak lu ketik sendiri, tapi dari transaksi wallet."""
+        by = self.wallet_name(ev.get("wallet"))
         if ev["action"] == "skip":
-            self.notify_owners("ℹ️ " + ev["text"])
+            self.notify_owners("ℹ️ " + (f"[{html.escape(by)}] " if by else "") + ev["text"])
             return
-        pos = ev["pos"]
+        pos = dict(ev["pos"], by=by) if by else dict(ev["pos"])
+        key = f"{pos['coin']}@{by.lower()}" if by else pos["coin"]  # posisi wallet lain nggak nimpa punya lu
         if ev["action"] == "open":
-            text = calls.render_open(self.store.open_position(pos))
+            text = calls.render_open(self.store.open_position(dict(pos, key=key)))
         else:
-            known = self.store.get(pos["coin"])
-            text = calls.render_close([self.store.set_status(pos["coin"], "closed") if known else pos])
+            known = self.store.get(key)
+            text = calls.render_close([self.store.set_status(key, "closed") if known else pos])
         if self.dry_run:
             self.notify_owners("🧪 DRY RUN, nggak dikirim ke follower:\n\n" + text)
             return
@@ -389,6 +461,7 @@ def main():
     if not owners:
         print("⚠️ OWNER_IDS kosong: kirim /id ke bot buat liat user ID lu, terus isi di .env.")
     store = Store(os.environ.get("STATE_FILE", HERE / "state.json"))
+    owner_wallets = env_wallets()
     bot = Bot(
         Telegram(token),
         store,
@@ -396,10 +469,11 @@ def main():
         id_list(os.environ.get("CHANNEL_IDS", "")),
         os.environ.get("DEFAULT_RANGE", "-65"),
         heartbeat=os.environ.get("HEARTBEAT_FILE", HERE / "heartbeat"),
-        watcher=build_watcher(store),
+        watcher=build_watcher(store, owner_wallets),
         watch_seconds=float(os.environ.get("AUTO_POLL_SECONDS", "15")),
         dry_run=os.environ.get("AUTO_DRY_RUN", "0") == "1",
         recap_minutes=float(os.environ.get("RECAP_MINUTES", "60")),
+        owner_wallets=owner_wallets,
     )
     bot.run()
 

@@ -282,13 +282,34 @@ class WatcherTest(unittest.TestCase):
         self.assertEqual([e["action"] for e in evs], ["skip", "open"])
         self.assertEqual(evs[1]["token_ids"], [8])
 
-    def test_state_survives_restart_and_wallet_change_resets(self):
+    def test_state_survives_restart_and_wallet_change_keeps_cursor(self):
         self.start()
         again = W.Watcher(self.chain, self.chain, [WALLET], Store(self.store.path))
         self.assertEqual(again.status()["cursor"], 1000)
         other = W.Watcher(self.chain, self.chain, [OTHER], Store(self.store.path))
-        self.assertIsNone(other.status()["cursor"])
+        self.assertEqual(other.status()["cursor"], 1000)  # wallet ditambah / diganti: lanjut dari block terakhir
 
+    def test_calls_carry_their_wallet_and_wallets_can_be_added_while_running(self):
+        self.start()
+        tx, tx2 = tx_hash(2), tx_hash(3)
+        self.chain.logs += mint([7], tx, 1010) + [modify(1010, 5, POOL, lower_tick(-65), 10000, 5_000_000, 7, tx)]
+        self.chain.logs += mint([8], tx2, 1020, wallet=OTHER) + [modify(1020, 5, POOL, lower_tick(-65), 10000, 5_000_000, 8, tx2)]
+        evs = self.w.poll()
+        self.assertEqual([(e["action"], e["wallet"]) for e in evs], [("open", WALLET)])  # OTHER belum dipantau
+
+        self.w.set_wallets([WALLET, OTHER])
+        self.chain.head += 50
+        tx3 = tx_hash(4)
+        self.chain.logs += burn([8], tx3, 1070, wallet=OTHER) + [modify(1070, 5, POOL, lower_tick(-65), 10000, -5_000_000, 8, tx3)]
+        self.assertEqual([(e["action"], e["wallet"]) for e in self.w.poll()], [("close", OTHER)])
+
+    def test_no_wallets_reads_only_the_block_number(self):
+        self.make()
+        self.w.set_wallets([])
+        self.w.poll()
+        self.chain.head += 50
+        with mock.patch.object(self.chain, "get_logs", side_effect=AssertionError("nggak boleh scan")):
+            self.assertEqual(self.w.poll(), [])
 
 class BuildRpcsTest(unittest.TestCase):
     def rpcs(self, **env):
@@ -387,6 +408,45 @@ class AutoCallTest(unittest.TestCase):
         sent = len(self.tg.sent)
         self.assertFalse(self.bot.maybe_recap(now=3600))
         self.assertEqual(len(self.tg.sent), sent)
+
+    def test_wallet_command_add_list_remove(self):
+        self.assertIn("Belum ada", self.bot.wallet_command(""))
+        self.assertIn("Format", self.bot.wallet_command("add 0x123 aan"))
+        self.assertIn("Mantau wallet <b>Aan</b>", self.bot.wallet_command(f"add {OTHER.upper().replace('0X', '0x')} Aan"))
+        self.assertEqual(self.store.wallets(), {OTHER: "Aan"})
+        self.assertIn("udah dipakai", self.bot.wallet_command(f"add {WALLET} aan"))
+        self.assertIn("Aan", self.bot.wallet_command(""))
+        self.assertIn("Berhenti mantau <b>Aan</b>", self.bot.wallet_command("hapus aan"))
+        self.assertEqual(self.store.wallets(), {})
+        self.assertIn("nggak ada", self.bot.wallet_command("hapus aan"))
+
+    def test_owner_and_added_wallet_calls(self):
+        self.bot.owner_wallets = [WALLET]
+        self.store.add_wallet(OTHER, "Aan")
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "pos": dict(self.pos)})
+        self.assertIn("OPEN LP — HYDX</b>", self.tg.to(FAN)[-1])  # punya lu: tanpa nama
+        self.bot.auto_call({"action": "open", "wallet": OTHER, "pos": dict(self.pos, range=["-70"])})
+        self.assertIn("OPEN LP — HYDX · Aan</b>", self.tg.to(FAN)[-1])
+        self.assertEqual(self.store.get("hydx")["range"], ["-65"])  # nggak ketimpa
+        self.assertEqual(self.store.get("hydx@aan")["range"], ["-70"])
+
+        self.bot.auto_call({"action": "close", "wallet": OTHER, "pos": {"coin": "hydx", "ca": self.pos["ca"]}})
+        self.assertIn("CLOSE LP — HYDX · Aan", self.tg.to(FAN)[-1])
+        self.assertEqual(self.store.get("hydx")["status"], "open")
+        self.assertEqual(self.store.get("hydx@aan")["status"], "closed")
+
+        self.bot.auto_call({"action": "skip", "wallet": OTHER, "text": "Posisi #9 di pool tanpa USDG"})
+        self.assertIn("[Aan] Posisi #9", self.tg.to(OWNER)[-1])
+
+    def test_recap_shows_whose_position(self):
+        self.bot.owner_wallets = [WALLET]
+        self.store.add_wallet(OTHER, "Aan")
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "pos": dict(self.pos)})
+        self.bot.auto_call({"action": "open", "wallet": OTHER, "pos": dict(self.pos)})
+        self.assertTrue(self.bot.send_recap())
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("(2)", text)
+        self.assertIn("HYDX · Aan", text)
 
     def test_dry_run_only_tells_owner(self):
         self.bot.dry_run = True

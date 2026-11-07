@@ -21,8 +21,8 @@ Huruf besar/kecil bebas. Koin yang belum pernah di-open nggak bakal di-blast pas
 `close`/`reentry` (biar salah ketik nggak nyampe ke follower); bot ngasih tau koin mana
 yang dilewatin. Tiap blast, bot bales "✅ Terkirim ke N penerima".
 
-Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/stats`, `/blast <teks bebas>`,
-`/hapus <koin>`, `/help`.
+Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/wallet` (wallet yang dipantau),
+`/stats`, `/blast <teks bebas>`, `/hapus <koin>`, `/help`.
 
 **Rekap per jam:** tiap `RECAP_MINUTES` (60) bot nge-blast daftar posisi yang masih kebuka (koin, pool %, range, CA,
 tanpa nilai), biar follower yang ketinggalan call tetep tau. Isinya dari call yang dikirim bot (auto atau ketik):
@@ -56,6 +56,10 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
   posisi tanpa burn, itu nggak kebaca.
 * Bot mati lebih dari `AUTO_CATCHUP_MINUTES` (30)? Aktivitas yang lebih lama dari itu dilewatin (daripada ngirim call
   basi ke follower) dan lu dikabarin. Yang lebih baru dari itu tetep dikirim begitu bot nyala lagi.
+* **Wallet lain:** `/wallet add 0x… nama` di DM bot = wallet itu ikut dipantau mulai saat itu, tanpa restart. Call-nya
+  bertanda nama itu (`🟢 OPEN LP — FOREVER · Aan`), di rekap juga, dan posisinya dicatat terpisah dari punya lu
+  (koin sama nggak saling nimpa). `/wallet` = daftar, `/wallet hapus nama` = berhenti mantau. Wallet lu sendiri tetep
+  dari `WALLET_ADDRESSES` di `.env` (call-nya tanpa nama). Daftar wallet tambahan disimpen di `state.json`.
 * Call manual (ketik) tetep jalan barengan. Cek status: `/auto` (block terakhir dibaca, kapan terakhir sehat, error
   terakhir). Kalau watcher error 3x berturut-turut, bot ngabarin lewat DM. Owner harus pernah `/start` bot dari
   akun sendiri biar DM bisa masuk.

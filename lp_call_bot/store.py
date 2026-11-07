@@ -43,9 +43,12 @@ class Store:
 
     @locked
     def open_position(self, call):
+        """call["key"] (opsional) = kunci simpan; posisi wallet tambahan pakai "koin@nama" biar nggak nimpa punya owner."""
         pos = {k: call[k] for k in ("coin", "ca", "fee", "range")}
+        if call.get("by"):
+            pos["by"] = call["by"]
         pos.update(status="open", updated=int(time.time()))
-        self.data["positions"][pos["coin"]] = pos
+        self.data["positions"][call.get("key") or pos["coin"]] = pos
         self.save()
         return pos
 
@@ -59,6 +62,22 @@ class Store:
     @locked
     def delete(self, coin):
         removed = self.data["positions"].pop(coin.lower(), None)
+        self.save()
+        return removed
+
+    # wallet tambahan yang dipantau (alamat -> nama), diatur lewat /wallet
+    @locked
+    def wallets(self):
+        return dict(self.data.get("wallets", {}))
+
+    @locked
+    def add_wallet(self, address, name):
+        self.data.setdefault("wallets", {})[address.lower()] = name
+        self.save()
+
+    @locked
+    def remove_wallet(self, address):
+        removed = self.data.setdefault("wallets", {}).pop(address.lower(), None)
         self.save()
         return removed
 

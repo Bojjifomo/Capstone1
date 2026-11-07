@@ -70,9 +70,14 @@ def _ca_line(ca):
     return f"CA: <code>{html.escape(ca)}</code>"
 
 
+def _by(pos):
+    """' · Aan' buat posisi wallet tambahan; kosong buat posisi owner."""
+    return f" · {html.escape(pos['by'])}" if pos.get("by") else ""
+
+
 def render_open(pos):
     return "\n".join([
-        f"🟢 <b>OPEN LP — {html.escape(pos['coin'].upper())}</b>",
+        f"🟢 <b>OPEN LP — {html.escape(pos['coin'].upper())}{_by(pos)}</b>",
         "",
         _ca_line(pos["ca"]),
         f"Pool: <b>{pos['fee']}%</b>",
@@ -83,10 +88,10 @@ def render_open(pos):
 def render_close(positions):
     if len(positions) == 1:
         pos = positions[0]
-        return f"🔴 <b>CLOSE LP — {html.escape(pos['coin'].upper())}</b>\n\n{_ca_line(pos['ca'])}"
+        return f"🔴 <b>CLOSE LP — {html.escape(pos['coin'].upper())}{_by(pos)}</b>\n\n{_ca_line(pos['ca'])}"
     lines = ["🔴 <b>CLOSE LP</b>", ""]
     for pos in positions:
-        lines.append(f"• <b>{html.escape(pos['coin'].upper())}</b> — <code>{html.escape(pos['ca'])}</code>")
+        lines.append(f"• <b>{html.escape(pos['coin'].upper())}{_by(pos)}</b> — <code>{html.escape(pos['ca'])}</code>")
     return "\n".join(lines)
 
 
@@ -110,7 +115,7 @@ def render_list(positions, title="LP kebuka"):
     lines = [f"📋 <b>{title} ({len(opened)})</b>", ""]
     for pos in opened:
         lines.append(
-            f"• <b>{html.escape(pos['coin'].upper())}</b> {pos['fee']}% {fmt_range(pos['range'])}\n"
+            f"• <b>{html.escape(pos['coin'].upper())}{_by(pos)}</b> {pos['fee']}% {fmt_range(pos['range'])}\n"
             f"  <code>{html.escape(pos['ca'])}</code>"
         )
     return "\n".join(lines)
