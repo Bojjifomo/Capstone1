@@ -345,6 +345,19 @@ class BuildRpcsTest(unittest.TestCase):
         self.assertEqual([m.url for m in logs.members],
                          [W.PUBLIC_RPC, solid, W.RH.ALCHEMY_RPC.format(key="abcdefghijklmnopqrstuvwxyz123456")])
 
+    def test_dead_key_answer_moves_the_pool_on(self):
+        """SolidRPC 'Invalid API key or inactive subscription' -> RPC itu diistirahatin, bukan error ke bot."""
+        for msg in ("Invalid API key or inactive subscription", "Must be authenticated!"):
+            with self.assertRaises(W.R.QuotaError):
+                W.R._result({"error": {"code": -32000, "message": msg}}, "eth_blockNumber")
+        dead = W.R.RPC("https://dead.example", workers=1)
+        dead._post = lambda payload: {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000,
+                                                                          "message": "Invalid API key or inactive subscription"}}
+        ok = W.R.RPC("https://ok.example", workers=1)
+        ok._post = lambda payload: {"jsonrpc": "2.0", "id": 1, "result": "0x10"}
+        pool = W.R.RPCPool([dead, ok], prefer=0)
+        self.assertEqual(pool.call("eth_blockNumber", []), "0x10")
+
     def test_daily_quota_answer_is_a_quota_error(self):
         """SolidRPC: 'Daily response quota exceeded' -> pool pindah ke cadangan, bukan error ke bot."""
         with self.assertRaises(W.R.QuotaError):
@@ -460,6 +473,14 @@ class AutoCallTest(unittest.TestCase):
         text = self.tg.to(FAN)[-1]
         self.assertIn("(2)", text)
         self.assertIn("HYDX · Aan", text)
+
+    def test_second_bot_instance_warns_once(self):
+        self.tg.call = mock.Mock(return_value={"ok": False, "error_code": 409, "description": "Conflict"})
+        with mock.patch("builtins.print") as out:
+            self.bot.poll_once()
+            self.bot.poll_once()
+        warnings = [c for c in out.call_args_list if "bot lain" in str(c)]
+        self.assertEqual(len(warnings), 1)
 
     def test_dry_run_only_tells_owner(self):
         self.bot.dry_run = True

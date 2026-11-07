@@ -315,6 +315,14 @@ def _quota(msg):
     return any(w in msg.lower() for w in _QUOTA_WORDS)
 
 
+# a key that no longer works (cancelled plan, wrong key): no point retrying soon, same as a spent quota
+_DEAD_KEY_WORDS = ("invalid api key", "inactive subscription", "must be authenticated", "unauthorized")
+
+
+def _dead_key(msg):
+    return any(w in msg.lower() for w in _DEAD_KEY_WORDS)
+
+
 def _throttled_err(e):
     return _throttled(str(e)) or "missing from batch" in str(e)
 
@@ -327,7 +335,7 @@ def _result(out, method):
         msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
         if method == "eth_getLogs" and any(w in msg.lower() for w in _RANGE_WORDS):
             raise RangeError(msg, _range_hint(msg))
-        if _quota(msg):  # e.g. SolidRPC "Daily response quota exceeded": let a pool move on to another RPC
+        if _quota(msg) or _dead_key(msg):  # e.g. SolidRPC "Daily response quota exceeded": a pool moves on
             raise QuotaError(f"{method}: {msg}")
         raise RPCError(f"{method}: {msg}")
     return out.get("result")
