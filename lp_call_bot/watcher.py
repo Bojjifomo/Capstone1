@@ -39,6 +39,7 @@ PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"
 CONFIRMATIONS = 2          # jangan baca block yang paling baru, biar nggak kena reorg
 BLOCKS_PER_MINUTE = 600    # Robinhood Chain ~0.1 detik per block
 DYNAMIC_FEE_FLAG = 0x800000
+SEL_OWNER_OF = "6352211e"  # ERC721 ownerOf(uint256)
 STATE_VERSION = 3          # naik kalau bentuk state berubah: watcher mulai dari "sekarang" lagi
 
 
@@ -191,6 +192,19 @@ class Watcher:
         return [{"action": "open", "token_ids": ids, "tx": tx,
                  "pos": {"coin": info["coin"], "ca": info["ca"], "fee": fmt_fee(fee),
                          "range": [fmt_step(depth, self.range_step)]}}]
+
+    def position_alive(self, token_id, wallet):
+        """True: NFT posisi masih di wallet itu. False: udah diburn / pindah. None: RPC lagi bermasalah, nggak tau."""
+        try:
+            ret = self.calls.call("eth_call", [
+                {"to": RH.POSITION_MANAGER, "data": "0x" + SEL_OWNER_OF + C.word(int(token_id))}, "latest"])
+        except R.TransportError:
+            return None
+        except R.RPCError:  # revert: NFT udah nggak ada (diburn)
+            return False
+        if not ret or len(ret) < 66:
+            return False
+        return ("0x" + ret[-40:]).lower() == wallet.lower()
 
     # baca chain
     def _pool(self, pool):

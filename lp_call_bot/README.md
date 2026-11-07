@@ -21,12 +21,15 @@ Huruf besar/kecil bebas. Koin yang belum pernah di-open nggak bakal di-blast pas
 `close`/`reentry` (biar salah ketik nggak nyampe ke follower); bot ngasih tau koin mana
 yang dilewatin. Tiap blast, bot bales "✅ Terkirim ke N penerima".
 
-Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/wallet` (wallet yang dipantau),
+Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/bersih` (buang catatan basi),
+`/wallet` (wallet yang dipantau),
 `/stats`, `/blast <teks bebas>`, `/hapus <koin>`, `/help`.
 
 **Rekap per jam:** tiap `RECAP_MINUTES` (60) bot nge-blast daftar posisi yang masih kebuka (koin, pool %, range, CA,
 tanpa nilai), biar follower yang ketinggalan call tetep tau. Isinya dari call yang dikirim bot (auto atau ketik):
-posisi yang dibuka sebelum bot nyala nggak ada di situ. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
+posisi yang dibuka sebelum bot nyala nggak ada di situ. Sebelum dikirim, posisi dari auto call dicek ke chain (NFT-nya
+masih di wallet?), jadi posisi yang CLOSE-nya kelewat (RPC error / bot mati) nggak ikut. Call ketik manual ikut rekap
+24 jam sejak terakhir di-update. `/bersih` = buang semua catatan lama yang nggak bisa dicek ke chain. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
 = mati.
 
 Command follower: `/start` (langganan), `/stop`, `/posisi`.

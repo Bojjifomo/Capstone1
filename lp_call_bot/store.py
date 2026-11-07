@@ -45,12 +45,18 @@ class Store:
     def open_position(self, call):
         """call["key"] (opsional) = kunci simpan; posisi wallet tambahan pakai "koin@nama" biar nggak nimpa punya owner."""
         pos = {k: call[k] for k in ("coin", "ca", "fee", "range")}
-        if call.get("by"):
-            pos["by"] = call["by"]
+        for k in ("by", "token_ids", "wallet"):  # token_ids + wallet: buat ngecek ke chain posisinya masih ada
+            if call.get(k):
+                pos[k] = call[k]
         pos.update(status="open", updated=int(time.time()))
         self.data["positions"][call.get("key") or pos["coin"]] = pos
         self.save()
         return pos
+
+    @locked
+    def items(self):
+        """(kunci, posisi) semua posisi."""
+        return list(self.data["positions"].items())
 
     @locked
     def set_status(self, coin, status):
