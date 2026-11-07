@@ -79,12 +79,19 @@ def key_configured() -> bool:
     return bool(os.environ.get("DLMM_PRIVATE_KEY") or os.environ.get("DLMM_KEYPAIR"))
 
 
-def trade_wallet() -> dict:
-    """{"ok", "pubkey"} for the key in .env, worked out once by the executor. The key itself
-    never leaves the Node process; only its public address comes back."""
-    if "v" not in _wallet_cache:
-        _wallet_cache["v"] = run("wallet.mjs", [], timeout=60) if key_configured() else {"ok": False, "error": "no key"}
-    return _wallet_cache["v"]
+def trade_wallet(force: bool = False) -> dict:
+    """{"ok", "pubkey"} for the key in .env, worked out by the executor. The key itself never
+    leaves the Node process; only its public address comes back. Worked out again when the key
+    in the environment changes (the web re-reads .env), and a failure is retried after 20 s."""
+    import hashlib
+    import time
+    fp = hashlib.sha256((os.environ.get("DLMM_PRIVATE_KEY", "") + "|" + os.environ.get("DLMM_KEYPAIR", "")).encode()).hexdigest()
+    hit = _wallet_cache.get("v")
+    stale = not hit or hit["fp"] != fp or (not hit["res"].get("ok") and time.time() - hit["t"] > 20)
+    if force or stale:
+        res = run("wallet.mjs", [], timeout=60) if key_configured() else {"ok": False, "error": "no key"}
+        _wallet_cache["v"] = {"fp": fp, "t": time.time(), "res": res}
+    return _wallet_cache["v"]["res"]
 
 
 def ladder_args(pool: str, sol: float, slices: int, bottom: float, top: float = 0, strategy: str = "spot") -> list[str]:

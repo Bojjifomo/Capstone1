@@ -155,7 +155,7 @@ Double-click `Buka DLMM Web.command` lagi (di Mac mini). Di HP / MacBook: refres
 | HP / MacBook: halaman nggak kebuka | Tailscale nyala di dua-duanya, akun sama? Server di Mac jalan (jendela Terminal kebuka)? Coba pakai IP `100.x.y.z`. |
 | HP / MacBook: "trading cuma dari Mac ini" | `DLMM_WEB_PIN` belum diisi. Isi, restart server. |
 | HP / MacBook: "PIN salah" | Ketik ulang PIN yang ada di `.env`. |
-| 🔒 read-only | `DLMM_PRIVATE_KEY` kosong / salah. Isi, restart server. |
+| 🔒 read-only | Klik chip **🔒** : dia baca ulang `.env` (nggak perlu restart) dan nulis kenapa key-nya nggak kebaca (kosong, key di baris bawahnya, kepotong, ada spasi/kutip, file RTF). Atau di Terminal: `python3 -m dlmm_terminal doctor`. |
 | Pool kosong / error SSL | `python3 -m pip install --user certifi`, restart. |
 | Cleanup / Close+swap: "HTTP 429" | Jupiter rate limit: penjualan otomatis lewat pool Meteora. Kalau sering: isi `JUPITER_API_KEY`. |
 | Auto exit nggak jalan | Server harus nyala dan Mac nggak tidur. Statusnya kelihatan di baris Portfolio. |
