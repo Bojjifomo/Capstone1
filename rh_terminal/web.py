@@ -6,8 +6,8 @@ watchlist, ladder zap, and your wallet's ladders with exits, close, claim, re-en
 
 Trading: the key in .env (RH_PRIVATE_KEY) or in RH Secrets (iCloud Scriptable) stays in the Node
 executor; the browser only sees the address. Who may trade:
-  * without RH_WEB_PIN: only a browser on this Mac (127.0.0.1)
-  * with RH_WEB_PIN: any device that reaches the page, with the PIN
+  * without RH_WEB_PIN: this Mac, plus devices on the home network or Tailscale, no PIN
+  * with RH_WEB_PIN: this Mac without it, every other device with the PIN
 Trade requests also need the X-RH-Trade header, which another website open in your browser
 cannot add without a CORS preflight this server never answers.
 RH_PRACTICE_MODE=true: every button only simulates (eth_call), nothing is sent.
@@ -15,6 +15,7 @@ RH_PRACTICE_MODE=true: every button only simulates (eth_call), nothing is sent.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import sys
@@ -248,6 +249,22 @@ def cleanup_list(wallet: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------- handler ----
+_TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
+
+
+def is_home_address(addr: str) -> bool:
+    """Loopback, private LAN (192.168/10/172.16, fe80/fc00) or a Tailscale address."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    if ip.version == 4 and ip in _TAILSCALE:
+        return True
+    return ip.is_loopback or (ip.is_private and not ip.is_global)
+
+
 class Handler(BaseHTTPRequestHandler):
     cfg: dict = {}
 
@@ -268,13 +285,22 @@ class Handler(BaseHTTPRequestHandler):
     def _is_local(self) -> bool:
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    def _is_home(self) -> bool:
+        return is_home_address(self.client_address[0])
+
     def _trade_refused(self, body: dict) -> str | None:
         if self.headers.get("X-RH-Trade") != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
             return "missing trade header"
+        # The Mac running the server never needs the PIN. Without RH_WEB_PIN, devices on the home
+        # network or Tailscale trade without one too; anything else (a public address) never trades.
+        if self._is_local():
+            return None
         pin = os.environ.get("RH_WEB_PIN")
         if pin:
             return None if hmac.compare_digest(str(body.get("pin") or ""), pin) else "PIN salah"
-        return None if self._is_local() else "trading cuma dari Mac ini (set RH_WEB_PIN di .env buat dari HP)"
+        if self._is_home():
+            return None
+        return "trading cuma dari Mac ini, Wi-Fi rumah, atau Tailscale"
 
     def reload_cfg(self) -> None:
         new = load_config()
@@ -310,6 +336,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("address"),
                                              "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
                                              "pin": bool(os.environ.get("RH_WEB_PIN")), "local": self._is_local(),
+                                             "trusted": self._is_local() or (not os.environ.get("RH_WEB_PIN") and self._is_home()),
                                              "practice": practice_mode(),
                                              "envCheck": None if tw.get("ok") or not self._is_local() else env_report()},
                                    "wallet": os.environ.get("RH_WALLET")})

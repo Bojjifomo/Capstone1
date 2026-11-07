@@ -233,3 +233,28 @@ class RpcFallback(unittest.TestCase):
             eps = dict(chain.endpoints())
         self.assertEqual(eps["https://robinhood-mainnet.g.alchemy.com/v2/abc"], 10)
         self.assertGreaterEqual(chain.max_log_span(), 2000)
+
+
+class TradeAccess(unittest.TestCase):
+    def _h(self, addr):
+        from rh_terminal import web
+        h = web.Handler.__new__(web.Handler)
+        h.client_address = (addr, 0)
+        h.headers = {"X-RH-Trade": "1", "Content-Type": "application/json"}
+        return h
+
+    def test_no_pin_home_and_tailscale_trade(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": ""}):
+            for a in ("127.0.0.1", "192.168.1.20", "10.0.0.5", "100.101.5.9", "::ffff:192.168.0.3"):
+                self.assertIsNone(self._h(a)._trade_refused({}), a)
+            self.assertIsNotNone(self._h("8.8.8.8")._trade_refused({}))
+
+    def test_pin_set_local_skips_others_need_it(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "4829"}):
+            self.assertIsNone(self._h("127.0.0.1")._trade_refused({}))
+            self.assertEqual(self._h("100.101.5.9")._trade_refused({}), "PIN salah")
+            self.assertIsNone(self._h("100.101.5.9")._trade_refused({"pin": "4829"}))
+
+    def test_header_required(self):
+        h = self._h("127.0.0.1"); h.headers = {}
+        self.assertEqual(h._trade_refused({}), "missing trade header")

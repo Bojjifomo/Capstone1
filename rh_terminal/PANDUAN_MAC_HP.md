@@ -98,7 +98,7 @@ Pertama kali dia bikin **`rh_terminal/.env`** dan buka di TextEdit. Isi:
 | `RH_PRIVATE_KEY=` | **Opsi A:** biarin kosong. **Opsi B:** private key wallet LP (64 hex, boleh pakai `0x`). |
 | `ALCHEMY_API_KEY=` | Opsi A: kosong. Opsi B: key Alchemy (chain Robinhood). |
 | `RH_PRACTICE_MODE=` | Biarin **`true`** dulu: semua tombol cuma simulasi di chain, nggak ada yang dikirim. |
-| `RH_WEB_PIN=` | **Wajib buat iPhone & MacBook.** PIN 6+ angka, misalnya `482913`. Tanpa PIN mereka cuma bisa lihat. |
+| `RH_WEB_PIN=` | **Biarin kosong** = iPhone & MacBook (Wi-Fi rumah / Tailscale) langsung bisa trading tanpa PIN. Isi PIN cuma kalau mau dikunci. |
 | `RH_WEB_PORT=` | Kosong = **8892**. Isi angka lain cuma kalau 8892 kepake app lain. |
 | `RH_BANKROLL_USD=` | Modal LP lu dalam dolar. Maks per posisi = bankroll × 5% ÷ 0.9. |
 | `RH_SIZE_USD=` | Size default per ladder (contoh `400`). |
@@ -154,7 +154,7 @@ Tailscale = jaringan pribadi gratis antara device lu. Halaman RH Terminal **ngga
 
 Tampilan versi HP: tab bar di bawah (**Pool · Pass · PING · Watch · Portfolio**), tiap pool / ladder jadi kartu, tap kartu = detail + chart layar penuh (**✕ Tutup** buat balik).
 
-Pertama kali lu ngubah sesuatu dari iPhone (zap, close, ★, ⚙, auto exit), dia **nanya PIN** (`RH_WEB_PIN`). Sekali per sesi.
+Kalau `RH_WEB_PIN` kosong, nggak ada PIN sama sekali. Kalau diisi, iPhone / MacBook ditanya PIN sekali per sesi (Mac mini nggak pernah).
 
 > Script Scriptable di iPhone (**RH Pool**, **RH Portfolio**) tetap bisa dipakai kayak biasa. Dua-duanya pakai wallet yang sama, jadi posisi yang dibuka dari mana pun kelihatan di dua-duanya.
 
@@ -228,7 +228,8 @@ Double-click `Buka RH Terminal.command` lagi. Di iPhone/MacBook: refresh halaman
 |---|---|
 | "Gagal baca: … Connection refused / HTTP 403 / alchemy HTTP 400", chip ⛓ merah "0 pool" | Jaringan lu (biasanya DNS provider internet) ngeblok RPC resmi Robinhood dan PublicNode. Versi terbaru otomatis pindah ke RPC cadangan (Daybreak, dRPC) dan nyari posisi lewat ownerOf: update (langkah 11). Biar normal lagi: System Settings → Network → Wi-Fi/Ethernet → **Details → DNS** → ganti ke `1.1.1.1` dan `8.8.8.8`, restart RH Terminal. `python3 -m rh_terminal doctor` nunjukin RPC mana yang kejangkau. (Alchemy gratis cuma bisa baca log 10 block, jadi bukan cadangan buat itu.) |
 | iPhone / MacBook: halaman nggak kebuka | Tailscale nyala di dua-duanya, akun sama? Server di Mac mini jalan (jendela Terminal kebuka)? Coba pakai IP `http://100.x.y.z:8892`. |
-| iPhone / MacBook: "trading cuma dari Mac ini" | `RH_WEB_PIN` belum diisi. Isi di `.env`, tutup Terminal, double-click lagi. |
+| iPhone / MacBook: "trading cuma dari Mac ini, Wi-Fi rumah, atau Tailscale" | Device-nya lewat internet publik. Buka lewat Tailscale (`http://<nama-mac>:8892`). |
+| "PIN salah" padahal nggak mau PIN | Hapus isi `RH_WEB_PIN=` di `.env`, tutup Terminal, double-click lagi. |
 | "PIN salah" | Ketik ulang PIN yang ada di `.env`. |
 | 🔒 read-only | Klik chip 🔒: dia nulis kenapa (`.env` kosong, key bukan 64 hex, RH Secrets nggak ketemu di iCloud, file RTF). Atau `python3 -m rh_terminal doctor`. |
 | RH Secrets nggak ketemu | Finder → iCloud Drive → Scriptable: `RH Secrets.js` ada? Kalau file-nya ada tanda awan, klik kanan → *Download Now*. Atau pakai Opsi B (`.env`). |

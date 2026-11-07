@@ -29,8 +29,9 @@ server di Mac, dibuka dari browser Mac dan HP (Tailscale), dengan semua utility-
 4. Chip kanan atas jadi **🔑 0x…** kalau key kebaca, **🔒 read-only** kalau belum (klik buat lihat kenapa).
    Di Terminal: `python3 -m rh_terminal doctor` (nggak pernah nampilin key).
 
-Dari HP / MacBook lewat Tailscale: `http://<nama-mac>:8892`, Add to Home Screen. Buat trading dari
-sana, isi `RH_WEB_PIN=` di `.env`; tanpa PIN, trading cuma dari browser di Mac itu sendiri.
+Dari HP / MacBook lewat Tailscale: `http://<nama-mac>:8892`, Add to Home Screen. Tanpa PIN: Mac itu,
+device di Wi-Fi rumah, dan Tailscale bisa langsung trading (IP publik tetap ditolak). Mau pakai PIN buat
+device lain: isi `RH_WEB_PIN=` di `.env`.
 
 Pertama kali index swap baca 1 jam terakhir (±15–30 detik). Makin lama server nyala, makin panjang
 historinya (sampai 24 jam, disimpan di `data/activity.json`, jadi restart nggak hilang). Fee 6h / 24h

@@ -253,7 +253,7 @@ def cmd_doctor(a, cfg):
     print("== lainnya ==")
     print("  ALCHEMY_API_KEY:", "terisi" if os.environ.get("ALCHEMY_API_KEY") else "kosong (kirim tx lewat RPC publik)")
     print("  practice mode:", "NYALA (semua tombol cuma simulasi)" if practice_mode() else "mati (tombol kirim transaksi beneran)")
-    print("  RH_WEB_PIN:", "terisi (HP / MacBook bisa trading)" if os.environ.get("RH_WEB_PIN") else "kosong (trading cuma dari Mac ini)")
+    print("  RH_WEB_PIN:", "terisi (device lain wajib PIN)" if os.environ.get("RH_WEB_PIN") else "kosong (Mac ini, Wi-Fi rumah, Tailscale trading tanpa PIN)")
     print("  RH_WEB_PORT:", os.environ.get("RH_WEB_PORT") or "8892 (default)")
     print("  executor:", node.ready() or "OK")
     print("== RPC (dari Mac ini) ==")
