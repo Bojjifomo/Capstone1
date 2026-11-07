@@ -817,9 +817,18 @@ document.addEventListener("keydown", e => {
   else if (e.key >= "1" && e.key <= "4") setMode(["all", "pass", "ping", "watch"][+e.key - 1]);
 });
 $("#stAge").onclick = () => loadPools(true);
-$("#keyBtn").onclick = () => alert(trade.ready()
-  ? `Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (DLMM_WEB_PIN)." : "\nTrading cuma dari Mac ini."}`
-  : trade.why() + "\n\nDi dlmm_terminal/.env:\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\nSOLANA_RPC_URL=<Helius RPC>\nOpsional: DLMM_WEB_PIN=<PIN> buat trading dari HP.");
+// The key chip: re-reads the server's config first (the server re-reads .env each time), so a key
+// pasted into .env shows up without restarting anything; if it still isn't read, says why.
+$("#keyBtn").onclick = async () => {
+  try { state.cfg = await getJson("/api/config"); trade.info = state.cfg && state.cfg.trade; paintWallet(); } catch (e) {}
+  if (trade.ready()) {
+    $("#wallet").value = trade.info.wallet;
+    return alert(`Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (DLMM_WEB_PIN)." : "\nTrading cuma dari Mac ini."}`);
+  }
+  const chk = (trade.info && trade.info.envCheck) || [];
+  alert(trade.why() + (chk.length ? "\n\nCek .env:\n• " + chk.join("\n• ") : "")
+    + "\n\nDi dlmm_terminal/.env (satu baris, tanpa spasi, tanpa kutip):\nDLMM_PRIVATE_KEY=<private key base58 dari Phantom>\n\nSave, lalu klik chip ini lagi (nggak perlu restart). Di Terminal: python3 -m dlmm_terminal doctor");
+};
 $("#positions tbody").addEventListener("click", e => {
   const sw = e.target.closest("[data-swap],[data-reenter]");
   const cl = e.target.closest("[data-close]");

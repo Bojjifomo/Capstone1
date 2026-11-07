@@ -243,6 +243,14 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 
 `--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
 
+### Key nggak kebaca? `doctor`
+
+```bash
+python3 -m dlmm_terminal doctor
+```
+
+Nampilin (tanpa nunjukin key): file `.env` mana yang kebaca, baris `DLMM_PRIVATE_KEY` (kosong / key di baris bawah / panjang salah / karakter aneh / RTF), wallet yang dihasilkan, RPC, PIN, port. Web juga baca ulang `.env` tiap klik chip 🔒, jadi habis ngisi key nggak perlu restart.
+
 ### Mac + HP dengan setup yang sama
 
 Panduan lengkap: **[PANDUAN_MAC_HP.md](PANDUAN_MAC_HP.md)** (juga `Panduan Mac + HP.pdf`). Satu server di Mac, dibuka dari Mac (`localhost:8891`) dan HP (Tailscale, `http://<nama-mac>:8891`, bisa Add to Home Screen). Settings, watchlist, auto exit, dan pilihan tampilan (◎/$, mode, window, sort, TVL: `data/ui_prefs.json`) kesimpen di Mac, jadi sama di dua-duanya. Dari HP, perubahan (zap, close, ★, ⚙, auto exit) nanya `DLMM_WEB_PIN` sekali per sesi.

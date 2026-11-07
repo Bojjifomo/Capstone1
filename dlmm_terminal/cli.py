@@ -32,17 +32,87 @@ DATA = HERE / "data"
 
 # ---------- plumbing ----------
 
-def load_env() -> None:
-    for p in (HERE / ".env", HERE.parent / ".env"):
-        if p.exists():
-            for line in p.read_text().splitlines():
-                if "=" in line and not line.lstrip().startswith("#"):
-                    k, v = line.split("=", 1)
-                    k, v = k.strip(), v.strip().strip('"').strip("'")
-                    # An empty line from the template ("KEY=") means "not set": it must not
-                    # block a value given later in the file or in the other .env.
-                    if v and not os.environ.get(k):
-                        os.environ[k] = v
+_FROM_FILE: dict[str, str] = {}      # keys this process took from a .env file (so a re-read may replace them)
+ENV_FILES = (HERE / ".env", HERE.parent / ".env")
+
+
+def _env_lines(p: Path):
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            yield k.strip().lstrip("\ufeff"), v.strip().strip('"').strip("'").strip("\u201c\u201d\u2018\u2019")
+
+
+def load_env(reload: bool = False) -> None:
+    """dlmm_terminal/.env, then the repo root's .env. A variable set in the shell wins over both.
+    reload=True (the web server, on every config read): values that came from a file are read
+    again, so a key pasted into .env works without restarting."""
+    seen = set()
+    for p in ENV_FILES:
+        if not p.exists():
+            continue
+        for k, v in _env_lines(p):
+            # An empty line from the template ("KEY=") means "not set": it must not
+            # block a value given later in the file or in the other .env.
+            if not v or k in seen:
+                continue
+            ours = k in _FROM_FILE and os.environ.get(k) == _FROM_FILE[k]
+            if not os.environ.get(k) or (reload and ours):
+                os.environ[k] = v
+                _FROM_FILE[k] = v
+                seen.add(k)
+            elif ours:
+                seen.add(k)
+
+
+B58 = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+
+def env_report() -> list[str]:
+    """Why DLMM_PRIVATE_KEY is or is not read, without ever showing it: which .env files exist,
+    and what the key line looks like (length, characters that are not base58, RTF, a key on the next line)."""
+    out = []
+    for p in ENV_FILES:
+        if not p.exists():
+            out.append(f"{p}: nggak ada")
+            continue
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        if raw.lstrip().startswith("{\\rtf"):
+            out.append(f"{p}: kesimpen sebagai RTF (TextEdit Rich Text). Buka, Format → Make Plain Text, save.")
+            continue
+        lines = raw.splitlines()
+        hit = [i for i, l in enumerate(lines) if l.strip().startswith("DLMM_PRIVATE_KEY")]
+        if not hit:
+            out.append(f"{p}: nggak ada baris DLMM_PRIVATE_KEY=")
+            continue
+        for i in hit:
+            line = lines[i]
+            if "=" not in line:
+                out.append(f"{p} baris {i + 1}: nggak ada tanda = setelah DLMM_PRIVATE_KEY")
+                continue
+            v = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if not v:
+                nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                hint = " (key-nya kayaknya ada di baris bawahnya: pindahin ke setelah = di baris yang sama)" if len(nxt) > 60 and "=" not in nxt else ""
+                out.append(f"{p} baris {i + 1}: DLMM_PRIVATE_KEY kosong{hint}")
+                continue
+            bad = sorted({c for c in v if c not in B58 and not v.startswith("[")})
+            msg = f"{p} baris {i + 1}: DLMM_PRIVATE_KEY terisi, {len(v)} karakter"
+            if v.startswith("["):
+                msg += " (format array [..])"
+            elif bad:
+                msg += f", ada karakter yang bukan base58: {' '.join(repr(c) for c in bad[:6])} (spasi / kutip miring / typo autocorrect?)"
+            elif not 80 <= len(v) <= 90:
+                msg += " (key Phantom biasanya 87-88 karakter: kepotong / kelebihan?)"
+            elif " " in line.split("=", 1)[1].strip():
+                msg += " (ada spasi di tengah)"
+            else:
+                msg += ", format kelihatan benar"
+            out.append(msg)
+    shell = os.environ.get("DLMM_PRIVATE_KEY")
+    if shell and "DLMM_PRIVATE_KEY" not in _FROM_FILE:
+        out.append("DLMM_PRIVATE_KEY juga di-set di shell (export), yang itu yang dipakai.")
+    return out
 
 
 def load_config(path: str | None, overlay: bool = True) -> dict:
@@ -235,6 +305,22 @@ def cmd_reenter(a, cfg):
                             "positions": positions, "rule": "reenter" if a.reopen else "close-swap",
                             **{k: res.get(k) for k in ("ok", "error", "step", "solBack", "reopenSol")}})
     print(json.dumps(res, indent=2))
+
+
+def cmd_doctor(a, cfg):
+    """Check the setup without showing secrets: .env files, the key line, the wallet it gives, RPC, port, Node."""
+    from . import node
+    print("== .env ==")
+    for line in env_report():
+        print(" ", line)
+    print("== wallet ==")
+    w = node.trade_wallet(force=True)
+    print("  ", f"OK: {w['pubkey']}" if w.get("ok") else f"BELUM: {w.get('error')}")
+    print("== lainnya ==")
+    print("  SOLANA_RPC_URL:", "terisi" if os.environ.get("SOLANA_RPC_URL") else "kosong (pakai RPC publik)")
+    print("  DLMM_WEB_PIN:", "terisi (HP / MacBook bisa trading)" if os.environ.get("DLMM_WEB_PIN") else "kosong (trading cuma dari Mac ini)")
+    print("  DLMM_WEB_PORT:", os.environ.get("DLMM_WEB_PORT") or "8891 (default)")
+    print("  executor:", node.ready() or "OK")
 
 
 def cmd_decide(a, cfg):
@@ -757,6 +843,7 @@ def main(argv=None):
     re_.add_argument("--dry-run", action="store_true")
     re_.add_argument("--owner")
     re_.add_argument("-y", "--yes", action="store_true")
+    sub.add_parser("doctor", help="cek setup: .env, key (tanpa nampilin key), wallet, RPC, PIN, port")
     sub.add_parser("followup", help="price 1h/6h/24h after each logged candidate")
     o = sub.add_parser("open", help="open a SOL-only Spot ladder (RH style, 5 slices) after the gates")
     o.add_argument("pool")
@@ -789,7 +876,7 @@ def main(argv=None):
     if a.cmd == "web":
         from . import web
         return web.serve(cfg, a.host, a.port, config_path=a.config)
-    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open, "reenter": cmd_reenter,
+    {"screen": cmd_screen, "decide": cmd_decide, "monitor": cmd_monitor, "followup": cmd_followup, "open": cmd_open, "reenter": cmd_reenter, "doctor": cmd_doctor,
      "benchmark": cmd_benchmark, "signal": cmd_signal, "rpc": cmd_rpc}[a.cmd](a, cfg)
 
 

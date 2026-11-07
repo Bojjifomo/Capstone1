@@ -465,12 +465,15 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/settings":
                 return self._json({"form": settings.form(self.cfg, self.base_cfg()), "overlay": settings.load()})
             if u.path == "/api/config":
+                from .cli import env_report, load_env
+                load_env(reload=True)                      # a key pasted into .env works without a restart
                 tw = node.trade_wallet() if not node.ready() else {"ok": False}
                 return self._json({"cfg": self.cfg, "wallet": tw.get("pubkey") or os.environ.get("DLMM_WALLET"),
                                    "maxPositionSol": filters.max_position_sol(self.cfg), "executor": node.ready(),
                                    "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("pubkey"),
                                              "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
-                                             "pin": bool(os.environ.get("DLMM_WEB_PIN")), "local": self._is_local()}})
+                                             "pin": bool(os.environ.get("DLMM_WEB_PIN")), "local": self._is_local(),
+                                             "envCheck": None if tw.get("ok") or not self._is_local() else env_report()}})
         except Exception as exc:
             import sys
             import traceback
