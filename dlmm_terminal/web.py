@@ -1,8 +1,8 @@
 """DLMM terminal, web version: Meteora DLMM SOL pools with the spec v1 entry check,
 a detail panel with the chart, and your wallet's positions with the exit rules.
 
-  python3 -m dlmm_terminal web                 # http://localhost:8790
-  python3 -m dlmm_terminal web --port 8790 --host 0.0.0.0   # reachable over Tailscale
+  python3 -m dlmm_terminal web                 # http://localhost:8891 (DLMM_WEB_PORT in .env)
+  python3 -m dlmm_terminal web --port 8891 --host 0.0.0.0   # reachable over Tailscale
 
 Trading (like LP WEB): put the wallet's private key in .env as DLMM_PRIVATE_KEY (base58,
 as Phantom exports it). The key stays in the Node executor on this Mac; the browser only
@@ -605,7 +605,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "logged": row})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8790, config_path: str | None = None) -> None:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8891, config_path: str | None = None) -> None:
     Handler.cfg = cfg
     Handler.config_path = config_path
     threading.Thread(target=_auto_loop, args=(cfg,), daemon=True).start()   # auto exit (TP) for armed ladders
