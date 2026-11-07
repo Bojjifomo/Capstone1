@@ -63,7 +63,8 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
   dipantau, berapa pun jumlah wallet-nya), plus 1 per transaksi buka/tutup. Default 20 detik = ±8.700 panggilan/hari,
   muat kuota SolidRPC 10k/hari; `AUTO_POLL_SECONDS=30` = ±5.800. `/auto` nunjukin pemakaian aslinya.
 * **Wallet lain:** `/wallet add 0x… nama` di DM bot = wallet itu ikut dipantau mulai saat itu, tanpa restart. Call-nya
-  bertanda nama itu (`🟢 OPEN LP — FOREVER · Aan`), di rekap juga, dan posisinya dicatat terpisah dari punya lu
+  beda tampilan dari call lu: diawali `👀 PANTAUAN WALLET: AAN` + catatan "bukan call dari admin", pakai 🔵 OPEN /
+  🟠 CLOSE (call lu tetep 🟢 / 🔴), dan di rekap bertanda `· 👀 Aan`, dan posisinya dicatat terpisah dari punya lu
   (koin sama nggak saling nimpa). `/wallet` = daftar, `/wallet hapus nama` = berhenti mantau. Wallet lu sendiri tetep
   dari `WALLET_ADDRESSES` di `.env` (call-nya tanpa nama). Daftar wallet tambahan disimpen di `state.json`.
 * Call manual (ketik) tetep jalan barengan. Cek status: `/auto` (block terakhir dibaca, kapan terakhir sehat, error
