@@ -18,9 +18,23 @@ const state = {
   pf: null, cfg: null, wallet: "", loadedAt: 0,
   unit: "sol", mode: "all", ping: null, watch: [], notify: false,
 };
+// How the page looks (unit, mode, fee window, sort, TVL floor, filters, tab) is kept on the Mac too
+// (data/ui_prefs.json), so the Mac and the phone open the same view. The browser copy is the fallback.
+const SHARED_PREFS = ["unit", "mode", "win", "sort", "tvl", "filters", "view"];
 const store = {
   get(k, d) { try { const v = localStorage.getItem("dlmmweb." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem("dlmmweb." + k, JSON.stringify(v)); } catch (e) {} },
+  set(k, v) {
+    try { localStorage.setItem("dlmmweb." + k, JSON.stringify(v)); } catch (e) {}
+    if (SHARED_PREFS.includes(k)) {
+      fetch("/api/prefs", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" }, body: JSON.stringify({ [k]: v }) }).catch(() => {});
+    }
+  },
+  async pull() {
+    try {
+      const p = await (await fetch("/api/prefs")).json();
+      for (const k of SHARED_PREFS) if (p[k] !== undefined) localStorage.setItem("dlmmweb." + k, JSON.stringify(p[k]));
+    } catch (e) {}
+  },
 };
 
 // ---------- formatting ----------
@@ -163,8 +177,7 @@ async function toggleWatch(pool, symbol) {
   renderPools();
   if (state.sel === pool) { const r = state.data.rows.find(x => x.pool === pool); if (r) renderDetail(r, true); }
   try {
-    const res = await getJson("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
-      body: JSON.stringify({ pool, symbol, on, pin: trade.pin }) });
+    const res = await trade.call("/api/watchlist", { pool, symbol, on });
     state.watch = res.rows || state.watch;
   } catch (e) { toast("Watchlist cuma disimpan di browser ini: " + e.message); }
 }
@@ -574,8 +587,7 @@ async function setAutoExit(sel) {
   if (!trade.ready()) { alert(trade.why()); renderPortfolio(); return; }
   if (pct && !confirm(`Nyalain AUTO EXIT ${sel.dataset.sym} di PnL +${pct}%?\n\nKalau PnL ladder (PnL ◎ ÷ deposit) sampai +${pct}%, server langsung close semua slice + jual token ke SOL pakai key di .env, tanpa nanya lagi.\nCuma jalan selama DLMM Web nyala di Mac.\n\nCatatan spec v1: TP tetap rata-rata lebih jelek dari exit manual.`)) { renderPortfolio(); return; }
   try {
-    const r = await getJson("/api/autoexit", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
-      body: JSON.stringify({ pool: sel.dataset.tp, symbol: sel.dataset.sym, pct, pin: trade.pin }) });
+    const r = await trade.call("/api/autoexit", { pool: sel.dataset.tp, symbol: sel.dataset.sym, pct });
     state.pf.autoExit = r.autoExit;
     toast(pct ? `🎯 Auto exit ${sel.dataset.sym} nyala di +${pct}%` : `Auto exit ${sel.dataset.sym} mati`);
   } catch (e) { alert("Gagal: " + e.message); }
@@ -688,8 +700,7 @@ async function openSettings() {
   $("#sClose").onclick = close;
   const send = async body => {
     try {
-      const res = await getJson("/api/settings", { method: "POST", headers: { "Content-Type": "application/json", "X-DLMM-Trade": "1" },
-        body: JSON.stringify(Object.assign(body, { pin: trade.pin })) });
+      const res = await trade.call("/api/settings", body);
       if (!res.ok) throw new Error(res.error);
       $("#sMsg").innerHTML = `<span class="pos">✓ Tersimpan.</span> Pool + PING di-scan ulang…`;
       try { state.cfg = await getJson("/api/config"); } catch (e) {}
@@ -827,6 +838,7 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
 
 (async function init() {
   window.__dlmmStarted = true;
+  await store.pull();                              // the Mac's view settings, so phone and Mac match
   state.win = store.get("win", "24h");
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);

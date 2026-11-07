@@ -243,6 +243,10 @@ Pakai key yang sama di `.env` (`DLMM_PRIVATE_KEY`, atau `DLMM_KEYPAIR=/path/keyp
 
 `--slices 1` sekarang beneran kebuka **1 posisi**. Dulu, kalau satu slice lebih dari 70 bin (posisi standar maksimal 70 bin), jumlah slice dinaikin diam-diam (1 jadi 2, bisa sampai 18 di bin step kecil). Sekarang slice yang lebih lebar dari 70 bin dibuka sebagai **satu posisi extended** (dibikin kosong lalu diisi per chunk, 3-4 transaksi). Konsekuensinya: **rent lebih gede** (±0.0006 SOL per bin di atas 70; balik pas close), modal tampil di plan sebagai `wide`. Mau perilaku lama (dipecah jadi banyak posisi 70 bin), pakai `--split` di `open_ladder.mjs`. Dites lokal di LiteSVM (program DLMM asli + akun mainnet): 1 slice 152 bin = 1 posisi extended 4 tx, 2 slice = 2 posisi extended, 5 slice standar = 5 posisi; semua tx sukses. **Belum dites kirim beneran ke mainnet.**
 
+### Mac + HP dengan setup yang sama
+
+Panduan lengkap: **[PANDUAN_MAC_HP.md](PANDUAN_MAC_HP.md)** (juga `Panduan Mac + HP.pdf`). Satu server di Mac, dibuka dari Mac (`localhost:8790`) dan HP (Tailscale, `http://<nama-mac>:8790`, bisa Add to Home Screen). Settings, watchlist, auto exit, dan pilihan tampilan (◎/$, mode, window, sort, TVL: `data/ui_prefs.json`) kesimpen di Mac, jadi sama di dua-duanya. Dari HP, perubahan (zap, close, ★, ⚙, auto exit) nanya `DLMM_WEB_PIN` sekali per sesi.
+
 ### Jual token: Jupiter, kalau gagal langsung ke pool Meteora
 
 `executor/swap.mjs` dipakai Close+swap, Re-entry, auto exit, dan Cleanup. Urutannya: Jupiter (retry kalau 429 / server error, pakai `JUPITER_API_KEY` di `.env` kalau ada) → kalau Jupiter nolak/rate limit/nggak ada rute, jual langsung di pool Meteora DLMM token itu (pool posisi yang ditutup, atau pool TOKEN/SOL dengan TVL terbesar). Dua-duanya batal kalau harganya lebih dari max loss (⚙ Risk, default 5%) di bawah harga pool. Alasan gagal sekarang ditulis apa adanya (misal `HTTP 429: Rate limit exceeded`), bukan cuma "no route".

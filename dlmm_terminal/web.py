@@ -214,6 +214,31 @@ def ping_rows(cfg: dict, force: bool = False) -> dict:
         return {"running": _ping["running"], "error": _ping["error"], **(_ping["data"] or {"rows": [], "t": 0})}
 
 
+# ---------- view prefs shared by every browser (Mac + phone) ----------
+PREF_KEYS = {"unit", "mode", "win", "sort", "tvl", "filters", "view"}
+
+
+def _prefs_file():
+    from .cli import DATA
+    return DATA / "ui_prefs.json"
+
+
+def prefs_load() -> dict:
+    try:
+        return json.loads(_prefs_file().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def prefs_set(changes: dict) -> dict:
+    p = prefs_load()
+    p.update({k: v for k, v in changes.items() if k in PREF_KEYS and len(json.dumps(v)) < 200})
+    f = _prefs_file()
+    f.parent.mkdir(exist_ok=True)
+    f.write_text(json.dumps(p))
+    return p
+
+
 # ---------- watchlist: the pools you picked to play ----------
 def _watch_file():
     from .cli import DATA
@@ -433,6 +458,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(portfolio(wallet, self.cfg))
             if u.path == "/api/ping":
                 return self._json(ping_rows(self.cfg, q.get("force") == "1"))
+            if u.path == "/api/prefs":
+                return self._json(prefs_load())
             if u.path == "/api/watchlist":
                 return self._json({"rows": watchlist()})
             if u.path == "/api/settings":
@@ -457,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
         f = (STATIC / name).resolve()
         if STATIC not in f.parents or not f.is_file():
             return self._send(404, b"not found", "text/plain")
-        ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}.get(f.suffix, "application/octet-stream")
+        ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png"}.get(f.suffix, "application/octet-stream")
         self._send(200, f.read_bytes(), ctype)
 
     config_path = None
@@ -531,6 +558,11 @@ class Handler(BaseHTTPRequestHandler):
                 append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
                                         "position": body.get("position"), "rule": body.get("rule"), **res})
                 return self._json(res)
+            if self.path == "/api/prefs":
+                # display only (no money, no rules): the trade header against other sites, no PIN
+                if self.headers.get("X-DLMM-Trade") != "1":
+                    return self._json({"ok": False, "error": "missing header"}, 403)
+                return self._json(prefs_set(body))
             if self.path == "/api/autoexit":
                 why = self._trade_refused(body)
                 if why:
