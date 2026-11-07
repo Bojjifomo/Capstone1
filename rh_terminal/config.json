@@ -1,0 +1,62 @@
+{
+  "_note": "RH Terminal defaults. Gates and flags are starting values, not results of a backtest like the DLMM spec: change them in ⚙ Settings (saved in data/settings.json) as you learn what works.",
+  "universe": {
+    "quotes": ["USDG", "ETH", "WETH"],
+    "minLpFeePct": 0.05,
+    "maxLpFeePct": 15,
+    "_maxLpFeePct": "above this a pool is a honeypot rather than a fee tier (RH Pool: nothing real exists between 20% and 60%)"
+  },
+  "scan": {
+    "backfillHours": 1,
+    "pollSec": 30,
+    "maxPools": 300,
+    "_maxPools": "pools (by last hour's fees) that get DexScreener data; watchlist and open positions always do"
+  },
+  "gates": {
+    "minPoolAgeMinutes": 60,
+    "minTvlUsd": 2000,
+    "minMcapUsd": null,
+    "minFeePctDay": 2,
+    "_minFeePctDay": "best of the 1h pace and the 24h figure, fees / TVL per day"
+  },
+  "flags": {
+    "pump1hPct": 25,
+    "drop6hPct": -17,
+    "minTvlUsd": 10000,
+    "sellsShare1hPct": 65,
+    "hookPool": true,
+    "nightEntryLocalHours": null,
+    "_nightEntryLocalHours": "DLMM found night entries worse on Solana; no RH data yet. [0, 9] turns the flag on (WIB)",
+    "utcOffsetHours": 7
+  },
+  "position": {
+    "defaultSizeUsd": 400,
+    "ladderSlices": 5,
+    "rangeTopPct": 0,
+    "rangeBottomPct": -60,
+    "bankrollUsd": 8000,
+    "lossBudgetPct": 5,
+    "_ladder": "RH ladder (same as RH Pool): equal-width slices from rangeTopPct down to rangeBottomPct below the price, quote-only, weights 1:2:...:n (deepest slice biggest)"
+  },
+  "ping": {
+    "top": 10,
+    "sortBy": "fee1hPct",
+    "_sortBy": "fee1hPct (fees last hour / TVL) | fees1hUsd | volTvl1h | fee24hPct",
+    "minTvlUsd": 5000,
+    "minMcapUsd": 100000,
+    "maxMcapUsd": null,
+    "minPoolAgeHours": 1,
+    "maxPoolAgeHours": null,
+    "minFees1hUsd": 5,
+    "requireGates": true
+  },
+  "exits": {
+    "alertAtPnlPct": -10,
+    "alertBottomThirdOfRange": true,
+    "alertFullyConverted": true,
+    "takeProfitPct": null,
+    "stopLossPct": null
+  },
+  "web": {"refreshMin": 2, "autoExitCheckMin": 2},
+  "trade": {"maxLossPct": 5, "gasReserveEth": 0.0005}
+}

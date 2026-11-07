@@ -12,6 +12,7 @@ agent **orchestrator** yang ngejalanin semuanya dari satu tempat.
 | **RH Smart LP Finder** | folder sebelah (`../RH Smart LP Finder`, bukan di repo ini) | Ranking LP satu pool, dihitung pas diklik. Wallet Finder baca database-nya (read-only): saved wallets → Watchlist, ranking per pool → kolom **Smart LP**. Kodenya: `rh_wallet_finder/smartlp.py`. | Mac, `localhost:8787` |
 | **Website widget** (web showcase) | `rh_wallet_finder/web/` | Halaman read-only di Vercel: board Multiday / Degen / 24h, filter, preset, detail wallet. Diisi snapshot yang di-upload Mac (`publish.py` → `/api/publish` → Vercel Blob → `/api/snapshot`). | Vercel |
 | **DLMM Terminal** (Solana LP) | `dlmm_terminal/` | Filter entry pool Meteora DLMM SOL (gate + flag dari DLMM-Auto-Entry-Spec v1), log semua kandidat, monitor PnL posisi tiap 5 menit + alert + exit rule (auto close lewat SDK Meteora). `signal`: ping pool yang lolos gate + mirip habitat wallet benchmark 20 hari. | Mac / di mana aja |
+| **RH Terminal** (Robinhood LP) | `rh_terminal/` | Versi web Mac + HP dari RH Pool / RH Portfolio, setara DLMM Terminal: semua pool Uniswap V4 USDG/ETH dibaca dari event Swap di chain (fee LP persis), entry check, PING, watchlist, zap ladder, portfolio ladder + Close / Claim / Close+swap / Re-entry / Cleanup / auto exit. Executor Node (ethers). Script iPhone di `rh_terminal/scriptable/`. | Mac (`Buka RH Terminal.command`), HP lewat Tailscale |
 
 Alurnya:
 

@@ -21,3 +21,8 @@ fund/logs/
 dlmm_terminal/data/
 dlmm_terminal/.env
 dlmm_terminal/executor/node_modules/
+
+# rh_terminal
+rh_terminal/data/
+rh_terminal/.env
+rh_terminal/executor/node_modules/

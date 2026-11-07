@@ -1,0 +1,9 @@
+{
+  "name": "rh-terminal-executor",
+  "private": true,
+  "type": "module",
+  "description": "Signs and sends Uniswap V4 transactions on Robinhood Chain for RH Terminal (open ladder, close, claim, swap, re-entry, cleanup).",
+  "dependencies": {
+    "ethers": "6.13.4"
+  }
+}
