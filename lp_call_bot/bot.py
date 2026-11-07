@@ -153,6 +153,7 @@ class Bot:
         self.watch_err = None
         self.watch_fails = 0
         self.recap_seconds = recap_minutes * 60
+        self.started = time.time()
         self.owner_wallets = [w.lower() for w in owner_wallets]
         if self.watcher:
             self.watcher.set_wallets(self.all_wallets())
@@ -280,7 +281,15 @@ class Bot:
                             for w in st["wallets"]) or "(belum ada wallet: /wallet add 0x… nama)"
         mode = "DRY RUN (cuma ke lu)" if self.dry_run else "LIVE (ke follower)"
         return (f"🤖 Auto call nyala: {mode}\n{wallets}\nBlock terakhir dibaca: {st['cursor']}\n"
-                + self.watch_health())
+                + self.watch_health() + "\n" + self.rpc_usage())
+
+    def rpc_usage(self):
+        """Panggilan RPC sejak bot nyala + perkiraan per hari, biar keliatan muat kuota (misal SolidRPC 10k/hari)."""
+        calls = getattr(self.watcher.rpc, "calls", None)
+        if calls is None:
+            return ""
+        hours = max((time.time() - self.started) / 3600, 1 / 60)
+        return f"Panggilan RPC sejak nyala: {calls:,} (± {calls / hours * 24:,.0f}/hari, tiap {self.watch_seconds:g} detik)"
 
     def watch_health(self):
         if self.watch_ok:
@@ -470,7 +479,7 @@ def main():
         os.environ.get("DEFAULT_RANGE", "-65"),
         heartbeat=os.environ.get("HEARTBEAT_FILE", HERE / "heartbeat"),
         watcher=build_watcher(store, owner_wallets),
-        watch_seconds=float(os.environ.get("AUTO_POLL_SECONDS", "15")),
+        watch_seconds=float(os.environ.get("AUTO_POLL_SECONDS", "20")),
         dry_run=os.environ.get("AUTO_DRY_RUN", "0") == "1",
         recap_minutes=float(os.environ.get("RECAP_MINUTES", "60")),
         owner_wallets=owner_wallets,

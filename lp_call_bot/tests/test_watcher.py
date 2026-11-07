@@ -303,6 +303,19 @@ class WatcherTest(unittest.TestCase):
         self.chain.logs += burn([8], tx3, 1070, wallet=OTHER) + [modify(1070, 5, POOL, lower_tick(-65), 10000, -5_000_000, 8, tx3)]
         self.assertEqual([(e["action"], e["wallet"]) for e in self.w.poll()], [("close", OTHER)])
 
+    def test_one_log_call_per_poll_whatever_the_wallet_count(self):
+        self.start()
+        self.w.set_wallets([WALLET, OTHER, "0x" + "f3" * 20])
+        tx = tx_hash(2)
+        self.chain.logs += mint([7], tx, 1010) + [modify(1010, 5, POOL, lower_tick(-65), 10000, 5_000_000, 7, tx)]
+        self.chain.logs += [transfer(1011, 1, OTHER, "0x" + "a9" * 20, 9, tx_hash(3))]  # dikirim ke luar: bukan call
+        self.chain.calls.clear()
+        with mock.patch.object(self.chain, "get_logs", wraps=self.chain.get_logs) as logs:
+            evs = self.w.poll()
+        self.assertEqual(logs.call_count, 1)
+        self.assertEqual([e["action"] for e in evs], ["open"])
+        self.assertEqual(self.chain.calls.count("eth_blockNumber"), 1)
+
     def test_no_wallets_reads_only_the_block_number(self):
         self.make()
         self.w.set_wallets([])
