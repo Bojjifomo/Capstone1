@@ -90,22 +90,36 @@ for (const p of positions) {
   closed.push({ position: p, ok: !!r?.ok, error: r?.error });
   if (!r?.ok) { out({ ok: false, step: "close", error: `close ${p} failed: ${r?.error || "?"}`, closed }); process.exit(1); }
 }
-// token that came out
-const tokAfter = await tokenBalance();
-const gained = tokAfter.raw - tokBefore.raw;
+// The token that came out. The RPC can answer with the balance from before the close for a few
+// seconds, so wait until it moves (up to ~30 s) when the positions held some token; if it never
+// shows, sell what the positions held, capped by what the wallet now holds.
+const expected = BigInt(Math.floor(view.reduce((a, v) => a + (Number(v.tokenRaw) || 0), 0)));
+let tokAfter = await tokenBalance(), gained = tokAfter.raw - tokBefore.raw, waited = 0;
+while (expected > 0n && gained * 100n < expected * 95n && waited < 15) {
+  await new Promise(r => setTimeout(r, 2000));
+  waited++;
+  tokAfter = await tokenBalance();
+  gained = tokAfter.raw - tokBefore.raw;
+}
+let gainedNote = null;
+if (gained <= 0n && expected > 0n && tokAfter.raw > 0n) {
+  gained = tokAfter.raw < expected ? tokAfter.raw : expected;
+  gainedNote = "balance did not move after the close; selling what the positions held";
+}
 let swap = null;
 if (gained > 0n) {
   // Jupiter, else straight into this pool; never more than --maxloss % under the pool price.
   const res = await sellToSol(tokenMint, gained.toString(), { connection, signer, owner, maxLossPct: maxLoss, pool });
   if (!res.ok) {
-    out({ ok: false, step: "swap", error: `positions closed, token NOT sold: ${res.error}. It stays in the wallet (Cleanup sells it later).`, closed, swap: res });
+    out({ ok: false, step: "swap", error: `positions closed, token NOT sold: ${res.error}. It stays in the wallet (Cleanup sells it later).`, closed, swap: res,
+      leftover: { mint: tokenMint, pool, raw: gained.toString() } });
     process.exit(1);
   }
-  swap = { signature: res.signature, via: res.via, tokenRaw: gained.toString(), sol: res.sol, underPct: res.underPct };
+  swap = { signature: res.signature, via: res.via, tokenRaw: gained.toString(), sol: res.sol, underPct: res.underPct, note: gainedNote, waitedS: waited * 2 };
 }
 const solAfter = await connection.getBalance(owner);
 const back = (solAfter - solBefore) / 1e9;                       // SOL + returned rent − fees
-if (!reopen) { out({ ok: true, mode: "close-swap", closed, swap, solBack: back }); process.exit(0); }
+if (!reopen) { out({ ok: true, mode: "close-swap", closed, swap, solBack: back, tokenMint, expectedTokenRaw: expected.toString() }); process.exit(0); }
 
 const rentBack = positions.length * 0.0419;
 const ask = arg("sol") ? Number(arg("sol")) : Math.floor((back - rentBack) * 0.999 * 1000) / 1000;

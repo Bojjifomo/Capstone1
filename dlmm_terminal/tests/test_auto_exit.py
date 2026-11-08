@@ -43,6 +43,33 @@ class AutoExitTest(unittest.TestCase):
             self.assertEqual(web.auto_exit_once(self.cfg, "W"), [])   # done: does not fire again
         self.assertEqual(web.auto_load()["POOL"]["status"], "done")
 
+    def test_token_not_sold_is_retried(self):
+        web.auto_set("POOL", "X", 3)
+        fail = {"ok": False, "step": "swap", "error": "HTTP 429", "leftover": {"mint": "MINT", "pool": "POOL", "raw": "5"}}
+        with mock.patch.object(web, "_ladders", lambda w: self.ladders(3.5)), \
+                mock.patch.object(web.node, "run", return_value=fail):
+            web.auto_exit_once(self.cfg, "W")
+        self.assertEqual(web.auto_load()["POOL"]["status"], "selling")
+        # next check: the sale is retried with sell.mjs and lands
+        with mock.patch.object(web, "_ladders", lambda w: {}), \
+                mock.patch.object(web.node, "run", return_value={"ok": True, "sol": 0.4, "via": "dlmm", "signature": "s"}) as run:
+            web.auto_exit_once(self.cfg, "W")
+            self.assertEqual(run.call_args[0][0], "sell.mjs")
+            self.assertIn("MINT", run.call_args[0][1])
+        self.assertEqual(web.auto_load()["POOL"]["status"], "done")
+
+    def test_sale_gives_up_after_tries(self):
+        web.auto_set("POOL", "X", 3)
+        with web._auto_lock:
+            d = web.auto_load()
+            d["POOL"].update(status="selling", leftover={"mint": "MINT", "pool": "POOL"}, sellTries=0)
+            web.auto_save(d)
+        with mock.patch.object(web, "_ladders", lambda w: {}), \
+                mock.patch.object(web.node, "run", return_value={"ok": False, "error": "no route"}):
+            for _ in range(web.SELL_TRIES):
+                web.auto_exit_once(self.cfg, "W")
+        self.assertEqual(web.auto_load()["POOL"]["status"], "failed")
+
     def test_off_and_gone(self):
         web.auto_set("POOL", "X", 10)
         web.auto_set("POOL", "X", None)

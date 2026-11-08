@@ -328,9 +328,45 @@ def _ladders(wallet: str) -> dict:
     return out
 
 
+SELL_TRIES = 6
+
+
+def _retry_sells(cfg: dict) -> None:
+    """A ladder the auto exit closed but whose token did not sell (route refused, rate limit): try the
+    sale again on every check, up to SELL_TRIES times, then leave it for Cleanup."""
+    from .cli import append, notify
+    with _auto_lock:
+        todo = {k: v for k, v in auto_load().items() if v.get("status") == "selling" and v.get("leftover")}
+    for pool, a in todo.items():
+        left = a["leftover"]
+        res = node.run("sell.mjs", ["--mint", left["mint"], "--pool", left.get("pool") or pool,
+                                    "--maxloss", str(cfg["trade"]["maxLossPct"])], timeout=300)
+        tries = int(a.get("sellTries") or 0) + 1
+        ok = bool(res.get("ok"))
+        with _auto_lock:
+            d = auto_load()
+            if pool not in d:
+                continue
+            if ok:
+                got = f"◎{res.get('sol', 0):.4f} via {res.get('via')}" if res.get("signature") else "udah nggak ada di wallet"
+                d[pool].update(status="done", msg=f"closed · token dijual {got} (percobaan {tries})", sellTries=tries)
+            elif tries >= SELL_TRIES:
+                d[pool].update(status="failed", msg=f"closed, token gagal dijual {tries}x: {(res.get('error') or '')[:120]}. Pakai Cleanup.", sellTries=tries)
+            else:
+                d[pool].update(sellTries=tries, msg=f"closed, token belum kejual (coba {tries}/{SELL_TRIES}): {(res.get('error') or '')[:100]}")
+            auto_save(d)
+            status = d[pool]["status"]
+        if status != "selling":
+            append("closes.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "auto-exit-sell",
+                                    "pool": pool, "symbol": a.get("symbol"), "mint": left["mint"], "tries": tries,
+                                    **{k: res.get(k) for k in ("ok", "error", "via", "sol", "signature")}})
+            notify(f"{'✅' if ok else '❌'} AUTO EXIT {a.get('symbol')}: {d[pool]['msg']}")
+
+
 def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
     """One pass: fire every armed ladder at or over its target. Returns what fired."""
     from .cli import append, notify
+    _retry_sells(cfg)
     with _auto_lock:
         armed = {k: v for k, v in auto_load().items() if v.get("status") == "armed"}
     if not armed:
@@ -359,11 +395,21 @@ def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
         res = node.run("reenter.mjs", ["--pool", pool, "--positions", ",".join(g["positions"]),
                                        "--maxloss", str(cfg["trade"]["maxLossPct"])], timeout=900)
         ok = bool(res.get("ok"))
-        msg = (f"closed, ◎{res.get('solBack', 0):.4f} balik" if ok else f"{res.get('step') or ''} {res.get('error') or 'gagal'}")[:200]
+        sw = res.get("swap") or {}
+        left = res.get("leftover")
+        if ok:
+            sold = f" · token dijual ◎{sw.get('sol', 0):.4f} via {sw.get('via')}" if sw.get("signature") else " · nggak ada token buat dijual"
+            msg = f"closed, ◎{res.get('solBack', 0):.4f} balik{sold}"
+        elif left:
+            msg = f"closed, token belum kejual ({(res.get('error') or '')[:120]}): dicoba jual lagi tiap cek"
+        else:
+            msg = f"{res.get('step') or ''} {res.get('error') or 'gagal'}"
+        msg = msg[:220]
         with _auto_lock:
             d = auto_load()
             if pool in d:
-                d[pool].update(status="done" if ok else "failed", msg=msg, firedAt=time.time(), pnlPct=g["pnlPct"])
+                d[pool].update(status="done" if ok else "selling" if left else "failed", msg=msg, firedAt=time.time(),
+                               pnlPct=g["pnlPct"], **({"leftover": left, "sellTries": 0} if left else {}))
                 auto_save(d)
         append("closes.jsonl", {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "auto-exit", "pool": pool,
                                 "symbol": g["symbol"], "positions": g["positions"], "rule": f"takeProfit {a['pct']:g}%",
