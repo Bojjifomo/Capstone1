@@ -256,3 +256,4 @@ button.chip { background: transparent; cursor: pointer; font: inherit; }
   .sgrid { grid-template-columns: 1fr; }
   .toast { left: 10px; right: 10px; bottom: calc(74px + env(safe-area-inset-bottom)); }
 }
+#pfAuto:empty { display: none; }
