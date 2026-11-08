@@ -35,12 +35,36 @@ def ready() -> str | None:
 USAGE_LOG = Path(__file__).resolve().parent / "data" / "rpc_usage.jsonl"
 
 
+def _meter_executor(bot: str, by_host: dict, urls: list[str]) -> None:
+    """Hand the executor's request counts ({label: n}) to the RPC Monitor (../rpc_monitor/meter.py).
+    A label is "helius" / "alchemy" / "public" or a hostname; it is matched back to the link it came from."""
+    try:
+        import importlib.util
+        import sys
+        from urllib.parse import urlsplit
+        mod = sys.modules.get("rpc_meter")
+        if mod is None:
+            path = Path(__file__).resolve().parents[1] / "rpc_monitor" / "meter.py"
+            spec = importlib.util.spec_from_file_location("rpc_meter", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            sys.modules["rpc_meter"] = mod
+        for label, n in (by_host or {}).items():
+            url = next((u for u in urls if u and (label in (urlsplit(u).hostname or "") or
+                        (label == "public" and u == urls[-1]))), None)
+            if url:
+                mod.hit(bot, url, "ok", int(n))
+    except Exception:
+        pass
+
+
 def log_rpc(script: str, args: list[str], result: dict) -> None:
     """Every executor run reports its RPC requests ({"rpc": {calls, byHost, byMethod}}): keep them,
     so `python -m dlmm_terminal rpc` can show what the Helius free tier is spent on."""
     st = (result or {}).get("rpc")
     if not st:
         return
+    _meter_executor("dlmm_terminal", st.get("byHost"), [os.environ.get("SOLANA_RPC_URL") or "", PUBLIC_RPC])
     mode = next((a[2:] for a in args if a in ("--plan", "--dry-run", "--build")), "send")
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "script": script, "mode": mode,
            "ok": result.get("ok"), **st}

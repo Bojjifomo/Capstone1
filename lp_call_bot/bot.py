@@ -73,6 +73,7 @@ def build_rpcs(watcher):
     cadangan: baru kepake kalau yang di depannya error, kena limit, atau kuotanya habis (yang kuotanya habis
     diistirahatin sejam). Key Alchemy doang otomatis jadi link Robinhood Chain-nya."""
     R, RH = watcher.R, watcher.RH
+    os.environ.setdefault("RPC_METER_BOT", "lp_call_bot")  # RPC Monitor: count these calls as this bot's
     primary = RH.rpc_link(os.environ.get("RPC_URL", "")) or watcher.PUBLIC_RPC
     backups = os.environ.get("BACKUP_RPC_URLS", "").split(",") + [os.environ.get("CALL_RPC_URL", "")]
     urls = list(dict.fromkeys([primary] + [RH.rpc_link(u) for u in backups if u.strip()]))

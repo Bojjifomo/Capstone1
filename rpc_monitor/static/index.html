@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>RPC Monitor</title>
+<style>
+:root {
+  --bg: #f6f6f4; --card: #ffffff; --ink: #1d1d1b; --mute: #6b6b66; --line: #e4e3de;
+  --aman: #1f8a4c; --waspada: #b8860b; --hampir: #d9641e; --limit: #c62828; --unk: #8a8a85;
+  --bar: #ecebe6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #141413; --card: #1e1e1c; --ink: #ecebe6; --mute: #9b9a93; --line: #2f2f2c;
+          --aman: #4cc27d; --waspada: #e0b443; --hampir: #f08a4b; --limit: #ef5350; --unk: #77766f; --bar: #2a2a27; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 16px 16px 48px; }
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+h1 { font-size: 20px; margin: 0; flex: 1; }
+h2 { font-size: 15px; margin: 26px 0 10px; color: var(--mute); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+button:disabled { opacity: .5; }
+.sum { display: flex; gap: 8px; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid var(--line); background: var(--card); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.l-aman { --c: var(--aman); } .l-waspada { --c: var(--waspada); } .l-hampir { --c: var(--hampir); } .l-limit { --c: var(--limit); } .l-\? { --c: var(--unk); }
+.dot { background: var(--c, var(--unk)); }
+.tag { color: var(--c); font-weight: 700; }
+.cards { display: grid; gap: 12px; }
+.card { background: var(--card); border: 1px solid var(--line); border-left: 5px solid var(--c, var(--unk)); border-radius: 10px; padding: 12px 14px; }
+.top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.name { font-weight: 700; font-size: 16px; }
+.url { color: var(--mute); font-size: 12.5px; word-break: break-all; font-family: ui-monospace, Menlo, monospace; }
+.bots { margin: 6px 0 2px; font-size: 13.5px; }
+.bots span { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 8px; border-radius: 6px; background: var(--bar); }
+.meter { margin: 10px 0 4px; }
+.meter .lbl { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--mute); }
+.track { height: 8px; border-radius: 4px; background: var(--bar); overflow: hidden; position: relative; margin-top: 3px; }
+.fill { height: 100%; background: var(--c); }
+.proj { position: absolute; top: 0; bottom: 0; border-right: 2px dashed var(--ink); opacity: .45; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px 12px; margin-top: 8px; font-size: 13px; }
+.stats b { display: block; font-size: 15px; }
+.stats div { color: var(--mute); }
+.stats div b { color: var(--ink); }
+ul.why { margin: 8px 0 0; padding-left: 18px; font-size: 13.5px; }
+ul.why li { margin: 2px 0; }
+details { margin-top: 8px; font-size: 13px; }
+summary { cursor: pointer; color: var(--mute); }
+code, .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.log { color: var(--mute); margin: 3px 0; word-break: break-all; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--mute); font-weight: 600; font-size: 12.5px; }
+tr:last-child td { border-bottom: 0; }
+.note { color: var(--hampir); font-size: 12.5px; }
+.muted { color: var(--mute); font-size: 13px; }
+.err { color: var(--limit); }
+.mono { word-break: break-all; }
+@media (max-width: 600px) {
+  th.hide, td.hide { display: none; }
+  thead { display: none; }
+  table, tbody, tr, td { display: block; width: 100%; }
+  tr { border-bottom: 1px solid var(--line); padding: 4px 0; }
+  td { border: 0; padding: 4px 12px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>RPC Monitor</h1>
+    <span class="muted" id="when"></span>
+    <button id="check">Cek sekarang</button>
+  </header>
+  <div class="sum" id="sum"></div>
+  <div id="err" class="err"></div>
+
+  <h2>RPC (dikelompokin per key)</h2>
+  <div class="cards" id="eps"></div>
+
+  <h2>Bot</h2>
+  <table>
+    <thead><tr><th>Bot</th><th>Status</th><th>RPC yang dipakai</th><th class="hide">Panggilan terakhir</th></tr></thead>
+    <tbody id="bots"></tbody>
+  </table>
+  <p class="muted" id="foot"></p>
+</main>
+<script>
+const TEXT = {"?": "belum ada data", aman: "aman", waspada: "waspada", hampir: "hampir limit", limit: "LIMIT"};
+const ORDER = ["limit", "hampir", "waspada", "aman", "?"];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmt = n => {
+  if (n == null) return "–";
+  n = Number(n);
+  for (const [d, s] of [[1e9, "B"], [1e6, "jt"], [1e3, "rb"]]) if (Math.abs(n) >= d) return (n / d).toFixed(1).replace(/\.0$/, "") + s;
+  return String(Math.round(n));
+};
+const ago = (ts, now) => {
+  if (!ts) return "belum kehitung";
+  const s = Math.max(0, Math.round(now - ts));
+  if (s < 90) return s + " detik lalu";
+  if (s < 5400) return Math.round(s / 60) + " menit lalu";
+  if (s < 172800) return Math.round(s / 3600) + " jam lalu";
+  return Math.round(s / 86400) + " hari lalu";
+};
+const dot = lv => `<span class="dot l-${esc(lv)}"></span>`;
+
+function bar(label, pct, proj, right) {
+  const w = Math.min(100, Math.max(0, pct || 0));
+  const p = proj != null ? `<div class="proj" style="left:${Math.min(100, proj)}%"></div>` : "";
+  return `<div class="meter"><div class="lbl"><span>${label}</span><span>${right}</span></div>
+    <div class="track"><div class="fill" style="width:${w}%"></div>${p}</div></div>`;
+}
+
+function card(ep, now) {
+  const n = ep.nums || {}, plan = ep.plan || {}, pr = ep.probe;
+  let bars = "";
+  if (n.used_pct != null)
+    bars += bar(`Kuota bulan ini (${esc(plan.unit || "req")})`, n.used_pct, n.proj_pct,
+                `${n.used_pct}% · proyeksi ${n.proj_pct}% dari ${fmt(n.monthly)}`);
+  if (n.daily_pct != null) bars += bar("Batas harian", n.daily_pct, null, `${n.daily_pct}% dari ${fmt(plan.daily)}`);
+  if (n.rps_pct != null) bars += bar("Menit tersibuk vs req/detik", n.rps_pct, null, `${n.peak_rps} / ${plan.rps} rps`);
+  const stats = [];
+  if (n.calls_24h != null) {
+    stats.push(["1 jam", fmt(n.calls_1h)], ["24 jam", fmt(n.calls_24h)], ["bulan ini", fmt(n.calls_month)],
+               ["~ per hari", fmt(n.per_day)], ["429 (1 jam)", fmt(n.limited_1h)], ["error (1 jam)", fmt(n.errors_1h)]);
+  }
+  if (pr) stats.push(["probe", `${esc(pr.outcome)}${pr.ms != null ? " · " + pr.ms + "ms" : ""}${pr.http ? " · HTTP " + pr.http : ""}`]);
+  if (n.header_room_pct != null) stats.push(["sisa (header)", n.header_room_pct + "%"]);
+  const perBot = Object.entries(ep.per_bot_24h || {}).sort((a, b) => b[1].calls - a[1].calls)
+    .map(([b, v]) => `<div class="mono">${esc(b)}: ${fmt(v.calls)} req${v.limited ? ", " + v.limited + "× 429/kuota" : ""}</div>`).join("");
+  const logs = (ep.log_lines || []).map(l => `<div class="log mono">${esc(ago(l.t, now))} · ${esc(l.bot)} · ${esc(l.line)}</div>`).join("");
+  const hdr = pr && pr.headers && Object.keys(pr.headers).length
+    ? `<div class="mono">${Object.entries(pr.headers).map(([k, v]) => esc(k) + ": " + esc(v)).join("<br>")}</div>` : "";
+  return `<div class="card l-${esc(ep.level)}">
+    <div class="top"><span class="tag">${dot(ep.level)} ${esc(ep.level_text)}</span><span class="name">${esc(plan.name || ep.host)}</span>
+      <span class="muted">${esc(ep.chain)}</span></div>
+    <div class="url">${esc(ep.masked)}</div>
+    <div class="bots">${ep.bots.map(b => `<span>${esc(b.name)}${b.role ? " · " + esc(b.role) : ""}</span>`).join("")}</div>
+    ${bars}
+    ${stats.length ? `<div class="stats">${stats.map(([k, v]) => `<div>${esc(k)}<b>${v}</b></div>`).join("")}</div>` : ""}
+    ${ep.reasons.length ? `<ul class="why">${ep.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+    <details><summary>Detail</summary>
+      <div>id buat config.json: <code>${esc(ep.id)}</code></div>
+      ${perBot ? "<div><b>Per bot (24 jam)</b>" + perBot + "</div>" : ""}
+      ${hdr ? "<div><b>Header rate limit</b>" + hdr + "</div>" : ""}
+      ${logs ? "<div><b>Log rate limit terakhir</b>" + logs + "</div>" : ""}
+      ${pr && pr.msg ? `<div class="log mono">probe: ${esc(pr.msg)}</div>` : ""}
+    </details>
+  </div>`;
+}
+
+function render(s) {
+  const now = s.now;
+  document.getElementById("when").textContent = "update " + new Date(now * 1000).toLocaleTimeString("id-ID");
+  document.getElementById("sum").innerHTML = ORDER.filter(l => s.counts[l])
+    .map(l => `<span class="pill l-${l}">${dot(l)} ${s.counts[l]} ${esc(TEXT[l])}</span>`).join("");
+  document.getElementById("eps").innerHTML = s.endpoints.map(e => card(e, now)).join("") || '<p class="muted">Belum ada RPC yang ketemu.</p>';
+  document.getElementById("bots").innerHTML = s.bots.map(b => `<tr>
+    <td><b>${esc(b.name)}</b>${b.notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}</td>
+    <td><span class="tag l-${esc(b.level)}">${dot(b.level)} ${esc(b.level_text)}</span>
+        <div class="muted">${b.running === true ? "jalan" : b.running === false ? "nggak jalan (launchd)" : ""}</div></td>
+    <td>${b.endpoints.map(e => `<div class="l-${esc(e.level)}">${dot(e.level)} <span class="mono">${esc(e.masked)}</span>${e.role ? ' <span class="muted">' + esc(e.role) + "</span>" : ""}</div>`).join("") || '<span class="muted">–</span>'}</td>
+    <td class="hide">${esc(ago(b.last_call, now))}${b.log_events_24h ? `<div class="note">${b.log_events_24h} baris rate limit di log (24 jam)</div>` : ""}</td>
+  </tr>`).join("");
+  document.getElementById("foot").textContent =
+    `Hitungan dari meter di ${s.meter_dir}. Probe tiap ${Math.round(s.probe_every_s / 60)} menit. Kuota = perkiraan plan gratis, set plan lu di rpc_monitor/config.json.`;
+}
+
+async function load(path = "api/status", opts) {
+  try {
+    const r = await fetch(path, opts);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    render(await r.json());
+    document.getElementById("err").textContent = "";
+  } catch (e) {
+    document.getElementById("err").textContent = "Gagal ambil data: " + e.message;
+  }
+}
+document.getElementById("check").onclick = async e => {
+  e.target.disabled = true;
+  e.target.textContent = "Ngecek…";
+  await load("api/check", {method: "POST"});
+  e.target.disabled = false;
+  e.target.textContent = "Cek sekarang";
+};
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
