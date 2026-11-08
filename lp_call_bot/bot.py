@@ -41,6 +41,7 @@ Command:
 /wallet hapus nama: berhenti mantau
 /rekap: kirim rekap posisi kebuka sekarang
 /bersih: buang posisi lama yang nggak bisa dicek ke chain dari rekap
+/sinkron: susun ulang posisi yang masih kebuka dari chain (buat rekap)
 /stats: jumlah penerima
 /blast &lt;teks&gt;: kirim pesan bebas
 /hapus &lt;koin&gt;: hapus koin dari daftar (salah ketik)"""
@@ -141,7 +142,7 @@ class Telegram:
 
 class Bot:
     def __init__(self, tg, store, owners, channels, default_range="-65", heartbeat=None,
-                 watcher=None, watch_seconds=15, dry_run=False, recap_minutes=60, owner_wallets=()):
+                 watcher=None, watch_seconds=15, dry_run=False, recap_minutes=60, owner_wallets=(), sync_days=7):
         self.tg = tg
         self.store = store
         self.owners = set(owners)
@@ -157,6 +158,7 @@ class Bot:
         self.recap_seconds = recap_minutes * 60
         self.started = time.time()
         self.conflict_warned = False
+        self.sync_days = sync_days
         self.owner_wallets = [w.lower() for w in owner_wallets]
         if self.watcher:
             self.watcher.set_wallets(self.all_wallets())
@@ -215,6 +217,9 @@ class Bot:
             self.reply(chat_id, self.auto_status())
         elif cmd == "/wallet":
             self.reply(chat_id, self.wallet_command(arg.strip()))
+        elif cmd == "/sinkron":
+            self.reply(chat_id, "🔄 Nyusun ulang posisi yang masih kebuka dari chain, sebentar…")
+            threading.Thread(target=self.sync_and_report, args=(chat_id,), daemon=True).start()
         elif cmd == "/bersih":
             n = self.clear_unverifiable()
             self.reply(chat_id, f"🧹 {n} posisi lama (tanpa data NFT, nggak bisa dicek ke chain) dibuang dari rekap. "
@@ -412,6 +417,34 @@ class Bot:
             elif not pos.get("token_ids") and now - pos.get("updated", 0) > STALE_MANUAL_HOURS * 3600:
                 self.store.set_status(key, "closed")
 
+    def sync_positions(self):
+        """Isi daftar rekap dari posisi yang beneran masih kebuka di chain (wallet lu + wallet pantauan). Nggak nge-blast.
+
+        Catatan lama tanpa data NFT ditutup (udah diganti data dari chain). Return jumlah posisi kebuka."""
+        if not self.watcher:
+            return 0
+        found = self.watcher.snapshot(self.sync_days)
+        self.clear_unverifiable()
+        for ev in found:
+            by = self.wallet_name(ev.get("wallet"))
+            pos = dict(ev["pos"], by=by) if by else dict(ev["pos"])
+            key = f"{pos['coin']}@{by.lower()}" if by else pos["coin"]
+            self.store.open_position(dict(pos, key=key, token_ids=ev["token_ids"], wallet=ev["wallet"]))
+        self.prune_closed()
+        return len(found)
+
+    def sync_and_report(self, chat_id=None):
+        try:
+            n = self.sync_positions()
+        except Exception as e:  # RPC lagi error: rekap tetep jalan pakai data yang ada
+            print("sinkron gagal:", repr(e), flush=True)
+            if chat_id:
+                self.reply(chat_id, f"⚠️ Sinkron gagal: <code>{html.escape(repr(e))}</code>")
+            return
+        print(f"Sinkron: {n} posisi kebuka dari chain", flush=True)
+        if chat_id:
+            self.reply(chat_id, f"✅ {n} posisi kebuka ketemu di chain. Cek /posisi, atau /rekap buat kirim ke grup.")
+
     def clear_unverifiable(self):
         """/bersih: tutup semua posisi kebuka yang nggak punya data NFT (catatan versi lama / call manual)."""
         n = 0
@@ -495,6 +528,7 @@ class Bot:
         if self.watcher:
             print(f"Auto call nyala: {self.watcher.wallets}" + ("  (DRY RUN)" if self.dry_run else ""), flush=True)
             threading.Thread(target=self.watch_loop, daemon=True).start()
+            threading.Thread(target=self.sync_and_report, daemon=True).start()  # isi rekap dari chain pas nyala
         if self.recap_seconds > 0:
             print(f"Rekap posisi tiap {self.recap_seconds // 60:.0f} menit", flush=True)
             threading.Thread(target=self.recap_loop, daemon=True).start()
@@ -524,6 +558,7 @@ def main():
         dry_run=os.environ.get("AUTO_DRY_RUN", "0") == "1",
         recap_minutes=float(os.environ.get("RECAP_MINUTES", "60")),
         owner_wallets=owner_wallets,
+        sync_days=float(os.environ.get("RECAP_SYNC_DAYS", "7")),
     )
     bot.run()
 

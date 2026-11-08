@@ -29,7 +29,10 @@ Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/be
 tanpa nilai), biar follower yang ketinggalan call tetep tau. Isinya dari call yang dikirim bot (auto atau ketik):
 posisi yang dibuka sebelum bot nyala nggak ada di situ. Sebelum dikirim, posisi dari auto call dicek ke chain (NFT-nya
 masih di wallet?), jadi posisi yang CLOSE-nya kelewat (RPC error / bot mati) nggak ikut. Call ketik manual ikut rekap
-24 jam sejak terakhir di-update. `/bersih` = buang semua catatan lama yang nggak bisa dicek ke chain. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
+24 jam sejak terakhir di-update. `/bersih` = buang semua catatan lama yang nggak bisa dicek ke chain.
+Pas bot nyala (dan lewat `/sinkron`), daftar rekap disusun ulang dari chain: NFT yang dimint ke wallet lu / wallet
+pantauan `RECAP_SYNC_DAYS` (7) hari terakhir dan masih dipegang. Nggak ada yang di-blast; posisi yang dibuka lebih
+lama dari itu nggak kebaca. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
 = mati.
 
 Command follower: `/start` (langganan), `/stop`, `/posisi`.

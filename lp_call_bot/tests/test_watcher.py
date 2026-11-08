@@ -324,6 +324,21 @@ class WatcherTest(unittest.TestCase):
         self.assertEqual([e["action"] for e in evs], ["open"])
         self.assertEqual(self.chain.calls.count("eth_blockNumber"), 1)
 
+    def test_snapshot_finds_positions_still_open(self):
+        self.make()
+        self.w.set_wallets([WALLET, OTHER])
+        self.chain.head = 5000
+        t1, t2, t3, t4 = tx_hash(1), tx_hash(2), tx_hash(3), tx_hash(4)
+        self.chain.logs += mint([1, 2], t1, 4000) + ladder([1, 2], t1, 4000)             # masih kebuka
+        self.chain.logs += mint([3], t2, 4100) + ladder([3], t2, 4100)                   # ditutup lagi
+        self.chain.logs += burn([3], t3, 4200) + ladder([3], t3, 4200, delta=-5_000_000)
+        self.chain.logs += mint([4], t4, 4300, wallet=OTHER) + ladder([4], t4, 4300)     # wallet pantauan, kebuka
+        self.chain.logs += mint([5], tx_hash(5), 4400) + ladder([5], tx_hash(5), 4400)   # dikirim ke luar
+        self.chain.owners.update({4: OTHER, 5: "0x" + "a9" * 20})
+        evs = self.w.snapshot(days=1)
+        self.assertEqual([(e["token_ids"], e["wallet"]) for e in evs], [([1, 2], WALLET), ([4], OTHER)])
+        self.assertEqual(evs[0]["pos"]["range"], ["-35"])  # 2 rung x 2100 tick
+
     def test_no_wallets_reads_only_the_block_number(self):
         self.make()
         self.w.set_wallets([])
@@ -456,6 +471,27 @@ class AutoCallTest(unittest.TestCase):
         self.assertEqual(self.bot.clear_unverifiable(), 1)
         self.assertEqual(self.store.get("wofl")["status"], "closed")
         self.assertEqual(self.store.get("hydx")["status"], "open")
+
+    def test_sync_fills_the_recap_from_chain_without_blasting(self):
+        chain = FakeChain()
+        self.bot.owner_wallets = [WALLET]
+        self.store.add_wallet(OTHER, "degen")
+        self.bot.watcher = W.Watcher(chain, chain, [WALLET, OTHER], self.store)
+        self.store.open_position({"coin": "wofl", "ca": self.pos["ca"], "fee": "4.7915", "range": ["-60"]})  # basi
+        chain.head = 5000
+        chain.logs += mint([1], tx_hash(1), 4000) + ladder([1], tx_hash(1), 4000)
+        chain.logs += mint([4], tx_hash(4), 4300, wallet=OTHER) + ladder([4], tx_hash(4), 4300)
+        chain.owners[4] = OTHER
+        sent = len(self.tg.sent)
+        self.assertEqual(self.bot.sync_positions(), 2)
+        self.assertEqual(len(self.tg.sent), sent)  # nggak nge-blast
+        self.assertEqual(self.store.get("wofl")["status"], "closed")
+        self.assertEqual(self.store.get("hydx")["token_ids"], [1])
+        self.assertEqual(self.store.get("hydx@degen")["by"], "degen")
+        self.assertTrue(self.bot.send_recap())
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("(2)", text)
+        self.assertIn("HYDX · 👀 degen", text)
 
     def test_hourly_recap(self):
         self.bot.recap_seconds = 3600
