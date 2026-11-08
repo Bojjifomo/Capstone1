@@ -25,7 +25,10 @@ export const ZERO = ethers.ZeroAddress;
 export const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
 export const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 const QUOTE_RANK = { [USDG]: 2, [ZERO]: 1, [WETH]: 1 };
-export const PUBLIC_RPCS = ["https://rpc.mainnet.chain.robinhood.com", "https://robinhood-rpc.publicnode.com"];
+// The chain's own node and PublicNode first; Daybreak and dRPC for networks that block those two
+// (seen behind Indonesian ISPs: connection refused / HTTP 403).
+export const PUBLIC_RPCS = ["https://rpc.mainnet.chain.robinhood.com", "https://robinhood-rpc.publicnode.com",
+  "https://robinhood.daybreak-rpc.network", "https://robinhood.drpc.org"];
 
 export const ACT = { DECREASE: 0x01, MINT: 0x02, BURN: 0x03, SWAP_EXACT_IN_SINGLE: 0x06, SETTLE_ALL: 0x0c,
   SETTLE_PAIR: 0x0d, TAKE_ALL: 0x0f, TAKE_PAIR: 0x11, CLOSE_CURRENCY: 0x12, SWEEP: 0x14 };
@@ -77,22 +80,32 @@ function counted(url) {
   req.preflightFunc = async r => { stats.calls++; stats.byHost[host] = (stats.byHost[host] || 0) + 1; return r; };
   return new ethers.JsonRpcProvider(req, Number(CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
 }
-export function tradeUrl() {
+export function keyedUrl() {
   const custom = (process.env.RH_RPC_URL || "").trim();
   if (custom) return custom;
   const k = (process.env.ALCHEMY_API_KEY || "").trim();
   if (/^[A-Za-z0-9_-]+$/.test(k)) return `https://robinhood-mainnet.g.alchemy.com/v2/${k}`;
-  return PUBLIC_RPCS[0];
+  return null;
 }
-// Reads: the public node first, the keyed one if it fails. Sends: the keyed one (Alchemy estimates
-// gas reliably; the public node is the fallback when no key is set).
+export const tradeUrl = () => keyedUrl() || PUBLIC_RPCS[0];
+// Reads: the public nodes in turn, the keyed one last. Sends: the keyed one (Alchemy estimates gas
+// reliably); without a key, the first public node that answers.
 export const readProvider = () => counted(PUBLIC_RPCS[0]);
-export const tradeProvider = () => counted(tradeUrl());
-export async function withRead(fn) {
-  try { return await fn(readProvider()); } catch (e) {
-    if (tradeUrl() === PUBLIC_RPCS[0]) return await fn(counted(PUBLIC_RPCS[1]));
-    return await fn(tradeProvider());
+let _tradeUrl = null;
+export function tradeProvider() { return counted(_tradeUrl || tradeUrl()); }
+export async function pickTradeProvider() {
+  if (keyedUrl()) return tradeProvider();
+  for (const u of PUBLIC_RPCS) {
+    try { await counted(u).getBlockNumber(); _tradeUrl = u; return counted(u); } catch (e) {}
   }
+  return tradeProvider();
+}
+export async function withRead(fn) {
+  let last;
+  for (const u of [...PUBLIC_RPCS, keyedUrl()].filter(Boolean)) {
+    try { return await fn(counted(u)); } catch (e) { last = e; if (e && /revert|CALL_EXCEPTION/i.test(String(e.code || e.message))) throw e; }
+  }
+  throw last;
 }
 
 // ------------------------------------------------------------------ key ----
@@ -268,7 +281,7 @@ export async function approvalTxs(provider, owner, token, spender, amount) {
 // ------------------------------------------------------------------ send ----
 // simulate (eth_call) -> estimate x1.3 -> sign + send -> wait. Throws before signing if it would revert.
 export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from } = {}) {
-  const provider = signer ? signer.provider : tradeProvider();
+  const provider = signer ? signer.provider : await pickTradeProvider();
   const sender = from || (signer && signer.address);
   try {
     await provider.call({ from: sender, to, data, value });

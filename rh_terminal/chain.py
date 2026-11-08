@@ -19,7 +19,6 @@ import urllib.request
 from .keccak import keccak256
 
 CHAIN_ID = 4663
-PUBLIC_RPCS = ("https://rpc.mainnet.chain.robinhood.com", "https://robinhood-rpc.publicnode.com")
 
 # Uniswap V4 on Robinhood Chain
 POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951"
@@ -90,35 +89,99 @@ class RpcError(Exception):
     pass
 
 
-def rpc_urls() -> list[str]:
-    urls = list(PUBLIC_RPCS)
-    key = (os.environ.get("ALCHEMY_API_KEY") or "").strip()
+class LogRangeError(RpcError):
+    """No reachable endpoint reads that many blocks of logs in one request."""
+
+
+# Free public endpoints (chainlist, chain 4663) and how many blocks of logs each serves per request,
+# measured 2026-11: the chain's own node and PublicNode 10M blocks (10k logs), Daybreak 2k, dRPC 100
+# (its error says 10k; 101 blocks is what it serves). Alchemy's free tier allows 10 blocks, so it is
+# used for calls and sends but never for logs.
+PUBLIC_ENDPOINTS = (
+    ("https://rpc.mainnet.chain.robinhood.com", 10_000_000),
+    ("https://robinhood-rpc.publicnode.com", 10_000_000),
+    ("https://robinhood.daybreak-rpc.network", 2_000),
+    ("https://robinhood.drpc.org", 100),
+)
+PUBLIC_RPCS = tuple(u for u, _ in PUBLIC_ENDPOINTS)
+
+
+def endpoints() -> list[tuple[str, int]]:
+    """[(url, max log span)] in the order they are tried."""
+    eps = list(PUBLIC_ENDPOINTS)
     custom = (os.environ.get("RH_RPC_URL") or "").strip()
     if custom:
-        urls.append(custom)
+        try:
+            span = int(os.environ.get("RH_RPC_LOG_RANGE") or 2000)
+        except ValueError:
+            span = 2000
+        eps.insert(0, (custom, span))
+    key = (os.environ.get("ALCHEMY_API_KEY") or "").strip()
     if key and all(c.isalnum() or c in "-_" for c in key):
-        urls.append(f"https://robinhood-mainnet.g.alchemy.com/v2/{key}")
-    return urls
+        eps.append((f"https://robinhood-mainnet.g.alchemy.com/v2/{key}", 10))
+    return eps
+
+
+def rpc_urls() -> list[str]:
+    return [u for u, _ in endpoints()]
 
 
 _stats_lock = threading.Lock()
 STATS: dict = {"calls": 0, "byHost": {}, "errors": 0}
-_cool: dict[str, float] = {}        # url -> time until which it is skipped after a 429
+_cool: dict[str, float] = {}        # url -> skipped until then (rate limit: 20 s, refused / blocked: 5 min)
+_span: dict[str, int] = {}          # url -> log span it actually accepted (learned from its errors)
+_why: dict[str, str] = {}           # url -> last failure, for doctor and the page
 
 
 def _host(url: str) -> str:
     return "alchemy" if "alchemy" in url else url.split("/")[2]
 
 
-def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
-    """One JSON-RPC call. Endpoints in order; 429/5xx/timeouts move on, an RPC error that is
-    about the request itself (bad range, revert) is raised at once. When every endpoint is
-    rate limited it waits and goes round once more."""
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-    fails = []
-    urls = rpc_urls()
+def _log_span(params: list) -> int | None:
+    try:
+        f = params[0]
+        return int(f["toBlock"], 16) - int(f["fromBlock"], 16) + 1
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def max_log_span() -> int:
+    """Widest log query an endpoint that is not resting can serve (falls back to all endpoints)."""
     now = time.time()
-    order = [u for u in urls if _cool.get(u, 0) <= now] + [u for u in urls if _cool.get(u, 0) > now]
+    eps = endpoints()
+    live = [_span.get(u, m) for u, m in eps if _cool.get(u, 0) <= now and _span.get(u, m) > 10]
+    every = [_span.get(u, m) for u, m in eps if _span.get(u, m) > 10]
+    return max(live or every or [0])
+
+
+def health() -> list[dict]:
+    """Per endpoint: resting or not, why, and the log span it serves."""
+    now = time.time()
+    return [{"host": _host(u), "logSpan": _span.get(u, m), "restingSec": max(0, round(_cool.get(u, 0) - now)),
+             "lastError": _why.get(u)} for u, m in endpoints()]
+
+
+def _range_limit(msg: str) -> int | None:
+    """'...up to a 10 block range', 'exceeds max block range 2000', 'over 10000 blocks' -> the number."""
+    import re
+    m = re.search(r"(\d[\d,]*)\s*(?:block|blocks)", msg) or re.search(r"range\s*(?:of\s*)?(\d[\d,]*)", msg)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
+    """One JSON-RPC call. Endpoints in order; one that is blocked, refuses or rate limits rests and
+    the next is tried; eth_getLogs only goes to endpoints that serve that many blocks. An RPC error
+    about the request itself (a revert, a bad argument) is raised at once."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    span = _log_span(params) if method == "eth_getLogs" else None
+    fails = []
+    eps = [(u, _span.get(u, m)) for u, m in endpoints()]
+    if span is not None:
+        eps = [(u, m) for u, m in eps if m >= span]
+        if not eps:
+            raise LogRangeError(f"no RPC serves {span} blocks of logs per request")
+    now = time.time()
+    order = [u for u, _ in eps if _cool.get(u, 0) <= now] + [u for u, _ in eps if _cool.get(u, 0) > now]
     for url in order:
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "User-Agent": UA})
         with _stats_lock:
@@ -129,29 +192,50 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
             with urlopen(req, timeout=timeout) as r:
                 j = json.load(r)
         except urllib.error.HTTPError as e:
+            try:
+                detail = e.read(300).decode("utf-8", "replace")
+            except Exception:
+                detail = ""
+            lim = _range_limit(detail) if span is not None and e.code == 400 else None
+            if lim is not None:                          # a free tier's log range: remember it, try the next one
+                # some nodes name a limit they do not keep; refused below it means half is the most to try
+                _span[url] = lim if lim < span else max(10, span // 2)
+                fails.append(f"{_host(url)}: logs max {_span[url]} blocks")
+                continue
             fails.append(f"{_host(url)} HTTP {e.code}")
-            _cool[url] = time.time() + (20 if e.code == 429 else 10)
+            _why[url] = f"HTTP {e.code} {detail[:120]}".strip()
+            _cool[url] = time.time() + (20 if e.code == 429 else 300 if e.code in (401, 403) else 30)
             continue
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-            fails.append(f"{_host(url)}: {str(e)[:60]}")
-            _cool[url] = time.time() + 10
+            fails.append(f"{_host(url)}: {str(e)[:70]}")
+            _why[url] = str(e)[:160]
+            refused = "refused" in str(e).lower() or "nodename" in str(e).lower() or "name or service" in str(e).lower()
+            _cool[url] = time.time() + (300 if refused else 30)
             continue
         if "error" in j:
             msg = str((j["error"] or {}).get("message") or j["error"])
-            # rate limits arrive as RPC errors on some nodes
             if "rate" in msg.lower() or "too many" in msg.lower():
                 _cool[url] = time.time() + 20
                 fails.append(f"{_host(url)}: {msg[:60]}")
                 continue
+            lim = _range_limit(msg) if span is not None else None
+            if lim is not None and ("block" in msg.lower() or "range" in msg.lower()):
+                _span[url] = lim if lim < span else max(10, span // 2)
+                fails.append(f"{_host(url)}: logs max {_span[url]} blocks")
+                continue
             raise RpcError(msg)
+        _why.pop(url, None)
         return j.get("result")
     if _round < 2 and fails and any("429" in f or "rate" in f.lower() or "too many" in f.lower() for f in fails):
         time.sleep(3 + 3 * _round)
-        for u in urls:
-            _cool.pop(u, None)
+        for u, _ in eps:
+            if _cool.get(u, 0) - time.time() < 60:
+                _cool.pop(u, None)
         return rpc(method, params, timeout, _round + 1)
     with _stats_lock:
         STATS["errors"] += 1
+    if span is not None and fails and all("logs max" in f for f in fails):
+        raise LogRangeError("; ".join(fails))
     raise RpcError("; ".join(fails) or "no RPC endpoint")
 
 
@@ -169,14 +253,21 @@ def eth_call(to: str, data: str, block: str = "latest") -> str:
 
 
 def get_logs(address: str, topics: list, start: int, end: int, chunk: int = 3000, pause: float = 0.15) -> list[dict]:
-    """All logs in [start, end], split into chunks; a chunk the node refuses as too big is halved."""
+    """All logs in [start, end], in chunks no wider than the reachable endpoints serve; a chunk a
+    node refuses as too big (too many logs or blocks) is halved."""
     out = []
     a = start
-    step = chunk
+    step = max(1, min(chunk, max_log_span() or chunk))
     while a <= end:
         b = min(end, a + step - 1)
         try:
             out += rpc("eth_getLogs", [{"address": address, "topics": topics, "fromBlock": hex(a), "toBlock": hex(b)}]) or []
+        except LogRangeError:
+            narrower = max_log_span()
+            if 0 < narrower < step:
+                step = narrower
+                continue
+            raise
         except RpcError as e:
             msg = str(e)
             if ("exceeds" in msg or "limit" in msg or "range" in msg or "narrow" in msg) and step > 50:

@@ -3,11 +3,11 @@
 // minOut = pool price x (1 - fee) x (1 - maxloss): a sale that would land further below the pool's
 // own price than that reverts in simulation and is never sent.
 import { pathToFileURL } from "node:url";
-import { args, done, fail, tradeProvider, loadSigner, poolKey, poolIdOf, slot0, quoteSide, balanceOf, approvalTxs,
+import { args, done, fail, pickTradeProvider, loadSigner, poolKey, poolIdOf, slot0, quoteSide, balanceOf, approvalTxs,
   swapCalldata, sendTx, deadline, rawPrice01, UNIVERSAL_ROUTER, ZERO } from "./lib.mjs";
 
 export async function sellToken({ signer, owner, pool, key, amount, maxLossPct = 5, dry = false }) {
-  const pr = signer ? signer.provider : tradeProvider();
+  const pr = signer ? signer.provider : (await pickTradeProvider());
   key = key || await poolKey(pr, pool);
   pool = pool || poolIdOf(key);
   const q = quoteSide(key);
@@ -43,7 +43,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const a = args();
   try {
     const dry = !!a["dry-run"];
-    const signer = dry ? null : loadSigner(tradeProvider());
+    const signer = dry ? null : loadSigner((await pickTradeProvider()));
     if (!dry && !signer) throw new Error("no RH_PRIVATE_KEY in .env");
     const owner = dry ? a.owner : signer.address;
     const r = await sellToken({ signer, owner, pool: String(a.pool).toLowerCase(), amount: a.amount || "all",

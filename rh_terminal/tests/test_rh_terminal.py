@@ -218,3 +218,51 @@ class EnvPrecedence(unittest.TestCase):
                     os.environ.pop(k, None)
                     if v is not None:
                         os.environ[k] = v
+
+
+class RpcFallback(unittest.TestCase):
+    def test_range_limits_from_real_errors(self):
+        f = chain._range_limit
+        self.assertEqual(f("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range."), 10)
+        self.assertEqual(f("query exceeds max block range 2000"), 2000)
+        self.assertEqual(f("eth_getLogs block range exceeds 100 blocks"), 100)
+        self.assertIsNone(f("logs matched by query exceeds limit of 10000"))     # too many logs: halve instead
+
+    def test_logs_never_go_to_alchemy(self):
+        with mock.patch.dict("os.environ", {"ALCHEMY_API_KEY": "abc"}):
+            eps = dict(chain.endpoints())
+        self.assertEqual(eps["https://robinhood-mainnet.g.alchemy.com/v2/abc"], 10)
+        self.assertGreaterEqual(chain.max_log_span(), 2000)
+
+
+class TradeAccess(unittest.TestCase):
+    def _h(self, addr):
+        from rh_terminal import web
+        h = web.Handler.__new__(web.Handler)
+        h.client_address = (addr, 0)
+        h.headers = {"X-RH-Trade": "1", "Content-Type": "application/json"}
+        return h
+
+    def test_only_mac_and_tailscale(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "", "RH_WEB_ALLOW_LAN": ""}):
+            for a in ("127.0.0.1", "::1", "100.101.5.9", "fd7a:115c:a1e0::1234"):
+                self.assertTrue(self._h(a)._is_allowed(), a)
+                self.assertIsNone(self._h(a)._trade_refused({}), a)
+            for a in ("192.168.1.20", "10.0.0.5", "::ffff:192.168.0.3", "8.8.8.8"):
+                self.assertFalse(self._h(a)._is_allowed(), a)
+                self.assertIsNotNone(self._h(a)._trade_refused({}), a)
+
+    def test_lan_opt_in(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "", "RH_WEB_ALLOW_LAN": "true"}):
+            self.assertTrue(self._h("192.168.1.20")._is_allowed())
+            self.assertFalse(self._h("8.8.8.8")._is_allowed())
+
+    def test_pin_set_local_skips_others_need_it(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "4829"}):
+            self.assertIsNone(self._h("127.0.0.1")._trade_refused({}))
+            self.assertEqual(self._h("100.101.5.9")._trade_refused({}), "PIN salah")
+            self.assertIsNone(self._h("100.101.5.9")._trade_refused({"pin": "4829"}))
+
+    def test_header_required(self):
+        h = self._h("127.0.0.1"); h.headers = {}
+        self.assertEqual(h._trade_refused({}), "missing trade header")

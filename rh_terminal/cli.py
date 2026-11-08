@@ -253,13 +253,35 @@ def cmd_doctor(a, cfg):
     print("== lainnya ==")
     print("  ALCHEMY_API_KEY:", "terisi" if os.environ.get("ALCHEMY_API_KEY") else "kosong (kirim tx lewat RPC publik)")
     print("  practice mode:", "NYALA (semua tombol cuma simulasi)" if practice_mode() else "mati (tombol kirim transaksi beneran)")
-    print("  RH_WEB_PIN:", "terisi (HP / MacBook bisa trading)" if os.environ.get("RH_WEB_PIN") else "kosong (trading cuma dari Mac ini)")
+    print("  RH_WEB_PIN:", "terisi (device Tailscale wajib PIN)" if os.environ.get("RH_WEB_PIN") else "kosong (Mac ini + Tailscale trading tanpa PIN)")
+    print("  RH_WEB_ALLOW_LAN:", "true (Wi-Fi tanpa Tailscale boleh)" if os.environ.get("RH_WEB_ALLOW_LAN", "").strip().lower() in ("1", "true", "yes") else "kosong (cuma Mac ini + Tailscale)")
     print("  RH_WEB_PORT:", os.environ.get("RH_WEB_PORT") or "8892 (default)")
     print("  executor:", node.ready() or "OK")
-    try:
-        print("  RPC publik: block", chain.block_number())
-    except Exception as e:
-        print("  RPC publik: GAGAL", e)
+    print("== RPC (dari Mac ini) ==")
+    import socket
+    ok_wide = False
+    for url, span in chain.endpoints():
+        host = url.split("/")[2]
+        try:
+            ips = sorted({a[4][0] for a in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
+        except OSError as e:
+            ips = [f"DNS gagal: {e}"]
+        try:
+            req = urllib.request.Request(url, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}).encode(),
+                                         headers={"Content-Type": "application/json", "User-Agent": chain.UA})
+            with chain.urlopen(req, timeout=12) as r:
+                res = "OK block " + str(int(json.load(r)["result"], 16))
+            ok_wide = ok_wide or span >= 1_000_000
+        except urllib.error.HTTPError as e:
+            res = f"HTTP {e.code} {e.read(160).decode('utf-8', 'replace')[:120]}"
+        except Exception as e:
+            res = f"GAGAL {str(e)[:120]}"
+        label = "alchemy" if "alchemy" in host else host
+        print(f"  {label:40} log ≤{span:>10,} blok   IP {', '.join(ips)[:46]:46}  {res}")
+    if not ok_wide:
+        print("  ⚠ RPC resmi & PublicNode nggak bisa dijangkau: index swap pakai dRPC/Daybreak, Portfolio nyari NFT lewat ownerOf (lebih lambat).")
+        print("    Kalau di atas ada 'refused' / IP aneh (bukan IP Cloudflare/Google): DNS provider internet lu ngeblok.")
+        print("    Fix: System Settings → Network → Wi-Fi/Ethernet → Details → DNS → ganti ke 1.1.1.1 dan 8.8.8.8, lalu restart RH Terminal.")
 
 
 def main(argv=None):

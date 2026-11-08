@@ -115,14 +115,19 @@ for (const [label, pool, units] of [["USDG", a["usdg-pool"], 400], ["ETH", a["et
   const SP = "tuple(tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)";
   const head = await pr.getBlockNumber();
   let same = 0, ok = 0, guard = 0, seen = 0;
-  for (let b = head; b > head - 600 && seen < 8; b--) {
+  for (let b = head; b > head - 3000 && (seen < 8 || same < 2); b--) {
     const blk = await pr.getBlock(b, true);
     for (const tx of blk.prefetchedTransactions) {
       if ((tx.to || "").toLowerCase() !== UNIVERSAL_ROUTER.toLowerCase() || !tx.data.startsWith("0x3593564c")) continue;
-      const d = ur.parseTransaction({ data: tx.data });
-      if (d.args[0] !== "0x10") continue;
-      const [, params] = ab.decode(["bytes", "bytes[]"], d.args[1][0]);
-      const [p] = ab.decode([SP], params[0]);
+      let d, acts, params, p;
+      try {                                              // other router payload shapes are skipped, not decoded
+        d = ur.parseTransaction({ data: tx.data });
+        if (d.args[0] !== "0x10") continue;
+        [acts, params] = ab.decode(["bytes", "bytes[]"], d.args[1][0]);
+        if (acts !== "0x060c0f") continue;               // single-pool exact-in only: what the executor builds
+        [p] = ab.decode([SP], params[0]);
+        if (p[4] !== "0x" || p[0].length !== 5) continue;   // ethers decodes lazily: touch the fields here
+      } catch (e) { continue; }
       const key = { currency0: p[0][0].toLowerCase(), currency1: p[0][1].toLowerCase(), fee: Number(p[0][2]), tickSpacing: Number(p[0][3]), hooks: p[0][4].toLowerCase() };
       if (swapCalldata(key, p[1], p[2], p[3], d.args[2]).data.toLowerCase() === tx.data.toLowerCase()) same++;
       const tokIn = p[1] ? key.currency0 : key.currency1;
