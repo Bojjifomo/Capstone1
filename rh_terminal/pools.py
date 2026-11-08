@@ -13,6 +13,40 @@ from . import chain, filters, market
 META_TTL = 6 * 3600          # symbol/decimals never change; supply rarely does
 
 
+def quote_ok(key: dict | None, cfg: dict) -> bool:
+    """Pools quoted in what this terminal trades: USDG only by default (⚙ Gate → Quote pool)."""
+    if not key:
+        return False
+    q = chain.quote_side(key)
+    if q is None:
+        return False
+    if (cfg.get("universe") or {}).get("quotes", "USDG") == "USDG":
+        return key["currency0" if q == 0 else "currency1"] == chain.USDG
+    return True
+
+
+def mark_clones(rows: list[dict]) -> None:
+    """Same symbol, different token contract: the oldest one is most likely the original,
+    the rest are look-alikes (often wash-traded to look busy). Sets row["clone"]."""
+    groups: dict[str, dict[str, float]] = {}
+    for r in rows:
+        sym = (r.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        age = r.get("ageHours")
+        g = groups.setdefault(sym, {})
+        g[r["token"]] = max(g.get(r["token"], -1.0), age if age is not None else -1.0)
+    for r in rows:
+        g = groups.get((r.get("symbol") or "").strip().upper()) or {}
+        others = len(g) - 1
+        r["clone"] = None
+        if others <= 0:
+            continue
+        oldest = max(g, key=lambda t: g[t])
+        if g[oldest] < 0 or r["token"] != oldest:
+            r["clone"] = {"others": others, "original": oldest if g[oldest] >= 0 else None}
+
+
 class Book:
     def __init__(self, index, cfg: dict):
         self.ix = index
@@ -43,10 +77,10 @@ class Book:
         new = [i for i in ids if i not in self.extra and i not in self.ix.keys]
         if new:
             for pid, key in chain.pool_keys(new).items():
-                if key and chain.quote_side(key) is not None:
+                if quote_ok(key, self.cfg):
                     self.extra[pid] = key
         for i in ids:
-            if i in self.ix.keys and self.ix.keys[i]:
+            if i in self.ix.keys and quote_ok(self.ix.keys[i], self.cfg):
                 self.extra.setdefault(i, self.ix.keys[i])
 
     # ---------------------------------------------------------------- rows ----
@@ -109,7 +143,9 @@ class Book:
     def rows(self, watch: list[str] | None = None) -> dict:
         cfg, now = self.cfg, time.time()
         eth = self.ix.eth_usd()
-        act = {r["pool"]: r for r in self.ix.rows()}
+        # USDG-only filter BEFORE the top-N cut, so ETH pools never push USDG pools out of the
+        # DexScreener budget (scan.maxPools)
+        act = {r["pool"]: r for r in self.ix.rows() if quote_ok(r.get("key"), cfg)}
         top = sorted(act.values(), key=lambda r: -((r["win"]["1h"]["feesUsd"] or 0) + (r["win"]["24h"]["feesUsd"] or 0) / 24))
         ids = [r["pool"] for r in top[: int(cfg["scan"]["maxPools"])]]
         for w in watch or []:
@@ -120,7 +156,7 @@ class Book:
             if i not in ids:
                 ids.append(i)
         keys = {i: (act[i]["key"] if i in act else self.extra.get(i)) for i in ids}
-        ids = [i for i in ids if keys.get(i)]
+        ids = [i for i in ids if quote_ok(keys.get(i), cfg)]
         dx = market.pairs(ids)
         idle = [i for i in ids if i not in act]
         s0 = chain.slot0s(idle) if idle else {}
@@ -130,11 +166,10 @@ class Book:
             toks.update((k["currency0"], k["currency1"]))
         meta = self.tokens(sorted(toks))
         size = filters.planned_size_usd(cfg)
-        out = []
-        for i in ids:
-            r = self._row(i, keys[i], act.get(i), dx.get(i), meta, eth, now, s0.get(i))
+        out = [self._row(i, keys[i], act.get(i), dx.get(i), meta, eth, now, s0.get(i)) for i in ids]
+        mark_clones(out)
+        for r in out:
             r["verdict"] = filters.evaluate(r, cfg, now, size)
-            out.append(r)
         ping = self.ping(out)
         return {"t": now, "rows": out, "ethUsd": eth, "ping": ping, "index": self.index_status(),
                 "sizeUsd": size, "maxPositionUsd": filters.max_position_usd(cfg)}
@@ -173,10 +208,11 @@ class Book:
             "fee24hPct": lambda r: r["feePctDay"].get("24h") or 0,
         }.get(p.get("sortBy"), lambda r: r["feePctDay"].get("1h") or 0)
         best, seen = [], set()
-        for r in sorted(hits, key=key, reverse=True):      # one pool per token: its best one
-            if r["token"] in seen:
+        for r in sorted(hits, key=key, reverse=True):      # one pool per token (and per symbol): its best one
+            sym = (r.get("symbol") or "").strip().upper()
+            if r["token"] in seen or (sym and sym in seen) or (p.get("skipClones", True) and r.get("clone")):
                 continue
-            seen.add(r["token"])
+            seen.update((r["token"], sym))
             best.append(r)
             if len(best) >= int(p.get("top", 10)):
                 break
@@ -200,7 +236,7 @@ class Book:
                 ids.append(d["pool"])
         self.add_pools(ids)
         keys = {i: self.ix.keys.get(i) or self.extra.get(i) for i in ids}
-        ids = [i for i in ids if keys.get(i)]
+        ids = [i for i in ids if quote_ok(keys.get(i), self.cfg)]
         act = {r["pool"]: r for r in self.ix.rows() if r["pool"] in ids}
         idle = [i for i in ids if i not in act]
         s0 = chain.slot0s(idle) if idle else {}
@@ -210,10 +246,9 @@ class Book:
         meta = self.tokens(sorted(toks))
         dx = market.pairs(ids)
         eth, now, size = self.ix.eth_usd(), time.time(), filters.planned_size_usd(self.cfg)
-        out = []
-        for i in ids:
-            r = self._row(i, keys[i], act.get(i), dx.get(i), meta, eth, now, s0.get(i))
+        out = [self._row(i, keys[i], act.get(i), dx.get(i), meta, eth, now, s0.get(i)) for i in ids]
+        mark_clones(out)
+        for r in out:
             r["verdict"] = filters.evaluate(r, self.cfg, now, size)
-            out.append(r)
-        out.sort(key=lambda r: -(r["tvlUsd"] or 0))
+        out.sort(key=lambda r: (bool(r.get("clone")), -(r["tvlUsd"] or 0)))
         return out

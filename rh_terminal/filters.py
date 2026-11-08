@@ -58,6 +58,10 @@ def evaluate(row: dict, cfg: dict, now: float, size_usd: float | None = None) ->
     n = (tx.get("buys") or 0) + (tx.get("sells") or 0)
     if f.get("sellsShare1hPct") and n >= 20 and tx["sells"] / n * 100 >= f["sellsShare1hPct"]:
         flags.append(f"sellers {tx['sells'] / n * 100:.0f}% of 1h trades")
+    cl = row.get("clone")
+    if f.get("cloneSymbol", True) and cl:
+        flags.append(f"kloningan: {cl['others']} token lain pakai simbol {row.get('symbol')}"
+                     + (f", yang paling tua {cl['original'][:8]}…" if cl.get("original") else ""))
     if f.get("hookPool") and row.get("hooks") and int(row["hooks"], 16):
         flags.append("hook pool")
     night = f.get("nightEntryLocalHours")

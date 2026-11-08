@@ -25,7 +25,7 @@
   <div class="stat" id="stFees">fees unclaimed <b>--</b></div>
   <div class="stat" id="stWallet" title="USDG + ETH di wallet (belum di posisi)">wallet <b>--</b></div>
   <div class="spacer"></div>
-  <div class="seg unit" id="unit" title="Baca semua angka dalam dolar atau ETH (shortcut u)"><button data-u="usd">$ USD</button><button data-u="eth">Ξ ETH</button></div>
+  <div class="seg unit hidden" id="unit" title="Baca semua angka dalam dolar atau ETH (shortcut u)"><button data-u="usd">$ USD</button><button data-u="eth">Ξ ETH</button></div>
   <button class="chip idx" id="idxChip" title="Index swap dari chain">⛓ --</button>
   <button class="chip" id="bellBtn" title="Notifikasi browser: pool baru masuk PING, exit alert">🔕</button>
   <button class="chip" id="setBtn" title="Settings: ladder, risk, gate, flag, PING, exit">⚙</button>
@@ -55,7 +55,7 @@
         <option value="0">semua</option><option value="1000">$1k</option><option value="2000" selected>$2k</option>
         <option value="5000">$5k</option><option value="10000">$10k</option><option value="25000">$25k</option>
       </select></label>
-      <label>quote <select id="quote"><option value="">semua</option><option value="USDG">USDG</option><option value="ETH">ETH</option></select></label>
+      <label class="hidden">quote <select id="quote"><option value="">semua</option><option value="USDG">USDG</option><option value="ETH">ETH</option></select></label>
       <label><input type="checkbox" id="hideSkip" checked> hide SKIP</label>
       <span class="muted" id="count">--</span>
     </div>
@@ -140,6 +140,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

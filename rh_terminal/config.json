@@ -1,10 +1,11 @@
 {
   "_note": "RH Terminal defaults. Gates and flags are starting values, not results of a backtest like the DLMM spec: change them in ⚙ Settings (saved in data/settings.json) as you learn what works.",
   "universe": {
-    "quotes": ["USDG", "ETH", "WETH"],
+    "quotes": "USDG",
     "minLpFeePct": 0.05,
     "maxLpFeePct": 15,
-    "_maxLpFeePct": "above this a pool is a honeypot rather than a fee tier (RH Pool: nothing real exists between 20% and 60%)"
+    "_maxLpFeePct": "above this a pool is a honeypot rather than a fee tier (RH Pool: nothing real exists between 20% and 60%)",
+    "_quotes": "USDG = cuma pool USDG (default) | USDG+ETH"
   },
   "scan": {
     "backfillHours": 1,
@@ -27,7 +28,8 @@
     "hookPool": true,
     "nightEntryLocalHours": null,
     "_nightEntryLocalHours": "DLMM found night entries worse on Solana; no RH data yet. [0, 9] turns the flag on (WIB)",
-    "utcOffsetHours": 7
+    "utcOffsetHours": 7,
+    "cloneSymbol": true
   },
   "position": {
     "defaultSizeUsd": 400,
@@ -48,7 +50,8 @@
     "minPoolAgeHours": 1,
     "maxPoolAgeHours": null,
     "minFees1hUsd": 5,
-    "requireGates": true
+    "requireGates": true,
+    "skipClones": true
   },
   "exits": {
     "alertAtPnlPct": -10,
@@ -57,6 +60,12 @@
     "takeProfitPct": null,
     "stopLossPct": null
   },
-  "web": {"refreshMin": 2, "autoExitCheckMin": 2},
-  "trade": {"maxLossPct": 5, "gasReserveEth": 0.0005}
+  "web": {
+    "refreshMin": 2,
+    "autoExitCheckMin": 2
+  },
+  "trade": {
+    "maxLossPct": 5,
+    "gasReserveEth": 0.0005
+  }
 }

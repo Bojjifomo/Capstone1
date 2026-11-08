@@ -280,20 +280,73 @@ export async function approvalTxs(provider, owner, token, spender, amount) {
 
 // ------------------------------------------------------------------ send ----
 // simulate (eth_call) -> estimate x1.3 -> sign + send -> wait. Throws before signing if it would revert.
-export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from } = {}) {
+const _nextNonce = {};   // per sender: a node that lags one block behind must not hand back a used nonce
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// retries: how many more times to re-simulate when the call reverts. For a tx that depends on the one
+// just mined (re-open right after close): a load-balanced RPC can answer from a node a block behind.
+export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from, retries = 0 } = {}) {
   const provider = signer ? signer.provider : await pickTradeProvider();
   const sender = from || (signer && signer.address);
-  try {
-    await provider.call({ from: sender, to, data, value });
-  } catch (e) {
-    throw new Error(`${label}: would revert, not sent (${String(e.shortMessage || e.reason || e.message).slice(0, 160)})`);
+  for (let i = 0; ; i++) {
+    try {
+      await provider.call({ from: sender, to, data, value });
+      break;
+    } catch (e) {
+      if (i < retries) { await sleep(3000); continue; }
+      throw new Error(`${label}: would revert, not sent (${String(e.shortMessage || e.reason || e.message).slice(0, 160)})`);
+    }
   }
   if (dryRun) return { label, simulated: true };
   const gas = (await provider.estimateGas({ from: sender, to, data, value })) * 13n / 10n;
-  const tx = await signer.sendTransaction({ to, data, value, gasLimit: gas, chainId: CHAIN_ID });
+  const who = sender.toLowerCase();
+  const pending = await provider.getTransactionCount(sender, "pending");
+  const nonce = Math.max(pending, _nextNonce[who] || 0);
+  const tx = await signer.sendTransaction({ to, data, value, gasLimit: gas, chainId: CHAIN_ID, nonce });
+  _nextNonce[who] = nonce + 1;
   const rc = await tx.wait(1, 180_000);
   if (!rc || rc.status !== 1) throw new Error(`${label}: reverted on chain ${tx.hash}`);
-  return { label, hash: tx.hash, gasUsed: rc.gasUsed, fee: rc.gasUsed * (rc.gasPrice || 0n), logs: rc.logs };
+  return { label, hash: tx.hash, gasUsed: rc.gasUsed, fee: rc.gasUsed * (rc.gasPrice || 0n), logs: rc.logs, block: rc.blockNumber };
+}
+
+// What `owner` received in one receipt, per ERC-20 (Transfer logs to owner minus from owner).
+// Read from the receipt itself, so it never depends on a balance read from a node that lags.
+const TRANSFER = ethers.id("Transfer(address,address,uint256)");
+export function receivedFromLogs(logs, owner, tokens) {
+  const me = owner.toLowerCase(), out = {};
+  for (const t of tokens) if (t !== ZERO) out[t] = 0n;
+  for (const l of logs || []) {
+    const t = l.address.toLowerCase();
+    if (!(t in out) || l.topics[0] !== TRANSFER || l.topics.length < 3) continue;
+    const from = ("0x" + l.topics[1].slice(26)).toLowerCase(), to = ("0x" + l.topics[2].slice(26)).toLowerCase();
+    const v = BigInt(l.data);
+    if (to === me) out[t] += v;
+    if (from === me) out[t] -= v;
+  }
+  return out;
+}
+
+// Native ETH balance change across one block: balance at the block minus the block before.
+export async function ethDeltaAt(provider, owner, block) {
+  const [a, b] = await Promise.all([provider.getBalance(owner, block - 1), provider.getBalance(owner, block)]);
+  return b - a;
+}
+
+// Wait until a node shows at least `need` of `token` in the wallet (the block that paid it is mined,
+// but the RPC may answer from a node a few blocks behind). Returns the balance it saw last.
+export async function waitForBalance(provider, token, owner, need, timeoutMs = 30000) {
+  const end = Date.now() + timeoutMs;
+  let bal = await balanceOf(provider, token, owner);
+  while (bal < need && Date.now() < end) { await sleep(2000); bal = await balanceOf(provider, token, owner); }
+  return bal;
+}
+
+// Token amounts a position holds at the pool's current price (fees not included).
+export function positionAmounts(p, sqrtPriceX96) {
+  const L = Number(p.liquidity);
+  const sp = Number(sqrtPriceX96) / 2 ** 96, sa = sqrtAt(p.tickLower), sb = sqrtAt(p.tickUpper);
+  const c = Math.min(Math.max(sp, sa), sb);
+  return { amount0: BigInt(Math.floor(L * (1 / c - 1 / sb))), amount1: BigInt(Math.floor(L * (c - sa))) };
 }
 
 // Position NFT ids minted to `owner` in a receipt (Transfer from 0x0).

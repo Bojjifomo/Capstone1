@@ -396,7 +396,7 @@ function paintWallet() {
   $("#practiceChip").classList.toggle("hidden", !practice());
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}`).join("<br>");
+const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.skipped ? "dilewati, " + esc(x.skipped) : x.note ? esc(x.note) : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}${(x.positions || []).length ? " · posisi #" + x.positions.join(", #") : ""}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
 function openZap(r, size) {
@@ -499,7 +499,8 @@ async function act(p, btn, url, body, confirmMsg, okText) {
   const out = cell.querySelector("[data-r]");
   try {
     const s = await trade.call(url, body);
-    out.innerHTML = s.ok ? `${s.hash ? "✓ " + txLink(s.hash) : stepsHtml(s) || "✓"} ${okText(s)}${practiceNote(s)}` : `<span class="neg">✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}</span>`;
+    out.innerHTML = s.ok ? `${s.hash ? "✓ " + txLink(s.hash) : stepsHtml(s) || "✓"} ${okText(s)}${practiceNote(s)}`
+      : `${stepsHtml(s) ? stepsHtml(s) + "<br>" : ""}<span class="neg">✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}</span>`;
     if (s.ok && !s.dryRun) setTimeout(() => loadPortfolio(true), 4000);
   } catch (e) { out.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`; }
   finally { btn.disabled = false; }
@@ -818,9 +819,9 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);
   const f = store.get("filters", null);
-  if (f) { $("#hideSkip").checked = f.skip !== false; $("#quote").value = f.quote || ""; }
+  if (f) $("#hideSkip").checked = f.skip !== false;   // quote filter gone: the server lists USDG pools only
   $("#tvl").value = store.get("tvl", "2000");
-  state.unit = store.get("unit", "usd");
+  state.unit = "usd";   // USDG only: everything reads in dollars
   document.querySelectorAll("#unit button").forEach(b => b.classList.toggle("on", b.dataset.u === state.unit));
   state.mode = store.get("mode", "all");
   document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === state.mode));

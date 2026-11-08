@@ -6,11 +6,11 @@
 // a call, not a transaction).
 //
 //   node tests/test_live_sim.mjs --usdg-pool 0x.. --eth-pool 0x.. --owner 0x.. --ids 1,2
-import { ethers, readProvider, poolKey, poolIdOf, slot0, quoteSide, planLadder, openCalldata, closeCalldata, swapCalldata,
+import { ethers, pickTradeProvider, poolKey, poolIdOf, slot0, quoteSide, planLadder, openCalldata, closeCalldata, swapCalldata,
   positionInfo, deadline, rawPrice01, POSITION_MANAGER, UNIVERSAL_ROUTER, PERMIT2, USDG, ZERO, args, P } from "../lib.mjs";
 
 const a = args();
-const pr = readProvider();
+const pr = await pickTradeProvider();   // first RPC that answers (the official one is blocked on some networks)
 const FAKE = "0x" + "7e".repeat(20);
 const ab = ethers.AbiCoder.defaultAbiCoder();
 const big = 10n ** 18n;   // fits uint64: USDG keeps balances in 64 bits (a larger value reads back truncated)

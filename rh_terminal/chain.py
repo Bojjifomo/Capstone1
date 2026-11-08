@@ -244,8 +244,17 @@ def block_number() -> int:
 
 
 def block_time(n: int | str) -> int:
-    b = rpc("eth_getBlockByNumber", [hex(n) if isinstance(n, int) else n, False])
-    return int(b["timestamp"], 16)
+    # eth_blockNumber and eth_getBlockByNumber can land on different nodes (or endpoints): one a block
+    # or two behind answers null for the newest block. Ask again, then step back a few blocks.
+    tag = hex(n) if isinstance(n, int) else n
+    for i in range(6):
+        b = rpc("eth_getBlockByNumber", [tag, False])
+        if b and b.get("timestamp"):
+            return int(b["timestamp"], 16)
+        time.sleep(0.5)
+        if isinstance(n, int) and i >= 2:
+            tag = hex(n - 5 * (i - 1))
+    raise RuntimeError(f"block {n} belum ada di RPC (node ketinggalan)")
 
 
 def eth_call(to: str, data: str, block: str = "latest") -> str:

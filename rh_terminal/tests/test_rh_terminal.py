@@ -295,3 +295,27 @@ class Send(unittest.TestCase):
         h.wfile = Dead()
         with self.assertRaises(web.ClientGone):
             h._send(200, b"x", "text/plain")
+
+
+class UsdgOnly(unittest.TestCase):
+    def test_quote_filter(self):
+        from rh_terminal import pools
+        tok = "0x" + "ab" * 20
+        usdg = {"currency0": chain.USDG, "currency1": tok, "fee": 10000, "tickSpacing": 200, "hooks": "0x" + "0" * 40}
+        eth = dict(usdg, currency0="0x" + "0" * 40)
+        cfg = {"universe": {"quotes": "USDG"}}
+        self.assertTrue(pools.quote_ok(usdg, cfg))
+        self.assertFalse(pools.quote_ok(eth, cfg))
+        self.assertTrue(pools.quote_ok(eth, {"universe": {"quotes": "USDG+ETH"}}))
+        self.assertFalse(pools.quote_ok(None, cfg))
+
+    def test_clones(self):
+        from rh_terminal import pools
+        rows = [{"symbol": "CLAUDIA", "token": "0xa", "ageHours": 30},
+                {"symbol": "claudia", "token": "0xb", "ageHours": 2},
+                {"symbol": "CLAUDIA", "token": "0xa", "ageHours": 30},
+                {"symbol": "GAGE", "token": "0xc", "ageHours": 5}]
+        pools.mark_clones(rows)
+        self.assertIsNone(rows[0]["clone"])
+        self.assertEqual(rows[1]["clone"], {"others": 1, "original": "0xa"})
+        self.assertIsNone(rows[3]["clone"])

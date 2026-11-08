@@ -4,7 +4,7 @@
 // own price than that reverts in simulation and is never sent.
 import { pathToFileURL } from "node:url";
 import { args, done, fail, pickTradeProvider, loadSigner, poolKey, poolIdOf, slot0, quoteSide, balanceOf, approvalTxs,
-  swapCalldata, sendTx, deadline, rawPrice01, UNIVERSAL_ROUTER, ZERO } from "./lib.mjs";
+  swapCalldata, sendTx, deadline, rawPrice01, receivedFromLogs, ethDeltaAt, UNIVERSAL_ROUTER, ZERO } from "./lib.mjs";
 
 export async function sellToken({ signer, owner, pool, key, amount, maxLossPct = 5, dry = false }) {
   const pr = signer ? signer.provider : (await pickTradeProvider());
@@ -30,12 +30,13 @@ export async function sellToken({ signer, owner, pool, key, amount, maxLossPct =
     steps.push(dry ? { label: t.label, needed: true } : await sendTx(signer, t));
   }
   if (dry && steps.length) return { steps, minOut, expected, note: "approvals missing, so the sale itself was not simulated" };
-  const before = await balanceOf(pr, quote, owner);
   const tx = swapCalldata(key, zeroForOne, amount, minOut, deadline());
-  const r = await sendTx(signer, { ...tx, to: UNIVERSAL_ROUTER, label: "sell token" }, { dryRun: dry, from: owner });
+  // retries: the token may have landed one block ago (close + sell), and the node can lag
+  const r = await sendTx(signer, { ...tx, to: UNIVERSAL_ROUTER, label: "sell token" }, { dryRun: dry, from: owner, retries: 3 });
   steps.push(r);
-  // ETH proceeds: add the gas back so "received" is what the sale paid, not net of its own fee
-  const got = dry ? null : (await balanceOf(pr, quote, owner)) - before + (quote === ZERO ? (r.fee || 0n) : 0n);
+  // from the receipt, never a balance read from a lagging node; ETH: gas added back
+  const got = dry ? null : quote === ZERO ? (await ethDeltaAt(pr, owner, r.block)) + (r.fee || 0n)
+    : receivedFromLogs(r.logs, owner, [quote])[quote];
   return { steps, hash: r.hash, minOut, expected, received: got, quote };
 }
 
