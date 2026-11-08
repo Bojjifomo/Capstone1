@@ -98,26 +98,8 @@ def verdict(c: dict, m: dict | None) -> dict:
     return {"level": level, "score": score, "reasons": bad + good, "info": info}
 
 
-def pool_rows(cfg: dict, min_tvl: float, force: bool = False) -> dict:
-    global _last_log
-    key = ("pools", min_tvl)
-    with _lock:
-        hit = _cache.get(key)
-        if hit and not force and time.time() - hit["t"] < POOL_TTL:
-            return hit["data"]
-    s = cfg["scan"]
-    min_ratio = cfg["gates"]["minFeeApr24hPct"] / 365 / 4   # wide prefilter: WAIT rows are worth seeing too
-    base = f"is_blacklisted=false && tvl>={max(min_tvl, s['prefilterMinTvlUsd'])} && fee_tvl_ratio_24h>={min_ratio:.4f}"
-    snaps, seen = [], set()
-    for side in ("token_y", "token_x"):
-        for page in range(1, s["pages"] + 1):
-            rows = api.list_pools(f"{base} && {side}={api.SOL_MINT}", page=page, page_size=s["pageSize"])
-            for r in rows:
-                if r["address"] not in seen:
-                    seen.add(r["address"])
-                    snaps.append(r)
-            if len(rows) < s["pageSize"]:
-                break
+def _build_rows(snaps: list[dict], cfg: dict):
+    """Meteora pool snapshots -> table rows (spec v1 verdict, fees per window, DexScreener moves)."""
     market = dex_market([p["address"] for p in snaps])
     now = datetime.now(timezone.utc)
     out = []
@@ -139,6 +121,65 @@ def pool_rows(cfg: dict, min_tvl: float, force: bool = False) -> dict:
             "priceUsd": filters.token_of(snap).get("price") if filters.sol_side(snap) else None,
             "verdict": v,
         })
+    return out, market, now
+
+
+def token_pools(cfg: dict, mint: str) -> dict:
+    """Every Meteora DLMM pool of one token against SOL, without the list's TVL / fee prefilter
+    (the list hides a token's quieter pools), deepest first. Cached two minutes."""
+    key = ("token", mint)
+    with _lock:
+        hit = _cache.get(key)
+        if hit and time.time() - hit["t"] < 120:
+            return hit["data"]
+    snaps, seen = [], set()
+    for f in (f"token_x={mint} && token_y={api.SOL_MINT}", f"token_x={api.SOL_MINT} && token_y={mint}"):
+        for r in api.list_pools(f"is_blacklisted=false && {f}", sort_by="tvl:desc", page=1, page_size=50):
+            if r["address"] not in seen:
+                seen.add(r["address"])
+                snaps.append(r)
+    rows, _, _ = _build_rows(snaps, cfg) if snaps else ([], None, None)
+    rows.sort(key=lambda r: -(r.get("tvlUsd") or 0))
+    # The token's pools on other venues (pump.fun / PumpSwap / Raydium / DAMM): context only, the terminal LPs on DLMM.
+    other = []
+    try:
+        for p in _get_json("https://api.dexscreener.com/token-pairs/v1/solana/" + mint, timeout=10) or []:
+            if p.get("pairAddress") in seen:
+                continue
+            liq = (p.get("liquidity") or {}).get("usd") or 0
+            other.append({"pair": p.get("pairAddress"), "dex": p.get("dexId"), "labels": p.get("labels") or [],
+                          "quote": (p.get("quoteToken") or {}).get("symbol"), "liqUsd": liq,
+                          "vol24": (p.get("volume") or {}).get("h24") or 0, "url": p.get("url")})
+    except Exception:
+        pass
+    other = sorted([o for o in other if o["liqUsd"] >= 100 or o["vol24"] >= 100], key=lambda o: -o["liqUsd"])[:8]
+    data = {"t": time.time(), "mint": mint, "rows": rows, "other": other}
+    with _lock:
+        _cache[key] = {"t": time.time(), "data": data}
+    return data
+
+
+def pool_rows(cfg: dict, min_tvl: float, force: bool = False) -> dict:
+    global _last_log
+    key = ("pools", min_tvl)
+    with _lock:
+        hit = _cache.get(key)
+        if hit and not force and time.time() - hit["t"] < POOL_TTL:
+            return hit["data"]
+    s = cfg["scan"]
+    min_ratio = cfg["gates"]["minFeeApr24hPct"] / 365 / 4   # wide prefilter: WAIT rows are worth seeing too
+    base = f"is_blacklisted=false && tvl>={max(min_tvl, s['prefilterMinTvlUsd'])} && fee_tvl_ratio_24h>={min_ratio:.4f}"
+    snaps, seen = [], set()
+    for side in ("token_y", "token_x"):
+        for page in range(1, s["pages"] + 1):
+            rows = api.list_pools(f"{base} && {side}={api.SOL_MINT}", page=page, page_size=s["pageSize"])
+            for r in rows:
+                if r["address"] not in seen:
+                    seen.add(r["address"])
+                    snaps.append(r)
+            if len(rows) < s["pageSize"]:
+                break
+    out, market, now = _build_rows(snaps, cfg)
     data = {"t": time.time(), "rows": out, "solUsd": next((r["solUsd"] for r in out if r["solUsd"]), None),
             "maxPositionSol": filters.max_position_sol(cfg), "sizeSol": filters.planned_size_sol(cfg)}
     with _lock:
@@ -495,6 +536,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/api/pools":
                 return self._json(pool_rows(self.cfg, float(q.get("tvl", 2000)), q.get("force") == "1"))
+            if u.path == "/api/token_pools":
+                return self._json(token_pools(self.cfg, q["mint"]))
             if u.path == "/api/pool":
                 return self._json(api.pool(q["address"]))
             if u.path == "/api/portfolio":
