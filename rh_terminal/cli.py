@@ -289,7 +289,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="rh_terminal", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     w = sub.add_parser("web")
-    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--host", default="0.0.0.0", help="0.0.0.0 = iPhone/MacBook lewat Tailscale bisa buka (cuma Mac ini + Tailscale yang diizinin); 127.0.0.1 = cuma Mac ini")
     w.add_argument("--port", type=int)
     s = sub.add_parser("screen")
     s.add_argument("--top", type=int, default=25)

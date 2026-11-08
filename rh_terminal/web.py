@@ -487,6 +487,10 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8892) -> None:
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"RH Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)
+    if host in ("127.0.0.1", "localhost", "::1"):
+        print("  ⚠ --host 127.0.0.1: iPhone / MacBook NGGAK bisa buka. Jalanin tanpa --host (atau --host 0.0.0.0).", flush=True)
+    else:
+        print(f"  iPhone / MacBook: Tailscale nyala, buka http://<nama-mac-di-Tailscale>:{port} atau http://100.x.y.z:{port}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
