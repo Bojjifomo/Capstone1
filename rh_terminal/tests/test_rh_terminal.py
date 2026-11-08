@@ -266,3 +266,32 @@ class TradeAccess(unittest.TestCase):
     def test_header_required(self):
         h = self._h("127.0.0.1"); h.headers = {}
         self.assertEqual(h._trade_refused({}), "missing trade header")
+
+
+class Send(unittest.TestCase):
+    def _h(self, enc=""):
+        import io as _io
+        from rh_terminal import web
+        h = web.Handler.__new__(web.Handler)
+        h.headers = {"Accept-Encoding": enc}
+        h.request_version = "HTTP/1.1"; h.requestline = "GET / HTTP/1.1"; h.command = "GET"
+        h.client_address = ("127.0.0.1", 0)
+        h.wfile = _io.BytesIO()
+        return h
+
+    def test_gzip_when_asked(self):
+        import gzip as _gz
+        h = self._h("gzip, deflate"); body = b'{"rows": []}' * 500
+        h._send(200, body, "application/json")
+        raw = h.wfile.getvalue()
+        self.assertIn(b"Content-Encoding: gzip", raw)
+        self.assertEqual(_gz.decompress(raw.split(b"\r\n\r\n", 1)[1]), body)
+
+    def test_closed_client_is_quiet(self):
+        from rh_terminal import web
+        h = self._h()
+        class Dead:
+            def write(self, b): raise BrokenPipeError(32, "Broken pipe")
+        h.wfile = Dead()
+        with self.assertRaises(web.ClientGone):
+            h._send(200, b"x", "text/plain")

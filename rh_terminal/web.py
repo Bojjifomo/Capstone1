@@ -15,6 +15,7 @@ RH_PRACTICE_MODE=true: every button only simulates (eth_call), nothing is sent.
 """
 from __future__ import annotations
 
+import gzip
 import hmac
 import ipaddress
 import json
@@ -273,19 +274,37 @@ _REFUSED_PAGE = ("RH Terminal cuma bisa dibuka dari Mac ini atau lewat Tailscale
                  "Nyalain Tailscale di device ini, lalu buka http://<nama-mac>:8892\n").encode()
 
 
+class ClientGone(Exception):
+    """The browser closed the connection (tab closed, phone locked, refresh) before the answer was sent."""
+
+
 class Handler(BaseHTTPRequestHandler):
     cfg: dict = {}
 
     def log_message(self, fmt, *a):
         pass
 
+    def handle(self):
+        try:
+            super().handle()
+        except ClientGone:
+            pass                    # nothing to answer; not an error worth a traceback
+
     def _send(self, code: int, body: bytes, ctype: str):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        gz = len(body) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:
+            body = gzip.compress(body, 5)   # /api/pools is a few MB of JSON; phones over Tailscale feel it
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            if gz:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            raise ClientGone() from None
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, default=str).encode(), "application/json")
@@ -358,6 +377,8 @@ class Handler(BaseHTTPRequestHandler):
                                              "practice": practice_mode(),
                                              "envCheck": None if tw.get("ok") or not self._is_local() else env_report()},
                                    "wallet": os.environ.get("RH_WALLET")})
+        except ClientGone:
+            raise
         except Exception as exc:
             print(f"[{datetime.now():%H:%M:%S}] {u.path} failed: {exc}", file=sys.stderr, flush=True)
             if "CERTIFICATE_VERIFY_FAILED" in str(exc):
@@ -469,6 +490,8 @@ class Handler(BaseHTTPRequestHandler):
                 res = self._trade("cleanup.mjs", args, wallet, 900)
                 append("closes.jsonl", {"ts": _now_iso(), "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "tokens", "practice")}})
                 return self._json(res)
+        except ClientGone:
+            raise
         except (KeyError, ValueError) as exc:
             return self._json({"ok": False, "error": f"{exc}"}, 400)
         except Exception as exc:
