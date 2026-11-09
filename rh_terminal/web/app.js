@@ -832,6 +832,8 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   const pools = loadPools();
   try { state.cfg = await getJson("/api/config"); } catch (e) {}
   trade.info = state.cfg && state.cfg.trade;
+  const v = state.cfg && state.cfg.version;
+  if (v && v.commit) { $("#ver").textContent = v.commit; $("#ver").title = `versi ${v.commit} · ${v.date} · branch ${v.branch}`; }
   paintWallet();
   $("#wallet").value = (trade.info && trade.info.wallet) || store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
   try { setView(store.get("view", "pools")); } catch (e) { setView("pools"); }

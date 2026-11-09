@@ -209,7 +209,9 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
             fails.append(f"{_host(url)}: {str(e)[:70]}")
             _why[url] = str(e)[:160]
-            refused = "refused" in str(e).lower() or "nodename" in str(e).lower() or "name or service" in str(e).lower()
+            low = str(e).lower()
+            # refused, no DNS, or a certificate that is not the site's (an ISP block page): blocked, rest 5 min
+            refused = any(x in low for x in ("refused", "nodename", "name or service", "certificate"))
             _cool[url] = time.time() + (300 if refused else 30)
             continue
         if "error" in j:

@@ -33,6 +33,23 @@ from . import chain, filters, node, pools, portfolio, settings
 from .cli import DATA, append, env_report, load_config, load_env, make_index, notify, practice_mode
 
 STATIC = Path(__file__).resolve().parent / "web"
+
+
+def code_version() -> dict:
+    """The commit this server runs, so the page can say when it is not the latest one pulled."""
+    import subprocess
+    root = Path(__file__).resolve().parent
+    try:
+        out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%h %cs"], capture_output=True,
+                             text=True, timeout=5).stdout.split()
+        br = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
+                            text=True, timeout=5).stdout.strip()
+        return {"commit": out[0], "date": out[1], "branch": br} if len(out) == 2 else {}
+    except Exception:
+        return {}
+
+
+VERSION = code_version()
 POOL_TTL = 30
 PF_TTL = 30
 
@@ -381,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/config":
                 load_env(reload=True)                       # a key pasted into .env works without a restart
                 tw = node.trade_wallet() if not node.ready() else {"ok": False}
-                return self._json({"cfg": self.cfg, "executor": node.ready(), "index": STATE["book"].index_status(),
+                return self._json({"cfg": self.cfg, "version": VERSION, "executor": node.ready(), "index": STATE["book"].index_status(),
                                    "maxPositionUsd": filters.max_position_usd(self.cfg), "rpc": chain.STATS,
                                    "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("address"),
                                              "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
@@ -523,6 +540,8 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8892) -> None:
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"RH Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)
+    if VERSION:
+        print(f"  versi {VERSION['commit']} ({VERSION['date']}, branch {VERSION['branch']})", flush=True)
     if host in ("127.0.0.1", "localhost", "::1"):
         print("  ⚠ --host 127.0.0.1: iPhone / MacBook NGGAK bisa buka. Jalanin tanpa --host (atau --host 0.0.0.0).", flush=True)
     else:
