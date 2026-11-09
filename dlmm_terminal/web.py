@@ -303,6 +303,59 @@ def watch_set(pool: str, symbol: str, on: bool, note: str | None = None) -> list
     return cur
 
 
+KEEP_MINTS = {"So11111111111111111111111111111111111111112", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}
+
+
+def _rpc(method: str, params: list):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(node.PUBLIC_RPC, data=body, headers={"Content-Type": "application/json", "User-Agent": "dlmm-terminal/1"})
+    with api.urlopen(req, timeout=15) as r:
+        return json.load(r)["result"]
+
+
+def leftovers(wallet: str) -> dict:
+    """Tokens in the wallet that are not SOL / USDC / USDT (what a close left behind), with their
+    value from DexScreener, biggest first. Read on the public node: no Helius quota."""
+    held: dict = {}
+    for prog in ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"):
+        res = _rpc("getTokenAccountsByOwner", [wallet, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+        for a in res.get("value") or []:
+            info = a["account"]["data"]["parsed"]["info"]
+            amt = info["tokenAmount"]
+            if info["mint"] in KEEP_MINTS or int(amt["amount"]) == 0:
+                continue
+            h = held.setdefault(info["mint"], {"mint": info["mint"], "raw": 0, "ui": 0.0, "decimals": amt["decimals"]})
+            h["raw"] += int(amt["amount"])
+            h["ui"] += float(amt.get("uiAmount") or 0)
+    mints = list(held)
+    for i in range(0, len(mints), 30):
+        try:
+            for p in _get_json("https://api.dexscreener.com/tokens/v1/solana/" + ",".join(mints[i:i + 30]), timeout=10) or []:
+                t = held.get((p.get("baseToken") or {}).get("address"))
+                liq = (p.get("liquidity") or {}).get("usd") or 0
+                if t is not None and liq >= t.get("_liq", -1):
+                    t.update(symbol=(p.get("baseToken") or {}).get("symbol"), priceUsd=float(p.get("priceUsd") or 0), _liq=liq)
+        except Exception:
+            pass
+    rows = []
+    for t in held.values():
+        t.pop("_liq", None)
+        t["valueUsd"] = t["ui"] * t["priceUsd"] if t.get("priceUsd") else None
+        rows.append(t)
+    rows.sort(key=lambda t: -(t["valueUsd"] or 0))
+    return {"wallet": wallet, "rows": rows, "sales": recent_sales()}
+
+
+def recent_sales(n: int = 8) -> list[dict]:
+    from .cli import DATA
+    try:
+        lines = (DATA / "swaps.jsonl").read_text().splitlines()[-n:]
+        return [json.loads(l) for l in reversed(lines)]
+    except (OSError, ValueError):
+        return []
+
+
 def wallet_sol(wallet: str) -> float | None:
     """SOL balance on the public node (reads never spend the Helius quota)."""
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [wallet, {"commitment": "confirmed"}]}).encode()
@@ -536,6 +589,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/api/pools":
                 return self._json(pool_rows(self.cfg, float(q.get("tvl", 2000)), q.get("force") == "1"))
+            if u.path == "/api/leftovers":
+                wallet = q.get("wallet") or (node.trade_wallet().get("pubkey"))
+                if not wallet:
+                    return self._json({"error": "no wallet"}, 400)
+                return self._json(leftovers(wallet))
             if u.path == "/api/token_pools":
                 return self._json(token_pools(self.cfg, q["mint"]))
             if u.path == "/api/pool":
@@ -610,7 +668,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         try:
-            if self.path in ("/api/trade/open", "/api/trade/close", "/api/trade/reenter", "/api/trade/cleanup"):
+            if self.path in ("/api/trade/open", "/api/trade/close", "/api/trade/reenter", "/api/trade/cleanup", "/api/trade/sell"):
                 why = self._trade_refused(body)
                 if why:
                     return self._json({"ok": False, "error": why}, 403)
@@ -629,6 +687,14 @@ class Handler(BaseHTTPRequestHandler):
                                                "decision": "enter", "sizeSol": sol, "override": bool(body.get("override")),
                                                "positions": [r.get("position") for r in res.get("results", [])], "ok": res.get("ok"),
                                                "error": res.get("error")})
+                    return self._json(res)
+                if self.path.endswith("/sell"):
+                    args = ["--mint", str(body["mint"]), "--maxloss", str(float(body.get("maxloss") or self.cfg["trade"]["maxLossPct"]))]
+                    if body.get("pool"):
+                        args += ["--pool", str(body["pool"])]
+                    res = node.run("sell.mjs", args, timeout=300)
+                    append("closes.jsonl", {"ts": ts, "source": "web", "rule": "sell", "mint": body.get("mint"),
+                                            **{k: res.get(k) for k in ("ok", "error", "via", "sol", "signature")}})
                     return self._json(res)
                 if self.path.endswith("cleanup"):
                     res = node.run("cleanup.mjs", ["--maxloss", str(float(body.get("maxloss") or self.cfg["trade"]["maxLossPct"]))], timeout=600)
