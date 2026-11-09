@@ -27,6 +27,11 @@ rh_terminal/data/
 rh_terminal/.env
 rh_terminal/executor/node_modules/
 
+# elysium_terminal
+elysium_terminal/data/
+elysium_terminal/.env
+elysium_terminal/executor/node_modules/
+
 # rpc_monitor
 rpc_monitor/config.json
 rpc_monitor/logs/

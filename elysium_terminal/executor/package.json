@@ -1,0 +1,9 @@
+{
+  "name": "elysium-terminal-executor",
+  "private": true,
+  "type": "module",
+  "description": "Signs and sends Uniswap v3/v4 LP transactions on Elysium (99901) for Elysium Terminal. The key never leaves this process.",
+  "dependencies": {
+    "ethers": "6.13.4"
+  }
+}
