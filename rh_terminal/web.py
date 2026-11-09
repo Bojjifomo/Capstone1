@@ -200,7 +200,8 @@ def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
             args += ["--dry-run", "--owner", wallet]
         res = node.run("reenter.mjs", args, timeout=900)
         ok = bool(res.get("ok"))
-        msg = ("simulasi (practice mode)" if res.get("dryRun") else "closed + swapped") if ok else f"{res.get('step') or ''} {res.get('error') or 'gagal'}"
+        msg = ("simulasi (practice mode)" if res.get("dryRun") else exit_summary(res)) if ok else \
+            f"{exit_summary(res)} · gagal di {res.get('step') or '?'}: {res.get('error') or 'gagal'}"
         with _auto_lock:
             d = auto_load()
             if pool in d:
@@ -211,6 +212,18 @@ def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
         notify(f"{'✅' if ok else '❌'} AUTO EXIT {g['symbol']}: {msg}")
         fired.append({"pool": pool, "ok": ok, "msg": msg})
     return fired
+
+
+def exit_summary(res: dict) -> str:
+    """One line per step of a close+swap for Telegram / the ladder row: what was sold, what stayed."""
+    parts = []
+    for s in res.get("steps") or []:
+        st = s.get("step") or s.get("label") or "tx"
+        if s.get("skipped"):
+            parts.append(f"{st}: dilewati ({s['skipped']})")
+        elif s.get("hash"):
+            parts.append(f"{st} ✓" + (f" ({s['note']})" if s.get("note") else ""))
+    return " · ".join(parts) or "closed"
 
 
 def _auto_loop(cfg: dict) -> None:

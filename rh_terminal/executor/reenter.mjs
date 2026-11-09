@@ -67,7 +67,8 @@ try {
   let quoteBack = c.received[quote] || 0n;
   if (tokOut > 0n) {
     const s = await sellToken({ signer, owner, pool: poolId, key, amount: tokOut, maxLossPct: Number(a.maxloss || 5) });
-    out.steps.push({ step: "swap", hash: s.hash, received: s.received });
+    out.steps.push({ step: "swap", hash: s.hash, received: s.received, sold: s.sold, left: s.left, note: s.note });
+    if (s.left > 0n) out.tokenLeft = s.left;
     quoteBack += s.received || 0n;
   } else {
     out.steps.push({ step: "swap", skipped: "nggak ada token keluar (ladder belum pernah kena harga), langsung lanjut" });

@@ -6,7 +6,9 @@ import { pathToFileURL } from "node:url";
 import { args, done, fail, pickTradeProvider, loadSigner, poolKey, poolIdOf, slot0, quoteSide, balanceOf, approvalTxs,
   swapCalldata, sendTx, deadline, rawPrice01, receivedFromLogs, ethDeltaAt, UNIVERSAL_ROUTER, ZERO } from "./lib.mjs";
 
-export async function sellToken({ signer, owner, pool, key, amount, maxLossPct = 5, dry = false }) {
+// partial: when the whole amount would land more than maxLoss under the pool price (a thin pool,
+// a big ladder), sell the largest part that stays inside it and leave the rest in the wallet.
+export async function sellToken({ signer, owner, pool, key, amount, maxLossPct = 5, dry = false, partial = true }) {
   const pr = signer ? signer.provider : (await pickTradeProvider());
   key = key || await poolKey(pr, pool);
   pool = pool || poolIdOf(key);
@@ -22,22 +24,46 @@ export async function sellToken({ signer, owner, pool, key, amount, maxLossPct =
   const p01 = rawPrice01(s0.sqrtPriceX96);
   const pf = zeroForOne ? s0.protocolFee & 0xfff : (s0.protocolFee >> 12) & 0xfff;
   const feeFrac = (s0.lpFee + pf) / 1e6;
-  const expected = zeroForOne ? Number(amount) * p01 : Number(amount) / p01;
-  const minOut = BigInt(Math.floor(expected * (1 - feeFrac) * (1 - maxLossPct / 100)));
+  const quoteFor = amt => {
+    const expected = zeroForOne ? Number(amt) * p01 : Number(amt) / p01;
+    return { expected, minOut: BigInt(Math.floor(expected * (1 - feeFrac) * (1 - maxLossPct / 100))) };
+  };
+  const { expected, minOut } = quoteFor(amount);
   if (minOut <= 0n) throw new Error("sale too small to price");
   const steps = [];
   for (const t of await approvalTxs(pr, owner, token, UNIVERSAL_ROUTER, amount)) {
     steps.push(dry ? { label: t.label, needed: true } : await sendTx(signer, t));
   }
   if (dry && steps.length) return { steps, minOut, expected, note: "approvals missing, so the sale itself was not simulated" };
-  const tx = swapCalldata(key, zeroForOne, amount, minOut, deadline());
-  // retries: the token may have landed one block ago (close + sell), and the node can lag
-  const r = await sendTx(signer, { ...tx, to: UNIVERSAL_ROUTER, label: "sell token" }, { dryRun: dry, from: owner, retries: 3 });
+  const call = amt => { const m = quoteFor(amt).minOut; return { ...swapCalldata(key, zeroForOne, amt, m, deadline()), to: UNIVERSAL_ROUTER, minOut: m }; };
+  let sell = amount, tx = call(amount), r;
+  try {
+    // retries: the token may have landed one block ago (close + sell), and the node can lag
+    r = await sendTx(signer, { ...tx, label: "sell token" }, { dryRun: dry, from: owner, retries: 3 });
+  } catch (e) {
+    if (!partial || !/would revert/.test(e.message)) throw e;
+    // biggest amount whose sale stays inside maxLoss: binary search on simulations (calls, nothing sent)
+    let lo = 0n, hi = amount;
+    for (let i = 0; i < 8 && hi - lo > amount / 200n; i++) {
+      const mid = (lo + hi) / 2n;
+      if (mid <= 0n) break;
+      const t = call(mid);
+      try { await pr.call({ from: owner, to: t.to, data: t.data, value: t.value || 0n }); lo = mid; } catch { hi = mid; }
+    }
+    if (lo <= 0n || quoteFor(lo).minOut <= 0n) {
+      throw new Error(`sell token: semua ukuran jatuh > ${maxLossPct}% di bawah harga pool (pool terlalu tipis), token tetap di wallet`);
+    }
+    sell = lo;
+    tx = call(sell);
+    r = await sendTx(signer, { ...tx, label: "sell token (sebagian)" }, { dryRun: dry, from: owner, retries: 2 });
+  }
   steps.push(r);
   // from the receipt, never a balance read from a lagging node; ETH: gas added back
   const got = dry ? null : quote === ZERO ? (await ethDeltaAt(pr, owner, r.block)) + (r.fee || 0n)
     : receivedFromLogs(r.logs, owner, [quote])[quote];
-  return { steps, hash: r.hash, minOut, expected, received: got, quote };
+  const left = amount - sell;
+  return { steps, hash: r.hash, minOut: tx.minOut, expected, received: got, quote, sold: sell, left,
+    note: left > 0n ? `jual ${Number(sell * 1000n / amount) / 10}% (sisanya bakal jatuh > ${maxLossPct}% di bawah harga pool); sisa token di wallet, pakai Cleanup / Close+swap lagi nanti` : undefined };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -249,8 +249,11 @@ export function closeCalldata(positions, recipient, dl, claimOnly = false) {
 export function swapCalldata(key, zeroForOne, amountIn, minOut, dl) {
   const cin = zeroForOne ? key.currency0 : key.currency1, cout = zeroForOne ? key.currency1 : key.currency0;
   const params = [
-    enc(["tuple(" + KEY + " poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)"],
-      [[keyTuple(key), zeroForOne, amountIn, minOut, "0x"]]),
+    // The router on Robinhood Chain takes the newer ExactInputSingleParams: one uint256 between
+    // amountOutMinimum and hookData (0 in every mined swap). The old 5-field layout decodes into
+    // garbage there: it happened to pass for most pools and reverts for others (FOBO).
+    enc(["tuple(" + KEY + " poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData)"],
+      [[keyTuple(key), zeroForOne, amountIn, minOut, 0n, "0x"]]),
     enc(["address", "uint256"], [cin, amountIn]),
     enc(["address", "uint256"], [cout, minOut]),
   ];

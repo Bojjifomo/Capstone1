@@ -396,7 +396,7 @@ function paintWallet() {
   $("#practiceChip").classList.toggle("hidden", !practice());
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.skipped ? "dilewati, " + esc(x.skipped) : x.note ? esc(x.note) : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}${(x.positions || []).length ? " · posisi #" + x.positions.join(", #") : ""}`).join("<br>");
+const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.skipped ? "dilewati, " + esc(x.skipped) : x.note ? esc(x.note) : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}${x.hash && x.note ? " · " + esc(x.note) : ""}${(x.positions || []).length ? " · posisi #" + x.positions.join(", #") : ""}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
 function openZap(r, size) {
