@@ -44,6 +44,17 @@ def single_sided_quote(liq: int, lo: int, hi: int, quote_side: int) -> float:
     return L * (1 / sa - 1 / sb) if quote_side == 0 else L * (sb - sa)
 
 
+# A 60% ladder is ~9k ticks. Full-range v3 positions span ~1.7M ticks and were not
+# minted quote-only, so the ladder deposit formula explodes and the PnL row is garbage.
+LADDER_MAX_TICKS = 200_000
+
+
+def ladder_deposit_usd(liq: int, lo: int, hi: int, quote_side: int, decimals: int, qusd: float | None) -> float | None:
+    if qusd is None or hi - lo > LADDER_MAX_TICKS:
+        return None
+    return single_sided_quote(liq, lo, hi, quote_side) / 10 ** decimals * qusd
+
+
 def _ids_file(data: Path, wallet: str) -> Path:
     return data / f"ids_{wallet.lower()}.json"
 
@@ -251,7 +262,7 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         f0, f1 = fees.get(fkey, (0, 0))
         fq, ft = (f0, f1) if q == 0 else (f1, f0)
         to_usd = lambda rq, rt: ((rq / 10 ** dq) + (rt / 10 ** dt) * (tok_q or 0)) * qusd if qusd else None
-        dep = single_sided_quote(p["liquidity"], p["tickLower"], p["tickUpper"], q) / 10 ** dq * qusd if qusd else None
+        dep = ladder_deposit_usd(p["liquidity"], p["tickLower"], p["tickUpper"], q, dq, qusd)
         in_range = p["tickLower"] <= sl["tick"] < p["tickUpper"]
         g = ladders.setdefault(p["pool"], {
             "pool": p["pool"], "dex": p["dex"], "venue": p["venue"], "manager": p["manager"], "key": k,
@@ -292,9 +303,12 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         g["heldHours"] = None
         if g["supply"] and g["tokenUsd"]:
             cap = g["supply"] / 10 ** g["decimals"] * g["tokenUsd"]
-            atp = lambda t: cap * 1.0001 ** ((-(t - g["tick"])) if g["flip"] else (t - g["tick"]))
-            g["capLo"], g["capHi"] = sorted((atp(lo), atp(hi)))
             g["mcapUsd"] = cap
+            if hi - lo > LADDER_MAX_TICKS:
+                g["capLo"] = g["capHi"] = None
+            else:
+                atp = lambda t, cap=cap: cap * 1.0001 ** ((-(t - g["tick"])) if g["flip"] else (t - g["tick"]))
+                g["capLo"], g["capHi"] = sorted((atp(lo), atp(hi)))
         else:
             g["capLo"] = g["capHi"] = g["mcapUsd"] = None
         g["state"] = ("in" if g["inRangeCount"] else "above" if frac is not None and frac > 1
@@ -302,7 +316,9 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         g["events"] = exit_events(g, cfg)
         rows.append(g)
     rows.sort(key=lambda r: -abs(r["pnlUsd"] or 0))
-    tot = lambda k: sum(r[k] for r in rows if r[k] is not None)
+    def tot(k):
+        vals = [r[k] for r in rows if r[k] is not None]
+        return sum(vals) if vals else None
     bal = wallet_balances(wallet)
     return {"wallet": wallet.lower(), "t": now, "rows": rows, "ethUsd": hype, "hypeUsd": hype,
             "valueUsd": tot("valueUsd"), "feesUsd": tot("feesUsd"), "depositUsd": tot("depositUsd"),

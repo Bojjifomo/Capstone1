@@ -96,6 +96,13 @@ class ChainMath(unittest.TestCase):
 
 
 class Ladder(unittest.TestCase):
+    def test_full_range_deposit_is_unknown(self):
+        # A full-range NFT is not a quote-only ladder. The formula would print a nonsense PnL.
+        self.assertIsNone(portfolio.ladder_deposit_usd(10 ** 18, -887200, 887200, 1, 6, 1.0))
+        narrow = portfolio.ladder_deposit_usd(10 ** 12, -302000, -300000, 1, 6, 1.0)
+        self.assertIsNotNone(narrow)
+        self.assertGreater(narrow, 0)
+
     def test_single_sided_round_trip(self):
         for side, (lo, hi) in ((0, (300000, 302000)), (1, (-302000, -300000))):
             sa, sb = 1.0001 ** (lo / 2), 1.0001 ** (hi / 2)
