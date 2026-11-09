@@ -5,6 +5,8 @@
 //   DLMM:    the pool's active price vs. what the swap quote returns.
 // Used by reenter.mjs (Close+swap / Re-entry / auto exit) and cleanup.mjs.
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const DLMMmod = require("@meteora-ag/dlmm");
@@ -80,7 +82,22 @@ const under = (gotLamports, fairLamports) => (fairLamports > 0 ? (1 - gotLamport
  * opts: {connection, signer (Keypair, null = dry run), owner (PublicKey), maxLossPct, pool (hint), dry}
  * Returns {ok, via: "jupiter"|"dlmm", sol, underPct, signature?, dryRun?, tried: [reasons]} or {ok:false, error, tried}.
  */
+// Every real sale (not dry runs) goes to data/swaps.jsonl: what was tried, what landed, the exact error.
+function logSale(row) {
+  try {
+    const dir = fileURLToPath(new URL("../data/", import.meta.url));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(dir + "swaps.jsonl", JSON.stringify({ ts: new Date().toISOString(), ...row }) + "\n");
+  } catch {}
+}
+
 export async function sellToSol(mint, rawAmount, opts) {
+  const res = await sellToSolInner(mint, rawAmount, opts);
+  if (!opts.dry) logSale({ mint, raw: String(rawAmount), ok: res.ok, via: res.via, sol: res.sol, signature: res.signature, error: res.error, tried: res.tried });
+  return res;
+}
+
+async function sellToSolInner(mint, rawAmount, opts) {
   const { connection, signer, owner, maxLossPct = 5, dry } = opts;
   const tried = [];
   let pool = opts.pool || null;

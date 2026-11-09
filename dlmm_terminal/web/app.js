@@ -599,6 +599,7 @@ async function cleanupWallet(btn) {
     const sold = (s.tokens || []).filter(t => /^sold/.test(t.status)).length;
     alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n` + (s.tokens || []).map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`).join("\n") : "Gagal: " + (s.error || "?"));
     loadPortfolio();
+    loadLeftovers();
   } catch (e) { alert("Gagal: " + (e.message || e)); }
   finally { btn.disabled = false; btn.textContent = old; }
 }
@@ -656,6 +657,50 @@ async function setAutoExit(sel) {
   renderPortfolio();
 }
 
+// Tokens left in the wallet (what a close left behind), each with its own "Jual ke SOL" button, and
+// the last sales with their exact outcome (data/swaps.jsonl), so a sale that did not happen says why.
+async function loadLeftovers() {
+  const el = $("#pfTokens");
+  if (!el || !state.wallet) return;
+  try {
+    const d = await getJson(`/api/leftovers?wallet=${encodeURIComponent(state.wallet)}`);
+    state.leftovers = d;
+    renderLeftovers();
+  } catch (e) { el.innerHTML = `<div class="muted">Token sisa: ${esc(e.message)}</div>`; }
+}
+function renderLeftovers() {
+  const d = state.leftovers, el = $("#pfTokens");
+  if (!d || !el) return;
+  const mine = trade.ready() && trade.info.wallet === state.wallet;
+  // worth showing: ≥ $0.10 or no price known; the rest is dust (Cleanup leaves it too)
+  const worth = d.rows.filter(t => t.valueUsd == null || t.valueUsd >= 0.1);
+  const dust = d.rows.length - worth.length;
+  const rows = worth.slice(0, 15).map(t => `<div class="tk"><span class="tks"><b>${esc(t.symbol || short(t.mint))}</b><span class="sub">${t.ui.toLocaleString(undefined, { maximumFractionDigits: 2 })} · ${short(t.mint)}</span></span>
+      <span class="r">${t.valueUsd != null ? (solUsd() && state.unit !== "usd" ? fmtSol(t.valueUsd / solUsd(), 4) : fmtUsd(t.valueUsd)) : "--"}</span>
+      ${mine ? `<button class="btn go" data-sell="${t.mint}" data-sym="${esc(t.symbol || short(t.mint))}">Jual ke SOL</button>` : ""}<span class="tkres" data-res="${t.mint}"></span></div>`).join("");
+  const sales = (d.sales || []).slice(0, 5).map(x => `<div class="sale ${x.ok ? "pos" : "neg"}">${new Date(x.ts).toLocaleTimeString()} · ${esc(short(x.mint))} · ${x.ok
+    ? `✓ ◎${(x.sol || 0).toFixed(4)} via ${esc(x.via)} <a href="https://solscan.io/tx/${esc(x.signature)}" target="_blank" rel="noopener">tx ↗</a>`
+    : `✗ ${esc((x.error || "").slice(0, 160))}`}</div>`).join("");
+  el.innerHTML = (rows ? `<div class="tkh">Token sisa di wallet <span class="muted">(belum SOL${dust ? ` · ${dust} token receh < $0.10 disembunyiin` : ""})</span></div>${rows}` : "")
+    + (sales ? `<div class="tkh">Penjualan terakhir</div>${sales}` : "");
+}
+async function sellToken(btn) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  const sym = btn.dataset.sym;
+  if (!confirm(`Jual semua ${sym} ke SOL?\nJupiter dulu, kalau gagal langsung ke pool Meteora. Batal kalau harganya > batas max loss di bawah harga pool.`)) return;
+  const res = document.querySelector(`[data-res="${btn.dataset.sell}"]`);
+  btn.disabled = true;
+  res.textContent = "jual…";
+  try {
+    const s = await trade.call("/api/trade/sell", { mint: btn.dataset.sell });
+    res.innerHTML = s.ok ? (s.signature ? `<span class="pos">✓ ◎${(s.sol || 0).toFixed(4)} via ${esc(s.via)}</span> ${solscan(s.signature)}` : `<span class="muted">${esc(s.note || "udah nggak ada")}</span>`)
+      : `<span class="neg">✗ ${esc(s.error || "gagal")}</span>`;
+    setTimeout(() => { loadLeftovers(); loadPortfolio(); }, 5000);
+  } catch (e) { res.innerHTML = `<span class="neg">✗ ${esc(e.message)}</span>`; }
+  finally { btn.disabled = false; }
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-sell]"); if (b) sellToken(b); });
+
 // ---------- portfolio ----------
 async function loadPortfolio() {
   const w = $("#wallet").value.trim();
@@ -671,6 +716,7 @@ async function loadPortfolio() {
   }
   renderPortfolio();
   renderTop();
+  loadLeftovers();
 }
 function renderPortfolio() {
   const pf = state.pf;
