@@ -8,8 +8,9 @@ wallet, dan cek wallet ke **LP Agent**. Tema cockpit mecha (logo V-fin + range b
 aksen emas, heatmap biru = lebih bagus / merah = lebih jelek).
 
 Semua angka diambil langsung dari chain lewat RPC lu (SolidRPC / Alchemy / dll),
-nggak pakai API pihak ketiga. Butuh Python 3.10+ dan Streamlit
-(`pip install -r requirements.txt`); sync & scoring sendiri cuma pakai standard library.
+nggak pakai API pihak ketiga. Butuh Python 3.10+. Streamlit di-install sendiri
+ke `.venv` pas lu double-click launchernya (Python Homebrew nolak `pip install`
+di luar virtualenv). Sync & scoring sendiri cuma pakai standard library.
 
 ## Jalanin di Mac (disarankan)
 
@@ -19,13 +20,15 @@ integrasi RH Smart LP Finder cuma bisa lokal.
 
 1. Ambil folder ini (`git pull`, atau clone `https://github.com/Bojjifomo/Capstone1`).
 2. Double-click **`rh_wallet_finder/Buka Wallet Finder.command`**.
-   Pertama kali dia install Streamlit sendiri, terus browser kebuka ke
-   **http://localhost:8501**. Dari Terminal sama aja:
-   ```bash
-   cd rh_wallet_finder
-   python3 -m pip install -r requirements.txt   # sekali aja
-   caffeinate -i python3 finder.py              # caffeinate = Mac nggak sleep
-   ```
+   Pertama kali dia bikin `.venv` di folder ini (kalau lu udah bikin sendiri,
+   yang itu yang dipakai), install Streamlit ke situ, terus browser kebuka ke
+   **http://localhost:8501**. Path yang ada spasinya (misalnya
+   `/Volumes/SSD 1TB/work/Capstone1`) aman. Dari Terminal sama aja: jalankan
+   file `.command` itu (`caffeinate` tetap dipake biar Mac nggak sleep).
+   Jangan `pip install` ke Python Homebrew — itu yang keluar
+   `externally-managed-environment`.
+   Kalau install-nya gagal, jendela Terminal-nya nunggu (Tekan Enter), nggak
+   langsung ilang.
 3. Buka tab **Settings**, paste link RPC Robinhood Chain lu di **RPC 1**, misalnya
    `https://rpc.solidrpc.io/ak_…/evm/4663` → Save. Disarankan: **Alchemy API
    key** lu di **RPC 2** (cukup key-nya; link-nya dibikin sendiri). Dua RPC itu

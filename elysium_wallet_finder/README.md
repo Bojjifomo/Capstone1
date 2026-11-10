@@ -11,21 +11,24 @@ Beda sama `rh_wallet_finder/`: ini chain-nya Elysium, gas-nya **HYPE**,
 stable-nya **USDC**, dan yang di-index bukan cuma Uniswap v4. v3 ikut, karena
 chain-nya masih baru dan likuiditasnya belum tentu duduk di satu venue.
 
-Semua angka dari RPC lu (default-nya RPC publik Elysium). Butuh Python 3.10+
-dan Streamlit (`pip install -r requirements.txt`). Sync & scoring sendiri cuma
-pakai standard library.
+Semua angka dari RPC lu (default-nya RPC publik Elysium). Butuh Python 3.10+.
+Streamlit di-install sendiri ke `.venv` pas lu double-click launchernya
+(Python Homebrew nolak `pip install` di luar virtualenv). Sync & scoring
+sendiri cuma pakai standard library.
 
 ## Jalanin
 
 1. Ambil repo (`git pull`, atau clone).
-2. Double-click **`elysium_wallet_finder/Buka Wallet Finder.command`**, atau:
-   ```bash
-   cd elysium_wallet_finder
-   python3 -m pip install -r requirements.txt   # sekali aja
-   python3 finder.py
-   ```
-   Browser kebuka ke **http://localhost:8502** (8501 dipakai RH Wallet Finder,
-   biar dua-duanya bisa nyala bareng).
+2. Double-click **`elysium_wallet_finder/Buka Wallet Finder.command`**.
+   Pertama kali dia bikin `.venv` di folder ini (kalau lu udah bikin sendiri,
+   yang itu yang dipakai), install Streamlit ke situ, terus browser kebuka ke
+   **http://localhost:8502** (8501 dipakai RH Wallet Finder, biar dua-duanya
+   bisa nyala bareng). Path yang ada spasinya (misalnya
+   `/Volumes/SSD 1TB/work/Capstone1`) aman. Dari Terminal sama aja: jalankan
+   file `.command` itu. Jangan `pip install` ke Python Homebrew — itu yang
+   keluar `externally-managed-environment`.
+   Kalau install-nya gagal, jendela Terminal-nya nunggu (Tekan Enter), nggak
+   langsung ilang.
 3. RPC publik `https://rpc.elysium.kinetiq.xyz` udah jadi default, jadi lu bisa
    langsung sync tanpa isi apa-apa. Kalau mau RPC sendiri (Alchemy lebih enak
    buat history panjang): tab **Settings**, atau
