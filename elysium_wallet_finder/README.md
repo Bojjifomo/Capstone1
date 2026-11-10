@@ -187,9 +187,15 @@ Yang ke-upload cuma alamat + angka. Label, notes, RPC nggak ikut.
 - Posisi yang dibuka sebelum history kita nggak punya setoran awal, jadi PnL-nya
   nggak dihitung.
 - Harga token ngawur (pool kesedot) dan posisi yang balik > 1000× dibuang.
-- RPC harus archive (`eth_call` blok lama) dan `eth_getLogs`. RPC publik
-  waktu dicek ngelayanin dua-duanya, tapi ini RPC bareng-bareng: `RPC_WORKERS`
-  default 4. Range log-nya mentok ~10 ribu log, indexer nurunin chunk sendiri.
+- RPC harus archive (`eth_call` blok lama) dan `eth_getLogs`. Tiap request
+  ada batas waktu; kalau RPC 1/2 gagal atau diam, yang satu lagi dicoba, terus
+  RPC publik. Harga HYPE yang gagal ditulis di log dan di pita kuning
+  (header tetap `–` sampai ada harga). Log scoring nulis `pricing 1–400 of N`
+  sebelum nunggu RPC, bukan cuma sesudah selesai.
+- Dua jendela app (port beda) pada database yang sama: yang kedua nggak sync,
+  biar SQLite dan RPC nggak ditabrak bareng. Tutup jendela yang lama.
+- Lompatan blok di log (`already scanned blocks A–B`) itu kursor backfill:
+  rentang itu udah ke-load di putaran sebelumnya, bukan bolong.
 - GeckoTerminal kadang ngasih fee dari nama pool (DEX yang bukan Uniswap).
   Yang `fee_src=name` jangan dipercaya buta.
 - Nggak ada patokan RH Discovery di chain ini, jadi nggak ada tab banding.

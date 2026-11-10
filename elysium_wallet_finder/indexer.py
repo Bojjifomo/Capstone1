@@ -413,6 +413,11 @@ def sync(con, rpc, cfg, log=print, max_segments=None, stop=lambda: False, call_r
     target = 1 if days <= 0 else max(1, head - int(days * 86400 / bt))
     chunk = get_meta(con, "log_chunk") or int(cfg["LOG_CHUNK"])
     fwd, back = get_meta(con, "fwd_block"), get_meta(con, "back_block")
+    if fwd is not None and back is not None:
+        # The next history segment starts at `back`, not at the head. Everything
+        # from `back` through `fwd` was scanned on an earlier pass, so this log
+        # jumps over it on purpose.
+        log(f"  already scanned blocks {back:,}–{fwd:,}; this pass adds the new head, then older history")
     seg = 0
 
     def run(s, e):
