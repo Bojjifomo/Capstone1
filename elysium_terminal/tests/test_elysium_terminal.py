@@ -202,6 +202,7 @@ class SwapIndex(unittest.TestCase):
                 mock.patch.object(chain, "hype_usd_from_slot", return_value=75.0), \
                 mock.patch.object(chain, "get_logs", side_effect=get_logs), \
                 mock.patch.object(chain, "pool_keys", side_effect=lambda ids: {i: v4key if i == v4 else None for i in ids}), \
+                mock.patch.object(chain, "v4_keys_from_init", return_value=({}, {other})), \
                 mock.patch.object(chain, "slot0s_v4", return_value={v4: {"protocolFee": 0, "lpFee": 10000}}), \
                 mock.patch.object(chain, "slot0s_v3", return_value={pool: {"feeProtocol": 0}}):
             ix = activity.Index(Path(d), backfill_hours=0.05)
@@ -219,6 +220,56 @@ class SwapIndex(unittest.TestCase):
             again = activity.Index(Path(d))
             self.assertEqual(again.head, 1000)
             self.assertIn(pool, again.v3pools)
+
+
+class ResolveDoesNotCacheFailures(unittest.TestCase):
+    def test_failed_init_is_retried(self):
+        tok = "0x" + "11" * 20
+        pid = "0x" + "22" * 32
+        key = {"dex": "v4", "venue": "uniswap-v4", "currency0": tok, "currency1": chain.USDC,
+               "fee": 3000, "tickSpacing": 60, "hooks": chain.ZERO}
+        with tempfile.TemporaryDirectory() as d:
+            ix = activity.Index(Path(d))
+            with mock.patch.object(chain, "pool_keys", return_value={pid: None}), \
+                    mock.patch.object(chain, "v4_keys_from_init", side_effect=chain.RpcError("rate limit")):
+                ix._resolve_v4([pid])
+            self.assertNotIn(pid, ix.keys)
+            with mock.patch.object(chain, "pool_keys", return_value={pid: key}), \
+                    mock.patch.object(chain, "slot0s_v4", return_value={pid: {"protocolFee": 0}}):
+                ix._resolve_v4([pid])
+            self.assertEqual(ix.keys[pid]["fee"], 3000)
+
+    def test_bad_cache_rescans(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            nulls = {"0x" + format(i, "064x"): None for i in range(12)}
+            nulls["0x" + "ef" * 32] = {"fee": 1}
+            (data / "poolkeys.json").write_text(json.dumps({"v3": {}, "v3Scanned": 0, "keys": nulls}))
+            (data / "activity.json").write_text(json.dumps({
+                "savedAt": time.time(), "head": 999, "started": time.time(), "ref": [1, 1], "spb": 0.1, "pools": {},
+            }))
+            ix = activity.Index(data)
+            self.assertEqual(ix.head, 0)
+            self.assertNotIn("0x" + "ab" * 32, ix.keys)
+
+
+class AlchemyCap(unittest.TestCase):
+    def test_cap_drops_alchemy(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(chain, "_BUDGET_PATH", Path(d) / "b.json"), \
+                mock.patch.object(chain, "_USAGE_PATH", Path(d) / "u.jsonl"), \
+                mock.patch.object(chain, "_budget_loaded", False):
+            chain._budget.update(day=chain._today(), public=0, alchemy=1500, skipped=0, errors=0)
+            os.environ["ELYSIUM_ALCHEMY_DAILY_CAP"] = "1500"
+            os.environ["ALCHEMY_API_KEY"] = "abc123"
+            try:
+                urls = chain.rpc_urls()
+            finally:
+                os.environ.pop("ALCHEMY_API_KEY", None)
+                os.environ.pop("ELYSIUM_ALCHEMY_DAILY_CAP", None)
+            self.assertTrue(all("alchemy" not in u for u in urls))
+            self.assertEqual(urls[0], chain.PUBLIC_RPCS[0])
+            chain._budget.update(day=chain._today(), public=0, alchemy=0, skipped=0, errors=0)
 
 
 class SettingsRoundTrip(unittest.TestCase):

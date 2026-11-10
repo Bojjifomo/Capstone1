@@ -224,11 +224,18 @@ function renderTop() {
     $("#stCap").textContent = `max ${mU(d.maxPositionUsd)} / posisi`;
     const ix = d.index || {};
     const chip = $("#idxChip");
-    chip.textContent = `⛓ ${ix.pools || 0} pool · ${(ix.coverageHours || 0).toFixed(1)}h`;
-    chip.classList.toggle("err", !!ix.error);
-    chip.title = ix.error ? `Index error: ${ix.error}` : `Index swap: ${ix.pools} pool USDC/HYPE (v3+v4) yang trading, histori ${ix.coverageHours} jam, block ${ix.head || "?"}. Klik = refresh.`;
-    $("#idxLine").textContent = `Index swap dari chain: ${ix.pools || 0} pool aktif · histori ${(ix.coverageHours || 0).toFixed(1)} jam (makin lama server nyala, makin lengkap sampai 24 jam) · `
-      + `poll terakhir ${ix.lastPoll ? Math.round(Date.now() / 1000 - ix.lastPoll) + " detik lalu" : "--"}${ix.error ? " · error: " + ix.error : ""}`;
+    const lag = ix.lagBlocks != null ? ` · lag ${ix.lagBlocks} blk` : "";
+    chip.textContent = `⛓ ${ix.pools || 0} pool · v4 ${ix.poolsV4 || 0} · v3 ${ix.poolsV3 || 0} · ${(ix.coverageHours || 0).toFixed(1)}h${lag}`;
+    chip.classList.toggle("err", !!ix.error || ix.phase === "backfill");
+    chip.title = ix.error ? `Index error: ${ix.error}` : `Head ${ix.head || "?"} / chain ${ix.chainHead || "?"} · retry ${ix.retries || 0}. Klik = refresh.`;
+    const line = $("#idxLine");
+    line.textContent = `Index: ${ix.phase || "?"} · head ${ix.head || "?"} / ${ix.chainHead || "?"} · histori ${(ix.coverageHours || 0).toFixed(1)} jam`
+      + ` · retry ${ix.retries || 0}${ix.error ? " · " + ix.error : ""}`;
+    line.classList.toggle("bad", !!ix.error);
+    const rpc = d.rpc || {};
+    const rpcEl = $("#rpcLine");
+    if (rpcEl) rpcEl.textContent = `RPC hari ini (UTC): publik ${rpc.public || 0} · Alchemy ${rpc.alchemy || 0}/${rpc.alchemyCap || 0}`
+      + ` · dilewati karena cap ${rpc.skipped || 0} · error ${rpc.errors || 0}`;
   }
   const pf = state.pf;
   if (pf && !pf.error) {
@@ -273,10 +280,12 @@ function renderPools() {
   renderSearchInfo();
   $("#count").textContent = state.search ? "" : `${rows.length} dari ${d.rows.length} pool`;
   $("#poolsEmpty").classList.toggle("hidden", rows.length > 0);
+  const ix0 = d.index || {};
   if (!rows.length) $("#poolsEmpty").textContent = state.search ? "Nggak ada pool USDC/HYPE (v3/v4) buat itu."
     : state.mode === "watch" ? "Belum ada pool di watchlist: klik ☆ di pool yang mau lu mainin."
     : state.mode === "ping" ? "Nggak ada pool yang lolos filter PING sekarang (atur di ⚙)."
-    : !d.rows.length ? "Index swap masih baca chain… (±15–30 detik)" : "Nggak ada pool yang cocok sama filter.";
+    : ix0.error ? "Index error: " + ix0.error
+    : !d.rows.length ? "Index swap masih baca chain… pool nambah sendiri, jangan di-refresh berkali-kali." : "Nggak ada pool yang cocok sama filter.";
   document.querySelectorAll("#pools th").forEach(th => th.classList.toggle("sorted", state.mode !== "ping" && !state.search && th.dataset.sort === state.sort.key));
   document.querySelectorAll("#pools th .wl").forEach(x => { x.textContent = w.toUpperCase(); });
   const size = d.sizeUsd, cards = [];
@@ -288,7 +297,7 @@ function renderPools() {
     const icon = r.icon ? `<img src="${esc(r.icon)}" alt="" loading="lazy">` : `<span class="ph"></span>`;
     const rank = pg ? `<span class="rank ${fresh.has(r.pool) ? "new" : ""}" title="PING #${pg.rank}">📡#${pg.rank}</span>` : "";
     const star = `<button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>`;
-    const sub = `${r.lpFeePct}%${r.dynamicFee ? " dyn" : ""} · ${age(r.ageHours)} · <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24h</span>`;
+    const sub = `${r.lpFeePct}%${r.dynamicFee ? " dyn" : ""} · ${age(r.ageHours)} · <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24h</span>${r.traders1h ? " · " + r.traders1h + " trader" : ""}${r.feeApr ? " · APR " + fmtPct(r.feeApr, 0) : ""}`;
     const zap = `<div class="zap"><button data-zap="${size / 2}">⚡${mU(size / 2)}</button><button data-zap="${size}">⚡${mU(size)}</button><button class="edit" data-zap="ask">✏️</button></div>`;
     cards.push(`<div class="pcard ${r.pool === state.sel ? "sel" : ""}" data-pool="${r.pool}">
       <div class="pc1">${star}${icon}<b class="psym">${esc(r.symbol)}</b>${qchip(r)}${rank}<span class="spacer"></span><span class="badge ${v.level}">${v.level}</span></div>
@@ -335,11 +344,11 @@ function renderDetail(r, keepChart) {
       <div><label class="muted">harga</label><b>${mU(r.priceUsd)}</b><span class="${cls(r.chg["1h"])}">${fmtPct(r.chg["1h"], 1, true)} 1j</span></div>
       <div><label class="muted">mcap</label><b>${mU(r.mcapUsd)}</b><span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24j</span></div>
       <div><label class="muted">TVL</label><b>${mU(r.tvlUsd)}</b><span class="muted">umur ${age(r.ageHours)}</span></div>
-      <div><label class="muted">fee / hari (1j)</label><b class="pos">${fmtPct(r.feePctDay["1h"], 2)}</b><span class="muted">24j ${fmtPct(r.feePctDay["24h"], 2)}</span></div>
+      <div><label class="muted">fee / hari (1j)</label><b class="pos">${fmtPct(r.feePctDay["1h"], 2)}</b><span class="muted">APR ${fmtPct(r.feeApr, 0)} · 24j ${fmtPct(r.feePctDay["24h"], 2)}</span></div>
     </div>
     <div class="vbox ${v.level}"><span class="lv">${v.level}</span>${label} <span class="muted">skor ${v.score > 0 ? "+" : ""}${v.score}</span></div>
     <ul class="rs">${li}</ul>
-    <div class="pinfo">Fee ${mU(r.fees["5m"])} / 5m · ${mU(r.fees["1h"])} / jam · ${mU(r.fees["24h"])} / 24j · ${r.swaps["1h"] ?? "--"} swap 1 jam${tx ? " · " + tx : ""}${r.sizeVsTvlPct != null ? ` · size ${r.sizeVsTvlPct}% dari TVL` : ""}</div>
+    <div class="pinfo">Fee ${mU(r.fees["5m"])} / 5m · ${mU(r.fees["1h"])} / jam · ${mU(r.fees["24h"])} / 24j · ${r.swaps["1h"] ?? "--"} swap 1 jam · ${r.traders1h || 0} trader${tx ? " · " + tx : ""}${r.hookName ? " · hook " + esc(r.hookName) : (r.hooks && r.hooks !== "0x0000000000000000000000000000000000000000" ? " · hook " + short(r.hooks) : "")}${r.sizeVsTvlPct != null ? ` · size ${r.sizeVsTvlPct}% dari TVL` : ""}</div>
     ${pg ? `<div class="pinfo">📡 <b>PING #${pg.rank}</b></div>` : ""}
     <div class="zapbig">
       <button data-zap="${size / 2}">⚡ ${mU(size / 2)} · ${ladderLabel()}</button>
@@ -384,6 +393,8 @@ function paintWallet() {
   b.textContent = t.enabled ? `🔑 ${short(t.wallet)}${trade.ready() ? "" : " · read-only"}` : "🔒 read-only";
   b.title = trade.ready() ? `Trading wallet ${t.wallet}${t.pin ? " (PIN aktif)" : ""}` : trade.why();
   $("#practiceChip").classList.toggle("hidden", !practice());
+  const bar = $("#practiceBar");
+  if (bar) bar.classList.toggle("hidden", !practice());
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}`).join("<br>");
@@ -567,7 +578,7 @@ function renderPortfolio() {
   if (!pf) return;
   if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error; $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
   const pnlPct = pf.depositUsd ? pf.pnlUsd / pf.depositUsd * 100 : null, b = pf.balances || {};
-  $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b></span>
+  $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b>${pf.valueHype != null ? ` <span class="muted">${fmtEth(pf.valueHype)}</span>` : ""}</span>
     <span>fees unclaimed <b class="pos">${mU(pf.feesUsd)}</b></span>
     <span>PnL <b class="big ${cls(pf.pnlUsd)}">${pf.pnlUsd > 0 ? "+" : ""}${mU(pf.pnlUsd)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span></span>
     <span>deposit <b>${mU(pf.depositUsd)}</b></span>
@@ -586,7 +597,7 @@ function renderPortfolio() {
     const head = `${esc(p.symbol)}${qchip(p)}${pg ? `<span class="rank">📡#${pg.rank}</span>` : ""}`;
     const sub = `${p.posCount} slice · ${p.inRangeCount} in range · ${age(p.heldHours)} · fee ${p.lpFeePct}%`;
     const pnl = `<span class="big ${cls(p.pnlUsd)}">${p.pnlUsd > 0 ? "+" : ""}${mU(p.pnlUsd)}</span><span class="sub"><span class="${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span> · ${mAlt(p.pnlUsd)}</span>
-      <span class="sub">nilai ${mU(p.valueUsd)} · fee <span class="pos">${mU(p.feesUsd)}</span>${p.feePctDay != null ? ` (${fmtPct(p.feePctDay, 2)}/hr)` : ""} · deposit ${mU(p.depositUsd)}</span>`;
+      <span class="sub">nilai ${mU(p.valueUsd)} · fee <span class="pos">${mU(p.feesUsd)}</span>${p.claimedUsd ? ` · claimed ${mU(p.claimedUsd)}` : ""}${p.feePctDay != null ? ` (${fmtPct(p.feePctDay, 2)}/hr)` : ""} · deposit ${mU(p.depositUsd)}</span>`;
     const btns = `<button class="btn ${exit ? "danger" : ""}" data-close="${p.pool}">${exit ? "Exit → close" : "Close"}</button>
       <button class="btn" data-claim="${p.pool}" ${p.feesUsd > 0 ? "" : "disabled"}>Claim</button>
       <button class="btn" data-swap="${p.pool}" title="Close semua slice + jual token">Close+swap</button>
@@ -827,7 +838,10 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   loadWatch();
   if ($("#wallet").value.trim()) loadPortfolio();
   const every = Math.max(1, +((state.cfg && state.cfg.cfg && state.cfg.cfg.web && state.cfg.cfg.web.refreshMin) || 2)) * 60000;
-  setInterval(() => loadPools(), every);
-  setInterval(() => { if (state.wallet) loadPortfolio(); }, every);
+  const beat = () => { if (!document.hidden) fetch("/api/heartbeat").catch(() => {}); };
+  beat();
+  setInterval(beat, 20000);
+  setInterval(() => { if (!document.hidden) loadPools(); }, every);
+  setInterval(() => { if (!document.hidden && state.wallet) loadPortfolio(); }, every * 2);
   setInterval(tickAge, 5000);
 })();

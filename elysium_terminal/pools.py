@@ -5,6 +5,7 @@ Money is in USD. Quote amounts stay on the row so the page can show HYPE or USDC
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -20,9 +21,33 @@ class Book:
         self.lock = threading.Lock()
         self.meta: dict[str, dict] = {}
         self.meta_t: dict[str, float] = {}
+        self.hook_names: dict[str, str] = {}
         self.extra: dict[str, dict] = {}
+        self._meta_path = index.dir / "token_meta.json"
+        self._hook_path = index.dir / "hooks.json"
+        self._load_disk_cache()
         self.prev_ping: list[str] | None = None
         self.ping_new: list[str] = []
+
+    def _load_disk_cache(self) -> None:
+        try:
+            saved = json.loads(self._meta_path.read_text())
+            self.meta = saved.get("meta") or {}
+            self.meta_t = {k: float(v) for k, v in (saved.get("t") or {}).items()}
+        except (OSError, ValueError, TypeError):
+            pass
+        try:
+            self.hook_names = json.loads(self._hook_path.read_text())
+        except (OSError, ValueError):
+            pass
+
+    def _save_disk_cache(self) -> None:
+        try:
+            self._meta_path.parent.mkdir(parents=True, exist_ok=True)
+            self._meta_path.write_text(json.dumps({"meta": self.meta, "t": self.meta_t}))
+            self._hook_path.write_text(json.dumps(self.hook_names))
+        except OSError:
+            pass
 
     def tokens(self, addrs: list[str]) -> dict[str, dict]:
         now = time.time()
@@ -35,7 +60,32 @@ class Book:
             with self.lock:
                 for a, m in got.items():
                     self.meta[a], self.meta_t[a] = m, now
+            if got:
+                self._save_disk_cache()
         return {a: self.meta[a] for a in addrs if a in self.meta}
+
+    def ensure_hooks(self, keys: dict) -> None:
+        need = []
+        for key in keys.values():
+            h = (key or {}).get("hooks") or ""
+            if h and h != chain.ZERO and h not in self.hook_names and h not in need:
+                need.append(h)
+        if not need:
+            return
+        name_sel = chain.selector("name()") if hasattr(chain, "selector") else "06fdde03"
+        try:
+            from .keccak import selector
+            name_sel = selector("name()")
+        except Exception:
+            name_sel = "06fdde03"
+        try:
+            res = chain.multicall([(h, name_sel) for h in need[:40]])
+        except Exception:
+            return
+        for h, raw in zip(need, res):
+            label = chain.decode_string(raw) if raw else ""
+            self.hook_names[h] = label[:48] if label else "hook"
+        self._save_disk_cache()
 
     def add_pools(self, ids: list[str]) -> None:
         new = [i.lower() for i in ids if i.lower() not in self.extra and i.lower() not in self.ix.keys]
@@ -52,7 +102,8 @@ class Book:
             miss = [i for i in v4 if not got.get(i)]
             if miss:
                 try:
-                    got.update(chain.v4_keys_from_init(miss))
+                    found, _searched = chain.v4_keys_from_init(miss, max_requests=4)
+                    got.update(found)
                 except Exception:
                     pass
         if v3:
@@ -148,6 +199,9 @@ class Book:
             "tvlUsd": tvl, "ageHours": (now - created) / 3600 if created else None,
             "fees": fees, "vol": vols, "feePctDay": fee_pct_day,
             "swaps": {w: (win.get(w) or {}).get("swaps") for w in ("5m", "1h", "24h")},
+            "traders1h": (act or {}).get("traders1h") or 0,
+            "feeApr": (fee_pct_day.get("1h") or 0) * 365 if fee_pct_day.get("1h") else None,
+            "hookName": self.hook_names.get(key.get("hooks") or "") or "",
             "chg": chg, "txns": txns, "icon": (dx or {}).get("icon"), "dexscreener": bool(dx),
             "manager": key.get("npm") or (chain.V4_POSITION_MANAGER if key.get("dex") != "v3" else None),
         }
@@ -192,6 +246,7 @@ class Book:
         for i in ids:
             toks.update((keys[i]["currency0"], keys[i]["currency1"]))
         meta = self.tokens(sorted(toks))
+        self.ensure_hooks(keys)
         size = filters.planned_size_usd(cfg)
         out = []
         for i in ids:
@@ -199,12 +254,18 @@ class Book:
             r["verdict"] = filters.evaluate(r, cfg, now, size)
             out.append(r)
         return {"t": now, "rows": out, "ethUsd": hype, "hypeUsd": hype, "ping": self.ping(out),
-                "index": self.index_status(), "sizeUsd": size, "maxPositionUsd": filters.max_position_usd(cfg)}
+                "index": self.index_status(), "rpc": chain.budget_view(),
+                "sizeUsd": size, "maxPositionUsd": filters.max_position_usd(cfg)}
 
     def index_status(self) -> dict:
         st = dict(self.ix.status)
         st["coverageHours"] = round(self.ix.coverage() / 3600, 2)
-        st["pools"] = len(self.ix.pool_ids())
+        ids = self.ix.pool_ids()
+        st["pools"] = len(ids)
+        with self.ix.lock:
+            keys = {i: self.ix.keys.get(i) for i in ids}
+        st["poolsV4"] = sum(1 for k in keys.values() if k and k.get("dex") != "v3")
+        st["poolsV3"] = sum(1 for k in keys.values() if k and k.get("dex") == "v3")
         return st
 
     def ping(self, rows: list[dict]) -> dict:

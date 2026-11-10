@@ -260,6 +260,8 @@ button.chip { background: transparent; cursor: pointer; font: inherit; }
 /* ---------- RH Terminal additions ---------- */
 .brand b { color: var(--accent); }
 .chip.practice { border-color: #6b5a24; color: var(--yellow); }
+.practicebar { background: #3a3010; color: var(--yellow); text-align: center; font-size: 12.5px; padding: 6px 12px; }
+.idxline.bad { color: var(--red); }
 .chip.idx { cursor: pointer; }
 .chip.idx.err { color: var(--red); border-color: #6b2b2e; }
 .qchip { display: inline-block; border: 1px solid #2c3746; border-radius: 4px; padding: 0 5px; font-size: 10.5px; color: var(--muted); margin-left: 6px; }

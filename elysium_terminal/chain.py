@@ -85,6 +85,7 @@ TOPIC = {
     "v3Swap": topic("Swap(address,address,int256,int256,uint160,uint128,int24)"),
     "v3PoolCreated": topic("PoolCreated(address,address,uint24,int24,address)"),
     "Transfer": topic("Transfer(address,address,uint256)"),
+    "v3Collect": topic("Collect(uint256,address,uint256,uint256)"),
 }
 DYNAMIC_FEE = 0x800000
 
@@ -166,50 +167,165 @@ _stats_lock = threading.Lock()
 STATS: dict = {"calls": 0, "byHost": {}, "errors": 0}
 _cool: dict[str, float] = {}
 
+# Daily request budget. Public RPC is always tried first. Alchemy is only appended
+# when the public endpoints failed AND today's Alchemy count is under the cap.
+_budget_lock = threading.Lock()
+_BUDGET_PATH = __import__("pathlib").Path(__file__).resolve().parent / "data" / "rpc_budget.json"
+_USAGE_PATH = __import__("pathlib").Path(__file__).resolve().parent / "data" / "rpc_usage.jsonl"
+_budget = {"day": "", "public": 0, "alchemy": 0, "skipped": 0, "errors": 0}
+_usage_pending = {"public": 0, "alchemy": 0, "errors": 0, "skipped": 0}
+_budget_loaded = False
+
+
+def alchemy_daily_cap() -> int:
+    raw = (os.environ.get("ELYSIUM_ALCHEMY_DAILY_CAP") or "1500").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1500
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _load_budget() -> None:
+    global _budget_loaded
+    if _budget_loaded:
+        return
+    _budget_loaded = True
+    try:
+        saved = json.loads(_BUDGET_PATH.read_text())
+        if saved.get("day") == _today():
+            _budget.update({k: int(saved.get(k) or 0) for k in ("public", "alchemy", "skipped", "errors")})
+            _budget["day"] = saved["day"]
+    except (OSError, ValueError, TypeError):
+        pass
+    if _budget["day"] != _today():
+        _budget.update(day=_today(), public=0, alchemy=0, skipped=0, errors=0)
+
+
+def _flush_budget(force: bool = False) -> None:
+    pending = sum(_usage_pending.values())
+    if not force and pending < 20:
+        return
+    _BUDGET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _BUDGET_PATH.write_text(json.dumps(_budget))
+    if pending:
+        row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **_usage_pending, "day": _budget["day"]}
+        with open(_USAGE_PATH, "a") as f:
+            f.write(json.dumps(row) + "\n")
+        for k in _usage_pending:
+            _usage_pending[k] = 0
+
+
+def _note_rpc(kind: str) -> None:
+    _load_budget()
+    with _budget_lock:
+        if _budget["day"] != _today():
+            _budget.update(day=_today(), public=0, alchemy=0, skipped=0, errors=0)
+        _budget[kind] = int(_budget.get(kind) or 0) + 1
+        _usage_pending[kind] = int(_usage_pending.get(kind) or 0) + 1
+        _flush_budget()
+
+
+def budget_view() -> dict:
+    _load_budget()
+    with _budget_lock:
+        if _budget["day"] != _today():
+            _budget.update(day=_today(), public=0, alchemy=0, skipped=0, errors=0)
+        return {"day": _budget["day"], "public": _budget["public"], "alchemy": _budget["alchemy"],
+                "skipped": _budget["skipped"], "errors": _budget["errors"], "alchemyCap": alchemy_daily_cap(),
+                "session": dict(STATS)}
+
 
 def _host(url: str) -> str:
-    return "alchemy" if "alchemy" in url else url.split("/")[2]
+    return "alchemy" if "alchemy" in url else ("custom" if os.environ.get("ELYSIUM_RPC_URL") and url == os.environ.get("ELYSIUM_RPC_URL") else "public")
+
+
+def _public_urls() -> list[str]:
+    urls = list(PUBLIC_RPCS)
+    custom = (os.environ.get("ELYSIUM_RPC_URL") or "").strip()
+    if custom:
+        urls.insert(0, custom)
+    return urls
+
+
+def _alchemy_url() -> str | None:
+    key = (os.environ.get("ALCHEMY_API_KEY") or "").strip()
+    if key and all(c.isalnum() or c in "-_" for c in key):
+        return f"https://elysium-mainnet.g.alchemy.com/v2/{key}"
+    return None
+
+
+def rpc_urls() -> list[str]:
+    """Public first. Alchemy is listed only when the daily cap still has room.
+    Callers that send transactions should prefer tradeUrl in the executor; this list is for reads."""
+    urls = _public_urls()
+    _load_budget()
+    al = _alchemy_url()
+    if al and _budget.get("alchemy", 0) < alchemy_daily_cap():
+        urls.append(al)
+    return urls
 
 
 def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     fails = []
-    urls = rpc_urls()
     now = time.time()
-    order = [u for u in urls if _cool.get(u, 0) <= now] + [u for u in urls if _cool.get(u, 0) > now]
+    public = [u for u in _public_urls() if _cool.get(u, 0) <= now] + [u for u in _public_urls() if _cool.get(u, 0) > now]
+    al = _alchemy_url()
+    _load_budget()
+    alchemy_ok = bool(al) and _budget.get("alchemy", 0) < alchemy_daily_cap() and _cool.get(al or "", 0) <= now
+    order = public + ([al] if alchemy_ok else [])
+    if al and not alchemy_ok and _budget.get("alchemy", 0) >= alchemy_daily_cap():
+        fails.append("alchemy daily cap")
     for url in order:
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "User-Agent": UA})
+        host = _host(url)
         with _stats_lock:
             STATS["calls"] += 1
-            h = _host(url)
-            STATS["byHost"][h] = STATS["byHost"].get(h, 0) + 1
+            STATS["byHost"][host] = STATS["byHost"].get(host, 0) + 1
+        kind = "alchemy" if host == "alchemy" else "public"
         try:
             with urlopen(req, timeout=timeout) as r:
                 j = json.load(r)
         except urllib.error.HTTPError as e:
+            _note_rpc("errors")
             _meter_hit(url, "limited" if e.code in (403, 429) else "error")
-            fails.append(f"{_host(url)} HTTP {e.code}")
+            fails.append(f"{host} HTTP {e.code}")
             _cool[url] = time.time() + (20 if e.code in (403, 429) else 10)
             continue
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            _note_rpc("errors")
             _meter_hit(url, "error")
-            fails.append(f"{_host(url)}: {str(e)[:60]}")
+            fails.append(f"{host}: {str(e)[:60]}")
             _cool[url] = time.time() + 10
             continue
         if "error" in j:
             msg = str((j["error"] or {}).get("message") or j["error"])
-            if "rate" in msg.lower() or "too many" in msg.lower() or "forbidden" in msg.lower():
+            low = msg.lower()
+            # Range/log-cap errors are about this query, not the provider. Raise so the caller
+            # can halve the chunk instead of spending an Alchemy call on the same too-wide query.
+            if any(s in low for s in ("exceed", "more than", "block range", "too many log", "query returned more", "10000")):
+                _meter_hit(url)
+                _note_rpc(kind)
+                raise RpcError(msg)
+            if "rate" in low or "too many" in low or "forbidden" in low or "quota" in low:
+                _note_rpc("errors")
                 _meter_hit(url, "limited")
                 _cool[url] = time.time() + 20
-                fails.append(f"{_host(url)}: {msg[:80]}")
+                fails.append(f"{host}: {msg[:80]}")
                 continue
             _meter_hit(url)
+            _note_rpc(kind)
             raise RpcError(msg)
         _meter_hit(url)
+        _note_rpc(kind)
         return j.get("result")
-    if _round < 2 and fails:
+    if _round < 2 and fails and not any("daily cap" in f for f in fails):
         time.sleep(2 + 2 * _round)
-        for u in urls:
+        for u in order:
             _cool.pop(u, None)
         return rpc(method, params, timeout, _round + 1)
     with _stats_lock:
@@ -367,19 +483,52 @@ def decode_v4_init(log: dict) -> tuple[str, dict]:
     return pid, key
 
 
-def v4_keys_from_init(ids: list[str]) -> dict[str, dict]:
-    """Initialize logs for pool ids poolKeys() does not know (no position minted yet)."""
-    out = {}
+def v4_keys_from_init(ids: list[str], head: int | None = None, max_requests: int = 8) -> tuple[dict[str, dict], set[str]]:
+    """Initialize logs for pool ids poolKeys() does not know.
+
+    Returns (keys, fully_searched ids). A wide getLogs over the whole chain is how the
+    public RPC rate-limits us, so this walks backwards in 400k-block windows and stops
+    after max_requests. Ids not in `fully_searched` must be retried, never cached as missing.
+    """
+    out: dict[str, dict] = {}
+    done: set[str] = set()
     ids = [i.lower() for i in ids]
-    for i in range(0, len(ids), 20):
-        part = ids[i:i + 20]
-        head = block_number()
-        logs = get_logs(V4_POOL_MANAGER, [TOPIC["v4Init"], part], 1, head, chunk=head, pause=0)
-        for lg in logs:
-            pid, key = decode_v4_init(lg)
-            if pid in part:
-                out[pid] = key
-    return out
+    if not ids:
+        return out, done
+    tip = head or block_number()
+    requests = 0
+    window = 400_000
+    for i in range(0, len(ids), 15):
+        part = [x for x in ids[i:i + 15] if x not in out]
+        if not part:
+            continue
+        cursor = tip
+        found_all = True
+        while part and cursor > 1:
+            if requests >= max_requests:
+                found_all = False
+                break
+            start = max(1, cursor - window + 1)
+            try:
+                logs = get_logs(V4_POOL_MANAGER, [TOPIC["v4Init"], part], start, cursor, chunk=window, pause=0)
+            except RpcError:
+                found_all = False
+                break
+            requests += 1
+            for lg in logs:
+                try:
+                    pid, key = decode_v4_init(lg)
+                except (IndexError, ValueError):
+                    continue
+                if pid in part:
+                    out[pid] = key
+            part = [x for x in part if x not in out]
+            cursor = start - 1
+        if found_all:
+            done.update(ids[i:i + 15])
+        if requests >= max_requests:
+            break
+    return out, done
 
 
 def decode_slot0_v4(ret: str | None) -> dict | None:
