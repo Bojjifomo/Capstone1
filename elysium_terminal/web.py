@@ -1,5 +1,6 @@
 """Elysium Terminal, web version: Uniswap v4 and v3 pools on Elysium with the entry check, PING,
-watchlist, ladder zap, and your wallet's ladders with exits, close, claim, re-entry and cleanup.
+watchlist, ladder zap, tight ranges, and your wallet's positions (one row per open) with close,
+claim, re-entry, cleanup and per-position auto rules (TP, SL, rebalance or close out of range).
 
   python3 -m elysium_terminal web                  # http://localhost:8893 (ELYSIUM_WEB_PORT in .env)
   python3 -m elysium_terminal web --host 0.0.0.0   # reachable over Tailscale (phone, MacBook)
@@ -26,12 +27,12 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import chain, filters, node, pools, portfolio, settings, tight
+from . import auto, chain, filters, groups, node, pools, portfolio, settings, tight
 from .cli import DATA, append, env_report, load_config, load_env, make_index, notify, practice_mode
 
 STATIC = Path(__file__).resolve().parent / "web"
 POOL_TTL = 30
-PF_TTL = 90
+PF_TTL = 25
 LAST_CLIENT = 0.0
 
 _lock = threading.Lock()
@@ -118,99 +119,187 @@ def _ping_notify(data: dict) -> None:
 
 
 # -------------------------------------------------------------- portfolio ----
+_pf_build = threading.Lock()
+
+
 def portfolio_of(wallet: str, force: bool = False) -> dict:
     key = ("pf", wallet.lower())
     with _lock:
         hit = _cache.get(key)
         if hit and not force and time.time() - hit["t"] < PF_TTL:
             return hit["data"]
-    cfg = Handler.cfg
-    pf = portfolio.portfolio(wallet, cfg, DATA, STATE["book"])
-    pf["autoExit"] = auto_load()
-    pf["tpChoices"] = TP_CHOICES
-    pf["autoExitCheckMin"] = cfg["web"]["autoExitCheckMin"]
-    with _lock:
-        _cache[key] = {"t": time.time(), "data": pf}
+    with _pf_build:                  # two tabs (or a tab and the auto loop) share one chain read
+        with _lock:
+            hit = _cache.get(key)
+            if hit and time.time() - hit["t"] < 3:
+                return hit["data"]
+        cfg = Handler.cfg
+        pf = portfolio.portfolio(wallet, cfg, DATA, STATE["book"])
+        with _lock:
+            _cache[key] = {"t": time.time(), "data": pf}
     _seen_tokens([r["token"] for r in pf["rows"]], [r["pool"] for r in pf["rows"]])
     return pf
 
 
+def _pf_view(pf: dict) -> dict:
+    """The portfolio plus the auto rules, which change without a chain read."""
+    store = _auto_store()
+    tw = node.trade_wallet() if node.key_configured() else {}
+    if tw.get("ok") and tw.get("address", "").lower() == pf.get("wallet") and not pf.get("partial"):
+        store.adopt_legacy(pf["rows"], time.time())
+    return {**pf, "auto": store.view(), "autoCheckSec": _auto_check_sec(), "practice": practice_mode()}
+
+
+def _drop_pf_cache() -> None:
+    with _lock:
+        for k in [k for k in _cache if isinstance(k, tuple)]:
+            _cache.pop(k, None)
+
+
 def _seen_tokens(tokens: list[str], pool_ids: list[str]) -> None:
-    """Remember every token a ladder held (and its pool), so Cleanup can find leftovers later."""
+    """Remember every token a position held (and its pool), so Cleanup can find leftovers later."""
     d = _jload("tokens_seen.json", {})
+    n = len(d)
     for t, p in zip(tokens, pool_ids):
         d.setdefault(t, p)
-    _jsave("tokens_seen.json", d)
+    if len(d) != n:
+        _jsave("tokens_seen.json", d)
 
 
-# -------------------------------------------------------------- auto exit ----
-# data/auto_exit.json: {pool: {"pct", "symbol", "armedAt", "status": armed|firing|done|failed, "msg", "pnlPct"}}
-# While the web server runs, a thread checks armed ladders every web.autoExitCheckMin minutes (chain
-# reads only). When the ladder's PnL % reaches the target it runs Close+swap (reenter.mjs, no reopen).
-TP_CHOICES = (3, 5, 10, 20)
-_auto_lock = threading.Lock()
+# ------------------------------------------------------------- executor ----
+# One wallet, one nonce sequence: a manual click and the auto loop never sign at the same time.
+_trade_lock = threading.Lock()
 
 
-def auto_load() -> dict:
-    return _jload("auto_exit.json", {})
+def _key_args(pool: str) -> list[str]:
+    """Hand the executor a v4 pool key we already have, so it does not look it up again."""
+    pid = str(pool or "").lower()
+    if len(pid) != 66:
+        return []
+    book, ix = STATE.get("book"), STATE.get("ix")
+    key = (ix.keys.get(pid) if ix is not None else None) or (book.extra.get(pid) if book is not None else None)
+    if not key or key.get("dex") == "v3":
+        return []
+    try:
+        return ["--key", json.dumps({k: key[k] for k in ("currency0", "currency1", "fee", "tickSpacing", "hooks")})]
+    except KeyError:
+        return []
 
 
-def auto_set(pool: str, symbol: str, pct: float | None) -> dict:
-    with _auto_lock:
-        d = auto_load()
-        if not pct:
-            d.pop(pool, None)
-        else:
-            d[pool] = {"pct": float(pct), "symbol": symbol, "armedAt": time.time(), "status": "armed"}
-        _jsave("auto_exit.json", d)
-        return d
+def run_trade(script: str, args: list[str], wallet: str, timeout: int = 600, pool: str | None = None) -> dict:
+    args = list(args) + (_key_args(pool) if pool else [])
+    if practice_mode():
+        args += ["--dry-run", "--owner", wallet]
+    with _trade_lock:
+        res = node.run(script, args, timeout=timeout)
+    res["practice"] = practice_mode()
+    _drop_pf_cache()
+    return res
 
 
-def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
-    with _auto_lock:
-        armed = {k: v for k, v in auto_load().items() if v.get("status") == "armed"}
-    if not armed:
+def _register(res: dict, kind: str, ids=None, **meta) -> str | None:
+    """Remember what a successful, real open minted, so it shows as its own row."""
+    ids = ids if ids is not None else res.get("positions")
+    if not res.get("ok") or res.get("dryRun") or not ids:
+        return None
+    venue = res.get("venue")
+    manager = res.get("manager")
+    if not venue or not manager:
+        return None
+    try:
+        return groups.register(DATA, venue, manager, ids, kind, **meta)
+    except (OSError, ValueError) as exc:
+        print(f"[groups] {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+# ------------------------------------------------------------------ auto ----
+# data/auto.json: one rule per position (see auto.py). While this process runs, a thread
+# reads the portfolio every web.autoExitCheckMin minutes (default 1) and acts on armed rules. Nothing runs in the browser.
+AUTO_CHECK_SEC = 60
+
+
+def _auto_check_sec() -> int:
+    try:
+        return int(max(1, min(60, float(Handler.cfg["web"].get("autoExitCheckMin", 1)))) * 60)
+    except (KeyError, TypeError, ValueError):
+        return AUTO_CHECK_SEC
+
+
+def _auto_store() -> auto.Store:
+    return auto.Store(DATA)
+
+
+def _find_row(wallet: str, gid: str, force: bool = False) -> dict | None:
+    pf = portfolio_of(wallet, force=force)
+    return next((r for r in pf["rows"] if r["id"] == gid), None)
+
+
+def _ids(row: dict) -> str:
+    return ",".join(str(p["tokenId"]) for p in row["positions"])
+
+
+def do_exit(row: dict, wallet: str, cfg: dict) -> dict:
+    """Close every NFT of the position and sell the token back to the quote."""
+    args = ["--pool", row["pool"], "--ids", _ids(row), "--maxloss", str(cfg["trade"]["maxLossPct"])]
+    return run_trade("reenter.mjs", args, wallet, 900, pool=row["pool"])
+
+
+def do_rebalance(row: dict, wallet: str, width_pct: float, slippage_bps: int) -> dict:
+    """Close, swap to the right mix, open a new range around the current price. Keeps the PnL basis."""
+    if row.get("posCount", 1) != 1:
+        return {"ok": False, "error": "rebalance cuma buat posisi satu range. Ladder: pakai Re-entry."}
+    args = ["--mode", "rebalance", "--pool", row["pool"], "--ids", _ids(row),
+            "--width", f"{float(width_pct):g}", "--slippage-bps", str(int(slippage_bps))]
+    res = run_trade("tight.mjs", args, wallet, 900, pool=row["pool"])
+    if res.get("ok") and not res.get("dryRun"):
+        basis = None
+        if row.get("depositUsd") and row.get("quoteUsd"):
+            basis = row["depositUsd"] / row["quoteUsd"]          # carried, so PnL spans the rebalances
+        res["newId"] = _register(res, "tight", depositQuote=basis if basis is not None else res.get("depositQuote"),
+                                 widthPct=float(width_pct), rebalances=int(row.get("rebalances") or 0) + 1,
+                                 originAt=row.get("openedAt"))
+    return res
+
+
+def auto_once(cfg: dict, wallet: str) -> list[dict]:
+    store = _auto_store()
+    view = store.view()
+    if view["global"]["paused"] or not any(r.get("status") == "armed" for r in view["rules"].values()):
         return []
     pf = portfolio_of(wallet, force=True)
-    lad = {r["pool"]: r for r in pf["rows"]}
-    fired = []
-    for pool, a in armed.items():
-        g = lad.get(pool)
-        with _auto_lock:
-            d = auto_load()
-            if pool not in d:
-                continue
-            if not g:
-                d[pool].update(status="done", msg="posisi sudah nggak ada")
-                _jsave("auto_exit.json", d)
-                continue
-            d[pool].update(pnlPct=g["pnlPct"], checkedAt=time.time())
-            hit = g["pnlPct"] is not None and g["pnlPct"] >= a["pct"]
-            if hit:
-                d[pool]["status"] = "firing"
-            _jsave("auto_exit.json", d)
-        if not hit:
-            continue
-        ids = ",".join(str(p["tokenId"]) for p in g["positions"])
-        notify(f"🎯 AUTO EXIT {g['symbol']}: PnL {g['pnlPct']:+.2f}% ≥ +{a['pct']:g}% → close + swap {len(g['positions'])} slice")
-        args = ["--pool", pool, "--ids", ids, "--maxloss", str(cfg["trade"]["maxLossPct"])]
-        if practice_mode():
-            args += ["--dry-run", "--owner", wallet]
-        res = node.run("reenter.mjs", args, timeout=900)
-        ok = bool(res.get("ok"))
-        msg = ("simulasi (practice mode)" if res.get("dryRun") else "closed + swapped") if ok else f"{res.get('step') or ''} {res.get('error') or 'gagal'}"
-        with _auto_lock:
-            d = auto_load()
-            if pool in d:
-                d[pool].update(status="done" if ok else "failed", msg=msg[:200], firedAt=time.time())
-                _jsave("auto_exit.json", d)
-        append("closes.jsonl", {"ts": _now_iso(), "source": "auto-exit", "pool": pool, "symbol": g["symbol"], "ids": ids,
-                                "rule": f"takeProfit {a['pct']:g}%", "pnlPct": g["pnlPct"], "ok": ok, "error": res.get("error")})
-        notify(f"{'✅' if ok else '❌'} AUTO EXIT {g['symbol']}: {msg}")
-        fired.append({"pool": pool, "ok": ok, "msg": msg})
-    return fired
+    slip = view["global"]["slippageBps"]
+
+    def execute(action, rule, row, decision):
+        if action == "exit":
+            res = do_exit(row, wallet, cfg)
+        else:
+            res = do_rebalance(row, wallet, decision["widthPct"], slip)
+        append("closes.jsonl", {"ts": _now_iso(), "source": "auto", "id": row["id"], "pool": row["pool"],
+                                "symbol": row["symbol"], "ids": _ids(row), "rule": f"{action}: {decision['reason']}",
+                                "pnlPct": row.get("pnlPct"), "ok": res.get("ok"), "error": res.get("error"),
+                                "practice": res.get("practice"), "newId": res.get("newId")})
+        return res
+
+    return auto.run_once(store, pf["rows"], bool(pf.get("partial")), time.time(), execute, notify)
 
 
+def _auto_loop(cfg: dict) -> None:
+    try:
+        _auto_store().recover(time.time())
+    except Exception as exc:
+        print(f"[auto] {exc}", file=sys.stderr, flush=True)
+    while True:
+        time.sleep(_auto_check_sec())
+        try:
+            tw = node.trade_wallet() if node.key_configured() else {}
+            if tw.get("ok"):
+                auto_once(cfg, tw["address"])
+        except Exception as exc:
+            print(f"[auto] {exc}", file=sys.stderr, flush=True)
+
+
+# ----------------------------------------------------------------- tight ----
 def _tight_store() -> tight.Store:
     return tight.Store(DATA)
 
@@ -257,112 +346,32 @@ def _tight_view(width: str | None, target: str | None) -> dict:
         c["listed"] = bool(st.get("on"))
         c["passes"] = int(st.get("above") or 0)
     store.save_signals(nxt)
-    keep = [c for c in cards if c["listed"] or c["verdict"]["status"] in ("lolos filter", "di bawah target")]
-    keep.sort(key=lambda c: (not c["listed"], -(c["verdict"]["grossPctPerHour"] or -1)))
+    # Everything a tight range can be opened on, best first. A pool that fails the filter is
+    # still shown with its reasons; hiding it left the tab empty on a volatile day.
+    rank = {"lolos filter": 0, "di bawah target": 1}
+    tvl = {r["pool"]: r.get("tvlUsd") or 0 for r in data.get("rows") or []}
+    for c in cards:
+        c["tvlUsd"] = tvl.get(c["pool"])
+    keep = [c for c in cards if c["supported"] and c["verdict"]["grossPctPerHour"] is not None
+            and (c["listed"] or (c["tvlUsd"] or 0) >= 1000)]
+    keep.sort(key=lambda c: (not c["listed"], rank.get(c["verdict"]["status"], 2), -(c["verdict"]["grossPctPerHour"] or -1)))
     age = None if not hit else max(0, now - hit["t"])
+    astore = _auto_store()
     return {
-        "t": now, "cfg": cfg, "screen": {"widthPct": screen["widthPct"], "targetPctPerHour": screen["targetPctPerHour"]},
+        "t": now, "screen": {"widthPct": screen["widthPct"], "targetPctPerHour": screen["targetPctPerHour"]},
         "rows": keep[:40], "scanned": len(cards), "listed": sum(1 for c in cards if c["listed"]),
         "rejected": sum(1 for c in cards if c["verdict"]["status"] == "tidak cocok"),
-        "feeSource": fee_source, "snapshotAgeSec": age, "audit": store.audit_tail(12),
-        "flight": store.positions(), "liveAllowed": tight.live_allowed(cfg, practice_mode()),
-        "envPractice": practice_mode(),
-        "note": "Daftar ini tidak membuka posisi dan tidak mengirim notifikasi. %/jam adalah fee seluruh pool dibagi TVL, bukan fee posisi lo.",
+        "feeSource": fee_source, "snapshotAgeSec": age, "auto": astore.view(), "log": astore.log_tail(12),
+        "autoCheckSec": _auto_check_sec(), "practice": practice_mode(),
+        "note": "Daftar ini tidak membuka posisi sendiri. %/jam adalah fee seluruh pool dibagi TVL, bukan fee posisi lo.",
     }
 
 
-def _tight_execute(payload: dict, wallet: str) -> dict:
-    dry = bool(payload.get("dryRun")) or practice_mode()
-    step = payload.get("step")
-    if step == "close":
-        args = ["--pool", str(payload.get("pool") or ""), "--ids", str(int(payload["tokenId"]))]
-        script = "close.mjs"
-    elif step in ("swap", "mint"):
-        args = ["--pool", str(payload.get("pool") or ""), "--step", step,
-                "--usd", str(payload.get("usd") or 0), "--quote-usd", str(payload.get("quoteUsd") or 0),
-                "--swap-frac", str(payload.get("swapFrac") or 0),
-                "--slippage-bps", str(int(payload.get("slippageBps") or 100)),
-                "--lower", str(int(payload["tickLower"])), "--upper", str(int(payload["tickUpper"]))]
-        script = "tight.mjs"
-    else:
-        return {"ok": False, "unsupported": True, "error": f"langkah {step} tidak didukung"}
-    if dry:
-        args += ["--dry-run", "--owner", wallet]
-    res = node.run(script, args, timeout=180)
-    res["practice"] = practice_mode() or dry
-    return res
-
-
-def _receipt(tx_hash: str):
-    rc = chain.rpc("eth_getTransactionReceipt", [tx_hash])
-    if not rc:
-        return None
-    return {"ok": int(rc.get("status") or "0x0", 16) == 1}
-
-
-def _tight_loop() -> None:
-    """Runs only while this web process is up. Does nothing until auto-rebalance is turned on."""
-    while True:
-        time.sleep(60)
-        try:
-            store = _tight_store()
-            cfg = store.config()
-            if not cfg.get("enabled") or cfg.get("killed"):
-                continue
-            tw = node.trade_wallet()
-            if not tw.get("ok"):
-                store.audit({"ts": time.time(), "kind": "skip", "reason": "wallet tidak siap, tidak ada yang dikirim"})
-                continue
-            wallet = tw["address"]
-            try:
-                pf = portfolio_of(wallet, force=False)
-                data = pool_rows(False)
-            except Exception as exc:
-                store.audit({"ts": time.time(), "kind": "rpc-fail", "reason": str(exc)[:200]})
-                continue
-            by_pool = {r["pool"]: r for r in data.get("rows") or []}
-            positions, snaps = [], {}
-            saved = store.positions()
-            for g in pf.get("rows") or []:
-                row = by_pool.get(g["pool"]) or {}
-                fee, tvl = (row.get("fees") or {}).get("1h"), row.get("tvlUsd")
-                gross = (fee / tvl * 100) if fee is not None and tvl else None
-                for p in g.get("positions") or []:
-                    prev = (saved.get(str(p["tokenId"])) or {}).get("lastTick")
-                    move = None
-                    if prev is not None and g.get("tick") is not None:
-                        move = abs(1.0001 ** (g["tick"] - prev) - 1) * 100
-                    positions.append({
-                        "tokenId": p["tokenId"], "pool": g["pool"], "dex": p.get("dex") or g.get("dex"),
-                        "hooks": (g.get("key") or {}).get("hooks"), "dynamicFee": bool(row.get("dynamicFee")),
-                        "tickSpacing": (g.get("key") or {}).get("tickSpacing") or 0,
-                        "tickLower": p["tickLower"], "tickUpper": p["tickUpper"], "valueUsd": p.get("valueUsd"),
-                        "quoteIsToken0": (g.get("key") or {}).get("currency0") == g.get("quote"),
-                    })
-                    snaps[g["pool"]] = {"tick": g.get("tick"), "ageSec": max(0, time.time() - data.get("t", time.time())),
-                                        "rpcOk": True, "movePct": move, "grossPctPerHour": gross, "feePpm": row.get("lpFee")}
-                    store.save_position(p["tokenId"], {"lastTick": g.get("tick")})
-
-            def execute(payload, wallet=wallet, data=data):
-                payload = dict(payload)
-                row = by_pool.get(payload.get("pool")) or {}
-                payload["quoteUsd"] = row.get("quoteUsd") or data.get("hypeUsd") or 0
-                return _tight_execute(payload, wallet)
-
-            tight.run_once(store, positions, snaps, time.time(), execute, practice_mode(), _receipt)
-        except Exception as exc:
-            print(f"[tight] {exc}", file=sys.stderr, flush=True)
-
-
-def _auto_loop(cfg: dict) -> None:
-    while True:
-        try:
-            tw = node.trade_wallet()
-            if tw.get("ok") and auto_load():
-                auto_exit_once(cfg, tw["address"])
-        except Exception as exc:
-            print(f"[auto-exit] {exc}", file=sys.stderr, flush=True)
-        time.sleep(max(1, float(cfg["web"].get("autoExitCheckMin", 2))) * 60)
+def _snapshot_row(pool: str) -> dict | None:
+    with _lock:
+        hit = _cache.get("pools")
+    rows = (hit["data"].get("rows") if hit else None) or []
+    return next((r for r in rows if r["pool"] == pool), None)
 
 
 # ---------------------------------------------------------------- cleanup ----
@@ -453,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
                 wallet = (q.get("wallet") or "").strip()
                 if not (wallet.startswith("0x") and len(wallet) == 42):
                     return self._json({"error": "wallet address 0x… (42 karakter)"}, 400)
-                return self._json(portfolio_of(wallet, q.get("force") == "1"))
+                return self._json(_pf_view(portfolio_of(wallet, q.get("force") == "1")))
             if u.path == "/api/prefs":
                 return self._json(_jload("ui_prefs.json", {}))
             if u.path == "/api/watchlist":
@@ -486,16 +495,6 @@ class Handler(BaseHTTPRequestHandler):
                  ".svg": "image/svg+xml", ".png": "image/png"}.get(f.suffix, "application/octet-stream")
         self._send(200, f.read_bytes(), ctype)
 
-    def _trade(self, script: str, args: list[str], wallet: str, timeout: int = 600) -> dict:
-        if practice_mode():
-            args = args + ["--dry-run", "--owner", wallet]
-        res = node.run(script, args, timeout=timeout)
-        res["practice"] = practice_mode()
-        with _lock:
-            for k in [k for k in _cache if isinstance(k, tuple)]:
-                _cache.pop(k, None)
-        return res
-
     def do_POST(self):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -504,14 +503,10 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self.cfg
         try:
             if self.path == "/api/tight/plan":
-                with _lock:
-                    hit = _cache.get("pools")
-                if not hit:
-                    return self._json({"ok": False, "error": "snapshot pool belum ada. Buka tab Pool dulu."}, 400)
                 pool = str(body.get("pool") or "").lower()
-                row = next((r for r in hit["data"].get("rows") or [] if r["pool"] == pool), None)
+                row = _snapshot_row(pool)
                 if not row or row.get("tick") is None:
-                    return self._json({"ok": False, "error": "pool ini tidak ada di snapshot, atau tick-nya kosong"}, 400)
+                    return self._json({"ok": False, "error": "pool ini belum ada di snapshot (buka tab Pool dulu), atau tick-nya kosong"}, 400)
                 key = row.get("key") or {}
                 fee, tvl = (row.get("fees") or {}).get("1h"), row.get("tvlUsd")
                 gross = (fee / tvl * 100) if fee is not None and tvl else None
@@ -520,66 +515,13 @@ class Handler(BaseHTTPRequestHandler):
                     width_pct=float(body.get("widthPct") or 1), usd=float(body.get("usd") or 0),
                     quote_is_token0=key.get("currency0") == row.get("quote"),
                     fee_ppm=row.get("lpFee"), slippage_bps=int(body.get("slippageBps") or 100),
-                    gross_pct_per_hour=gross, include_close=bool(body.get("close")))
-                rev["pool"] = pool
-                rev["symbol"] = row.get("symbol")
-                rev["quoteSymbol"] = row.get("quoteSymbol")
-                rev["quoteUsd"] = row.get("quoteUsd")
+                    gross_pct_per_hour=gross)
+                rev.update(pool=pool, symbol=row.get("symbol"), quoteSymbol=row.get("quoteSymbol"),
+                           quoteUsd=row.get("quoteUsd"), tvlUsd=row.get("tvlUsd"))
                 hooks = str(row.get("hooks") or chain.ZERO).lower()
-                rev["supported"] = (row.get("dex") in ("v3", "v4")) and hooks == chain.ZERO and not row.get("dynamicFee")
-                if rev.get("ok") and not rev["supported"]:
-                    rev["ok"] = False
-                    rev["unsupported"] = True
-                    rev["error"] = "pool ber-hook atau fee dinamis: tight open tidak didukung"
+                if rev.get("ok") and not ((row.get("dex") in ("v3", "v4")) and hooks == chain.ZERO and not row.get("dynamicFee")):
+                    rev.update(ok=False, unsupported=True, error="pool ber-hook atau fee dinamis: tight range tidak didukung")
                 return self._json(rev)
-            if self.path == "/api/tight/settings":
-                why = self._trade_refused(body)
-                if why:
-                    return self._json({"ok": False, "error": why}, 403)
-                cfg = _tight_store().save_config(body)
-                if body.get("allowLive") and practice_mode():
-                    cfg = _tight_store().save_config({"forcePractice": True})
-                    cfg["note"] = "ELYSIUM_PRACTICE_MODE masih nyala di proses ini, jadi tetap simulasi."
-                return self._json({"ok": True, "cfg": cfg, "liveAllowed": tight.live_allowed(cfg, practice_mode())})
-            if self.path == "/api/tight/resume":
-                why = self._trade_refused(body)
-                if why:
-                    return self._json({"ok": False, "error": why}, 403)
-                if not body.get("confirmForget"):
-                    return self._json({"ok": False, "error": "konfirmasi dulu. Ini tidak mengulang tx yang tertinggal."}, 400)
-                store = _tight_store()
-                tid = str(body.get("tokenId") or "")
-                st = store.positions().get(tid) or {}
-                if st.get("pendingHash"):
-                    return self._json({"ok": False, "error": "masih ada tx pending. Tidak dilupakan dan tidak diganti."}, 400)
-                store.save_position(tid, {"paused": False, "pauseReason": "", "inflightKey": None, "unsupported": False})
-                store.audit({"ts": time.time(), "kind": "resume", "tokenId": tid})
-                return self._json({"ok": True})
-            if self.path == "/api/tight/verify":
-                why = self._trade_refused(body)
-                if why:
-                    return self._json({"ok": False, "error": why}, 403)
-                ids = [str(x).lower() for x in (body.get("pools") or [])][:8]
-                with _lock:
-                    hit = _cache.get("pools")
-                rows = {r["pool"]: r for r in (hit or {}).get("data", {}).get("rows") or []}
-                v4 = [i for i in ids if (rows.get(i) or {}).get("dex") != "v3"]
-                v3 = [i for i in ids if (rows.get(i) or {}).get("dex") == "v3"]
-                try:
-                    slots = {}
-                    if v4:
-                        slots.update(chain.slot0s_v4(v4))
-                    if v3:
-                        slots.update(chain.slot0s_v3(v3))
-                except Exception as exc:
-                    return self._json({"ok": False, "error": f"RPC gagal: {exc}"[:240]})
-                out = []
-                for i in ids:
-                    live = (slots.get(i) or {}).get("tick") if slots.get(i) else None
-                    cached = (rows.get(i) or {}).get("tick")
-                    out.append({"pool": i, "cachedTick": cached, "liveTick": live,
-                                "moved": live is not None and cached is not None and live != cached})
-                return self._json({"ok": True, "rows": out, "note": "Cuma shortlist yang lo kirim. Bukan poll baru."})
             if self.path == "/api/prefs":
                 if self.headers.get("X-ELY-Trade") != "1":
                     return self._json({"ok": False, "error": "missing header"}, 403)
@@ -589,7 +531,7 @@ class Handler(BaseHTTPRequestHandler):
                 args = node.ladder_args(str(body["pool"]), float(body["usd"]), int(body.get("slices") or pos["ladderSlices"]),
                                         float(body.get("top") if body.get("top") is not None else pos["rangeTopPct"]),
                                         float(body.get("bottom") or pos["rangeBottomPct"]), STATE["ix"].eth_usd())
-                return self._json(node.run("open_ladder.mjs", args + ["--plan"], timeout=90))
+                return self._json(node.run("open_ladder.mjs", args + ["--plan"] + _key_args(str(body["pool"])), timeout=90))
             if self.path == "/api/decide":
                 row = {"ts": _now_iso(), "source": "web", **{k: body.get(k) for k in
                        ("pool", "symbol", "decision", "decisionReason", "sizeUsd", "level", "gatesFailed", "flags")}}
@@ -611,84 +553,113 @@ class Handler(BaseHTTPRequestHandler):
             if not tw.get("ok"):
                 return self._json({"ok": False, "error": "belum ada key: isi ELYSIUM_PRIVATE_KEY di elysium_terminal/.env"}, 400)
             wallet = tw["address"]
-            if self.path == "/api/autoexit":
-                pct = body.get("pct")
-                pct = float(pct) if pct not in (None, "", 0, "0", "off") else None
-                if pct is not None and not 0.5 <= pct <= 500:
-                    return self._json({"ok": False, "error": "target 0.5–500%"}, 400)
-                return self._json({"ok": True, "autoExit": auto_set(str(body["pool"]), str(body.get("symbol") or ""), pct)})
-            if self.path == "/api/trade/tight":
-                store = _tight_store()
-                if store.config().get("killed"):
-                    return self._json({"ok": False, "error": "kill switch nyala"}, 400)
-                step = str(body.get("step") or "")
-                pool = str(body.get("pool") or "")
-                token_id = str(body.get("tokenId") or f"open:{pool.lower()}")
-                key = str(body.get("key") or "")
-                if not key or step not in ("close", "swap", "mint"):
-                    return self._json({"ok": False, "error": "step atau kunci tidak lengkap"}, 400)
-                blocked = tight.manual_claim(store, key, token_id)
-                if blocked:
-                    return self._json(blocked, 409)
-                payload = {
-                    "step": step, "pool": pool, "tokenId": body.get("tokenId") or 0,
-                    "tickLower": body.get("tickLower"), "tickUpper": body.get("tickUpper"),
-                    "usd": body.get("usd"), "swapFrac": body.get("swapFrac") or 0,
-                    "slippageBps": body.get("slippageBps") or 100, "quoteUsd": body.get("quoteUsd") or 0,
-                    "dryRun": practice_mode(),
-                }
-                try:
-                    res = _tight_execute(payload, wallet)
-                except Exception as exc:
-                    res = {"ok": False, "error": str(exc)[:240]}
-                tight.manual_finish(store, token_id, key, res, time.time())
-                append("decisions.jsonl", {"ts": _now_iso(), "source": "tight", "pool": pool, "step": step,
-                                           "key": key, "ok": res.get("ok"), "hash": res.get("hash"),
-                                           "error": res.get("error"), "practice": res.get("practice")})
+            store = _auto_store()
+
+            # ---- auto rules -------------------------------------------------
+            if self.path == "/api/auto/global":
+                return self._json({"ok": True, "auto": {**store.view(), "global": store.set_global(body)}})
+            if self.path == "/api/auto/rule":
+                gid = str(body["id"])
+                row = _find_row(wallet, gid)
+                if row is None:
+                    return self._json({"ok": False, "error": "posisi ini tidak ada di wallet trading (refresh portfolio)"}, 400)
+                rule = auto.clean_rule(body)
+                if "rebalance" in (rule["above"], rule["below"]):
+                    if row["posCount"] != 1:
+                        return self._json({"ok": False, "error": "rebalance cuma buat posisi satu range. Buat ladder pilih close atau diam."}, 400)
+                    if row.get("hooked") or row.get("dynamicFee"):
+                        return self._json({"ok": False, "error": "pool ber-hook / fee dinamis: rebalance tidak didukung"}, 400)
+                store.set_rule(gid, body, row, time.time())
+                return self._json({"ok": True, "auto": store.view()})
+            if self.path == "/api/auto/resume":
+                gid = str(body["id"])
+                cur = store.view()["rules"].get(gid)
+                if not cur:
+                    return self._json({"ok": False, "error": "rule tidak ada"}, 400)
+                if cur.get("status") == "running":
+                    return self._json({"ok": False, "error": "masih jalan, tunggu selesai"}, 400)
+                if body.get("remove"):
+                    store.set_rule(gid, {}, None, time.time())
+                else:
+                    store.patch(gid, {"status": "armed", "msg": "dilanjutkan manual", "fails": 0, "outSince": None})
+                return self._json({"ok": True, "auto": store.view()})
+
+            # ---- trades -----------------------------------------------------
+            if self.path == "/api/trade/tight-open":
+                pool = str(body["pool"]).lower()
+                usd = float(body["usd"])
+                if not usd > 0:
+                    return self._json({"ok": False, "error": "ukuran harus > 0"}, 400)
+                row = _snapshot_row(pool) or {}
+                quote_usd = row.get("quoteUsd") or (1.0 if row.get("quoteSymbol") == "USDC" else STATE["ix"].hype_usd())
+                if not quote_usd:
+                    return self._json({"ok": False, "error": "harga quote belum kebaca, coba lagi sebentar"}, 400)
+                width = tight.sanitize_config({"widthPct": body.get("widthPct")}, {})["widthPct"]
+                slip = auto.clean_global({"slippageBps": body.get("slippageBps")}, store.view()["global"])["slippageBps"]
+                args = ["--mode", "open", "--pool", pool, "--usd", str(usd), "--quote-usd", str(quote_usd),
+                        "--width", f"{width:g}", "--slippage-bps", str(slip)]
+                res = run_trade("tight.mjs", args, wallet, 600, pool=pool)
+                gid = _register(res, "tight", depositQuote=res.get("depositQuote"), widthPct=width)
+                res["id"] = gid
+                rule = auto.clean_rule(body.get("rule") or {})
+                if gid and not auto.is_empty(rule):
+                    store.set_rule(gid, {**rule, "widthPct": rule.get("widthPct") or width},
+                                   {"pool": pool, "symbol": body.get("symbol") or row.get("symbol")}, time.time())
+                    res["ruleArmed"] = True
+                append("decisions.jsonl", {"ts": _now_iso(), "source": "tight", "pool": pool, "symbol": body.get("symbol"),
+                                           "decision": "enter", "sizeUsd": usd, "widthPct": width, "id": gid,
+                                           **{k: res.get(k) for k in ("ok", "error", "hash", "practice", "stage", "sent")}})
                 return self._json(res)
-            if self.path == "/api/trade/tight-receipt":
-                store = _tight_store()
-                tid = str(body.get("tokenId") or "")
-                st = store.positions().get(tid) or {}
-                h = st.get("pendingHash")
-                if not h:
-                    return self._json({"ok": True, "state": "idle", "doneSteps": st.get("doneSteps") or []})
-                try:
-                    rc = _receipt(h)
-                except Exception as exc:
-                    store.audit({"ts": time.time(), "kind": "rpc-fail", "tokenId": tid, "error": str(exc)[:200]})
-                    return self._json({"ok": False, "error": f"RPC gagal: {exc}"[:240]})
-                return self._json({"ok": True, "hash": h, **tight.resolve_receipt(store, tid, rc, time.time())})
+            if self.path == "/api/trade/rebalance":
+                row = _find_row(wallet, str(body["id"]), force=True)
+                if row is None:
+                    return self._json({"ok": False, "error": "posisi tidak ketemu (refresh portfolio)"}, 400)
+                g = store.view()["global"]
+                width = auto.clean_global({"widthPct": body.get("widthPct") or row.get("widthPct") or g["widthPct"]}, g)["widthPct"]
+                res = do_rebalance(row, wallet, width, g["slippageBps"])
+                if res.get("newId"):
+                    store.move(row["id"], res["newId"], {"lastFire": time.time()})
+                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": row["id"], "pool": row["pool"], "symbol": row["symbol"],
+                                        "ids": _ids(row), "rule": "rebalance", "newId": res.get("newId"),
+                                        **{k: res.get(k) for k in ("ok", "error", "hash", "practice", "stage", "sent")}})
+                return self._json(res)
             if self.path == "/api/trade/open":
                 pos = cfg["position"]
                 usd = float(body["usd"])
-                args = node.ladder_args(str(body["pool"]), usd, int(body.get("slices") or pos["ladderSlices"]),
+                pool = str(body["pool"])
+                args = node.ladder_args(pool, usd, int(body.get("slices") or pos["ladderSlices"]),
                                         float(body.get("top") if body.get("top") is not None else pos["rangeTopPct"]),
                                         float(body.get("bottom") or pos["rangeBottomPct"]), STATE["ix"].eth_usd())
-                res = self._trade("open_ladder.mjs", args, wallet)
+                res = run_trade("open_ladder.mjs", args, wallet, pool=pool)
+                plan = res.get("plan") or {}
+                res["id"] = _register(res, "ladder", depositQuote=plan.get("total"))
                 append("decisions.jsonl", {"ts": _now_iso(), "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
                                            "decision": "enter", "sizeUsd": usd, "override": bool(body.get("override")),
                                            "practice": res.get("practice"), "positions": res.get("positions"), "ok": res.get("ok"),
-                                           "hash": res.get("hash"), "error": res.get("error")})
+                                           "hash": res.get("hash"), "error": res.get("error"), "id": res.get("id")})
                 return self._json(res)
             if self.path in ("/api/trade/close", "/api/trade/claim"):
                 ids = [str(int(x)) for x in body["ids"]]
                 claim = self.path.endswith("claim")
-                res = self._trade("close.mjs", ["--pool", str(body.get("pool") or ""), "--ids", ",".join(ids)] + (["--claim"] if claim else []), wallet, 300)
-                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
+                pool = str(body.get("pool") or "")
+                res = run_trade("close.mjs", ["--pool", pool, "--ids", ",".join(ids)] + (["--claim"] if claim else []), wallet, 300, pool=pool)
+                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": body.get("id"), "pool": body.get("pool"), "symbol": body.get("symbol"),
                                         "ids": ids, "rule": "claim" if claim else (body.get("rule") or "close"),
                                         **{k: res.get(k) for k in ("ok", "error", "hash", "practice")}})
                 return self._json(res)
             if self.path == "/api/trade/reenter":
                 ids = [str(int(x)) for x in body["ids"]]
                 pos = cfg["position"]
-                args = ["--pool", str(body.get("pool") or ""), "--ids", ",".join(ids), "--maxloss", str(float(body.get("maxloss") or cfg["trade"]["maxLossPct"]))]
+                pool = str(body.get("pool") or "")
+                args = ["--pool", pool, "--ids", ",".join(ids), "--maxloss", str(float(body.get("maxloss") or cfg["trade"]["maxLossPct"]))]
                 if body.get("reopen"):
                     args += ["--reopen", "--slices", str(int(body.get("slices") or len(ids))),
                              "--top", str(float(body.get("top") if body.get("top") is not None else pos["rangeTopPct"])),
                              "--bottom", str(abs(float(body.get("bottom") or pos["rangeBottomPct"])))]
-                res = self._trade("reenter.mjs", args, wallet, 900)
-                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
+                res = run_trade("reenter.mjs", args, wallet, 900, pool=pool)
+                if body.get("reopen"):
+                    res["id"] = _register(res, "ladder", ids=res.get("positions"), depositQuote=res.get("reopenedQuote"))
+                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": body.get("id"), "pool": body.get("pool"), "symbol": body.get("symbol"),
                                         "ids": ids, "rule": "reenter" if body.get("reopen") else "close-swap",
                                         **{k: res.get(k) for k in ("ok", "error", "step", "practice")}})
                 return self._json(res)
@@ -696,7 +667,7 @@ class Handler(BaseHTTPRequestHandler):
                 lst = cleanup_list(wallet)
                 args = ["--tokens", json.dumps(lst), "--minusd", str(float(body.get("minusd") or 1)),
                         "--maxloss", str(float(body.get("maxloss") or cfg["trade"]["maxLossPct"]))]
-                res = self._trade("cleanup.mjs", args, wallet, 900)
+                res = run_trade("cleanup.mjs", args, wallet, 900)
                 append("closes.jsonl", {"ts": _now_iso(), "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "tokens", "practice")}})
                 return self._json(res)
         except (KeyError, ValueError) as exc:
@@ -713,8 +684,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8893) -> None:
     STATE["ix"], STATE["book"] = ix, pools.Book(ix, cfg)
     print("Index swap: baca chain (pertama kali ±15–30 detik buat 1 jam terakhir)…", flush=True)
     ix.start()
-    threading.Thread(target=_auto_loop, args=(cfg,), daemon=True, name="auto-exit").start()
-    threading.Thread(target=_tight_loop, daemon=True, name="tight-rebalance").start()
+    threading.Thread(target=_auto_loop, args=(cfg,), daemon=True, name="auto").start()
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"Elysium Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)

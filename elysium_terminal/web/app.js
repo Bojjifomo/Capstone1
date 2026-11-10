@@ -9,7 +9,8 @@ function showFatal(msg) {
   el.innerHTML = `<span style="color:#ff5a5f">Error di browser: ${String(msg).replace(/[<>&]/g, "")}</span><br>Coba Cmd+Shift+R. Kalau tetap, screenshot ini + Console (Cmd+Option+J).`;
 }
 window.addEventListener("error", e => showFatal(e.message + (e.filename ? ` (${e.filename.split("/").pop()}:${e.lineno})` : "")));
-window.addEventListener("unhandledrejection", e => showFatal((e.reason && e.reason.message) || e.reason));
+// A failed background fetch is not fatal: say it quietly instead of replacing the table with an error.
+window.addEventListener("unhandledrejection", e => { console.warn(e.reason); try { toast("⚠ " + ((e.reason && e.reason.message) || e.reason)); } catch (x) {} });
 
 const $ = s => document.querySelector(s);
 const isPhone = () => window.matchMedia("(max-width: 760px)").matches;
@@ -148,7 +149,7 @@ const findRow = pool => (state.data && state.data.rows.find(x => x.pool === pool
 async function runSearch(q) {
   if (!q) { state.search = null; renderPools(); return; }
   $("#searchInfo").classList.remove("hidden");
-  $("#searchInfo").innerHTML = `<span class="muted">🔎 Cari "${esc(q)}" di semua pool V4 Robinhood…</span>`;
+  $("#searchInfo").innerHTML = `<span class="muted">🔎 Cari "${esc(q)}" di semua pool v3 + v4 Elysium…</span>`;
   try {
     state.search = { q, rows: (await getJson(`/api/search?q=${encodeURIComponent(q)}`)).rows };
   } catch (e) { state.search = { q, rows: [], error: e.message }; }
@@ -360,6 +361,7 @@ function renderDetail(r, keepChart) {
       <button data-zap="${size / 2}">⚡ ${mU(size / 2)} · ${ladderLabel()}</button>
       <button data-zap="${size}">⚡ ${mU(size)} · ${ladderLabel()}</button>
       <button class="edit" data-zap="ask">✏️ custom</button>
+      ${r.hooks && r.hooks !== "0x0000000000000000000000000000000000000000" || r.dynamicFee ? "" : `<button class="edit" data-tightopen="${r.pool}" title="Range sempit di sekitar harga sekarang, bisa auto rebalance">🎯 tight</button>`}
     </div>
     <div class="note">Zap = ladder ${esc(r.quoteSymbol)}-only (slice sama lebar, isi 1:2:…:n, paling dalam paling gede). v4 lewat PositionManager, v3 lewat NFT multicall. Key cuma di executor.
       Disimulasikan dulu sebelum dikirim. Ubah bentuk default di ⚙. Gate & flag ini nilai awal, bukan hasil backtest: atur sesuai pengalaman lu.</div>
@@ -442,7 +444,7 @@ function paintWallet() {
   }
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}`).join("<br>");
+const stepsHtml = s => (s.steps || []).map(x => `${esc(x.step || x.label || "tx")}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.planned ? "direncanakan (butuh hasil langkah sebelumnya)" : x.needed ? "perlu approve dulu" : x.received != null ? "✓" : "–"}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
 async function quickZap(r, size) {
@@ -542,39 +544,71 @@ function openZap(r, size) {
 }
 
 // ---------- portfolio actions ----------
+// One row = one thing you opened (a ladder or a single range). Buttons, results and auto
+// rules are keyed by that row's id, so two positions in the same pool never share state.
+state.busy = {};      // id -> text while an action runs
+state.note = {};      // id -> { ok, html } result of the last action, kept across re-renders
 function guard() {
   if (!trade.ready()) { alert(trade.why()); return false; }
   if (state.wallet.toLowerCase() !== (trade.info.wallet || "").toLowerCase()) { alert(`Portfolio lagi nampilin wallet lain. Trading wallet: ${trade.info.wallet}`); return false; }
   return true;
 }
-async function act(p, btn, url, body, confirmMsg, okText) {
-  if (!guard()) return;
-  if (!practice() && !confirm(confirmMsg)) return;
-  btn.disabled = true;
-  const cell = btn.parentElement;
-  cell.insertAdjacentHTML("beforeend", `<div class="res muted" data-r>${practice() ? "simulasi…" : "jalan… (bisa 1–3 menit)"}</div>`);
-  const out = cell.querySelector("[data-r]");
-  try {
-    const s = await trade.call(url, body);
-    out.innerHTML = s.ok ? `${s.hash ? "✓ " + txLink(s.hash) : stepsHtml(s) || "✓"} ${okText(s)}${practiceNote(s)}` : `<span class="neg">✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}</span>`;
-    if (s.ok && !s.dryRun) setTimeout(() => loadPortfolio(true), 4000);
-  } catch (e) { out.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`; }
-  finally { btn.disabled = false; }
-}
+const rowOf = id => state.pf && state.pf.rows && state.pf.rows.find(x => x.id === id);
+const posName = p => `${p.symbol}${p.ofPool > 1 ? " #" + p.nth : ""}`;
 const idsOf = p => p.positions.map(x => x.tokenId);
-const closeLadder = (p, btn) => act(p, btn, "/api/trade/close", { pool: p.pool, symbol: p.symbol, ids: idsOf(p) },
-  `Close ${p.symbol}: ${p.posCount} slice?\nTarik 100% likuiditas + klaim fee, satu transaksi.\nToken yang keluar TIDAK dijual (pakai Close+swap kalau mau).`, () => "closed");
-const claimLadder = (p, btn) => act(p, btn, "/api/trade/claim", { pool: p.pool, symbol: p.symbol, ids: idsOf(p) },
-  `Claim fee ${p.symbol} (${mU(p.feesUsd)})?\nLikuiditas tetap di tempat, cuma fee yang diambil.`, () => "fee diklaim");
-const swapLadder = (p, btn, reopen) => {
-  return act(p, btn, "/api/trade/reenter", { pool: p.pool, symbol: p.symbol, ids: idsOf(p), reopen, slices: p.posCount },
-    reopen ? `RE-ENTRY ${p.symbol}\n1) Close ${p.posCount} slice (klaim fee)\n2) Jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool)\n3) Buka ladder baru di harga sekarang, ${p.posCount} slice, bentuk dari ⚙, pakai semua ${p.quoteSymbol} yang balik\n\nLanjut?`
-      : `CLOSE + SWAP ${p.symbol}\nClose ${p.posCount} slice, lalu jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool).\n\nLanjut?`,
-    () => reopen ? "re-entry selesai" : "closed + swapped");
-};
+const autoOf = id => (state.pf && state.pf.auto && state.pf.auto.rules && state.pf.auto.rules[id]) || null;
+const autoGlobal = () => (state.pf && state.pf.auto && state.pf.auto.global) || (state.tight && state.tight.auto && state.tight.auto.global) || {};
+
+async function act(p, url, body, confirmMsg, okText) {
+  if (!guard() || state.busy[p.id]) return;
+  if (!practice() && !confirm(confirmMsg)) return;
+  state.busy[p.id] = practice() ? "simulasi…" : "jalan… (bisa 1–3 menit, jangan ditutup)";
+  delete state.note[p.id];
+  renderPortfolio();
+  let target = p.id;
+  try {
+    const s = await trade.call(url, Object.assign({ id: p.id, pool: p.pool, symbol: p.symbol }, body));
+    if (s.ok) {
+      target = s.newId || s.id || p.id;
+      const steps = (s.steps || []).filter(x => x.hash).map(x => `${esc(x.step || "tx")} ${txLink(x.hash)}`).join(" · ");
+      state.note[target] = { ok: true, html: s.dryRun
+        ? `<span class="warn">🧪 simulasi lolos, tidak ada yang dikirim.</span> ${esc(okText(s))}`
+        : `✓ ${esc(okText(s))}${steps ? "<br>" + steps : s.hash ? " " + txLink(s.hash) : ""}` };
+      toast(`✓ ${posName(p)}: ${s.dryRun ? "simulasi lolos" : okText(s)}`);
+    } else {
+      state.note[p.id] = { ok: false, html: `✗ ${esc(s.stage || s.step || "")} ${esc(s.error || "gagal")}${s.sent ? "<br>Sebagian transaksi sudah terkirim: cek wallet, sisa token bisa dijual lewat Cleanup." : ""}` };
+      toast(`✗ ${posName(p)}: ${s.error || "gagal"}`);
+    }
+  } catch (e) {
+    state.note[p.id] = { ok: false, html: `✗ ${esc(e.message || e)}` };
+  } finally {
+    delete state.busy[p.id];
+    await loadPortfolio(true);
+    setTimeout(() => loadPortfolio(true), 6000);     // a slow RPC node may still show the old state
+  }
+}
+const closePos = p => act(p, "/api/trade/close", { ids: idsOf(p) },
+  `Close ${posName(p)} (${p.posCount} NFT)?\nTarik 100% likuiditas + klaim fee, satu transaksi.\nToken yang keluar TIDAK dijual (pakai Close+swap kalau mau).`, s => s.dryRun ? "Close." : "closed");
+const claimPos = p => act(p, "/api/trade/claim", { ids: idsOf(p) },
+  `Claim fee ${posName(p)} (${mU(p.feesUsd)})?\nLikuiditas tetap di tempat, cuma fee yang diambil.`, () => "fee diklaim");
+const swapPos = (p, reopen) => act(p, "/api/trade/reenter", { ids: idsOf(p), reopen, slices: p.posCount },
+  reopen ? `RE-ENTRY ${posName(p)}\n1) Close ${p.posCount} slice (klaim fee)\n2) Jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool)\n3) Buka ladder baru di harga sekarang, ${p.posCount} slice, bentuk dari ⚙\n\nLanjut?`
+    : `CLOSE + SWAP ${posName(p)}\nClose, lalu jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool).\n\nLanjut?`,
+  s => s.dryRun ? "Close lolos; jual token" + (reopen ? " + buka lagi" : "") + " baru jalan kalau live." : reopen ? "re-entry selesai" : "closed + swapped");
+function rebalancePos(p) {
+  const g = autoGlobal();
+  const def = (autoOf(p.id) || {}).widthPct || p.widthPct || g.widthPct || 2;
+  const w = prompt(`Rebalance ${posName(p)}: lebar range baru (% harga, total kiri+kanan)?`, (+def).toFixed(2));
+  if (w === null) return;
+  const width = parseFloat(w);
+  if (!(width > 0)) return alert("Lebar harus angka > 0.");
+  return act(p, "/api/trade/rebalance", { widthPct: width },
+    `REBALANCE ${posName(p)}\n1) Close (fee ikut)\n2) Swap ke komposisi range baru (slippage maks ${(g.slippageBps || 100) / 100}%)\n3) Mint range ${width}% di sekitar harga sekarang\n\nTiga transaksi berurutan, bukan atomik. Lanjut?`,
+    s => s.dryRun ? `Close lolos; rencana: swap ${s.plan ? (s.plan.swapFrac * 100).toFixed(0) + "%" : "?"}, range baru ${s.plan ? s.plan.actualWidthPct.toFixed(2) + "%" : "?"}.` : "rebalance selesai");
+}
 async function cleanupWallet(btn) {
   if (!guard()) return;
-  if (!practice() && !confirm("CLEANUP wallet\nJual sisa token dari ladder lu (yang nilainya ≥ $1) ke USDC/HYPE lewat pool terdalamnya, batal per token kalau > max loss di bawah harga pool.\nUSDC/HYPE/WHYPE nggak dijual. Lanjut?")) return;
+  if (!practice() && !confirm("CLEANUP wallet\nJual sisa token dari posisi lu (yang nilainya ≥ $1) ke USDC/HYPE lewat pool terdalamnya, batal per token kalau > max loss di bawah harga pool.\nUSDC/HYPE/WHYPE nggak dijual. Lanjut?")) return;
   btn.disabled = true;
   const old = btn.textContent;
   btn.textContent = "cleanup…";
@@ -585,61 +619,147 @@ async function cleanupWallet(btn) {
   } catch (e) { alert("Gagal: " + (e.message || e)); }
   finally { btn.disabled = false; btn.textContent = old; }
 }
-function autoExitCell(p) {
-  const a = (state.pf.autoExit || {})[p.pool], choices = state.pf.tpChoices || [3, 5, 10];
-  const cur = a && a.status === "armed" ? a.pct : 0;
-  const opts = [0, ...choices].map(v => `<option value="${v}" ${v === cur ? "selected" : ""}>${v ? "TP +" + v + "%" : "auto exit: off"}</option>`).join("");
+
+// ---------- auto rules (per position) ----------
+const ACT_WORD = { hold: "diam", rebalance: "rebalance", close: "close + swap" };
+function autoCell(p) {
+  const a = autoOf(p.id), g = autoGlobal();
+  const chips = [];
+  if (a) {
+    if (a.tp) chips.push(`TP +${a.tp}%${p.pnlPct != null && a.status === "armed" ? ` <span class="muted">(kurang ${(a.tp - p.pnlPct).toFixed(2)}%)</span>` : ""}`);
+    if (a.sl) chips.push(`SL ${a.sl}%`);
+    if (a.above && a.above !== "hold") chips.push(`↑ ${ACT_WORD[a.above]}`);
+    if (a.below && a.below !== "hold") chips.push(`↓ ${ACT_WORD[a.below]}`);
+  }
   let st = "";
-  if (a && a.status === "armed") st = `<span class="tp on">🎯 nyala · close+swap di +${a.pct}%${p.pnlPct != null ? ` (kurang ${(a.pct - p.pnlPct).toFixed(2)}%)` : ""}</span>`;
-  else if (a && a.status === "firing") st = `<span class="tp warn">⏳ lagi close + swap…</span>`;
-  else if (a && a.status === "done") st = `<span class="tp pos">✓ auto exit: ${esc(a.msg || "")}</span>`;
-  else if (a && a.status === "failed") st = `<span class="tp neg">✗ auto exit gagal: ${esc(a.msg || "")}</span>`;
-  return `<div class="tpbox"><select class="tpsel" data-tp="${p.pool}" data-sym="${esc(p.symbol)}" title="Close semua slice + jual token saat PnL ladder ≥ target. Dicek server tiap ${state.pf.autoExitCheckMin || 2} menit selama Elysium Terminal jalan.">${opts}</select>${st}</div>`;
+  if (a) {
+    const m = esc(a.msg || "");
+    if (a.status === "armed") st = g.paused ? `<span class="tp warn">⏸ auto dijeda (semua)</span>` : `<span class="tp on">🎯 nyala${m ? " · " + m : ""}</span>`;
+    else if (a.status === "running") st = `<span class="tp warn">⏳ lagi jalan: ${m}</span>`;
+    else if (a.status === "done") st = `<span class="tp pos">✓ ${m}</span>`;
+    else if (a.status === "failed") st = `<span class="tp neg">✗ ${m}</span> <button class="btn mini" data-act="resume" data-id="${p.id}">coba lagi</button>`;
+    else if (a.status === "attention") st = `<span class="tp neg">⚠ ${m}</span> <button class="btn mini" data-act="resume" data-id="${p.id}">sudah dicek, lanjutkan</button>`;
+  }
+  return `<div class="tpbox"><div class="achips"><button class="btn mini auto ${a && a.status === "armed" ? "on" : ""}" data-act="auto" data-id="${p.id}" title="TP, SL, dan apa yang dilakukan kalau harga keluar range. Dicek server tiap ${state.pf.autoCheckSec || 60} detik selama Elysium Terminal jalan.">⚙ Auto${chips.length ? "" : ": off"}</button>${chips.map(c => `<span class="achip">${c}</span>`).join("")}</div>${st}</div>`;
 }
-async function setAutoExit(sel) {
-  const pct = +sel.value;
-  if (!guard()) { renderPortfolio(); return; }
-  if (pct && !confirm(`Nyalain AUTO EXIT ${sel.dataset.sym} di PnL +${pct}%?\n\nKalau PnL ladder sampai +${pct}%, server langsung close semua slice + jual token pakai key di .env, tanpa nanya lagi.\nCuma jalan selama Elysium Terminal nyala di Mac.`)) { renderPortfolio(); return; }
+function openAuto(p) {
+  if (!guard()) return;
+  const a = autoOf(p.id) || {}, g = autoGlobal();
+  const single = p.posCount === 1 && !p.hooked && !p.dynamicFee;
+  const sel = (id, cur) => `<select id="${id}">${["hold", "rebalance", "close"].map(v =>
+    `<option value="${v}" ${v === (cur || "hold") ? "selected" : ""} ${v === "rebalance" && !single ? "disabled" : ""}>${v === "hold" ? "diam (nggak ngapa-ngapain)" : v === "rebalance" ? "rebalance: tutup + buka range baru di harga itu" : "close + swap ke " + esc(p.quoteSymbol)}</option>`).join("")}</select>`;
+  $("#modalCard").classList.remove("wide");
+  $("#modalCard").innerHTML = `
+    <h3>⚙ Auto · ${esc(posName(p))} ${qchip(p)} <span class="muted">#${p.positions[0].tokenId}${p.posCount > 1 ? " +" + (p.posCount - 1) : ""}</span></h3>
+    <p class="muted">Rule ini cuma buat posisi ini. Posisi lain di pool yang sama punya rule sendiri. Dicek server tiap ${state.pf.autoCheckSec || 60} detik, selama Elysium Terminal jalan di Mac (tab boleh ditutup).</p>
+    <div class="aform">
+      <label>Take profit, PnL ≥ <span><input id="aTp" value="${a.tp || ""}" placeholder="off" inputmode="decimal"> %</span></label>
+      <label>Stop loss, PnL ≤ −<span><input id="aSl" value="${a.sl ? Math.abs(a.sl) : ""}" placeholder="off" inputmode="decimal"> %</span></label>
+      <label>Harga NAIK lewat atas range <small>posisi jadi 100% ${esc(p.quoteSymbol)}, fee berhenti</small>${sel("aAbove", a.above)}</label>
+      <label>Harga TURUN lewat bawah range <small>posisi jadi 100% ${esc(p.symbol)}</small>${sel("aBelow", a.below)}</label>
+      <label>Lebar range baru saat rebalance <span><input id="aWidth" value="${a.widthPct || (p.widthPct ? +p.widthPct.toFixed(2) : g.widthPct || 2)}" inputmode="decimal" ${single ? "" : "disabled"}> %</span></label>
+    </div>
+    ${single ? "" : `<p class="muted">Rebalance cuma buat posisi satu range di pool tanpa hook. ${p.posCount > 1 ? "Ini ladder: pilih close atau diam, atau pakai tombol Re-entry." : ""}</p>`}
+    <p class="muted">TP/SL = close + swap. Aksi range nunggu harga di luar <b>${g.holdSec}s</b>, jeda antar aksi <b>${g.cooldownSec}s</b>, maks <b>${g.maxPerDay}×</b>/hari, cuma kalau nilai posisi ≤ <b>${fmtUsd(g.maxNotionalUsd)}</b>, slippage swap maks <b>${g.slippageBps / 100}%</b>. Ubah batas ini di tab 🎯 Tight.</p>
+    <p class="warn">${practice() ? "PRACTICE MODE: auto cuma mensimulasikan, tidak ada yang dikirim." : "LIVE: kalau syaratnya kena, server mengirim transaksi pakai key di .env tanpa nanya lagi."} Rebalance = close, swap, mint berurutan. Kalau berhenti di tengah, rule dijeda dan nunggu lu.</p>
+    <div class="acts"><button class="btn go" id="aSave">Simpan</button><button class="btn" id="aOff">Matikan semua</button><span class="spacer"></span><button class="btn" id="aClose">Tutup</button></div>
+    <div class="res" id="aMsg"></div>`;
+  $("#modal").classList.remove("hidden");
+  $("#aClose").onclick = closeModal;
+  const send = async body => {
+    try {
+      const r = await trade.call("/api/auto/rule", Object.assign({ id: p.id }, body));
+      if (!r.ok) throw new Error(r.error);
+      state.pf.auto = r.auto;
+      renderPortfolio();
+      closeModal();
+      toast(r.auto.rules[p.id] ? `🎯 Auto ${posName(p)} tersimpan` : `Auto ${posName(p)} mati`);
+    } catch (e) { $("#aMsg").innerHTML = `<span class="neg">✗ ${esc(e.message)}</span>`; }
+  };
+  $("#aOff").onclick = () => send({});
+  $("#aSave").onclick = () => {
+    const body = { tp: $("#aTp").value.trim(), sl: $("#aSl").value.trim(), above: $("#aAbove").value, below: $("#aBelow").value, widthPct: $("#aWidth").value.trim() };
+    const does = [body.tp && `TP +${body.tp}%`, body.sl && `SL −${Math.abs(body.sl)}%`, body.above !== "hold" && `naik lewat atas → ${ACT_WORD[body.above]}`, body.below !== "hold" && `turun lewat bawah → ${ACT_WORD[body.below]}`].filter(Boolean);
+    if (does.length && !practice() && !confirm(`Nyalain AUTO buat ${posName(p)}?\n\n${does.join("\n")}\n\nServer bakal mengirim transaksi sendiri saat syaratnya kena.`)) return;
+    send(body);
+  };
+}
+async function resumeAuto(id) {
+  if (!guard()) return;
+  const a = autoOf(id);
+  if (!a || !confirm(`Lanjutkan auto buat posisi ini?\n\nTerakhir: ${a.msg || a.status}\n\nPastikan wallet dan posisinya sudah lu cek.`)) return;
+  try { state.pf.auto = (await trade.call("/api/auto/resume", { id })).auto; renderPortfolio(); } catch (e) { alert(e.message); }
+}
+async function setAutoGlobal(patch) {
+  if (!guard()) return;
   try {
-    const r = await trade.call("/api/autoexit", { pool: sel.dataset.tp, symbol: sel.dataset.sym, pct });
-    state.pf.autoExit = r.autoExit;
-    toast(pct ? `🎯 Auto exit ${sel.dataset.sym} nyala di +${pct}%` : `Auto exit ${sel.dataset.sym} mati`);
-  } catch (e) { alert("Gagal: " + e.message); }
-  renderPortfolio();
+    const r = await trade.call("/api/auto/global", patch);
+    if (state.pf) { state.pf.auto = r.auto; renderPortfolio(); }
+    if (state.tight) { state.tight.auto = r.auto; if (state.view === "tight") renderTight(); }
+    toast(r.auto.global.paused ? "⏸ Semua auto dijeda" : "Setting auto tersimpan");
+  } catch (e) { alert(e.message); }
 }
 
 // ---------- portfolio ----------
+let pfSeq = 0;
 async function loadPortfolio(force) {
   const w = $("#wallet").value.trim();
   if (!w) return;
+  const seq = ++pfSeq;
   state.wallet = w;
   store.set("wallet", w);
   if (!state.pf) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Baca posisi dari chain… (pertama kali scan histori NFT, bisa ±10–30 detik)"; }
-  try { state.pf = await getJson(`/api/portfolio?wallet=${encodeURIComponent(w)}${force ? "&force=1" : ""}`, null, 300000); }
-  catch (e) { state.pf = { error: e.message }; }
+  let pf;
+  try { pf = await getJson(`/api/portfolio?wallet=${encodeURIComponent(w)}${force ? "&force=1" : ""}`, null, 300000); }
+  catch (e) {
+    // keep showing the last good read; a failed refresh should not blank the table
+    if (seq !== pfSeq) return;
+    if (state.pf && !state.pf.error) { state.pf.stale = e.message; renderPortfolio(); return; }
+    pf = { error: e.message };
+  }
+  if (seq !== pfSeq) return;
+  state.pf = pf;
   renderPortfolio();
   renderTop();
+}
+function stateWord(p) {
+  const single = p.posCount === 1;
+  if (p.state === "in") return single && p.edgePct != null ? `in range · ${p.edgePct.toFixed(2)}% ke tepi terdekat` : "in range, dapet fee";
+  if (p.state === "above") return single ? `harga di ATAS range: 100% ${p.quoteSymbol}, fee berhenti` : `di atas ladder (masih ${p.quoteSymbol}), nunggu harga turun`;
+  if (p.state === "below") return single ? `harga di BAWAH range: 100% ${p.symbol}` : "lewat bawah ladder (pegang token)";
+  return "di celah antar slice";
 }
 function rangeStrip(p) {
   const rp = p.rangePct;
   const pos = rp == null ? null : Math.max(-3, Math.min(103, rp));
   const mk = p.state === "in" ? "in" : p.state === "below" ? "below" : "out";
-  const word = { in: "in range", above: "di atas ladder (masih " + p.quoteSymbol + ")", below: "lewat bawah ladder (pegang token)", gap: "di celah antar slice" }[p.state];
-  return `<div class="strip"><span>${mU(p.capLo)}</span><div class="rbar"><div class="fill" style="left:0;right:0"></div><div class="third"></div>${pos != null ? `<div class="mk ${mk}" style="left:${pos}%"></div>` : ""}</div><span>${mU(p.capHi)}</span>
+  return `<div class="strip"><span>${mU(p.capLo)}</span><div class="rbar"><div class="fill" style="left:0;right:0"></div>${p.posCount > 1 ? `<div class="third"></div>` : ""}${pos != null ? `<div class="mk ${mk}" style="left:${pos}%"></div>` : ""}</div><span>${mU(p.capHi)}</span>
     <b class="${p.state === "in" ? "pos" : p.state === "below" ? "neg" : "warn"}">${rp == null ? "--" : Math.round(Math.max(-999, Math.min(999, rp))) + "%"}</b></div>
-    <span class="sub">${word} · mcap sekarang ${mU(p.mcapUsd)}</span>`;
+    <span class="sub">${esc(stateWord(p))} · mcap sekarang ${mU(p.mcapUsd)}</span>`;
+}
+function kindChip(p) {
+  if (p.kind === "ladder" || p.posCount > 1) return `<span class="kchip">ladder ${p.posCount}</span>`;
+  const w = p.widthPct != null ? " " + p.widthPct.toFixed(p.widthPct < 10 ? 1 : 0) + "%" : "";
+  return `<span class="kchip tight">${p.kind === "tight" ? "tight" : "range"}${w}${p.rebalances ? " · ↻" + p.rebalances : ""}</span>`;
 }
 function renderPortfolio() {
   const pf = state.pf;
   if (!pf) return;
-  if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error; $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
+  if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error + " (dicoba lagi otomatis)"; $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
   const pnlPct = pf.depositUsd ? pf.pnlUsd / pf.depositUsd * 100 : null, b = pf.balances || {};
+  const g = autoGlobal();
+  const armed = Object.values((pf.auto && pf.auto.rules) || {}).filter(r => r.status === "armed").length;
+  const warn = pf.stale ? `<span class="warn">⚠ refresh gagal (${esc(pf.stale)}), ini data terakhir</span>`
+    : pf.partial ? `<span class="warn" title="${esc((pf.warnings || []).join("\n"))}">⚠ sebagian posisi gagal dibaca, auto nunggu baca berikutnya</span>` : "";
   $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b>${pf.valueHype != null ? ` <span class="muted">${fmtEth(pf.valueHype)}</span>` : ""}</span>
     <span>fees unclaimed <b class="pos">${mU(pf.feesUsd)}</b></span>
     <span>PnL <b class="big ${cls(pf.pnlUsd)}">${pf.pnlUsd > 0 ? "+" : ""}${mU(pf.pnlUsd)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span></span>
     <span>deposit <b>${mU(pf.depositUsd)}</b></span>
     <span>wallet <b>${b.usdc != null ? b.usdc.toFixed(2) : "--"} USDC · ${b.hype != null ? fmtEth(b.hype) : "--"} HYPE${b.whype ? " · " + Number(b.whype).toFixed(4) + " WHYPE" : ""}</b></span>
-    <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>`;
+    <span><button class="btn mini ${g.paused ? "danger" : ""}" id="autoPause" title="Jeda / lanjutkan semua rule auto">${g.paused ? "▶ lanjutkan auto" : `⏸ jeda auto (${armed} nyala)`}</button></span>
+    <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>${warn}`;
+  const ap = $("#autoPause");
+  if (ap) ap.onclick = () => setAutoGlobal({ paused: !g.paused });
   $("#pfEmpty").classList.toggle("hidden", pf.rows.length > 0);
   if (!pf.rows.length) $("#pfEmpty").textContent = "Nggak ada posisi v3/v4 terbuka di wallet ini.";
   const cards = [];
@@ -648,34 +768,43 @@ function renderPortfolio() {
     const exit = ev.find(e => e.kind === "close"), alerts = ev.filter(e => e.kind === "alert").map(e => e.msg);
     const status = exit ? `<span class="badge WAIT">EXIT</span> <span class="neg">${esc(exit.msg)}</span>`
       : alerts.length ? `<span class="badge CAREFUL">ALERT</span> <span class="warn">${esc(alerts.join(" · "))}</span>`
-      : `<span class="badge OPEN">OK</span> <span class="muted">${p.state === "in" ? "in range, dapet fee" : p.state === "above" ? "nunggu harga turun ke ladder" : p.state === "gap" ? "di celah slice" : ""}</span>`;
-    const pg = pingOf(p.pool);
-    const head = `${esc(p.symbol)}${qchip(p)}${pg ? `<span class="rank">📡#${pg.rank}</span>` : ""}`;
-    const sub = `${p.posCount} slice · ${p.inRangeCount} in range · ${age(p.heldHours)} · fee ${p.lpFeePct}%`;
+      : p.state === "in" || p.state === "gap" ? `<span class="badge OPEN">OK</span> <span class="muted">${p.state === "in" ? "in range, dapet fee" : "di celah slice"}</span>`
+      : p.posCount > 1 && p.state === "above" ? `<span class="badge OPEN">OK</span> <span class="muted">nunggu harga turun ke ladder</span>`
+      : `<span class="badge CAREFUL">OOR</span> <span class="warn">${p.state === "above" ? "di atas range, fee berhenti" : "di bawah range, pegang token"}</span>`;
+    const pg = pingOf(p.pool), busy = state.busy[p.id], note = state.note[p.id];
+    const head = `${esc(p.symbol)}${p.ofPool > 1 ? `<span class="nth">#${p.nth}</span>` : ""}${qchip(p)}${kindChip(p)}${pg ? `<span class="rank">📡#${pg.rank}</span>` : ""}`;
+    const sub = `NFT #${p.positions[0].tokenId}${p.posCount > 1 ? "–" + p.positions[p.posCount - 1].tokenId + " · " + p.inRangeCount + "/" + p.posCount + " in range" : ""} · ${age(p.heldHours)} · fee ${p.lpFeePct}%`;
+    const dep = `${p.depositEst ? "≈" : ""}${mU(p.depositUsd)}`;
     const pnl = `<span class="big ${cls(p.pnlUsd)}">${p.pnlUsd > 0 ? "+" : ""}${mU(p.pnlUsd)}</span><span class="sub"><span class="${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span> · ${mAlt(p.pnlUsd)}</span>
-      <span class="sub">nilai ${mU(p.valueUsd)} · fee <span class="pos">${mU(p.feesUsd)}</span>${p.claimedUsd ? ` · claimed ${mU(p.claimedUsd)}` : ""}${p.feePctDay != null ? ` (${fmtPct(p.feePctDay, 2)}/hr)` : ""} · deposit ${mU(p.depositUsd)}</span>`;
-    const btns = `<button class="btn ${exit ? "danger" : ""}" data-close="${p.pool}">${exit ? "Exit → close" : "Close"}</button>
-      <button class="btn" data-claim="${p.pool}" ${p.feesUsd > 0 ? "" : "disabled"}>Claim</button>
-      <button class="btn" data-swap="${p.pool}" title="Close semua slice + jual token">Close+swap</button>
-      <button class="btn go" data-reenter="${p.pool}" title="Close + jual token + buka ladder lagi di harga sekarang">Re-entry</button>`;
+      <span class="sub">nilai ${mU(p.valueUsd)} · fee <span class="pos">${mU(p.feesUsd)}</span>${p.claimedUsd ? ` · claimed ${mU(p.claimedUsd)}` : ""} · deposit <span ${p.depositEst ? `title="Posisi ini tidak dibuka dari terminal: deposit dihitung dari likuiditas seolah satu sisi, jadi bisa kegedean."` : ""}>${dep}</span></span>`;
+    const dis = busy ? "disabled" : "";
+    const btns = `<button class="btn ${exit ? "danger" : ""}" data-act="close" data-id="${p.id}" ${dis}>${exit ? "Exit → close" : "Close"}</button>
+      <button class="btn" data-act="claim" data-id="${p.id}" ${p.feesUsd > 0 && !busy ? "" : "disabled"}>Claim</button>
+      <button class="btn" data-act="swap" data-id="${p.id}" ${dis} title="Close + jual token ke ${esc(p.quoteSymbol)}">Close+swap</button>
+      ${p.posCount > 1
+        ? `<button class="btn go" data-act="reenter" data-id="${p.id}" ${dis} title="Close + jual token + buka ladder lagi di harga sekarang">Re-entry</button>`
+        : `<button class="btn go" data-act="rebal" data-id="${p.id}" ${dis || (p.hooked || p.dynamicFee ? "disabled" : "")} title="Close + swap ke komposisi baru + buka range baru di harga sekarang">Rebalance</button>`}`;
+    const res = busy ? `<div class="res rowres muted">⏳ ${esc(busy)}</div>` : note ? `<div class="res rowres ${note.ok ? "" : "neg"}">${note.html}</div>` : "";
     cards.push(`<div class="lcard"><div class="lc1"><div><b class="psym">${head}</b><div class="sub">${sub}</div></div>
       <div class="r"><div class="pnlbig ${cls(p.pnlUsd)}">${p.pnlUsd > 0 ? "+" : ""}${mU(p.pnlUsd)}</div><div class="sub"><span class="${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span></div></div></div>
-      <div class="lc2"><span><small>nilai</small>${mU(p.valueUsd)}</span><span><small>fee</small>${mU(p.feesUsd)}</span><span><small>deposit</small>${mU(p.depositUsd)}</span><span><small>mcap</small>${mU(p.mcapUsd)}</span></div>
-      ${rangeStrip(p)}<div class="lc3">${status}</div><div class="lbtns">${btns}</div>${autoExitCell(p)}</div>`);
-    return `<tr><td><span class="sym">${head}</span><span class="sub">${sub}</span></td><td class="r">${pnl}</td><td>${rangeStrip(p)}</td><td>${status}</td>
-      <td>${btns}${autoExitCell(p)}<a href="https://dexscreener.com/elysium/${p.pool}" target="_blank" rel="noopener">dex ↗</a></td></tr>`;
+      <div class="lc2"><span><small>nilai</small>${mU(p.valueUsd)}</span><span><small>fee</small>${mU(p.feesUsd)}</span><span><small>deposit</small>${dep}</span><span><small>mcap</small>${mU(p.mcapUsd)}</span></div>
+      ${rangeStrip(p)}<div class="lc3">${status}</div><div class="lbtns">${btns}</div>${res}${autoCell(p)}</div>`);
+    return `<tr class="${busy ? "busy" : ""}"><td><span class="sym">${head}</span><span class="sub">${sub}</span></td><td class="r">${pnl}</td><td>${rangeStrip(p)}</td><td>${status}</td>
+      <td>${btns}${res}${autoCell(p)}<a href="https://dexscreener.com/elysium/${p.pool}" target="_blank" rel="noopener">dex ↗</a></td></tr>`;
   }).join("");
   $("#pfCards").innerHTML = cards.join("");
+  for (const id of Object.keys(state.note)) if (!rowOf(id)) delete state.note[id];
   const seen = store.get("seenAlerts", {});
   for (const p of pf.rows) for (const e of p.events || []) {
-    const k = p.pool + "|" + e.rule;
-    if (!seen[k]) { seen[k] = Date.now(); notify(`${e.kind === "close" ? "🔴 EXIT" : "⚠️ ALERT"} ${p.symbol}`, e.msg); }
+    const k = p.id + "|" + e.rule;
+    if (!seen[k]) { seen[k] = Date.now(); notify(`${e.kind === "close" ? "🔴 EXIT" : "⚠️ ALERT"} ${posName(p)}`, e.msg); }
   }
   for (const k of Object.keys(seen)) if (Date.now() - seen[k] > 3 * 864e5) delete seen[k];
   store.set("seenAlerts", seen);
   const x = pf.exitsCfg || {};
-  $("#pfRules").textContent = `Exit rules: alert PnL ≤ ${x.alertAtPnlPct ?? "off"}% · alert 1/3 bawah range ${x.alertBottomThirdOfRange ? "on" : "off"} · alert lewat semua slice ${x.alertFullyConverted ? "on" : "off"} · `
-    + `TP ${x.takeProfitPct ?? "off"} · SL ${x.stopLossPct ?? "off"}. Deposit dihitung dari likuiditas (ladder single-sided), fee yang udah di-claim belum ikut PnL.`;
+  $("#pfRules").textContent = `Satu baris = satu pembukaan (ladder atau satu range). Dua posisi di pool yang sama tetap dua baris, PnL dan rule auto-nya sendiri-sendiri. `
+    + `Alert: PnL ≤ ${x.alertAtPnlPct ?? "off"}% · 1/3 bawah ladder ${x.alertBottomThirdOfRange ? "on" : "off"} · lewat semua slice ${x.alertFullyConverted ? "on" : "off"}. `
+    + `Deposit: yang dicatat terminal saat buka; posisi dari luar terminal dihitung dari likuiditas (≈).`;
 }
 
 // ---------- settings ----------
@@ -751,222 +880,170 @@ function saveTightPref(name, value) { try { localStorage.setItem(name, value); }
 let tightTimer = null;
 async function loadTight() {
   const root = $("#tightRoot");
-  const width = tightPref("elyterm.tightWidth", "1");
+  const width = tightPref("elyterm.tightWidth", "2");
   const target = tightPref("elyterm.tightTarget", "5");
   try {
     state.tight = await getJson(`/api/tight?width=${encodeURIComponent(width)}&target=${encodeURIComponent(target)}`, null, 20000);
-    renderTight();
+    // do not redraw under the user's cursor while they are typing in one of the boxes
+    const typing = document.activeElement && root.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
+    if (!typing) renderTight();
   } catch (e) {
-    root.innerHTML = `<div class="empty">Gagal ambil tight range: ${esc(e.message)}</div>`;
+    if (!state.tight) root.innerHTML = `<div class="empty">Gagal ambil tight range: ${esc(e.message)}</div>`;
   }
+  clearTimeout(tightTimer);
+  if (state.view === "tight") tightTimer = setTimeout(loadTight, 20000);
 }
 function renderTight() {
   const d = state.tight;
   if (!d) return;
-  const cfg = d.cfg || {};
-  const width = d.screen.widthPct;
-  const target = d.screen.targetPctPerHour;
+  const width = d.screen.widthPct, target = d.screen.targetPctPerHour;
   const usd = tightPref("elyterm.tightUsd", String((state.data && state.data.sizeUsd) || 100));
-  const slip = tightPref("elyterm.tightSlip", String(cfg.maxSlippageBps || 100));
-  const live = d.liveAllowed;
   const rows = d.rows || [];
   $("#tightRoot").innerHTML = `
     <div class="tightwrap">
       <div class="tbox">
-        <h3>${live ? "LIVE" : "PRACTICE"} · auto-rebalance ${cfg.enabled ? "NYALA" : "mati"}${cfg.killed ? " · KILL" : ""}</h3>
+        <h3>Cari pool buat range sempit</h3>
         <p class="muted">${esc(d.note || "")} Sumber fee: ${esc(d.feeSource || "?")}. ${d.snapshotAgeSec == null ? "" : "Snapshot pool " + Math.round(d.snapshotAgeSec) + " dtk."}</p>
         <div class="tacts">
-          <label>lebar % <input id="tw" value="${width}" style="width:64px"></label>
-          <label>target %/jam <input id="tt" value="${target}" style="width:64px" title="Selera lo, bukan patokan aman"></label>
-          <label>usd <input id="tu" value="${esc(usd)}" style="width:72px"></label>
-          <label>slip bps <input id="ts" value="${esc(slip)}" style="width:64px"></label>
+          <label>lebar % <input id="tw" value="${width}" style="width:64px" inputmode="decimal"></label>
+          <label>target %/jam <input id="tt" value="${target}" style="width:64px" inputmode="decimal" title="Selera lo, bukan patokan aman"></label>
+          <label>ukuran $ <input id="tu" value="${esc(usd)}" style="width:72px" inputmode="decimal"></label>
           <button class="btn" id="tReload">Terapkan</button>
-          <button class="btn" id="tVerify">Cek on-chain shortlist</button>
         </div>
-        <p class="muted">Discanning ${d.scanned} pool dari snapshot. ${d.listed} lagi di daftar (butuh beberapa kali lolos biar tidak kedip). ${d.rejected} ditolak. Tidak ada entry otomatis.</p>
+        <p class="muted">${d.scanned} pool di-scan dari snapshot · ${d.listed} di daftar (butuh beberapa kali lolos biar tidak kedip) · ${d.rejected} tidak lolos filter. Yang tidak lolos tetap ditampilkan dengan alasannya: lu yang mutusin. Pool mana pun (tanpa hook) juga bisa dibuka dari tombol 🎯 tight di detail pool.</p>
       </div>
-      <div class="tgrid">${rows.length ? rows.map(tightCard).join("") : `<div class="empty">Belum ada pool yang lolos filter. Yang ditolak tetap dihitung di atas, alasannya tidak disembunyikan: sampel tipis, data basi, spacing terlalu kasar, atau gerak harga lebih lebar dari range.</div>`}</div>
-      ${rebalanceBox(cfg, d)}
+      <div class="tgrid">${rows.length ? rows.map(tightCard).join("") : `<div class="empty">Belum ada pool yang lolos filter: sampel tipis, data basi, spacing terlalu kasar, atau gerak harga lebih lebar dari range. Coba lebar lebih besar atau target lebih rendah.</div>`}</div>
+      ${autoBox(d)}
     </div>`;
   $("#tReload").onclick = () => {
     saveTightPref("elyterm.tightWidth", $("#tw").value);
     saveTightPref("elyterm.tightTarget", $("#tt").value);
     saveTightPref("elyterm.tightUsd", $("#tu").value);
-    saveTightPref("elyterm.tightSlip", $("#ts").value);
-    loadTight();
+    loadTight().then(renderTight);
   };
-  $("#tVerify").onclick = verifyShortlist;
-  $("#tightRoot").querySelectorAll("[data-plan]").forEach(b => b.onclick = () => openTightPlan(b.dataset.plan, b.dataset.close === "1"));
-  $("#tightRoot").querySelectorAll("[data-watch]").forEach(b => b.onclick = () => {
-    const cur = (state.tight.cfg.watch || []).filter(w => String(w.tokenId) !== String(b.dataset.watch));
-    saveTightCfg({ watch: cur.concat([{ pool: b.dataset.pool, tokenId: b.dataset.watch, symbol: b.dataset.sym }]) });
+  $("#tightRoot").querySelectorAll("[data-plan]").forEach(b => b.onclick = () => openTightPlan(b.dataset.plan));
+  $("#gSave").onclick = () => setAutoGlobal({
+    holdSec: $("#gHold").value, cooldownSec: $("#gCool").value, maxPerDay: $("#gMax").value,
+    maxNotionalUsd: $("#gNot").value, slippageBps: $("#gSlip").value, widthPct: $("#gWidth").value,
   });
-  const kill = $("#tKill");
-  if (kill) kill.onclick = () => saveTightCfg({ kill: true });
-  const en = $("#tEnable");
-  if (en) en.onclick = () => saveTightCfg({ enabled: !cfg.enabled, forcePractice: true });
-  const liveBtn = $("#tLive");
-  if (liveBtn) liveBtn.onclick = allowLive;
-  const forget = $("#tForget");
-  if (forget) forget.onclick = () => resumeTight($("#tForgetId").value);
-  clearTimeout(tightTimer);
-  if (state.view === "tight") tightTimer = setTimeout(loadTight, 20000);
+  $("#gPause").onclick = () => setAutoGlobal({ paused: !((d.auto || {}).global || {}).paused });
 }
 function tightCard(c) {
-  const v = c.verdict || {};
-  const where = c.where;
-  const band = c.band;
-  const whereTxt = !where ? "harga tidak ketahuan" : where.inRange
-    ? `di dalam · ${where.priceToEdgePct.toFixed(2)}% dari tepi` : `di luar (${where.side})`;
+  const v = c.verdict || {}, band = c.band;
   const gross = v.grossPctPerHour == null ? "--" : v.grossPctPerHour.toFixed(2) + "%/jam";
   const apr = v.simpleAprPct == null ? "--" : Math.round(v.simpleAprPct).toLocaleString("en-US") + "%";
   return `<article class="tcard ${c.listed ? "listed" : ""}">
-    <h3>${esc(c.symbol || "?")} <span class="muted">${esc(c.quoteSymbol || "")} ${esc(c.dex || "")}</span> ${c.listed ? "· di daftar" : ""}</h3>
+    <h3>${esc(c.symbol || "?")} <span class="muted">${esc(c.quoteSymbol || "")} ${esc(c.dex || "")}</span> <span class="st ${v.status === "lolos filter" ? "ok" : ""}">${c.listed ? "di daftar" : esc(v.status || "")}</span></h3>
     <div class="tnums">
       <span><small>fee pool/TVL</small><b>${gross}</b></span>
       <span><small>APR sederhana</small><b>${apr}</b></span>
-      <span><small>range tick</small><b>${band ? band.tickLower + " → " + band.tickUpper : "--"}</b></span>
-      <span><small>harga sekarang</small><b>${whereTxt}</b></span>
+      <span><small>lebar di grid</small><b>${band ? band.actualWidthPct.toFixed(2) + "%" + (band.spacingCoarse ? " (grid kasar)" : "") : "--"}</b></span>
+      <span><small>TVL</small><b>${fmtUsd(c.tvlUsd)}</b></span>
+      <span><small>gerak 1 jam</small><b class="${band && v.movePct > band.actualWidthPct ? "warn" : ""}">${v.movePct == null ? "--" : v.movePct.toFixed(1) + "%"}</b></span>
     </div>
-    <div class="muted">${band ? "lebar minta " + band.requestedWidthPct + "% · kejajar " + band.actualWidthPct.toFixed(2) + "%" + (band.spacingCoarse ? " · spacing lebih kasar" : "") : "range tidak kejajar"} · ${esc(v.label || "")} · ${esc(v.confidence || "")}</div>
-    <div class="muted">${c.net && c.net.known ? "Net parsial " + fmtUsd(c.net.netUsd) + " atas ukuran default. Gas dan IL tidak masuk." : esc((c.net && c.net.note) || "")}</div>
-    ${(v.notes || []).concat(v.rejects || []).slice(0, 4).map(x => `<div class="muted">${esc(x)}</div>`).join("")}
+    <div class="muted">${esc(v.label || "")} · ${esc(v.confidence || "")}</div>
+    ${(v.notes || []).concat(v.rejects || []).slice(0, 3).map(x => `<div class="muted">${esc(x)}</div>`).join("")}
     <div class="tacts">
-      ${c.supported ? `<button class="btn go" data-plan="${esc(c.pool)}">Review buka</button>` : `<span class="muted">tidak didukung (hook / fee dinamis / spacing)</span>`}
+      ${c.supported ? `<button class="btn go" data-plan="${esc(c.pool)}">Buka tight…</button>` : `<span class="muted">tidak didukung (hook / fee dinamis / spacing)</span>`}
     </div>
   </article>`;
 }
-function rebalanceBox(cfg, d) {
-  const watch = (cfg.watch || []).map(w => `#${w.tokenId} ${esc(w.symbol || "")}`).join(", ") || "belum ada";
-  const audit = (d.audit || []).slice(-6).map(a => `<div class="muted">${esc(a.kind || "")} ${esc(a.reason || a.error || a.step || "")}</div>`).join("") || `<div class="muted">audit kosong</div>`;
+function autoBox(d) {
+  const a = d.auto || {}, g = a.global || {}, rules = a.rules || {};
+  const names = {};
+  for (const r of (state.pf && state.pf.rows) || []) names[r.id] = posName(r);
+  const list = Object.entries(rules).map(([id, r]) => {
+    const what = [r.tp && `TP +${r.tp}%`, r.sl && `SL ${r.sl}%`, r.above !== "hold" && `↑ ${ACT_WORD[r.above]}`, r.below !== "hold" && `↓ ${ACT_WORD[r.below]}`].filter(Boolean).join(" · ");
+    return `<div class="arow"><b>${esc(names[id] || r.symbol || id)}</b> <span class="muted">${esc(id)}</span> · ${esc(what)} · <span class="${r.status === "armed" ? "pos" : r.status === "done" ? "muted" : "warn"}">${esc(r.status)}</span>${r.msg ? ` <span class="muted">${esc(r.msg)}</span>` : ""}</div>`;
+  }).join("") || `<div class="muted">Belum ada rule. Pasang dari tombol ⚙ Auto di baris posisi (tab Portfolio), atau langsung saat buka tight.</div>`;
+  const when = t => t ? new Date(t * 1000).toLocaleTimeString() : "";
+  const log = (d.log || []).slice().reverse().map(x => `<div class="muted">${when(x.ts)} · ${esc(x.symbol || x.id || "")} · ${esc(x.kind || "")} ${esc(x.action || "")} ${esc(x.reason || x.error || "")}</div>`).join("") || `<div class="muted">log kosong</div>`;
   return `<div class="tbox">
-    <h3>Auto-rebalance</h3>
-    <p class="muted">Mati secara default. Practice secara default. Loop-nya jalan di proses Python di Mac ini, tab boleh ditutup, tapi prosesnya harus tetap hidup. Tidak mengganti tx yang masih pending. Bukan satu transaksi atomik: close, lalu swap, lalu mint, masing-masing sendiri, dan simulasi berhenti setelah close.</p>
-    <div class="tnums">
-      <span><small>tahan di luar</small><b>${cfg.persistenceSec}s</b></span>
-      <span><small>cooldown</small><b>${cfg.cooldownSec}s</b></span>
-      <span><small>maks / hari</small><b>${cfg.maxPerDay}</b></span>
-      <span><small>maks swap</small><b>${fmtUsd(cfg.maxSwapUsd)}</b></span>
-      <span><small>maks notional</small><b>${fmtUsd(cfg.maxNotionalUsd)}</b></span>
-      <span><small>net minimum</small><b>${fmtUsd(cfg.minNetUsd)}</b></span>
+    <h3>Auto ${g.paused ? "· ⏸ DIJEDA" : ""} <span class="muted">${d.practice ? "PRACTICE: cuma simulasi" : "LIVE"} · dicek tiap ${d.autoCheckSec || 60} dtk di proses server</span></h3>
+    <p class="muted">Batas ini berlaku buat semua rule range (rebalance / close saat keluar range). TP dan SL tidak nunggu.</p>
+    <div class="aform cols">
+      <label>tahan di luar range <span><input id="gHold" value="${g.holdSec}" inputmode="numeric"> dtk</span></label>
+      <label>jeda antar aksi <span><input id="gCool" value="${g.cooldownSec}" inputmode="numeric"> dtk</span></label>
+      <label>maks aksi / posisi / hari <span><input id="gMax" value="${g.maxPerDay}" inputmode="numeric"> ×</span></label>
+      <label>maks nilai posisi <span>$ <input id="gNot" value="${g.maxNotionalUsd}" inputmode="decimal"></span></label>
+      <label>slippage swap maks <span><input id="gSlip" value="${g.slippageBps}" inputmode="numeric"> bps</span></label>
+      <label>lebar default rebalance <span><input id="gWidth" value="${g.widthPct}" inputmode="decimal"> %</span></label>
     </div>
-    <p class="muted">Posisi yang diikutkan: ${watch}. Net minimum membandingkan proxy fee pool/TVL dikurangi fee swap. IL, adverse selection, dan gas tidak masuk. 0 = gate net mati.</p>
-    <div class="tacts">
-      <button class="btn" id="tEnable">${cfg.enabled ? "Matikan auto" : "Nyalakan auto (tetap practice)"}</button>
-      <button class="btn" id="tLive">Izinkan live…</button>
-      <button class="btn kill" id="tKill">Kill switch</button>
-    </div>
-    <div class="tacts">
-      <input id="tForgetId" placeholder="token id buat lepas jeda" style="width:180px">
-      <button class="btn" id="tForget">Lepas jeda</button>
-    </div>
-    <p class="muted">Posisi di portfolio (kalau sudah di-load):</p>
-    ${pfTightButtons()}
-    ${audit}
+    <div class="tacts"><button class="btn go" id="gSave">Simpan batas</button><button class="btn ${g.paused ? "" : "kill"}" id="gPause">${g.paused ? "▶ Lanjutkan semua auto" : "⏸ Jeda semua auto"}</button></div>
+    <h3 style="margin-top:12px">Rule yang terpasang</h3>${list}
+    <h3 style="margin-top:12px">Log</h3>${log}
   </div>`;
 }
-function pfTightButtons() {
-  const rows = (state.pf && state.pf.rows) || [];
-  if (!rows.length) return `<div class="muted">Load portfolio dulu kalau mau tutup cepat atau ikutkan posisi.</div>`;
-  return rows.map(p => (p.positions || []).map(pos => `<div class="tacts">
-      <span>${esc(p.symbol)} #${pos.tokenId} ${pos.inRange ? "di dalam" : "di luar"}</span>
-      <button class="btn" data-plan="${esc(p.pool)}" data-close="1">Review tutup + buka</button>
-      <button class="btn" data-watch="${pos.tokenId}" data-pool="${esc(p.pool)}" data-sym="${esc(p.symbol)}">Ikutkan</button>
-    </div>`).join("")).join("");
-}
-async function saveTightCfg(patch) {
-  if (!guard()) return;
-  try {
-    const r = await trade.call("/api/tight/settings", patch);
-    toast(r.cfg && r.cfg.note ? r.cfg.note : "Setting tersimpan");
-    loadTight();
-  } catch (e) { alert(e.message); }
-}
-async function allowLive() {
-  if (!guard()) return;
-  const typed = prompt("Buat live, ketik persis: SAYA PAHAM LIVE\nIni tetap butuh ELYSIUM_PRACTICE_MODE=false di proses yang jalan. Auto tidak menyala sendiri.");
-  if (typed !== "SAYA PAHAM LIVE") return alert("Tidak diubah.");
-  if (!confirm("Live artinya langkah yang lolos gate bisa terkirim beneran. Tetap satu per satu, bukan atomik. Lanjut?")) return;
-  await saveTightCfg({ allowLive: true, liveAck: typed });
-}
-async function resumeTight(id) {
-  if (!guard() || !id) return;
-  if (!confirm("Lepas jeda " + id + "?\nTx yang hash-nya tidak tersimpan tidak akan dikirim ulang otomatis. Kalau masih pending, permintaan ini ditolak.")) return;
-  try {
-    await trade.call("/api/tight/resume", { tokenId: id, confirmForget: true });
-    loadTight();
-  } catch (e) { alert(e.message); }
-}
-async function verifyShortlist() {
-  const ids = (state.tight && state.tight.rows || []).filter(r => r.listed || r.verdict.status === "lolos filter").map(r => r.pool).slice(0, 8);
-  if (!ids.length) return alert("Shortlist kosong. Tidak ada yang dicek.");
-  if (!guard()) return;
-  try {
-    const r = await trade.call("/api/tight/verify", { pools: ids });
-    alert((r.rows || []).map(x => `${x.pool.slice(0, 8)} cache ${x.cachedTick} live ${x.liveTick} ${x.moved ? "GESER" : "sama"}`).join("\n") || r.error);
-  } catch (e) { alert(e.message); }
-}
-async function openTightPlan(pool, withClose) {
-  const usd = parseFloat(tightPref("elyterm.tightUsd", "100")) || 0;
-  const width = parseFloat(tightPref("elyterm.tightWidth", "1")) || 1;
-  const slip = parseInt(tightPref("elyterm.tightSlip", "100"), 10) || 100;
-  let rev;
-  try {
-    rev = await post("/api/tight/plan", { pool, widthPct: width, usd, slippageBps: slip, close: !!withClose });
-  } catch (e) { return alert(e.message); }
-  if (!rev.ok) return alert(rev.error || "plan gagal");
-  const where = rev.where || {};
-  const band = rev.band || {};
-  const net = rev.net || {};
-  const steps = rev.steps || [];
+function openTightPlan(pool) {
+  const g = autoGlobal();
+  const card = ((state.tight && state.tight.rows) || []).find(r => r.pool === pool) || findRow(pool) || {};
+  $("#modalCard").classList.remove("wide");
   $("#modalCard").innerHTML = `
-    <h3>${withClose ? "Tutup lalu buka" : "Buka"} ${esc(rev.symbol || "")} ${esc(rev.quoteSymbol || "")}</h3>
-    <p class="warn">Ini ${steps.length} transaksi terpisah, bukan atomik. Kalau salah satu gagal, yang sudah masuk tidak di-undo dan tidak dikirim ulang.</p>
-    <div class="tnums">
-      <span><small>tick sekarang</small><b>${rev.where ? "" : ""}${band.tickLower} → ${band.tickUpper}</b></span>
-      <span><small>harga</small><b>${where.inRange ? "di dalam" : "di luar"} · ${where.priceToEdgePct != null ? where.priceToEdgePct.toFixed(2) + "% ke tepi" : ""}</b></span>
-      <span><small>lebar kejajar</small><b>${band.actualWidthPct ? band.actualWidthPct.toFixed(2) + "%" : "--"}</b></span>
-      <span><small>slippage</small><b>${(rev.slippageBps / 100).toFixed(2)}%</b></span>
+    <h3>🎯 Buka tight ${esc(card.symbol || "")} <span class="muted">${esc(card.quoteSymbol || "")} ${esc(card.dex || "")}</span></h3>
+    <div class="acts">
+      <label>$ <input id="pUsd" value="${esc(tightPref("elyterm.tightUsd", String((state.data && state.data.sizeUsd) || 100)))}" style="width:80px" inputmode="decimal"></label>
+      <label>lebar % <input id="pWidth" value="${esc(tightPref("elyterm.tightWidth", "2"))}" style="width:60px" inputmode="decimal"></label>
+      <label>slippage bps <input id="pSlip" value="${g.slippageBps || 100}" style="width:60px" inputmode="numeric"></label>
     </div>
-    ${steps.map(s => `<div>${s.n}. <b>${esc(s.what)}</b> ${s.usd != null ? fmtUsd(s.usd) : ""}<div class="muted">${esc(s.note)}</div></div>`).join("")}
-    <p class="muted">${esc(rev.minOutNote || "")}<br>${esc(rev.gasNote || "")}<br>${esc(rev.costNote || "")}</p>
-    <p class="muted">${net.known ? `Net parsial ${fmtUsd(net.netUsd)} (gross proxy ${fmtUsd(net.grossUsd)} − fee swap ${fmtUsd(net.swapCostUsd)}). ${esc(net.note || "")}` : esc(net.note || "Net tidak ditampilkan.")}</p>
-    <div class="tacts" id="tStepBtns"></div>
-    <div class="res" id="tStepMsg"></div>
-    <div class="acts"><button class="btn" id="tClosePlan">Tutup</button></div>`;
+    <div id="pBody" class="muted" style="margin:10px 0">Hitung…</div>
+    <div class="aform">
+      <label>Kalau harga NAIK lewat atas range <select id="pAbove"><option value="hold">diam</option><option value="rebalance">rebalance</option><option value="close">close + swap</option></select></label>
+      <label>Kalau harga TURUN lewat bawah range <select id="pBelow"><option value="hold">diam</option><option value="rebalance">rebalance</option><option value="close">close + swap</option></select></label>
+      <label>Take profit, PnL ≥ <span><input id="pTp" placeholder="off" inputmode="decimal"> %</span></label>
+      <label>Stop loss, PnL ≤ −<span><input id="pSl" placeholder="off" inputmode="decimal"> %</span></label>
+    </div>
+    <p class="muted">Rule di atas langsung nempel ke posisi yang kebuka (bisa diubah di ⚙ Auto). Di practice mode tidak ada posisi yang dibuat, jadi rule tidak dipasang.</p>
+    <div class="acts"><button class="btn go" id="pGo" ${trade.ready() ? "" : "disabled"} title="${esc(trade.why())}">${trade.ready() ? (practice() ? "🧪 Simulasi" : "⚡ Buka tight") : "🔒 " + esc(trade.why())}</button><span class="spacer"></span><button class="btn" id="pClose">Tutup</button></div>
+    <div class="res" id="pMsg"></div>`;
   $("#modal").classList.remove("hidden");
-  $("#tClosePlan").onclick = closeModal;
-  const box = $("#tStepBtns");
-  steps.forEach(s => {
-    const b = document.createElement("button");
-    b.className = "btn go";
-    b.textContent = (practice() ? "Simulasi " : "Kirim ") + s.what;
-    b.onclick = () => runTightStep(rev, s, withClose);
-    box.appendChild(b);
-  });
-}
-async function runTightStep(rev, step, withClose) {
-  if (!guard()) return;
-  const tokenId = withClose ? (prompt("Token id posisi yang ditutup?", "") || "") : `open:${rev.pool}`;
-  if (!tokenId) return;
-  const key = `manual:${tokenId}:${step.what}:${rev.band.tickLower}:${rev.band.tickUpper}`;
-  const verb = practice() ? "Simulasi" : "KIRIM BENERAN";
-  if (!confirm(`${verb} langkah ${step.n}: ${step.what}.\nBukan gabungan dengan langkah lain.\n${practice() ? "Practice: eth_call, tidak ada yang dikirim." : "Ini transaksi mainnet."}`)) return;
-  $("#tStepMsg").textContent = "Jalan…";
-  try {
-    const res = await trade.call("/api/trade/tight", {
-      key, step: step.what, pool: rev.pool, tokenId,
-      tickLower: rev.band.tickLower, tickUpper: rev.band.tickUpper, usd: parseFloat(tightPref("elyterm.tightUsd", "100")) || 0,
-      swapFrac: rev.swapFrac || 0, slippageBps: rev.slippageBps, quoteUsd: rev.quoteUsd || 0,
-    });
-    if (res.hash) {
-      $("#tStepMsg").innerHTML = `Terkirim ${txLink(res.hash)}. Cek receipt sebelum langkah berikutnya. Tidak dikirim ulang.`;
-      const rc = await trade.call("/api/trade/tight-receipt", { tokenId });
-      $("#tStepMsg").innerHTML += `<br>Receipt: ${esc(rc.state || rc.error || "")}`;
-    } else {
-      $("#tStepMsg").innerHTML = res.ok ? `Simulasi / selesai tanpa hash. ${esc(res.note || res.error || "")}${practiceNote(res)}` : `<span class="neg">${esc(res.error || "gagal")}</span>`;
-    }
-  } catch (e) { $("#tStepMsg").innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  $("#pAbove").value = tightPref("elyterm.tightAbove", "hold");
+  $("#pBelow").value = tightPref("elyterm.tightBelow", "hold");
+  $("#pClose").onclick = closeModal;
+  let rev = null, timer = null, seq = 0;
+  const vals = () => ({ usd: parseFloat($("#pUsd").value) || 0, widthPct: parseFloat($("#pWidth").value) || 0, slippageBps: parseInt($("#pSlip").value, 10) || 100 });
+  async function plan() {
+    const my = ++seq, v = vals();
+    if (!(v.usd > 0) || !(v.widthPct > 0)) { $("#pBody").innerHTML = `<span class="neg">Isi ukuran dan lebar.</span>`; rev = null; return; }
+    let r;
+    try { r = await post("/api/tight/plan", Object.assign({ pool }, v)); } catch (e) { r = { ok: false, error: e.message }; }
+    if (my !== seq || !$("#pBody")) return;
+    if (!r.ok) { rev = null; $("#pBody").innerHTML = `<span class="neg">${esc(r.error || "plan gagal")}</span>`; return; }
+    rev = r;
+    const band = r.band, net = r.net || {}, sizePct = r.tvlUsd ? v.usd / r.tvlUsd * 100 : null;
+    $("#pBody").innerHTML = `<div class="tnums">
+        <span><small>range di grid pool</small><b>${band.actualWidthPct.toFixed(2)}%${band.spacingCoarse ? " (grid lebih kasar dari yang diminta)" : ""}</b></span>
+        <span><small>tick</small><b>${band.tickLower} → ${band.tickUpper}</b></span>
+        <span><small>di-swap dulu</small><b>${r.swapFrac != null ? (r.swapFrac * 100).toFixed(0) + "% ≈ " + fmtUsd(v.usd * r.swapFrac) : "--"}</b></span>
+        <span><small>ukuran vs TVL</small><b class="${sizePct > 25 ? "warn" : ""}">${sizePct == null ? "--" : sizePct.toFixed(1) + "%"}</b></span>
+      </div>
+      <div>${(r.steps || []).map(s => `<span title="${esc(s.note)}">${s.n}. <b>${esc(s.what)}</b> ${s.usd != null ? fmtUsd(s.usd) : ""}</span>`).join(" → ")}</div>
+      <div class="muted" style="margin-top:6px">${esc(r.flowNote || "")}</div>
+      <div class="muted">${net.known ? `Proxy fee 1 jam ${fmtUsd(net.grossUsd)} − fee swap ${fmtUsd(net.swapCostUsd)}. ${esc(r.costNote || "")}` : esc(net.note || "")}</div>`;
+  }
+  ["#pUsd", "#pWidth", "#pSlip"].forEach(s => { $(s).oninput = () => { clearTimeout(timer); timer = setTimeout(plan, 300); }; });
+  plan();
+  $("#pGo").onclick = async () => {
+    if (!trade.ready() || !rev) return;
+    const v = vals();
+    const rule = { above: $("#pAbove").value, below: $("#pBelow").value, tp: $("#pTp").value.trim(), sl: $("#pSl").value.trim() };
+    if (!practice() && !confirm(`Buka tight ${card.symbol || ""}?\n${fmtUsd(v.usd)} · range ${rev.band.actualWidthPct.toFixed(2)}% · slippage maks ${v.slippageBps / 100}%\n${rule.above !== "hold" || rule.below !== "hold" ? `Auto: atas → ${ACT_WORD[rule.above]}, bawah → ${ACT_WORD[rule.below]}\n` : ""}Wallet ${short(trade.info.wallet)}. Ini kirim transaksi beneran (swap, lalu mint).`)) return;
+    saveTightPref("elyterm.tightUsd", String(v.usd));
+    saveTightPref("elyterm.tightAbove", rule.above);
+    saveTightPref("elyterm.tightBelow", rule.below);
+    const btn = $("#pGo");
+    btn.disabled = true;
+    $("#pMsg").textContent = practice() ? "Simulasi di chain…" : "Swap + mint… (±10–60 detik, jangan ditutup)";
+    try {
+      const s = await trade.call("/api/trade/tight-open", Object.assign({ pool, symbol: card.symbol, rule }, v));
+      if (!$("#pMsg")) return;
+      setTimeout(() => { const m = $("#pMsg"); if (m) m.scrollIntoView({ block: "nearest" }); }, 0);
+      $("#pMsg").innerHTML = s.ok
+        ? `${stepsHtml(s)}<br>${s.dryRun ? "✓ Simulasi lolos." : `✓ Tight kebuka${(s.positions || []).length ? ": NFT #" + s.positions.join(", #") : ""}${s.ruleArmed ? " · auto terpasang" : ""}.`}${practiceNote(s)}`
+        : `<span class="neg">✗ ${esc(s.stage || "")} ${esc(s.error || "gagal")}${s.sent ? "<br>Sebagian transaksi sudah terkirim (token ada di wallet). Cleanup bisa jual balik." : ""}</span>`;
+      if (s.ok && !s.dryRun) { loadPortfolio(true); setTimeout(() => loadPortfolio(true), 6000); }
+    } catch (e) { if ($("#pMsg")) $("#pMsg").innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`; }
+    finally { btn.disabled = !trade.ready(); }
+  };
 }
 function setView(v) {
   state.view = v;
@@ -1069,6 +1146,8 @@ $("#detail").addEventListener("click", async e => {
   if (e.target.closest("[data-closesheet]")) { document.body.classList.remove("sheet"); return; }
   const z = e.target.closest("[data-zap]"), r = state.sel && findRow(state.sel);
   if (z && r) return z.dataset.zap === "ask" ? openZap(r, state.data.sizeUsd) : quickZap(r, parseFloat(z.dataset.zap));
+  const t = e.target.closest("[data-tightopen]");
+  if (t) return openTightPlan(t.dataset.tightopen);
   const c = e.target.closest("[data-copy]");
   if (c) { try { await navigator.clipboard.writeText(c.dataset.copy); c.textContent = "copied ✓"; } catch (err) {} }
 });
@@ -1091,19 +1170,21 @@ $("#keyBtn").onclick = async () => {
     + "\n\nDi elysium_terminal/.env (satu baris, tanpa spasi, tanpa kutip):\nELYSIUM_PRIVATE_KEY=<64 hex>\n\nKey Robinhood (RH_PRIVATE_KEY) nggak dipakai di sini.\nSave, lalu klik chip ini lagi. Di Terminal: python3 -m elysium_terminal doctor");
 };
 const onPfClick = e => {
-  const b = e.target.closest("[data-close],[data-claim],[data-swap],[data-reenter]");
+  const b = e.target.closest("[data-act]");
   if (!b || !state.pf) return;
-  const pool = b.dataset.close || b.dataset.claim || b.dataset.swap || b.dataset.reenter;
-  const p = state.pf.rows.find(x => x.pool === pool);
+  const p = rowOf(b.dataset.id);
   if (!p) return;
-  if (b.dataset.close) return closeLadder(p, b);
-  if (b.dataset.claim) return claimLadder(p, b);
-  return swapLadder(p, b, !!b.dataset.reenter);
+  const a = b.dataset.act;
+  if (a === "close") return closePos(p);
+  if (a === "claim") return claimPos(p);
+  if (a === "swap") return swapPos(p, false);
+  if (a === "reenter") return swapPos(p, true);
+  if (a === "rebal") return rebalancePos(p);
+  if (a === "auto") return openAuto(p);
+  if (a === "resume") return resumeAuto(p.id);
 };
 $("#positions tbody").addEventListener("click", onPfClick);
 $("#pfCards").addEventListener("click", onPfClick);
-$("#positions tbody").addEventListener("change", e => { const s = e.target.closest("[data-tp]"); if (s) setAutoExit(s); });
-$("#pfCards").addEventListener("change", e => { const s = e.target.closest("[data-tp]"); if (s) setAutoExit(s); });
 $("#cleanupBtn").onclick = () => cleanupWallet($("#cleanupBtn"));
 $("#cleanupBtn2").onclick = () => cleanupWallet($("#cleanupBtn2"));
 $("#loadWallet").onclick = () => loadPortfolio(true);
@@ -1149,6 +1230,13 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   beat();
   setInterval(beat, 20000);
   setInterval(() => { if (!document.hidden) loadPools(); }, every);
-  setInterval(() => { if (!document.hidden && state.wallet) loadPortfolio(); }, every * 2);
+  // portfolio: every 30 s while you look at it (the server caches 25 s), every few minutes otherwise
+  let pfTick = 0;
+  setInterval(() => {
+    if (document.hidden || !state.wallet || Object.keys(state.busy).length) return;
+    pfTick++;
+    if (state.view === "portfolio" || pfTick % 6 === 0) loadPortfolio();
+  }, 30000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadPools(); if (state.wallet) loadPortfolio(); } });
   setInterval(tickAge, 5000);
 })();

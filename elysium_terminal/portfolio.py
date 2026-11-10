@@ -1,4 +1,7 @@
-"""A wallet's v3 and v4 LP positions on Elysium, one row per ladder (pool), from chain.
+"""A wallet's v3 and v4 LP positions on Elysium, one row per thing you opened, from chain.
+
+Two opens in the same pool are two rows (see groups.py): a ladder's slices stay together,
+a second ladder or a tight range in that pool gets its own row, PnL, buttons and auto rules.
 
 v4: position NFTs from the PositionManager's Transfer logs (cached), ownerOf to confirm.
     Unclaimed fees from StateView fee growth. Same idea as RH Terminal.
@@ -16,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import chain
+from . import chain, groups
 
 Q128 = 1 << 128
 MAX128 = (1 << 128) - 1
@@ -245,7 +248,7 @@ def exit_events(lad: dict, cfg: dict) -> list[dict]:
     if x.get("alertAtPnlPct") is not None and pnl is not None and pnl <= x["alertAtPnlPct"]:
         ev.append({"kind": "alert", "rule": "pnl", "msg": f"PnL {pnl:+.1f}% ≤ {x['alertAtPnlPct']}%"})
     rp = lad.get("rangePct")
-    if x.get("alertBottomThirdOfRange") and rp is not None and 0 <= rp < 100 / 3 and lad["inRangeCount"]:
+    if x.get("alertBottomThirdOfRange") and rp is not None and 0 <= rp < 100 / 3 and lad["inRangeCount"] and lad.get("kind") == "ladder":
         ev.append({"kind": "alert", "rule": "bottomThird", "msg": f"harga di 1/3 bawah range ({rp:.0f}%)"})
     if x.get("alertFullyConverted") and rp is not None and rp < 0:
         ev.append({"kind": "alert", "rule": "converted", "msg": "harga lewat bawah semua slice: sekarang pegang token"})
@@ -258,15 +261,19 @@ def exit_events(lad: dict, cfg: dict) -> list[dict]:
 
 def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
     now = time.time()
+    warnings: list[str] = []
     with _lock:
         v4_ids, mint_blocks = v4_position_ids(data, wallet)
     pos = read_v4(v4_ids)
+    if len(pos) < len(v4_ids):
+        # read_v4 drops emptied NFTs too, so this is only a hint, not an error
+        pass
     for venue, spec in chain.V3_VENUES.items():
         try:
             ids = v3_token_ids(spec["npm"], wallet)
             pos += read_v3(spec["npm"], venue, ids)
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.append(f"posisi {venue} gagal dibaca: {str(exc)[:120]}")
     v4s = [p for p in pos if p["dex"] == "v4"]
     v3s = [p for p in pos if p["dex"] == "v3"]
     fees = unclaimed_v4(v4s)
@@ -288,10 +295,13 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
     meta = book.tokens(toks) if toks else {}
     hype = book.ix.hype_usd()
     book.add_pools(pools)
-    ladders: dict[str, dict] = {}
+
+    # ---- one priced item per NFT -------------------------------------------------
+    items = []
     for p in pos:
         k, sl = p["key"], s0.get(p["pool"])
         if not sl:
+            warnings.append(f"harga pool …{p['pool'][-6:]} gagal dibaca, posisi #{p['tokenId']} dilewati")
             continue
         q = chain.quote_side(k)
         if q is None:
@@ -311,64 +321,37 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         fq, ft = (f0, f1) if q == 0 else (f1, f0)
         c0, c1 = claimed.get(fkey, (0, 0))
         cq, ct = (c0, c1) if q == 0 else (c1, c0)
-        to_usd = lambda rq, rt: ((rq / 10 ** dq) + (rt / 10 ** dt) * (tok_q or 0)) * qusd if qusd else None
-        dep = ladder_deposit_usd(p["liquidity"], p["tickLower"], p["tickUpper"], q, dq, qusd)
-        in_range = p["tickLower"] <= sl["tick"] < p["tickUpper"]
-        g = ladders.setdefault(p["pool"], {
-            "pool": p["pool"], "dex": p["dex"], "venue": p["venue"], "manager": p["manager"], "key": k,
-            "token": taddr, "quote": qaddr, "quoteSymbol": chain.QUOTE_SYMBOL.get(qaddr, "?"),
-            "symbol": (meta.get(taddr) or {}).get("symbol") or taddr[2:8], "quoteSide": q, "flip": q == 0,
-            "tick": sl["tick"], "lpFeePct": (sl.get("lpFee") or k.get("fee") or 0) / 1e4, "positions": [],
-            "valueUsd": 0.0, "feesUsd": 0.0, "claimedUsd": 0.0, "depositUsd": 0.0, "inRangeCount": 0,
-            "tokenUsd": tok_q * qusd if tok_q and qusd else None,
-            "amountQuote": 0.0, "amountToken": 0.0, "feesQuote": 0.0, "feesToken": 0.0, "mintedAt": None,
-            "supply": (meta.get(taddr) or {}).get("supply"), "decimals": dt,
+
+        def to_usd(rq, rt, dq=dq, dt=dt, tok_q=tok_q, qusd=qusd):
+            return ((rq / 10 ** dq) + (rt / 10 ** dt) * (tok_q or 0)) * qusd if qusd else None
+
+        items.append({
+            **p, "q": q, "quote": qaddr, "token": taddr, "qusd": qusd, "dq": dq, "dt": dt, "tokQ": tok_q,
+            "tick": sl["tick"], "lpFee": sl.get("lpFee"),
+            "inRange": p["tickLower"] <= sl["tick"] < p["tickUpper"],
+            "valueUsd": to_usd(aq, at), "feesUsd": to_usd(fq, ft), "claimedUsd": to_usd(cq, ct),
+            "ladderDepositUsd": ladder_deposit_usd(p["liquidity"], p["tickLower"], p["tickUpper"], q, dq, qusd),
+            "amountQuote": aq / 10 ** dq, "amountToken": at / 10 ** dt,
+            "feesQuote": fq / 10 ** dq, "feesToken": ft / 10 ** dt,
+            "mintBlock": mint_blocks.get(p["tokenId"]) if p["dex"] == "v4" else None,
         })
-        mt = mint_blocks.get(p["tokenId"]) if p["dex"] == "v4" else None
-        g["positions"].append({"tokenId": p["tokenId"], "tickLower": p["tickLower"], "tickUpper": p["tickUpper"],
-                               "liquidity": str(p["liquidity"]), "inRange": in_range, "mintedAt": mt,
-                               "valueUsd": to_usd(aq, at), "feesUsd": to_usd(fq, ft),
-                               "claimedUsd": to_usd(cq, ct), "depositUsd": dep,
-                               "dex": p["dex"], "manager": p["manager"]})
-        for field, val in (("valueUsd", to_usd(aq, at)), ("feesUsd", to_usd(fq, ft)),
-                           ("claimedUsd", to_usd(cq, ct)), ("depositUsd", dep)):
-            if val is not None and g[field] is not None:
-                g[field] += val
-            else:
-                g[field] = None
-        g["amountQuote"] += aq / 10 ** dq
-        g["amountToken"] += at / 10 ** dt
-        g["feesQuote"] += fq / 10 ** dq
-        g["feesToken"] += ft / 10 ** dt
-        g["inRangeCount"] += int(in_range)
-    rows = []
-    for g in ladders.values():
-        lo = min(x["tickLower"] for x in g["positions"])
-        hi = max(x["tickUpper"] for x in g["positions"])
-        frac = (g["tick"] - lo) / (hi - lo) if hi > lo else None
-        if frac is not None and g["flip"]:
-            frac = 1 - frac
-        g.update(tickLower=lo, tickUpper=hi, posCount=len(g["positions"]),
-                 rangePct=frac * 100 if frac is not None else None,
-                 pnlUsd=(g["valueUsd"] + (g["feesUsd"] or 0) + (g["claimedUsd"] or 0) - g["depositUsd"])
-                 if None not in (g["valueUsd"], g["depositUsd"]) else None)
-        g["pnlPct"] = g["pnlUsd"] / g["depositUsd"] * 100 if g["pnlUsd"] is not None and g["depositUsd"] else None
-        g["heldHours"] = None
-        if g["supply"] and g["tokenUsd"]:
-            cap = g["supply"] / 10 ** g["decimals"] * g["tokenUsd"]
-            g["mcapUsd"] = cap
-            if hi - lo > LADDER_MAX_TICKS:
-                g["capLo"] = g["capHi"] = None
-            else:
-                atp = lambda t, cap=cap: cap * 1.0001 ** ((-(t - g["tick"])) if g["flip"] else (t - g["tick"]))
-                g["capLo"], g["capHi"] = sorted((atp(lo), atp(hi)))
-        else:
-            g["capLo"] = g["capHi"] = g["mcapUsd"] = None
-        g["state"] = ("in" if g["inRangeCount"] else "above" if frac is not None and frac > 1
-                      else "below" if frac is not None and frac < 0 else "gap")
-        g["events"] = exit_events(g, cfg)
-        rows.append(g)
-    rows.sort(key=lambda r: -abs(r["pnlUsd"] or 0))
+
+    registry = groups.load(data)
+    if not warnings:
+        try:
+            groups.prune(data, {(p["manager"].lower(), int(p["tokenId"])) for p in pos})
+        except OSError:
+            pass
+    rows = [_group_row(g, cfg, meta, book, now) for g in groups.group_positions(items, registry, mint_blocks)]
+    rows.sort(key=lambda r: ((r["symbol"] or "").lower(), r["pool"], r["positions"][0]["tokenId"]))
+    per_pool: dict[str, int] = {}
+    for r in rows:
+        per_pool[r["pool"]] = per_pool.get(r["pool"], 0) + 1
+    seen: dict[str, int] = {}
+    for r in rows:
+        seen[r["pool"]] = seen.get(r["pool"], 0) + 1
+        r["nth"], r["ofPool"] = seen[r["pool"]], per_pool[r["pool"]]
+
     def tot(k):
         vals = [r[k] for r in rows if r[k] is not None]
         return sum(vals) if vals else None
@@ -376,6 +359,93 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
     value = tot("valueUsd")
     return {"wallet": wallet.lower(), "t": now, "rows": rows, "ethUsd": hype, "hypeUsd": hype,
             "valueHype": (value / hype) if value and hype else None,
-            "valueUsd": tot("valueUsd"), "feesUsd": tot("feesUsd"), "depositUsd": tot("depositUsd"),
+            "valueUsd": value, "feesUsd": tot("feesUsd"), "depositUsd": tot("depositUsd"),
             "pnlUsd": tot("pnlUsd"), "balances": bal, "exitsCfg": cfg["exits"],
+            "partial": bool(warnings), "warnings": warnings[:6],
             "walletUsd": (bal["usdc"] or 0) + ((bal["hype"] or 0) + (bal["whype"] or 0)) * (hype or 0)}
+
+
+def _sum(vals):
+    vals = list(vals)
+    return None if any(v is None for v in vals) else sum(vals)
+
+
+def _group_row(grp: dict, cfg: dict, meta: dict, book, now: float) -> dict:
+    """One portfolio row from the NFTs of one group."""
+    ps = sorted(grp["positions"], key=lambda x: x["tokenId"])
+    m, first = grp.get("meta") or {}, ps[0]
+    k, q = first["key"], first["q"]
+    taddr, qaddr, qusd, tok_q = first["token"], first["quote"], first["qusd"], first["tokQ"]
+    lo = min(x["tickLower"] for x in ps)
+    hi = max(x["tickUpper"] for x in ps)
+    tick, flip = first["tick"], q == 0
+    frac = (tick - lo) / (hi - lo) if hi > lo else None
+    if frac is not None and flip:
+        frac = 1 - frac
+    in_count = sum(1 for x in ps if x["inRange"])
+    kind = m.get("kind") or ("ladder" if len(ps) > 1 else "single")
+    # Deposit: what the terminal recorded at open if it has it. Otherwise the quote a
+    # single-sided slice needs for its liquidity, which overstates a range minted two-sided.
+    dep_est = False
+    if m.get("depositQuote") is not None and qusd:
+        deposit = float(m["depositQuote"]) * qusd
+    else:
+        deposit = _sum(x["ladderDepositUsd"] for x in ps)
+        dep_est = kind != "ladder"
+    value, fees_usd, claimed_usd = _sum(x["valueUsd"] for x in ps), _sum(x["feesUsd"] for x in ps), _sum(x["claimedUsd"] for x in ps)
+    pnl = (value + (fees_usd or 0) + (claimed_usd or 0) - deposit) if None not in (value, deposit) else None
+    opened = m.get("openedAt")
+    if opened is None:
+        blocks = [x["mintBlock"] for x in ps if x.get("mintBlock")]
+        if blocks:
+            try:
+                opened = book.ix.ts_of(min(blocks))
+            except Exception:
+                opened = None
+    supply, dt = (meta.get(taddr) or {}).get("supply"), first["dt"]
+    cap = cap_lo = cap_hi = None
+    if supply and tok_q and qusd:
+        cap = supply / 10 ** dt * tok_q * qusd
+        if hi - lo <= LADDER_MAX_TICKS:
+            at = lambda t: cap * 1.0001 ** ((-(t - tick)) if flip else (t - tick))
+            cap_lo, cap_hi = sorted((at(lo), at(hi)))
+    # How far the price is from the edge it would cross next, in percent of price.
+    edge_pct = None
+    if lo <= tick < hi:
+        edge_pct = (1.0001 ** min(tick - lo, hi - tick) - 1) * 100
+    g = {
+        "id": grp["id"], "kind": kind, "pool": first["pool"], "dex": first["dex"], "venue": first["venue"],
+        "manager": first["manager"], "key": k, "token": taddr, "quote": qaddr,
+        "quoteSymbol": chain.QUOTE_SYMBOL.get(qaddr, "?"),
+        "symbol": (meta.get(taddr) or {}).get("symbol") or taddr[2:8], "quoteSide": q, "flip": flip,
+        "tick": tick, "lpFeePct": (first.get("lpFee") or k.get("fee") or 0) / 1e4,
+        "positions": [{"tokenId": x["tokenId"], "tickLower": x["tickLower"], "tickUpper": x["tickUpper"],
+                       "liquidity": str(x["liquidity"]), "inRange": x["inRange"], "valueUsd": x["valueUsd"],
+                       "feesUsd": x["feesUsd"], "dex": x["dex"], "manager": x["manager"]} for x in ps],
+        "valueUsd": value, "feesUsd": fees_usd, "claimedUsd": claimed_usd, "depositUsd": deposit,
+        "depositEst": dep_est, "inRangeCount": in_count, "posCount": len(ps),
+        "tokenUsd": tok_q * qusd if tok_q and qusd else None, "quoteUsd": qusd,
+        "amountQuote": sum(x["amountQuote"] for x in ps), "amountToken": sum(x["amountToken"] for x in ps),
+        "feesQuote": sum(x["feesQuote"] for x in ps), "feesToken": sum(x["feesToken"] for x in ps),
+        "supply": supply, "decimals": dt, "tickLower": lo, "tickUpper": hi,
+        "widthPct": (1.0001 ** (hi - lo) - 1) * 100 if hi - lo <= LADDER_MAX_TICKS else None,
+        "rangePct": frac * 100 if frac is not None else None, "edgePct": edge_pct,
+        "pnlUsd": pnl, "pnlPct": pnl / deposit * 100 if pnl is not None and deposit else None,
+        "openedAt": opened, "heldHours": (now - opened) / 3600 if opened else None,
+        "rebalances": int(m.get("rebalances") or 0),
+        "mcapUsd": cap, "capLo": cap_lo, "capHi": cap_hi,
+        "hooked": str(k.get("hooks") or chain.ZERO).lower() != chain.ZERO,
+        "dynamicFee": bool(int(k.get("fee") or 0) & chain.DYNAMIC_FEE),
+    }
+    # "above" = price went up past the range: the position is all quote and earns nothing.
+    # "below" = price fell through it: the position is all token.
+    if in_count:
+        g["state"] = "in"
+    elif tick < lo:
+        g["state"] = "above" if flip else "below"
+    elif tick >= hi:
+        g["state"] = "below" if flip else "above"
+    else:
+        g["state"] = "gap"
+    g["events"] = exit_events(g, cfg)
+    return g

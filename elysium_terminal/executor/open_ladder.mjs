@@ -68,5 +68,6 @@ try {
   }
   const r = await sendTx(signer, { ...tx, to: desc.manager, label: `mint ${plan.slices.length} slices` }, { dryRun: dry, from: owner });
   steps.push(r);
-  done({ ok: true, dryRun: dry, plan: view, steps, hash: r.hash, positions: r.logs ? mintedIds(r.logs, owner, desc.manager) : [] });
+  done({ ok: true, dryRun: dry, plan: view, steps, hash: r.hash, positions: r.logs ? mintedIds(r.logs, owner, desc.manager) : [],
+    manager: desc.manager.toLowerCase(), venue: desc.venue });
 } catch (e) { fail(e); }

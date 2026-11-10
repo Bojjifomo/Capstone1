@@ -2,7 +2,7 @@
 //   node reenter.mjs --pool 0x.. --ids 1,2 [--maxloss 5] [--reopen --slices 5 --top 0 --bottom 60] [--dry-run --owner 0x..]
 // Dry run stops after the close simulation: the sale depends on what the close returns.
 import { args, done, fail, tradeProvider, loadSigner, quoteSide, slot0, planLadder, openCalldataV4, openCalldataV3,
-  approvalTxs, erc20Approval, sendTx, deadline, mintedIds, ZERO, WHYPE, GAS_RESERVE, balanceOf } from "./lib.mjs";
+  approvalTxs, erc20Approval, sendTx, deadline, mintedIds, decimalsOf, ZERO, WHYPE, GAS_RESERVE, balanceOf } from "./lib.mjs";
 import { closePositions } from "./close.mjs";
 import { sellToken } from "./swap.mjs";
 
@@ -55,8 +55,12 @@ try {
     for (const t of appr) out.steps.push({ step: "approve", ...(await sendTx(signer, t)) });
     const tx = desc.dex === "v4" ? openCalldataV4(key, plan, q === 0, owner, deadline()) : openCalldataV3(key, plan, q === 0, owner, deadline(), native && quote === WHYPE);
     const r = await sendTx(signer, { ...tx, to: desc.manager, label: `re-open ${plan.slices.length} slices` });
-    out.steps.push({ step: "reopen", hash: r.hash, positions: mintedIds(r.logs, owner, desc.manager) });
+    out.positions = mintedIds(r.logs, owner, desc.manager);
+    out.steps.push({ step: "reopen", hash: r.hash, positions: out.positions });
     out.reopened = total;
+    out.reopenedQuote = Number(total) / 10 ** (await decimalsOf(pr, quote));
+    out.manager = desc.manager.toLowerCase();
+    out.venue = desc.venue;
   }
   out.ok = true;
   delete out.step;

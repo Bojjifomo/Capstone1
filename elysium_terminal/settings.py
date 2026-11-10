@@ -47,7 +47,7 @@ SCHEMA = [
     ("exits.stopLossPct", "Exit", "Stop loss (%, negatif) (kosong = off)", "numnull", {}),
     ("scan.maxPools", "Web", "Pool yang dicek DexScreener (top by fee 1h)", "int", {"min": 30, "max": 900}),
     ("web.refreshMin", "Web", "Refresh pool + portfolio tiap (menit)", "int", {"min": 1, "max": 120}),
-    ("web.autoExitCheckMin", "Web", "Cek auto exit (TP) tiap (menit)", "int", {"min": 1, "max": 60}),
+    ("web.autoExitCheckMin", "Web", "Cek rule auto (TP, SL, keluar range) tiap (menit)", "int", {"min": 1, "max": 60}),
 ]
 KEYS = {p: (kind, extra) for p, _, _, kind, extra in SCHEMA}
 

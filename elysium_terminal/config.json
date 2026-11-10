@@ -51,6 +51,6 @@
     "takeProfitPct": null,
     "stopLossPct": null
   },
-  "web": {"refreshMin": 2, "autoExitCheckMin": 2},
+  "web": {"refreshMin": 2, "autoExitCheckMin": 1},
   "trade": {"maxLossPct": 5, "gasReserveHype": 0.01}
 }
