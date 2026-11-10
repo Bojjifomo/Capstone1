@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- RH Wallet Finder mark: swept fins over a core, reading an LP range bar -->
+  <defs>
+    <linearGradient id="fin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd85c"/>
+      <stop offset="1" stop-color="#e59f00"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff5a6d"/>
+      <stop offset="1" stop-color="#c41c33"/>
+    </linearGradient>
+  </defs>
+  <!-- fins: slim swept blades, each with a cut at the root -->
+  <path d="M1 7.5 L8.5 7 L28 26.5 L26 29 L28.5 31.5 L24.5 32.5 Z" fill="url(#fin)"/>
+  <path d="M63 7.5 L55.5 7 L36 26.5 L38 29 L35.5 31.5 L39.5 32.5 Z" fill="url(#fin)"/>
+  <!-- core: split diamond -->
+  <path d="M32 22.5 L38 31 L32 40 L26 31 Z" fill="url(#core)"/>
+  <path d="M32 22.5 L32 40 L26 31 Z" fill="#000" opacity=".2"/>
+  <!-- range bar: lower and upper bound ticks, price marker inside -->
+  <path d="M12 47 L15 44 L49 44 L52 47 L49 50 L15 50 Z" fill="#2f6bff"/>
+  <rect x="18.6" y="40.5" width="2.8" height="13" rx="1" fill="#eef2f8"/>
+  <rect x="42.6" y="40.5" width="2.8" height="13" rx="1" fill="#eef2f8"/>
+  <circle cx="35" cy="47" r="2.3" fill="#ffd85c"/>
+</svg>

@@ -1,0 +1,134 @@
+"""Background loop for the app: sync, score, repeat every SYNC_MINUTES."""
+import threading
+import time
+import traceback
+from collections import deque
+
+import config
+import db
+import indexer
+import publish
+from rpc import QUOTA_RETRY_S, RPCError, make_rpcs
+from db import get_meta, set_meta
+from scorer import Scorer
+
+SEGMENTS_PER_CYCLE = 3  # score in between, so a long backfill shows results early
+
+
+def calls_today(con):
+    """RPC calls the worker made today (UTC)."""
+    u = get_meta(con, "rpc_usage") or {}
+    return u.get("calls", 0) if u.get("day") == time.strftime("%Y-%m-%d", time.gmtime()) else 0
+
+
+def count_calls(con, n):
+    set_meta(con, "rpc_usage", {"day": time.strftime("%Y-%m-%d", time.gmtime()), "calls": calls_today(con) + n})
+
+
+class Worker:
+    def __init__(self):
+        self.logs = deque(maxlen=400)
+        self.state = "idle"
+        self.error = None
+        self.notice = None  # e.g. "calls RPC out of quota, using the logs RPC"
+        self.progress = None
+        self.cycle_at = None
+        self._wake = threading.Event()
+        self._stop = False
+        self._ranked_once = False
+
+    def log(self, msg):
+        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+        self.logs.append(line)
+        print(line, flush=True)
+
+    def start(self):
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def kick(self):
+        self._wake.set()
+
+    def stop(self):
+        self._stop = True
+        self._wake.set()
+
+    def publish(self, con, cfg):
+        """Upload the boards to the web showcase, if it's set up and the last
+        upload is PUBLISH_MINUTES old; never stops the loop."""
+        if not (cfg.get("VERCEL_PUBLISH_URL") or cfg.get("VERCEL_BLOB_TOKEN")):
+            return
+        last = (publish.last(con) or {}).get("at") or 0
+        if time.time() - last < float(cfg.get("PUBLISH_MINUTES") or 30) * 60:
+            return
+        try:
+            publish.refresh_pools(cfg, self.log)
+            publish.publish(con, cfg, self.log)
+        except Exception as e:  # noqa: BLE001 - the showcase is optional
+            self.log(f"Web showcase not updated: {e}")
+
+    def _loop(self):
+        while not self._stop:
+            cfg = config.load_env()
+            wait = max(30, float(cfg.get("SYNC_MINUTES") or 5) * 60)
+            if not cfg["RPC_URL"]:
+                self.state = "no_rpc"
+                self.log("No RPC link yet. Open the Settings tab and paste an Elysium RPC URL.")
+                self._wake.wait()
+                self._wake.clear()
+                continue
+            con = None
+            try:
+                con = db.connect()
+                rpc, call_rpc = make_rpcs(cfg)
+                if not self._ranked_once:  # current rules on the board now, not after a long sync
+                    self._ranked_once = True
+                    self.state = "scoring"
+                    self.log("Rank: re-ranking what is already priced with the current rules…")
+                    self.log(f"Ranked {Scorer(con, call_rpc, cfg, self.log).rerank():,} wallets")
+                    self.publish(con, cfg)
+                self.state = "syncing"
+                self.log("Sync: scanning new LP activity…")
+                res = indexer.sync(con, rpc, cfg, self.log, max_segments=SEGMENTS_PER_CYCLE,
+                                   stop=lambda: self._stop, call_rpc=call_rpc)
+                self.progress = res
+                if not res["done"]:
+                    left = res["back"] - res["target"]
+                    self.log(f"Backfill: {left:,} blocks of history still to load")
+                    wait = 1
+                self.state = "scoring"
+                self.log("Score: pricing positions and ranking wallets…")
+                cap = int(float(cfg.get("RPC_CALLS_PER_DAY") or 0))
+                used = calls_today(con) + rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
+                budget = max(0, cap - used) if cap > 0 else None
+                out = Scorer(con, call_rpc, cfg, self.log).run(stop=lambda: self._stop, budget=budget)
+                calls = rpc.calls + (call_rpc.calls if call_rpc is not rpc else 0)
+                count_calls(con, calls)
+                con.commit()
+                self.log(f"Scored {out['scored']:,} wallets ({out['priced']:,} positions priced, "
+                         f"{calls:,} RPC calls, {calls_today(con):,} today)")
+                self.publish(con, cfg)
+                self.error = None
+                spent = getattr(call_rpc, "exhausted", None)  # a pool member sitting out a spent quota
+                self.notice = None
+                if cap > 0 and calls_today(con) >= cap:
+                    self.notice = (f"Today's RPC budget ({cap:,} calls) is used up: pricing waits until 00:00 UTC. "
+                                   "New LP activity still syncs and the board shows everything priced so far.")
+                if spent and time.time() - spent[0] < QUOTA_RETRY_S:
+                    self.notice = f"{spent[1]}. The other RPC carries on alone; this one is tried again every hour."
+                    self.log(self.notice)
+            except RPCError as e:
+                self.error = str(e)
+                self.log(f"RPC error: {e}")
+                wait = 60
+            except Exception as e:  # noqa: BLE001 - keep the loop alive, show it in the UI
+                self.error = f"{type(e).__name__}: {e}"
+                self.log("Error: " + self.error)
+                traceback.print_exc()
+                wait = 120
+            finally:
+                if con is not None:
+                    con.close()
+            self.state = "idle"
+            self.cycle_at = time.time()
+            self._wake.wait(wait)
+            self._wake.clear()

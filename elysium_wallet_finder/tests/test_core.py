@@ -1,0 +1,1308 @@
+"""Offline tests: python3 -m unittest discover -s rh_wallet_finder/tests"""
+import json
+import math
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import chain as C  # noqa: E402
+import config  # noqa: E402
+import db  # noqa: E402
+from db import get_meta  # noqa: E402
+import indexer  # noqa: E402
+import metrics as M  # noqa: E402
+import rpc as R  # noqa: E402
+import scorer as S  # noqa: E402
+from keccak import keccak256, selector, topic  # noqa: E402
+
+PM = config.POSITION_MANAGER
+ZERO = config.ZERO
+
+
+class KeccakTest(unittest.TestCase):
+    def test_known_vectors(self):
+        self.assertEqual(keccak256(b"").hex(), "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
+        self.assertEqual(selector("transfer(address,uint256)"), "a9059cbb")
+        self.assertEqual(topic("Transfer(address,address,uint256)"),
+                         "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+
+    def test_selectors_match_constants(self):
+        self.assertEqual(selector("getSlot0(bytes32)"), C.SEL_GET_SLOT0)
+        self.assertEqual(selector("getPositionInfo(bytes32,address,int24,int24,bytes32)"), C.SEL_POSITION_INFO)
+        self.assertEqual(selector("getFeeGrowthInside(bytes32,int24,int24)"), C.SEL_FEE_GROWTH_INSIDE)
+        self.assertEqual(selector("aggregate3((address,bool,bytes)[])"), C.SEL_AGGREGATE3)
+
+    def test_v3_pool_address_matches_the_hype_usdc_pool(self):
+        # CREATE2 of ElysiumSwap v3 factory + init hash for USDC/WHYPE 1% is the
+        # pool the public RPC's getPool returns (checked 10 Nov 2026).
+        v = config.V3_VENUES[0]
+        got = C.v3_pool_address(v["factory"], v["init_hash"], config.USDC, config.WHYPE, 10000)
+        self.assertEqual(got, config.HYPE_USD_SOURCES[0]["pool"])
+
+
+class MathTest(unittest.TestCase):
+    def test_amounts_below_inside_above(self):
+        L = 10 ** 18
+        lo, hi = -600, 600
+        below = int(C.sqrt_at_tick(-1000) * C.Q96)
+        above = int(C.sqrt_at_tick(1000) * C.Q96)
+        mid = int(C.sqrt_at_tick(0) * C.Q96)
+        a0, a1 = C.amounts_for_liquidity(L, below, lo, hi)
+        self.assertGreater(a0, 0)
+        self.assertEqual(a1, 0)
+        a0, a1 = C.amounts_for_liquidity(L, above, lo, hi)
+        self.assertEqual(a0, 0)
+        self.assertGreater(a1, 0)
+        a0, a1 = C.amounts_for_liquidity(L, mid, lo, hi)
+        self.assertAlmostEqual(a0, a1, delta=a0 * 1e-9)  # symmetric range at price 1
+        # value is continuous at the range edge
+        edge = int(C.sqrt_at_tick(hi) * C.Q96)
+        self.assertAlmostEqual(C.amounts_for_liquidity(L, edge, lo, hi)[1],
+                               C.amounts_for_liquidity(L, above, lo, hi)[1], delta=1e9)
+
+    def test_fees_wrap(self):
+        # fee growth is uint256 and wraps; the difference must still be right
+        last = C.U256 - 5 * C.Q128
+        now = 3 * C.Q128
+        self.assertEqual(C.fees_owed(10, now, last), 80)
+
+    def test_range_width(self):
+        self.assertAlmostEqual(C.range_width_pct(0, 6932), 100, delta=0.1)  # 1.0001^6932 ≈ 2
+
+    def test_usd_prices(self):
+        # token0 = USDG (6 dec) quote, token1 = token (18 dec) at 0.005 USDG each
+        p_raw = (1 / 0.005) * 10 ** 18 / 10 ** 6  # token1 raw per token0 raw
+        sqrtp = int(math.sqrt(p_raw) * C.Q96)
+        u0, u1 = S.usd_prices(sqrtp, 6, 18, 0, "usd", None)
+        self.assertAlmostEqual(u0, 1.0)
+        self.assertAlmostEqual(u1, 0.005, places=9)
+        # token0 = ETH quote at $2000, token1 = token at 0.001 ETH
+        sqrtp = int(math.sqrt(1000) * C.Q96)
+        u0, u1 = S.usd_prices(sqrtp, 18, 18, 0, "eth", 2000.0)
+        self.assertAlmostEqual(u0, 2000)
+        self.assertAlmostEqual(u1, 2.0)
+        self.assertIsNone(S.usd_prices(sqrtp, 18, 18, 0, "eth", None))
+        # $2 a token is fine for 1B supply ($2B mcap), not for 100B; a drained pool's 1e50 never is
+        self.assertIsNotNone(S.usd_prices(sqrtp, 18, 18, 0, "eth", 2000.0, supply=1e9))
+        self.assertIsNone(S.usd_prices(sqrtp, 18, 18, 0, "eth", 2000.0, supply=1e11))
+        drained = int(math.sqrt(1e-60) * C.Q96)  # almost no token1 per token0 left
+        self.assertIsNone(S.usd_prices(drained, 6, 18, 0, "usd", None))
+
+    def test_quote_side(self):
+        self.assertEqual(S.quote_side(config.USDC, "0xabc"), (0, "usd"))
+        self.assertEqual(S.quote_side(ZERO, config.USDC), (1, "usd"))  # USDG beats ETH
+        self.assertEqual(S.quote_side(ZERO, "0xabc"), (0, "eth"))
+        self.assertEqual(S.quote_side("0xabc", "0xdef"), (None, None))
+
+
+class AbiTest(unittest.TestCase):
+    def test_aggregate3_roundtrip(self):
+        calls = [(config.STATE_VIEW, C.cd_slot0("0x" + "11" * 32)), (PM, "0x1234")]
+        data = C.encode_aggregate3(calls)
+        self.assertTrue(data.startswith("0x" + C.SEL_AGGREGATE3))
+        # build a fake reply: [(true, 0xdeadbeef), (false, "")]
+        def tup(ok, b):
+            pad = b + "0" * (-len(b) % 64)
+            return C.word(ok) + C.word(0x40) + C.word(len(b) // 2) + pad
+        t0, t1 = tup(1, "deadbeef"), tup(0, "")
+        ret = "0x" + C.word(0x20) + C.word(2) + C.word(0x40) + C.word(0x40 + len(t0) // 2) + t0 + t1
+        self.assertEqual(C.decode_aggregate3(ret), ["0xdeadbeef", None])
+
+    def test_decode_modify(self):
+        log = {"topics": [C.MODIFY_LIQUIDITY, "0x" + "ab" * 32, "0x" + C.addr_word(PM)],
+               "data": "0x" + C.word(-120) + C.word(240) + C.word(-5000) + C.word(77),
+               "blockNumber": "0x10", "logIndex": "0x2", "transactionHash": "0xAA", "blockTimestamp": "0x64"}
+        d = C.decode_modify(log)
+        self.assertEqual((d["tl"], d["tu"], d["delta"], d["salt"], d["sender"], d["ts"]),
+                         (-120, 240, -5000, 77, PM, 100))
+
+    def test_decode_string(self):
+        s = "VRAX".encode().hex()
+        ret = "0x" + C.word(0x20) + C.word(4) + s + "0" * (64 - len(s))
+        self.assertEqual(C.decode_string(ret), "VRAX")
+        self.assertEqual(C.decode_string("0x" + s + "0" * (64 - len(s))), "VRAX")  # bytes32 symbol
+
+
+class RpcTest(unittest.TestCase):
+    def test_range_hint(self):
+        msg = ("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range. "
+               "Based on your parameters, this block range should work: [0x574b1aa, 0x574b1b3].")
+        self.assertEqual(R._range_hint(msg), 10)
+        self.assertEqual(R._range_hint("block range too large, max 5000 blocks"), 5000)
+
+    def test_cut_off_replies(self):
+        import http.client
+        import io
+        from unittest import mock
+        rpc = R.RPC("http://example.invalid", workers=1)
+        rpc._backoff = lambda *a: None
+        replies = [http.client.IncompleteRead(b"x" * 10), ConnectionResetError("reset"),
+                   io.BytesIO(b'{"jsonrpc":"2.0","id":1,"result":"0x10"}')]
+
+        def urlopen(*a, **k):
+            r = replies.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with mock.patch("urllib.request.urlopen", urlopen):
+            self.assertEqual(rpc.call("eth_blockNumber", []), "0x10")  # one cut, one reset: retried
+            replies[:] = [http.client.IncompleteRead(b"x" * 10)] * 2
+            with self.assertRaises(R.TruncatedError):  # cut twice: give up so the caller asks for less
+                rpc.call("eth_getLogs", [{}])
+
+        # get_logs answers a reply that keeps getting cut by asking for smaller ranges
+        def fake_call(method, params):
+            f = params[0]
+            a, b = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+            if b - a + 1 > 50:
+                raise R.TruncatedError("cut off")
+            return [{"n": n} for n in range(a, b + 1) if n % 10 == 0]
+        rpc.call = fake_call
+        logs, chunk = rpc.get_logs({}, 0, 999, 400)
+        self.assertEqual([x["n"] for x in logs], list(range(0, 1000, 10)))
+        self.assertLessEqual(chunk, 50)
+
+        # a batch whose reply keeps getting cut off is asked one call at a time
+        rb = R.RPC("http://example.invalid", workers=2)
+
+        def post(payload):
+            if isinstance(payload, list):
+                raise R.TruncatedError("cut off")
+            return {"jsonrpc": "2.0", "id": 1, "result": payload["params"][0]}
+        rb._post = post
+        self.assertEqual(rb.batch([("echo", [i]) for i in range(5)]), list(range(5)))
+
+        # a multicall whose reply is cut off is asked again in halves
+        def reply(n):  # n x (success, 0x01)
+            t = C.word(1) + C.word(0x40) + C.word(1) + "01" + "0" * 62
+            heads = "".join(C.word(0x20 * n + i * len(t) // 2) for i in range(n))
+            return "0x" + C.word(0x20) + C.word(n) + heads + t * n
+
+        class Cut:
+            asked = []
+
+            def call(self, method, params):
+                n = params[0]["data"].count("c0ffee11")
+                self.asked.append(n)
+                if n > 2:
+                    raise R.TruncatedError("cut off")
+                return reply(n)
+        cut = Cut()
+        got = indexer.multicall(cut, [(config.MULTICALL3, "0xc0ffee11")] * 7, "latest")
+        self.assertEqual(got, ["0x01"] * 7)
+        self.assertEqual(max(n for n in cut.asked if n <= 2), 2)
+
+    def test_rate_limits_and_spent_quota(self):
+        import io
+        import urllib.error
+        from unittest import mock
+        hits = {"main": 0, "backup": 0}
+        plan = {"main": [], "backup": []}
+
+        def urlopen(req, timeout=None):
+            who = "main" if "main" in req.full_url else "backup"
+            hits[who] += 1
+            body = json.loads(req.data)
+            if plan[who]:
+                code, text = plan[who].pop(0)
+                if code == 200:  # a JSON-RPC error answer
+                    one = lambda o: {"jsonrpc": "2.0", "id": o["id"], "error": {"code": -32000, "message": text}}  # noqa: E731
+                    return io.BytesIO(json.dumps([one(o) for o in body] if isinstance(body, list) else one(body)).encode())
+                raise urllib.error.HTTPError(req.full_url, code, "Too Many Requests", {}, io.BytesIO(text.encode()))
+            res = lambda o: {"jsonrpc": "2.0", "id": o["id"], "result": f"{who}:{o['params'][0]}"}  # noqa: E731
+            return io.BytesIO(json.dumps([res(o) for o in body] if isinstance(body, list) else res(body)).encode())
+
+        def pool():
+            ms = [R.RPC("https://main.example/v2/k"), R.RPC("https://backup.example/rpc")]
+            for m in ms:
+                m._backoff = lambda *a: None
+            return R.RPCPool(ms)
+        spent = (429, '{"jsonrpc":"2.0","id":1,"error":{"code":429,"message":"Monthly capacity limit exceeded. '
+                      'Visit https://dashboard.alchemy.com/settings/billing"}}')
+        with mock.patch("urllib.request.urlopen", urlopen):
+            # work is shared between the two
+            p = pool()
+            self.assertEqual(sorted(p.call("eth_call", [x])[:4] for x in "abcd"), ["back", "back", "main", "main"])
+            # one rate limits: the other takes it at once, no waiting; the first rests
+            p = pool()
+            plan["main"] = [(429, "Too Many Requests")]
+            got = [p.call("eth_call", [x]) for x in "ef"]
+            self.assertTrue(all(g.startswith("backup") for g in got))
+            self.assertGreater(p.members[0].cool_until, 0)
+            # a spent monthly allowance sits that one out, and says so
+            p = pool()
+            plan["main"] = [spent]
+            n = hits["main"]
+            self.assertEqual(p.batch([("eth_call", [x]) for x in "ghij"]), [f"backup:{x}" for x in "ghij"])
+            self.assertEqual(hits["main"], n + 1)
+            self.assertIn("main.example: plan limit reached", p.exhausted[1])
+            self.assertTrue(p.call("eth_call", ["k"]).startswith("backup"))
+            # old block state missing on one: asked of the other
+            p = pool()
+            p._turn = iter([0, 0, 0, 0])
+            plan["main"] = [(200, "missing trie node abc (path )")]
+            self.assertEqual(p.call("eth_call", ["l"]), "backup:l")
+            plan["main"] = [(200, "missing trie node abc")]
+            self.assertEqual(p.batch([("eth_call", [x]) for x in "mn"]), ["backup:m", "backup:n"])
+            # a real error answer is the answer, not something to ask elsewhere
+            p = pool()
+            p._turn = iter([0])
+            plan["main"] = [(200, "execution reverted")]
+            with self.assertRaisesRegex(R.RPCError, "execution reverted"):
+                p.call("eth_call", ["o"])
+            plan["main"] = []
+            # a lone RPC: a spent quota fails at once, a rate limit that never eases names the host
+            solo = R.RPC("https://main.example/v2/k")
+            solo._backoff = lambda *a: None
+            plan["main"] = [spent]
+            with self.assertRaises(R.QuotaError):
+                solo.call("eth_call", ["p"])
+            plan["main"] = [(429, "Too Many Requests")] * 20
+            with self.assertRaisesRegex(R.ThrottledError, "main.example kept rate limiting"):
+                solo.call("eth_call", ["q"])
+            plan["main"] = []
+        # Alchemy's free-tier getLogs range error mentions "Upgrade": still a range error, not a spent quota
+        self.assertFalse(R._quota("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 "
+                                  "block range. Upgrade to PAYG for expanded block range."))
+        # an Alchemy API key on its own becomes its link; links stay as they are
+        self.assertEqual(config.rpc_link(" AbCdEf0123456789xyz_- "),
+                         "https://elysium-mainnet.g.alchemy.com/v2/AbCdEf0123456789xyz_-")
+        self.assertEqual(config.rpc_link("https://rpc.example/x"), "https://rpc.example/x")
+        cfg = {"RPC_URL": "https://a.example", "CALL_RPC_URL": "https://b.example", "RPC_WORKERS": "2"}
+        logs, calls = R.make_rpcs(cfg)
+        self.assertIs(logs, calls)
+        self.assertEqual(logs.host, "a.example + b.example")
+        one, same = R.make_rpcs({**cfg, "CALL_RPC_URL": ""})
+        self.assertIs(one, same)
+        self.assertIsInstance(one, R.RPC)
+        # price reads on one RPC, the other only while it rests (eth_getLogs still goes to RPC 1 first)
+        self.assertEqual(R.make_rpcs({**cfg, "CALL_SPLIT": "rpc2"})[0].prefer, 1)
+        self.assertIsNone(R.make_rpcs(cfg)[0].prefer)
+        with mock.patch("urllib.request.urlopen", urlopen):
+            p = pool()
+            p.prefer = 1
+            self.assertEqual([p.call("eth_call", [x])[:4] for x in "rst"], ["back"] * 3)
+            plan["backup"] = [(429, "Too Many Requests")]
+            self.assertTrue(p.call("eth_call", ["u"]).startswith("main"))  # resting: the other steps in
+            self.assertTrue(p.batch([("eth_call", ["v"])])[0].startswith("main"))
+            plan["backup"] = []
+
+    def test_pool_get_logs_carries_on_elsewhere(self):
+        ms = [R.RPC("https://main.example"), R.RPC("https://backup.example")]
+        p = R.RPCPool(ms)
+        calls = {"main": 0, "backup": 0}
+
+        def fake(who):
+            def call(method, params):
+                f = params[0]
+                a, b = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+                calls[who] += 1
+                if who == "main" and a >= 300 and calls["main"] < 20:
+                    ms[0].cool_until = __import__("time").time() + 0.2
+                    raise R.ThrottledError("main: rate limited")
+                return [{"n": n} for n in range(a, b + 1) if n % 10 == 0]
+            return call
+        ms[0].call, ms[1].call = fake("main"), fake("backup")
+        logs, _ = p.get_logs({}, 0, 999, 100)
+        self.assertEqual([x["n"] for x in logs], list(range(0, 1000, 10)))  # complete, in order, no repeats
+        self.assertGreater(calls["backup"], 0)  # the other RPC carried on while the first rested
+
+    def test_pool_moves_past_a_rejected_key(self):
+        rejected = "Invalid API key or inactive subscription"
+        ms = [R.RPC("https://dead.example"), R.RPC("https://backup.example")]
+        p = R.RPCPool(ms, prefer=0)
+
+        def dead(method, params):
+            raise R.RPCError(f"{method}: {rejected}")
+        ms[0].call = dead
+        ms[1].call = lambda method, params: [{"n": 1}] if method == "eth_getLogs" else "0x10"
+        self.assertEqual(p.call("eth_blockNumber", []), "0x10")
+        ms[0].cool_until = 0
+        self.assertEqual(p.get_logs({}, 0, 9, 10)[0], [{"n": 1}])
+        # every key rejected: the caller still gets the real error
+        ms[1].call = dead
+        ms[0].cool_until = ms[1].cool_until = 0
+        with self.assertRaisesRegex(R.RPCError, rejected):
+            p.call("eth_blockNumber", [])
+
+    def test_get_logs_shrinks_and_resumes(self):
+        rpc = R.RPC("http://example.invalid", workers=2)
+        seen = []
+
+        def fake_call(method, params):
+            f = params[0]
+            a, b = int(f["fromBlock"], 16), int(f["toBlock"], 16)
+            if b - a + 1 > 25:
+                raise R.RangeError("block range too large", 25)
+            seen.append((a, b))
+            return [{"n": n} for n in range(a, b + 1) if n % 7 == 0]
+
+        rpc.call = fake_call
+        logs, chunk = rpc.get_logs({}, 0, 299, 100)
+        self.assertEqual([x["n"] for x in logs], [n for n in range(300) if n % 7 == 0])
+        self.assertLessEqual(chunk, 25)
+        covered = sorted(seen)
+        self.assertEqual(covered[0][0], 0)
+        self.assertEqual(covered[-1][1], 299)
+        for (a1, b1), (a2, _) in zip(covered, covered[1:]):
+            self.assertEqual(b1 + 1, a2)  # no gaps, no overlaps
+
+
+def _pos(open_ts, close_ts, pnl, dep=100.0, **kw):
+    p = {"open_ts": open_ts, "close_ts": close_ts, "dep": dep, "wd": dep + pnl, "fee": 1.0, "now": 0.0,
+         "pnl": pnl, "cost": 2.0, "eth_pair": 0, "single": 0, "tl": 0, "tu": 6932, "mcap": 5e5}
+    p.update(kw)
+    return p
+
+
+class MetricsTest(unittest.TestCase):
+    now = 1_800_000_000
+
+    def test_basic(self):
+        d = 86400
+        ps = [_pos(self.now - 5 * d, self.now - 5 * d + 3600, 10),
+              _pos(self.now - 4 * d, self.now - 4 * d + 3600, -30),
+              _pos(self.now - 3 * d, self.now - 3 * d + 3600, 25),
+              _pos(self.now - 2 * d, self.now - 2 * d + 3600, 5),
+              _pos(self.now - 3600, None, 0, now=104.0)]
+        m = M.wallet_metrics(ps, self.now, 30, self.now - 10 * d)
+        self.assertAlmostEqual(m["net"], 10)
+        self.assertEqual(m["closed"], 4)
+        self.assertEqual(m["open"], 1)
+        self.assertEqual(m["win"], 75)
+        self.assertEqual(m["daily"], 75)
+        self.assertAlmostEqual(m["duration"], 3600)
+        # equity 10 -> -20 -> 5 -> 10: worst drop 30 from the first close, healed by the 4th
+        self.assertAlmostEqual(m["dd"], -30 / m["capital"] * 100)
+        self.assertFalse(m["recover_open"])
+        self.assertAlmostEqual(m["recover"], 3 * d)
+        real = M.wallet_metrics(ps, self.now, 30, self.now - 10 * d, real=True)
+        self.assertAlmostEqual(real["net"], 10 - 4 * 2.0)
+        self.assertAlmostEqual(m["range"], 100, delta=0.1)
+
+    def test_unrecovered_and_window(self):
+        d = 86400
+        ps = [_pos(self.now - 40 * d, self.now - 39 * d, 50),  # outside the 30 d window
+              _pos(self.now - 3 * d, self.now - 2 * d, 20),
+              _pos(self.now - 2 * d, self.now - 1 * d, -50)]
+        m = M.wallet_metrics(ps, self.now, 30, self.now - 50 * d)
+        self.assertEqual(m["closed"], 2)
+        self.assertTrue(m["recover_open"])
+        self.assertAlmostEqual(m["recover"], 2 * d)
+        self.assertIsNone(M.wallet_metrics([_pos(self.now - 9, None, 0)], self.now, 30, 0))
+
+    def test_scores_and_verdicts(self):
+        good = {"net": 500, "roi": 40, "pf": 3, "win": 80, "daily": 90, "dd": -2, "recover": 3600, "fees": 50,
+                "closed": 40, "closed_trades": 40}
+        bad = {"net": -100, "roi": -10, "pf": 0.5, "win": 20, "daily": 10, "dd": -40, "recover": 9e5, "fees": 1,
+               "closed": 40, "closed_trades": 40}
+        mid = {"net": 50, "roi": 5, "pf": 1.2, "win": 55, "daily": 50, "dd": -10, "recover": 86400, "fees": 10,
+               "closed": 3, "closed_trades": 3}
+        s = M.score_all([good, bad, mid])
+        self.assertGreater(s[0], s[2])
+        self.assertLessEqual(s[1], 45)
+        self.assertEqual(M.verdict(75), "Elite")
+        self.assertEqual(M.verdict(10), "Avoid")
+        # multiday players are judged on total PnL: a realized loss with a bigger open gain isn't capped
+        a = {**mid, "net": -20, "total": 300, "closed_trades": 20}
+        b = {**mid, "net": 40, "total": -100, "closed_trades": 20}
+        sa, sb = M.score_all([a, b], "multiday")
+        self.assertGreater(sa, sb)
+        self.assertLessEqual(sb, 45)
+
+    def test_copyable_and_style(self):
+        self.assertEqual(M.copyable({"duration": 60, "per_day": 5}), "✗")
+        self.assertEqual(M.copyable({"duration": 7200, "per_day": 5}), "✓")
+        self.assertEqual(M.copyable({"duration": 900, "per_day": 5}), "?")
+        legs = [_pos(0, 600, 1, pool="p", open_block=7, side="bid") for _ in range(5)]
+        single = [_pos(0, 600, 1, pool="p", open_block=9, side="both")]
+        st, conf = M.style(M.trades(legs + single))
+        self.assertEqual((st, conf), ("Ladder ×5 · bid", 50))
+
+    def test_ladder_is_one_trade(self):
+        d = 86400
+        # one 5-range ladder: two legs filled and earned, three were never reached (pnl 0)
+        ladder = [_pos(self.now - 2 * d, self.now - d, x, dep=200, pool="p", open_block=10, side="bid")
+                  for x in (12, 8, 0, 0, 0)]
+        # an untouched ladder: flat, neither a win nor a loss
+        flat = [_pos(self.now - d, self.now - d + 600, 0, dep=200, pool="p", open_block=20, side="bid")
+                for _ in range(5)]
+        loser = [_pos(self.now - 3 * d, self.now - 3 * d + 7200, -5, dep=1000, pool="q", open_block=5, side="both")]
+        m = M.wallet_metrics(ladder + flat + loser, self.now, 30, self.now - 10 * d)
+        self.assertEqual((m["trades"], m["closed_trades"], m["pos"]), (3, 3, 11))
+        self.assertEqual(m["win"], 50)  # 1 win, 1 loss, 1 flat
+        self.assertAlmostEqual(m["flat"], 100 / 3)
+        self.assertAlmostEqual(m["pf"], 20 / 5)
+        self.assertEqual(m["size"], 1000)  # per trade, not per range
+        self.assertEqual(m["legs"], 5)
+        self.assertAlmostEqual(m["net"], 15)  # PnL still adds every position
+
+    def test_player_kind(self):
+        h = 3600
+        self.assertEqual(M.player_kind([20 * 60, 30 * 60, 3 * h], [])[0], "degen")
+        self.assertEqual(M.player_kind([5 * h, 30 * h, 40 * 60], [])[0], "multiday")
+        # long-open trades count once they're past the line; young ones don't
+        self.assertEqual(M.player_kind([30 * 60], [26 * h, 50 * h])[0], "multiday")
+        self.assertEqual(M.player_kind([30 * 60], [10 * 60, 20 * 60])[0], "degen")
+        kind, fit = M.player_kind([5 * h, 6 * h, 7 * h, 60], [])
+        self.assertEqual((kind, fit), ("multiday", 75))
+        d = 86400
+        quick = [_pos(self.now - d + i * 60, self.now - d + i * 60 + 30, 0, pool="p", open_block=i)
+                 for i in range(200)]
+        self.assertTrue(M.prescreen(quick, self.now)["bot"])
+        slow = [_pos(self.now - 3 * d, self.now - 2 * d, 0, pool="p", open_block=1),
+                _pos(self.now - 2 * d, self.now - d, 0, pool="p", open_block=2)]
+        x = M.prescreen(slow, self.now)
+        self.assertEqual((x["kind"], x["bot"]), ("multiday", False))
+
+    def test_roi_over_active_days(self):
+        d = 86400
+        # a wallet that started 3 days ago: $30 on $1000 kept deployed = 1%/day ~ 30%/month
+        ps = [_pos(self.now - 3 * d + i * d, self.now - 2 * d + i * d, 10, dep=1000, pool="p", open_block=i)
+              for i in range(3)]
+        m = M.wallet_metrics(ps, self.now, 30, self.now - 60 * d)
+        self.assertAlmostEqual(m["span_days"], 3)
+        self.assertAlmostEqual(m["roi"], 30, delta=0.5)
+
+    def test_win_per_position_and_history(self):
+        d = 86400
+        # one ladder: 3 ranges opened together, one won, one lost, one never touched
+        ps = [_pos(self.now - 2 * d, self.now - d, 10, pool="p", open_block=7),
+              _pos(self.now - 2 * d, self.now - d, -4, pool="p", open_block=7),
+              _pos(self.now - 2 * d, self.now - d, 0.01, pool="p", open_block=7),
+              _pos(self.now - 3 * d, self.now - 2 * d, 5, pool="p", open_block=5)]
+        m = M.wallet_metrics(ps, self.now, 30, self.now - 10 * d)
+        self.assertEqual(m["win"], 100)  # per trade: both trades made money
+        self.assertAlmostEqual(m["win_pos"], 200 / 3)  # per position: 2 of 3 decided, the untouched one is flat
+        # months counted the way RH Discovery does: 14 Aug -> 22 Oct is Aug, Sep, Oct
+        aug14, oct22 = 1786665600, 1792627200
+        self.assertEqual(M.months_between(aug14, oct22), 3)
+        h = M.history({"pnl": 900.0, "pnl_3m": 600.0, "dep": 30000.0, "first_ts": aug14, "gap": 2}, oct22,
+                      data_from=aug14 - 30 * d, launch=config.CHAIN_LAUNCH_TS)
+        self.assertEqual((h["months"], h["avg_month"], h["roi_all"], h["hist_from"], h["hist_gap"]),
+                         (3, 300.0, 3.0, None, 2))
+        # already active when our data starts (after the launch): cut off there, and said so
+        h = M.history({"pnl": 900.0, "dep": 30000.0, "first_ts": aug14}, oct22, data_from=aug14,
+                      launch=aug14 - 60 * d)
+        self.assertEqual((h["hist_from"], h["months"]), (aug14, 3))
+        # Elysium's own launch is after these sample dates, so the same window is not cut
+        h = M.history({"pnl": 900.0, "dep": 30000.0, "first_ts": aug14}, oct22, data_from=aug14,
+                      launch=config.CHAIN_LAUNCH_TS)
+        self.assertIsNone(h["hist_from"])
+        # ...but history loaded back to the launch is the whole history
+        h = M.history({"pnl": 900.0, "dep": 30000.0, "first_ts": config.CHAIN_LAUNCH_TS + 3600}, oct22,
+                      data_from=config.CHAIN_LAUNCH_TS, launch=config.CHAIN_LAUNCH_TS)
+        self.assertEqual((h["hist_from"], h["months"]),
+                         (None, M.months_between(config.CHAIN_LAUNCH_TS + 3600, oct22)))
+
+    def test_similarity(self):
+        ms = [{"duration": 600, "range": 50, "single": 100, "eth": 0, "mcap": 1e5, "size": 100, "per_day": 50,
+               "concur": 3, "win": 60},
+              {"duration": 650, "range": 55, "single": 100, "eth": 0, "mcap": 1.2e5, "size": 110, "per_day": 45,
+               "concur": 3, "win": 62},
+              {"duration": 9e5, "range": 2000, "single": 0, "eth": 100, "mcap": 1e9, "size": 1e5, "per_day": 0.2,
+               "concur": 1, "win": 90}]
+        f = M.feature_matrix(ms)
+        self.assertGreater(M.similarity(f[0], f[1]), M.similarity(f[0], f[2]))
+        self.assertEqual(M.similarity(f[0], f[0]), 100)
+
+
+class IndexerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.con = db.connect(Path(self.tmp.name) / "t.db")
+
+    def tearDown(self):
+        self.con.close()
+        self.tmp.cleanup()
+
+    def ev(self, block, li, tid, delta, ts=None):
+        self.con.execute("INSERT INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta) "
+                         "VALUES(?,?,?,?,?,?,?,?,?)", (block, li, "0x", ts or block, tid, "0xp", -60, 60, str(delta)))
+
+    def tr(self, block, li, tid, a, b):
+        self.con.execute("INSERT INTO transfers(block, log_index, ts, token_id, from_addr, to_addr) "
+                         "VALUES(?,?,?,?,?,?)", (block, li, block, tid, a, b))
+
+    def test_lifecycle_loaded_out_of_order(self):
+        w = "0x" + "aa" * 20
+        # newest segment first: burn arrives before the mint
+        self.tr(200, 1, 7, w, ZERO)
+        self.ev(200, 0, 7, -1000)
+        indexer.rebuild_positions(self.con, {7})
+        p = dict(self.con.execute("SELECT * FROM positions").fetchone())
+        self.assertEqual((p["minted"], p["close_block"], p["owner"]), (0, 200, w))
+        self.tr(100, 1, 7, ZERO, w)
+        self.ev(100, 0, 7, 1000)
+        self.ev(150, 0, 7, 0)  # fee claim
+        indexer.rebuild_positions(self.con, {7})
+        p = dict(self.con.execute("SELECT * FROM positions").fetchone())
+        self.assertEqual((p["minted"], p["open_block"], p["close_block"], p["liq"], p["n_events"]),
+                         (1, 100, 200, "0", 3))
+
+    def test_closed_without_burn_and_transfer(self):
+        a, b = "0x" + "aa" * 20, "0x" + "bb" * 20
+        self.tr(10, 1, 9, ZERO, a)
+        self.ev(10, 0, 9, 500)
+        self.tr(20, 0, 9, a, b)  # sold the NFT
+        self.ev(30, 0, 9, -500)
+        indexer.rebuild_positions(self.con, {9})
+        p = dict(self.con.execute("SELECT * FROM positions").fetchone())
+        self.assertEqual((p["owner"], p["close_block"]), (b, 30))
+        indexer.refresh_wallets(self.con)
+        self.assertEqual(self.con.execute("SELECT n_closed FROM wallets WHERE addr=?", (b,)).fetchone()[0], 1)
+
+
+def _agg_calls(data):
+    """Multicall3.aggregate3 calldata -> [(target, calldata)] (the test reads what the scorer asks)."""
+    d = data[2 + 8:]
+    at = lambda off: int(d[off * 2:off * 2 + 64], 16)  # noqa: E731
+    n, out = at(at(0)), []
+    base = at(0) + 32
+    for i in range(n):
+        el = base + at(base + 32 * i)
+        boff = el + at(el + 64)
+        out.append(("0x" + d[el * 2 + 24:el * 2 + 64], "0x" + d[(boff + 32) * 2:(boff + 32 + at(boff)) * 2]))
+    return out
+
+
+def _agg_reply(results):
+    """[return hex or None] -> aggregate3's encoded reply."""
+    tups = []
+    for r in results:
+        b = (r or "0x")[2:]
+        tups.append(C.word(1 if r else 0) + C.word(0x40) + C.word(len(b) // 2) + b + "0" * (-len(b) % 64))
+    heads, off = [], 32 * len(tups)
+    for t in tups:
+        heads.append(C.word(off))
+        off += len(t) // 2
+    return "0x" + C.word(0x20) + C.word(len(tups)) + "".join(heads) + "".join(tups)
+
+
+class FakeStateView:
+    """Answers the scorer's archive reads: every pool at one price, every
+    position earning 1 USDG of fees since its checkpoint."""
+
+    def __init__(self, liq, sqrtp):
+        self.liq, self.sqrtp, self.asked, self.calls = liq, sqrtp, [], 0
+
+    def call(self, method, params):
+        return self.batch([(method, params)])[0]
+
+    def batch(self, calls, size=40):
+        out = []
+        for method, (tx, block) in calls:
+            self.calls += 1
+            subs = _agg_calls(tx["data"])
+            self.asked.append((int(block, 16) if block.startswith("0x") else block, subs))
+            res = []
+            for target, cd in subs:
+                sel = cd[2:10]
+                if sel == C.SEL_GET_SLOT0:
+                    pool = "0x" + cd[10:74]
+                    res.append(None if pool in config.ETH_USD_POOLS else
+                               "0x" + C.word(self.sqrtp) + C.word(0) + C.word(0) + C.word(3000))
+                elif sel == C.SEL_POSITION_INFO:
+                    res.append("0x" + C.word(self.liq) + C.word(0) + C.word(0))
+                elif sel == C.SEL_FEE_GROWTH_INSIDE:
+                    res.append("0x" + C.word(0) + C.word(10 ** 6 * C.Q128 // self.liq + 1))
+                else:  # balances
+                    res.append("0x" + C.word(0))
+            out.append(_agg_reply(res))
+        return out
+
+
+class ScorerTest(unittest.TestCase):
+    def test_events_of_one_block_share_one_call(self):
+        pool, tok = "0x" + "77" * 32, "0x" + "99" * 20
+        liq = 10 ** 12
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            con.execute("INSERT INTO pools(id, c0, c1, fee, spacing, hooks) VALUES(?,?,?,3000,60,?)",
+                        (pool, tok, config.USDC, ZERO))
+            con.executemany("INSERT INTO tokens(addr, symbol, decimals, supply) VALUES(?,?,?,?)",
+                            [(tok, "TOK", 6, 1e9), (config.USDC, "USDG", 6, 1e9)])
+            # a 2-range ladder opened in block 100 and closed in 200; a single range 150 -> 300
+            for tid, opened, closed in ((1, 100, 200), (2, 100, 200), (3, 150, 300)):
+                con.execute("""INSERT INTO positions(token_id, owner, pool, tl, tu, open_block, open_ts, close_block,
+                               close_ts, minted) VALUES(?,?,?,-600,600,?,?,?,?,1)""",
+                            (tid, "0x" + "a" * 40, pool, opened, opened, closed, closed))
+                for blk, sign in ((opened, 1), (closed, -1)):
+                    con.execute("INSERT INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta) "
+                                "VALUES(?,?,?,?,?,?,-600,600,?)", (blk, tid, "0x", blk, tid, pool, str(sign * liq)))
+            con.commit()
+            rpc = FakeStateView(liq, C.Q96)  # price 1: 1 TOK = 1 USDG
+            sc = S.Scorer(con, rpc, dict(config.DEFAULTS), log=lambda *a: None)
+            self.assertEqual(sc.value_events([1, 2, 3]), 4)  # 4 blocks, 4 calls (not one per position and block)
+            blocks = {b: subs for b, subs in rpc.asked}
+            self.assertEqual(sorted(blocks), [99, 149, 199, 299])  # each read one block before the events
+            self.assertEqual(len(blocks[99]), 3)  # opened there: 2 ETH prices + the pool, no fee reads
+            self.assertEqual(len(blocks[199]), 3 + 2 * 2)  # closed there: + checkpoint and fee growth per range
+            rows = con.execute("SELECT token_id, block, v_state, f1, u0, u1 FROM events ORDER BY token_id, block")
+            got = [tuple(r) for r in rows]
+            self.assertTrue(all(r[2] == 1 for r in got))
+            fees = {(r[0], r[1]): round(r[3], 6) for r in got}
+            self.assertEqual(fees, {(1, 100): 0, (1, 200): 1.0, (2, 100): 0, (2, 200): 1.0, (3, 150): 0, (3, 300): 1.0})
+            self.assertAlmostEqual(got[0][4], 1.0)
+            self.assertAlmostEqual(got[0][5], 1.0)
+            # priced positions roll up, and the ranking carries the all-time figures
+            sc.aggregate([1, 2, 3], {})
+            con.execute("INSERT INTO wallets(addr, first_seen, last_seen) VALUES(?,?,?)", ("0x" + "a" * 40, 100, 300))
+            now = 300 + 86400
+            hist = sc.history_sums(["0x" + "a" * 40], now)["0x" + "a" * 40]["raw"]
+            self.assertAlmostEqual(hist["pnl"], 3.0, places=4)  # 1 USDG of fees each
+            self.assertEqual((hist["first_ts"], hist["gap"]), (100, 0))
+            con.close()
+
+    def test_sample_counts_trades(self):
+        row = lambda tid, blk, closed=1: (tid, closed, 0, "p", blk)  # noqa: E731
+        ladder = [row(i, 7) for i in range(40)]  # 40 ranges opened in one go = one trade
+        rows = ladder + [row(100, 8), row(101, 9), row(102, 10), row(103, 11, closed=0)]
+        self.assertEqual([r[0] for r in S.sample(rows)], list(range(40)) + [100, 101])  # 3 trades
+        singles = [row(i, i) for i in range(30)]
+        self.assertEqual(len(S.sample(singles)), S.SAMPLE)
+        self.assertEqual(len(S.sample([row(i, 7) for i in range(400)])), S.SAMPLE_MAX)  # one huge ladder: capped
+        self.assertEqual(S.sample([row(1, 1, closed=0)]), [])  # nothing closed yet: nothing to judge by
+
+    def test_pricing_goes_where_the_board_needs_it(self):
+        import time as _t
+        import worker as W
+        pool, tok = "0x" + "77" * 32, "0x" + "99" * 20
+        liq = 10 ** 12
+        now = _t.time()
+        good, bad, mine = "0x" + "a" * 40, "0x" + "b" * 40, "0x" + "c" * 40
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            con.execute("DELETE FROM labels")
+            con.execute("INSERT INTO labels(addr, label, starred, source, added) VALUES(?, 'mine', 1, 'test', 0)",
+                        (mine,))
+            con.execute("INSERT INTO pools(id, c0, c1, fee, spacing, hooks) VALUES(?,?,?,3000,60,?)",
+                        (pool, tok, config.USDC, ZERO))
+            con.executemany("INSERT INTO tokens(addr, symbol, decimals, supply) VALUES(?,?,?,?)",
+                            [(tok, "TOK", 6, 1e9), (config.USDC, "USDG", 6, 1e9)])
+            tid = 0
+            for owner, sample_pnl in ((good, 5.0), (bad, -5.0), (mine, -5.0)):
+                con.execute("INSERT INTO wallets(addr, first_seen, last_seen) VALUES(?,?,?)", (owner, now - 9e5, now))
+                # 3 older positions already priced (the sample), then 30 newer ones still to price
+                for k in range(33):
+                    tid += 1
+                    t = now - 20 * 86400 + k * 3600
+                    priced = k < 3
+                    con.execute("""INSERT INTO positions(token_id, owner, pool, tl, tu, open_block, open_ts, close_block,
+                                   close_ts, minted, valued, dep_usd, wd_usd, fee_usd, now_usd, pnl_usd, cost_usd)
+                                   VALUES(?,?,?,-600,600,?,?,?,?,1,?,?,?,?,0,?,0)""",
+                                (tid, owner, pool, 1000 + tid * 10, t, 1005 + tid * 10, t + 1800, int(priced),
+                                 100.0 if priced else None, 100 + sample_pnl if priced else None,
+                                 0.0 if priced else None, sample_pnl if priced else None))
+                    for blk, sign in ((1000 + tid * 10, 1), (1005 + tid * 10, -1)):
+                        con.execute("INSERT INTO events(block, log_index, tx, ts, token_id, pool, tl, tu, delta, v_state) "
+                                    "VALUES(?,?,?,?,?,?,-600,600,?,?)",
+                                    (blk, 0, "0x", blk, tid, pool, str(sign * liq), 1 if priced else 0))
+            con.commit()
+            rpc = FakeStateView(liq, C.Q96)
+            sc = S.Scorer(con, rpc, dict(config.DEFAULTS), log=lambda *a: None)
+            # the labelled wallet and the one whose sample made money come first, in full
+            self.assertEqual(sc.promising([good, bad, mine], now - 30 * 86400), [mine, good])
+            # a budget of 0 prices nothing at all
+            out = sc.run(budget=0)
+            self.assertEqual((out["priced"], out["calls"], out["budget_hit"]), (0, 0, True))
+            out = sc.run()
+            priced = dict(con.execute("SELECT owner, SUM(valued=1) FROM positions GROUP BY owner").fetchall())
+            # the losing wallet: its newest 20 only (its board figures are partial); the others: all 33
+            self.assertEqual((priced[good], priced[mine], priced[bad]), (33, 33, 23))
+            self.assertEqual(get_meta(con, "price_queue"), 0)
+            self.assertGreater(out["calls"], 0)
+            # values that only drift are refreshed on their own clock, not every pass
+            self.assertIsNotNone(get_meta(con, "open_values_at"))
+            self.assertIsNotNone(get_meta(con, "slow_refresh_at"))
+            # its newest 20 made money after all (1 USDG of fees each here): now it's worth pricing in full
+            self.assertEqual(sc.promising([good, bad, mine], now - 30 * 86400), [mine, good, bad])  # best sample first
+            self.assertEqual(sc.run()["priced"], 10)
+            n = rpc.calls
+            out = sc.run()
+            self.assertEqual((out["priced"], rpc.calls - n), (0, 0))  # nothing new, nothing due: no RPC at all
+            # the worker counts calls per UTC day
+            W.count_calls(con, 120)
+            W.count_calls(con, 30)
+            self.assertEqual(W.calls_today(con), 150)
+            con.close()
+
+    def test_idle_wallets_left_out_and_absurd_returns_dropped(self):
+        import time as _t
+        now = _t.time()
+        active, idle = "0x" + "a" * 40, "0x" + "b" * 40
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            tid = 0
+            for owner, last in ((active, now - 3 * 86400), (idle, now - 20 * 86400)):
+                con.execute("INSERT INTO wallets(addr, last_seen) VALUES(?,?)", (owner, last))
+                for k in range(3):
+                    tid += 1
+                    con.execute("""INSERT INTO positions(token_id, owner, pool, open_block, open_ts, close_ts, minted,
+                                   valued, dep_usd, wd_usd, fee_usd, now_usd, pnl_usd)
+                                   VALUES(?,?,'p',?,?,?,1,1,100,100,1,0,1)""",
+                                (tid, owner, tid, last - 7200 - k, last - k))
+            # a drained pool's leftovers valued at a crazy price: $10 in, $5M out
+            con.execute("UPDATE positions SET wd_usd=5e6, pnl_usd=5e6-10, dep_usd=10 WHERE token_id=1")
+            con.commit()
+            sc = S.Scorer(con, None, dict(config.DEFAULTS), log=lambda *a: None)
+            people, bots = sc.candidates(now, now - 30 * 86400)
+            self.assertEqual((people, bots), ([active], []))  # idle for 20 days > ACTIVE_DAYS (14)
+            sc.cfg["ACTIVE_DAYS"] = "0"
+            self.assertEqual(sorted(sc.candidates(now, now - 30 * 86400)[0]), [active, idle])
+            sc.drop_spiked_prices()
+            self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=1").fetchone()[0], 2)
+            self.assertEqual(con.execute("SELECT valued FROM positions WHERE token_id=2").fetchone()[0], 1)
+            con.close()
+
+
+class CompareTest(unittest.TestCase):
+    HEAD = ("RANK ▾\tSCORE\tWALLET\tNET WORTH\tPNL 30D\tROI 30D\tNON-USDG*\tUSDG%*\tAVG / MONTH\tPNL 7D\t7D / 30D\t"
+            "PNL 3M\tPNL 1Y\tPNL ALL\tOPEN PNL\tROI ALL\tWIN")
+    ROW = ("46\t79.0\t0x5784…4ffd\t$2866\t+$3858\t+134.6%\t0.0%\t100.0%\t+$2840\t+$184\t0.05\t+$8521\t+$8521\t"
+           "+$8521\t-$27.57\t+1.6%\t87.8%")
+
+    def test_parse_pasted_rows(self):
+        import compare
+        want = {"wallet": "0x5784…4ffd", "rank": 46, "score": 79.0, "worth": 2866, "net": 3858, "roi_nw": 134.6,
+                "non_usdg": 0, "usdg": 100, "avg_month": 2840, "net_7d": 184, "momentum": 0.05, "pnl_3m": 8521,
+                "pnl_1y": 8521, "pnl_all": 8521, "float": -27.57, "roi_all": 1.6, "win_pos": 87.8, "open_none": False}
+        self.assertEqual(compare.parse(self.HEAD + "\n" + self.ROW), [want])
+        self.assertEqual(compare.parse(self.ROW), [want])  # no header: RH Discovery's column order
+        spaced = "2 84.6 0x74a9...181b $2015 +$83.4k +4140.1% – 0.1% +$115.3k +$2013 0.02 +$345.8k +$345.8k " \
+                 "+$345.8k none open +45.6% 67.6%"
+        r = compare.parse("Showing 251 of 3000\n" + spaced)[0]
+        self.assertEqual((r["wallet"], r["net"], r["non_usdg"], r["float"], r["open_none"], r["win_pos"]),
+                         ("0x74a9…181b", 83400, None, None, True, 67.6))
+        self.assertEqual([compare.value(v) for v in ("$440.0k", "-$1460", "$1.2M", "–", "+12.0%")],
+                         [440000, -1460, 1200000, None, 12.0])
+
+    def test_side_by_side(self):
+        import compare
+        import queries as Q
+        now = 1_800_000_000
+        ranked, idle = "0x5784" + "0" * 32 + "4ffd", "0x74a9" + "1" * 32 + "181b"
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            con.execute("INSERT INTO wallets(addr, last_seen, eth_bal, usd_bal, data, score, scored_at) "
+                        "VALUES(?,?,0,2800,?,80,?)", (ranked, now - 3600, json.dumps({"raw": {
+                            "net": 3900.0, "net_7d": 100.0, "win_pos": 89.3, "pnl_all": 8853.0, "avg_month": 2951.0,
+                            "roi_all": 1.68, "float": -20.0, "open": 1, "open_now": 60.0, "score": 80.0,
+                            "kind": "degen", "hist_from": now - 69 * 86400}}), now))
+            con.execute("INSERT INTO wallets(addr, last_seen) VALUES(?,?)", (idle, now - 30 * 86400))
+            con.execute("INSERT INTO meta(k, v) VALUES('scored_at', ?)", (json.dumps(now),))
+            con.commit()
+            Q._cache.clear()
+            rows = compare.parse(self.ROW + "\n" + self.ROW.replace("0x5784…4ffd", "0x74a9…181b") + "\n"
+                                 + self.ROW.replace("0x5784…4ffd", "0xdead…beef"))
+            res = compare.compare(con, rows, now=now, cfg=dict(config.DEFAULTS))
+            a, b, c = res["rows"]
+            self.assertEqual((a["status"], b["status"], c["status"]), ("ranked", "not ranked", "not in our data"))
+            self.assertIn("idle", b["reason"])
+            same = {x["key"]: x["same"] for x in a["checks"]}
+            self.assertEqual((same["net"], same["win_pos"], same["pnl_all"], same["worth"], same["float"]),
+                             (True, True, True, True, True))
+            self.assertFalse(same["net_7d"])  # 184 vs 100: further apart than 20%
+            self.assertTrue(any("PnL ALL starts" in n for n in a["notes"]))
+            self.assertEqual(res["summary"]["per_metric"]["net"], {"label": "PnL 30D", "compared": 1, "same": 1})
+            self.assertIn("0x5784…4ffd", compare.table(res))
+            con.close()
+
+
+class LauncherTest(unittest.TestCase):
+    def test_old_instance_on_the_port_is_replaced(self):
+        import shutil
+        import socket
+        import subprocess
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import finder
+        if not shutil.which("lsof"):
+            self.skipTest("no lsof")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        # an "old" Wallet Finder still holding the port after a git pull
+        old = subprocess.Popen([sys.executable, "-c", "import socket, sys, time; s = socket.socket(); "
+                                f"s.bind(('127.0.0.1', {port})); s.listen(); time.sleep(60)", "streamlit_app.py"],
+                               cwd=Path(finder.__file__).resolve().parent)
+        try:
+            for _ in range(50):
+                if not finder._port_free(port):
+                    break
+                import time as _t
+                _t.sleep(0.1)
+            self.assertEqual(finder._free_port(port), port)
+            self.assertIsNotNone(old.wait(timeout=10))  # stopped
+        finally:
+            old.kill()
+        # something else holding it (here: this test, not run from that folder): the next free port instead
+        with socket.socket() as other:
+            other.bind(("127.0.0.1", port))
+            other.listen()
+            self.assertGreater(finder._free_port(port), port)
+
+
+class PublishTest(unittest.TestCase):
+    """The web showcase: what goes out, how it's uploaded, how the site reads it back."""
+
+    def _db(self, d):
+        import queries
+        con = db.connect(Path(d) / "w.db")
+        a = "0x" + "1" * 40
+        con.execute("INSERT INTO wallets(addr, data, score, first_seen, last_seen) VALUES(?,?,?,?,?)",
+                    (a, json.dumps({"raw": {"score": 70, "net": 12.345678, "kind": "degen", "verdict": "Elite",
+                                            "copy": "✓", "duration": 900, "size": 100, "per_day": 3, "open_now": 0}}),
+                     70, 1, 2))
+        con.commit()
+        queries.set_label(con, a, label="My secret label", notes="private note", starred=True)
+        return con, a
+
+    def test_snapshot_is_public_data_only(self):
+        import publish
+        with tempfile.TemporaryDirectory() as d:
+            con, a = self._db(d)
+            snap = publish.snapshot(con)
+            text = json.dumps(snap)
+            self.assertEqual(snap["views"]["raw"][0]["addr"], a)
+            self.assertEqual(snap["views"]["raw"][0]["net"], 12.3457)  # 6 significant digits
+            for private in ("My secret label", "private note", "starred", "Degen example", "Multiday example"):
+                self.assertNotIn(private, text)
+            con.close()
+
+    def test_upload_request_and_errors(self):
+        import gzip
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import publish
+        seen = {}
+        tok = lambda t: {"VERCEL_PUBLISH_URL": "", "VERCEL_BLOB_TOKEN": t}  # noqa: E731
+
+        class Blob(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                seen["path"] = self.path
+                seen["headers"] = {k.lower(): v for k, v in self.headers.items()}
+                seen["body"] = self.rfile.read(int(self.headers["content-length"]))
+                bad = "wrong" in self.headers["authorization"]
+                public = self.headers["x-vercel-blob-access"] == "public"
+                seen.setdefault("accesses", []).append(self.headers["x-vercel-blob-access"])
+                body = {"error": {"code": "forbidden", "message": "Access denied"}} if bad else \
+                    {"error": {"code": "bad_request", "message": "Cannot use public access on a private store. "
+                                                                 "The store is configured with private access."}} \
+                    if public and seen.get("store") == "private" else \
+                    {"error": {"code": "bad_request", "message": "Cannot use private access on a public store."}} \
+                    if not public and seen.get("store") == "public" else \
+                    {"url": f"https://s1.{self.headers['x-vercel-blob-access']}.blob.vercel-storage.com/x"}
+                self.send_response(403 if bad else 400 if "error" in body else 200)
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
+
+            def log_message(self, *a):
+                pass
+        srv = HTTPServer(("127.0.0.1", 0), Blob)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        old = publish.BLOB_API
+        publish.BLOB_API = f"http://127.0.0.1:{srv.server_port}/api/blob/"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                con, a = self._db(d)
+                seen["store"] = "public"  # a public store: the first (private) try is refused, then remembered
+                url = publish.publish(con, tok("vercel_blob_rw_S1_secret"), log=lambda *x: None)
+                self.assertEqual((url, seen["accesses"]), ("https://s1.public.blob.vercel-storage.com/x",
+                                                           ["private", "public"]))
+                publish.publish(con, tok("vercel_blob_rw_S1_secret"), log=lambda *x: None)
+                self.assertEqual(seen["accesses"][-1], "public")  # straight away the next time
+                seen["store"] = "private"  # e.g. a new store connected later: switches back
+                url = publish.publish(con, tok("vercel_blob_rw_S1_secret"), log=lambda *x: None)
+                self.assertTrue(url.startswith("https://s1.private."))
+                self.assertEqual(seen["path"], "/api/blob/?pathname=elywf%2Fsnapshot.json.gz")
+                h = seen["headers"]
+                self.assertEqual((h["authorization"], h["x-vercel-blob-store-id"], h["x-vercel-blob-access"],
+                                  h["x-add-random-suffix"], h["x-allow-overwrite"], h["x-api-version"]),
+                                 ("Bearer vercel_blob_rw_S1_secret", "S1", "private", "0", "1", "13"))
+                self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
+                self.assertEqual(publish.last(con)["url"], url)
+                with self.assertRaisesRegex(publish.PublishError, "403: Access denied.*expire now"):
+                    publish.publish(con, tok("vercel_blob_rw_wrong_x"), log=lambda *x: None)
+                self.assertIn("403", publish.last(con)["error"])
+                # a whole .env line pasted instead of the value: the token is picked out of it
+                publish.publish(con, tok('BLOB_READ_WRITE_TOKEN="vercel_blob_rw_S1_secret"'), log=lambda *x: None)
+                self.assertEqual(seen["headers"]["authorization"], "Bearer vercel_blob_rw_S1_secret")
+                # not a Blob token at all: said plainly, nothing sent
+                seen.clear()
+                with self.assertRaisesRegex(publish.PublishError, "isn't a Vercel Blob read-write token"):
+                    publish.publish(con, tok("abc123"), log=lambda *x: None)
+                self.assertEqual(seen, {})
+                con.close()
+        finally:
+            publish.BLOB_API = old
+            srv.shutdown()
+            srv.server_close()
+
+    def test_upload_through_the_site(self):
+        import gzip
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import publish
+        seen = {}
+
+        class Site(BaseHTTPRequestHandler):
+            def do_PUT(self):
+                seen["path"] = self.path
+                seen["headers"] = {k.lower(): v for k, v in self.headers.items()}
+                seen["body"] = self.rfile.read(int(self.headers["content-length"]))
+                if self.path != "/api/publish":
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"<html>Not found</html>")
+                    return
+                ok = self.headers["authorization"] == "Bearer K123"
+                self.send_response(200 if ok else 401)
+                self.end_headers()
+                self.wfile.write(json.dumps({"url": "https://s.private.blob.vercel-storage.com/rhwf/snapshot.json.gz"}
+                                            if ok else {"error": "Wrong publish key: copy the publish link again."})
+                                 .encode())
+
+            def log_message(self, *a):
+                pass
+        srv = HTTPServer(("127.0.0.1", 0), Site)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        site = f"http://127.0.0.1:{srv.server_port}"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                con, a = self._db(d)
+                # the link wins over an (expired) Blob token; the key goes in a header, not the URL
+                cfg = {"VERCEL_PUBLISH_URL": f"{site}/api/publish?key=K123", "VERCEL_BLOB_TOKEN": "vercel_blob_rw_S1_x"}
+                url = publish.publish(con, cfg, log=lambda *x: None)
+                self.assertEqual((url, seen["path"], seen["headers"]["authorization"]),
+                                 ("https://s.private.blob.vercel-storage.com/rhwf/snapshot.json.gz", "/api/publish",
+                                  "Bearer K123"))
+                self.assertEqual(json.loads(gzip.decompress(seen["body"]))["views"]["raw"][0]["addr"], a)
+                self.assertEqual(publish.last(con)["url"], url)
+                # a bare site link gets /api/publish; a wrong key is said as the site says it
+                with self.assertRaisesRegex(publish.PublishError, "Wrong publish key"):
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": f"{site}?key=nope"}, log=lambda *x: None)
+                self.assertEqual(seen["path"], "/api/publish")
+                self.assertIn("Wrong publish key", publish.last(con)["error"])
+                with self.assertRaisesRegex(publish.PublishError, "redeploy"):  # an old deployment, no endpoint yet
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": f"{site}/api/old?key=K123"}, log=lambda *x: None)
+                with self.assertRaisesRegex(publish.PublishError, "has no key"):
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": f"{site}/api/publish"}, log=lambda *x: None)
+                with self.assertRaisesRegex(publish.PublishError, "Nowhere to publish"):
+                    publish.publish(con, {"VERCEL_PUBLISH_URL": "", "VERCEL_BLOB_TOKEN": ""}, log=lambda *x: None)
+                con.close()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_site_publish_function(self):
+        import gzip
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("no node")
+        fn = Path(__file__).resolve().parents[1] / "web" / "api" / "publish.js"
+        snap = gzip.compress(b'{"v":1,"views":{"raw":[{"addr":"0xa"}]}}')
+
+        def run(env, auth, body, store_kind="private"):
+            js = f"""
+              Object.assign(process.env, {json.dumps(env)});
+              const body = Buffer.from({json.dumps(body.hex())}, "hex");
+              const puts = [];
+              globalThis.fetch = async (u, o) => {{
+                puts.push([u, o.headers]);
+                const wrong = o.headers["x-vercel-blob-access"] !== {json.dumps(store_kind)};
+                return {{ ok: !wrong, status: wrong ? 400 : 200, text: async () => JSON.stringify(wrong
+                  ? {{ error: {{ message: `Cannot use ${{o.headers["x-vercel-blob-access"]}} access on a ` +
+                                          `${{{json.dumps(store_kind)}}} store.` }} }}
+                  : {{ url: "https://abc9.private.blob.vercel-storage.com/rhwf/snapshot.json.gz" }}) }};
+              }};
+              const req = {{ method: "PUT", headers: {{ authorization: {json.dumps(auth)}, "x-vercel-oidc-token": "oidc.jwt" }},
+                             async *[Symbol.asyncIterator]() {{ yield body; }} }};
+              const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                             end(b) {{ console.log(JSON.stringify({{ status: this.statusCode, body: JSON.parse(String(b)), puts }})); }} }};
+              require({json.dumps(str(fn))})(req, res);
+            """
+            return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+
+        env = {"PUBLISH_KEY": "k" * 32, "BLOB_STORE_ID": "store_AbC9"}
+        out = run(env, "Bearer " + "k" * 32, snap)
+        self.assertEqual((out["status"], out["body"]["wallets"], out["body"]["via"]), (200, 1, "oidc"))
+        u, h = out["puts"][0]
+        self.assertEqual(u, "https://vercel.com/api/blob/?pathname=elywf%2Fsnapshot.json.gz")
+        self.assertEqual((h["authorization"], h["x-vercel-blob-store-id"], h["x-vercel-blob-access"],
+                          h["x-allow-overwrite"], h["x-add-random-suffix"]),
+                         ("Bearer oidc.jwt", "AbC9", "private", "1", "0"))
+        out = run(env, "Bearer " + "k" * 32, snap, store_kind="public")  # a public store: tries again as public
+        self.assertEqual((out["status"], [p[1]["x-vercel-blob-access"] for p in out["puts"]]), (200, ["private", "public"]))
+        self.assertEqual(run(env, "Bearer wrong", snap)["status"], 401)
+        self.assertEqual(run(env, "", snap)["status"], 401)
+        out = run(env, "Bearer " + "k" * 32, b"not a snapshot")
+        self.assertEqual((out["status"], out["puts"]), (400, []))
+        self.assertEqual(run({"BLOB_STORE_ID": "store_AbC9"}, "Bearer x", snap)["status"], 503)  # no PUBLISH_KEY
+        self.assertEqual(run({"PUBLISH_KEY": "k" * 32}, "Bearer " + "k" * 32, snap)["status"], 503)  # no store
+
+    def test_raw_data_export(self):
+        import gzip
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("no node")
+        web = Path(__file__).resolve().parents[1] / "web"
+        row = lambda a, kind, net, **kw: {"addr": a, "kind": kind, "score": 80.0, "verdict": "Elite", "net": net,  # noqa: E731
+                                          "copy": "✓", "duration": 5400, "first_seen": 1790000000, **kw}
+        snap = {"v": 1, "generated": 1792900000, "status": {"metric_days": 30},
+                "views": {"raw": [row("0xa", "degen", 3858.12, style='Ladder ×5, "bid"'),
+                                  row("0xb", "multiday", 270.5, ref=1, sim_ref=1, sim_pct=88, exposure=0.6),
+                                  row("0xc", "degen", -12.0, win_pos=87.8, hist_from=1786686219)],
+                          "real": [], "d1raw": [row("0xa", "degen", 184.0)], "d1real": []}}
+        gz = gzip.compress(json.dumps(snap).encode())
+
+        def get(query):
+            js = f"""
+              process.env.BLOB_STORE_ID = "store_AbC9";
+              const buf = Buffer.from({json.dumps(gz.hex())}, "hex");
+              globalThis.fetch = async () => ({{ ok: true, status: 200,
+                arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }});
+              const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                             end(b) {{ console.log(JSON.stringify({{ status: this.statusCode, headers: this.headers,
+                                                                      body: String(b) }})); }} }};
+              require({json.dumps(str(web / "api" / "export.js"))})(
+                {{ url: {json.dumps("/api/export?" + query)}, headers: {{ "x-vercel-oidc-token": "o" }} }}, res);
+            """
+            return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+
+        import csv
+        import io
+        out = get("board=degen")
+        self.assertEqual(out["status"], 200)
+        self.assertTrue(out["headers"]["content-type"].startswith("text/csv"))
+        self.assertIn('filename="rh-wallet-finder-degen-2026-10-25.csv"', out["headers"]["content-disposition"])
+        recs = list(csv.DictReader(io.StringIO(out["body"])))
+        self.assertEqual([(r["rank"], r["address"], r["pnl_30d_usd"]) for r in recs],
+                         [("1", "0xa", "3858.12"), ("2", "0xc", "-12")])  # its class only, plain numbers
+        self.assertEqual(recs[0]["style"], 'Ladder ×5, "bid"')  # commas and quotes survive
+        self.assertEqual((recs[0]["hold_hours"], recs[0]["followable"], recs[0]["first_seen_utc"]),
+                         ("1.5", "yes", "2026-09-21T14:13:20Z"))
+        self.assertEqual((recs[1]["win_pct"], recs[1]["pnl_all_since_utc"], recs[1]["roi_30d_pct"]),
+                         ("87.8", "2026-08-14T05:43:39Z", ""))  # a missing figure is an empty cell
+        out = get("board=all&format=json")
+        body = json.loads(out["body"])
+        self.assertEqual((body["board"], body["window_days"], len(body["rows"])), ("all", 30, 3))
+        b = body["rows"][1]
+        self.assertEqual((b["address"], b["reference_wallet"], b["like_reference_pct"], b["crowding_pct"]),
+                         ("0xb", 1, 88, 60))
+        day = list(csv.DictReader(io.StringIO(get("board=day")["body"])))
+        self.assertEqual((day[0]["pnl_1d_usd"], "pnl_30d_usd" in day[0]), ("184", False))  # the 24 h board: 1-day columns
+        self.assertEqual(get("board=whales")["status"], 400)
+        # the page's own Export uses the same columns
+        js = f"""const X = require({json.dumps(str(web / "export.js"))});
+                 console.log(JSON.stringify(X.headers(30).slice(0, 8)));"""
+        heads = json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout)
+        self.assertEqual(heads, ["rank", "address", "class", "score", "tier", "net_worth_usd", "pnl_30d_usd", "roi_30d_pct"])
+
+    def test_site_function_reads_the_blob(self):
+        import gzip
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("no node")
+        fn = Path(__file__).resolve().parents[1] / "web" / "api" / "snapshot.js"
+
+        def run(env, headers=None, stores=("AbC9",)):
+            """The function with these env vars and request headers; the Blob host
+            serves the file only for the stores listed -> what it asked and answered."""
+            with tempfile.TemporaryDirectory() as d:
+                gz = Path(d) / "s.gz"
+                gz.write_bytes(gzip.compress(b'{"v":1,"views":{"raw":[]}}'))
+                js = f"""
+                  Object.assign(process.env, {json.dumps(env)});
+                  const buf = require("fs").readFileSync({json.dumps(str(gz))});
+                  const asked = [];
+                  globalThis.fetch = async (u, o) => {{
+                    asked.push([u.split("?")[0], o.headers.authorization]);
+                    const ok = {json.dumps(list(stores))}.some(s => u.startsWith(`https://${{s}}.private.`));
+                    return {{ ok, status: ok ? 200 : 404,
+                      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }};
+                  }};
+                  const res = {{ headers: {{}}, setHeader(k, v) {{ this.headers[k] = v; }},
+                                 end(b) {{ console.log(JSON.stringify({{ asked, status: this.statusCode,
+                                   cache: this.headers["cache-control"], body: String(b) }})); }} }};
+                  require({json.dumps(str(fn))})({{ headers: {json.dumps(headers or {})} }}, res);
+                """
+                return json.loads(subprocess.run(["node", "-e", js], capture_output=True, text=True,
+                                                 timeout=30).stdout)
+
+        url = "https://AbC9.private.blob.vercel-storage.com/elywf/snapshot.json.gz"
+        snap = '{"v":1,"views":{"raw":[]}}'
+        # a store connected the current way: its id in BLOB_STORE_ID, read with the call's OIDC token
+        out = run({"BLOB_STORE_ID": "store_AbC9"}, {"x-vercel-oidc-token": "oidc.jwt"})
+        self.assertEqual((out["asked"], out["status"], out["body"]), ([[url, "Bearer oidc.jwt"]], 200, snap))
+        self.assertIn("s-maxage=60", out["cache"])
+        # a read-write token, with the default prefix or another one
+        for name in ("BLOB_READ_WRITE_TOKEN", "RH_BLOB_READ_WRITE_TOKEN"):
+            out = run({name: "vercel_blob_rw_AbC9_x"})
+            self.assertEqual((out["asked"], out["status"]), ([[url, "Bearer vercel_blob_rw_AbC9_x"]], 200))
+        # both: the connected store first; a token for another (e.g. deleted) store is only a fallback
+        out = run({"BLOB_STORE_ID": "store_AbC9", "BLOB_READ_WRITE_TOKEN": "vercel_blob_rw_Old1_x"},
+                  {"x-vercel-oidc-token": "oidc.jwt"})
+        self.assertEqual((len(out["asked"]), out["status"]), (1, 200))
+        out = run({"BLOB_STORE_ID": "store_New2", "BLOB_READ_WRITE_TOKEN": "vercel_blob_rw_AbC9_x"},
+                  {"x-vercel-oidc-token": "oidc.jwt"})
+        self.assertEqual((out["asked"][-1], out["status"]), ([url, "Bearer vercel_blob_rw_AbC9_x"], 200))
+        # nothing uploaded yet: a 404 that says so, and which reads were tried
+        out = run({"BLOB_STORE_ID": "store_New2"}, {"x-vercel-oidc-token": "oidc.jwt"}, stores=())
+        self.assertEqual(out["status"], 404)
+        self.assertIn("Publish now", out["body"])
+        self.assertEqual(json.loads(out["body"])["tried"], ["oidc private 404", "oidc public 404"])
+        out = run({})  # no store reaches this deployment: say what to do
+        self.assertEqual(out["status"], 503)
+        self.assertIn("Redeploy", out["body"])
+
+
+class ConfigTest(unittest.TestCase):
+    def test_public_rpc_is_the_default_and_a_key_becomes_an_elysium_link(self):
+        import os
+        orig = config.ENV_FILE
+        with tempfile.TemporaryDirectory() as d:
+            config.ENV_FILE = Path(d) / "none.env"
+            old = os.environ.pop("RPC_URL", None)
+            try:
+                cfg = config.load_env()
+                self.assertEqual(cfg["RPC_URL"], config.PUBLIC_RPC)
+                self.assertEqual(cfg["RPC_SOURCE"], "public")
+                self.assertEqual(config.rpc_link("AbCdEf0123456789xyz_-"),
+                                 "https://elysium-mainnet.g.alchemy.com/v2/AbCdEf0123456789xyz_-")
+                config.ENV_FILE.write_text("RPC_URL=https://mine\n")
+                cfg = config.load_env()
+                self.assertEqual((cfg["RPC_URL"], cfg["RPC_SOURCE"]), ("https://mine", "settings"))
+            finally:
+                config.ENV_FILE = orig
+                if old is not None:
+                    os.environ["RPC_URL"] = old
+
+
+class SmartLpTest(unittest.TestCase):
+    def test_imports_saved_wallets_and_rankings_from_a_live_wal_db(self):
+        import json
+        import smartlp
+        with tempfile.TemporaryDirectory() as d:
+            theirs = Path(d) / "lp-finder.sqlite"
+            src = __import__("sqlite3").connect(str(theirs))
+            src.execute("PRAGMA journal_mode=WAL")
+            src.executescript("""
+                CREATE TABLE pool_lp_finder_cache (pool_id TEXT, from_block INTEGER, to_block INTEGER,
+                  result_json TEXT, computed_at_ms INTEGER, PRIMARY KEY (pool_id, from_block, to_block));
+                CREATE TABLE smart_lp_wallets (wallet_address TEXT PRIMARY KEY, label TEXT, saved_at_ms INTEGER);""")
+            a, b = "0x" + "aa" * 20, "0x" + "bb" * 20
+            res = {"totalWalletsFound": 40, "wallets": [
+                {"walletAddress": b, "pnlUsd": -5, "totalDepositedUsd": 100, "positionCount": 1},
+                {"walletAddress": a, "pnlUsd": 90, "pnlPercent": 30, "totalDepositedUsd": 300, "positionCount": 4}]}
+            src.execute("INSERT INTO pool_lp_finder_cache VALUES(?,?,?,?,?)",
+                        ("0x" + "cd" * 32, 10, 20, json.dumps(res), 1_790_000_000_000))
+            src.execute("INSERT INTO smart_lp_wallets VALUES(?,?,?)", (a.upper().replace("0X", "0x"), "Cactus", 1))
+            src.commit()  # still only in the -wal file: the connection stays open
+            con = db.connect(Path(d) / "ours.db")
+            con.execute("INSERT INTO labels(addr, label, starred, source, added) VALUES(?, 'mine', 0, 'manual', 1)", (a,))
+            got = smartlp.import_all(con, theirs, log=lambda *_: None)
+            self.assertEqual(got, {"saved": 1, "ranked": 2})
+            lab = dict(con.execute("SELECT label, starred FROM labels WHERE addr=?", (a,)).fetchone())
+            self.assertEqual(lab, {"label": "mine", "starred": 1})  # our label kept, star added
+            best = smartlp.best_ranks(con)
+            self.assertEqual((best[a]["rank"], best[a]["total"], best[a]["pnl_usd"]), (1, 40, 90))
+            self.assertNotIn(b, best)  # losing placings don't count
+            self.assertEqual(smartlp.import_all(con, theirs, log=lambda *_: None)["ranked"], 2)  # idempotent
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM slf_ranks").fetchone()[0], 2)
+            src.close()
+            con.close()
+
+
+class QueriesTest(unittest.TestCase):
+    def test_import_labels_presets(self):
+        import queries
+        with tempfile.TemporaryDirectory() as d:
+            con = db.connect(Path(d) / "w.db")
+            text = ("No\tWallet Address\tShort\n"
+                    "1\t0x74b26ec2754dcbd27e43a2a527e38005358a772e\t0x74b2...772e\tROBINHOOD\t"
+                    "https://app.lpagent.io/portfolio?address=0x74b2&chain=ROBINHOOD\tCactus\n"
+                    "0xd21556896db6242f6e5823389623728da49118ae\n")
+            self.assertEqual(queries.import_text(con, text, "t")["added"], 2)
+            labs = {r["addr"]: r["label"] for r in con.execute("SELECT * FROM labels")}
+            self.assertEqual(labs["0x74b26ec2754dcbd27e43a2a527e38005358a772e"], "Cactus")
+            self.assertIsNone(labs["0xd21556896db6242f6e5823389623728da49118ae"])
+            a = "0xd21556896db6242f6e5823389623728da49118ae"
+            queries.set_label(con, a, notes="ladder bot", starred=False)
+            row = dict(con.execute("SELECT label, notes, starred FROM labels WHERE addr=?", (a,)).fetchone())
+            self.assertEqual(row, {"label": None, "notes": "ladder bot", "starred": 0})
+            queries.set_label(con, a, label="LB")  # starred=None keeps the star as it is
+            self.assertEqual(con.execute("SELECT label, starred FROM labels WHERE addr=?", (a,)).fetchone()[:], ("LB", 0))
+            with self.assertRaises(ValueError):
+                queries.set_label(con, "0x123")
+            queries.save_presets(con, [{"name": "mine", "filters": {"f_win": 60}}])
+            self.assertEqual(queries.presets(con)[0]["filters"]["f_win"], 60)
+            self.assertEqual(queries.wallet_rows(con, "raw")[0], [])
+            # a new database starts with the two reference wallets
+            refs = dict(con.execute("SELECT addr, ref FROM labels WHERE ref IS NOT NULL").fetchall())
+            self.assertEqual(refs, {k: v[0] for k, v in config.REFERENCE_WALLETS.items()})
+            queries.set_label(con, a, ref="degen")
+            self.assertEqual(con.execute("SELECT ref FROM labels WHERE addr=?", (a,)).fetchone()[0], "degen")
+            queries.set_label(con, a, notes="x")  # ref=None keeps it
+            self.assertEqual(con.execute("SELECT ref FROM labels WHERE addr=?", (a,)).fetchone()[0], "degen")
+            with self.assertRaises(ValueError):
+                queries.set_label(con, a, ref="whale")
+            # boards: one class each, ranked on its own; similarity to that class's reference
+            base = {"score": 50, "net": 1, "float": 0, "roi": 1, "win": 50, "duration": 600, "size": 100,
+                    "per_day": 5, "open_now": 0}
+            for addr, kind, score in (("0x" + "1" * 40, "degen", 70), ("0x" + "2" * 40, "multiday", 60),
+                                      ("0x" + "3" * 40, "degen", 40), (a, "degen", 55)):
+                con.execute("INSERT INTO wallets(addr, data, score) VALUES(?,?,?)",
+                            (addr, json.dumps({"raw": {**base, "kind": kind, "score": score}}), score))
+            con.commit()
+            degen, _ = queries.wallet_rows(con, "raw", "degen")
+            self.assertEqual([(r["rank"], r["score"]) for r in degen], [(1, 70), (2, 55), (3, 40)])
+            self.assertTrue(degen[0]["sim_ref"])
+            self.assertEqual(degen[0]["sim_label"], "LB")  # the degen reference, by its label
+            self.assertEqual([r["kind"] for r in queries.wallet_rows(con, "raw", "multiday")[0]], ["multiday"])
+            self.assertEqual(queries.status(con)["kinds"], {"multiday": 1, "degen": 3})
+            queries.set_label(con, a, ref="")
+            self.assertIsNone(con.execute("SELECT ref FROM labels WHERE addr=?", (a,)).fetchone()[0])
+            self.assertIn("error", queries.similar(con, "0x" + "9" * 40, "raw"))
+            queries.delete_label(con, a)
+            self.assertIsNone(con.execute("SELECT 1 FROM labels WHERE addr=?", (a,)).fetchone())
+            self.assertIn("discovered", queries.status(con))
+            con.close()
+
+
+class AppTest(unittest.TestCase):
+    def test_app_renders(self):
+        try:
+            from streamlit.testing.v1 import AppTest as StAppTest
+        except ImportError:
+            self.skipTest("streamlit not installed")
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            old = {k: os.environ.get(k) for k in ("RHWF_DB", "RHWF_NO_WORKER", "SMART_LP_FINDER_DIR")}
+            os.environ.update(RHWF_DB=str(Path(d) / "w.db"), RHWF_NO_WORKER="1", SMART_LP_FINDER_DIR=d)
+            orig = config.DB_PATH
+            config.DB_PATH = Path(d) / "w.db"
+            try:
+                at = StAppTest.from_file(str(Path(__file__).resolve().parents[1] / "streamlit_app.py"),
+                                         default_timeout=60).run()
+                self.assertFalse(at.exception, at.exception)
+                self.assertEqual([t.label for t in at.tabs],
+                                 ["Multiday", "Degen", "Last 24h", "Pools", "Twin finder", "Watchlist", "Early",
+                                  "Settings"])
+                self.assertTrue(any("WALLET FINDER" in m.value for m in at.markdown))
+            finally:
+                config.DB_PATH = orig
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+
+if __name__ == "__main__":
+    unittest.main()
