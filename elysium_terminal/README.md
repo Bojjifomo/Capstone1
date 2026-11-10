@@ -10,8 +10,10 @@ port sendiri, env sendiri.
 | **ENTRY CHECK** | `OPEN / CAREFUL / WAIT / SKIP`. Fee 0 / honeypot = SKIP. Pool baru, TVL tipis, fee pelan = WAIT. Pump, dump, seller dominan, pool v4 ber-hook = flag. |
 | **PING, watch, search** | Top pool yang lolos gate. Watchlist di Mac. Search nama / CA / pool id (DexScreener chain `elysium` + yang ada di index). |
 | **Zap ladder** | Slice sama lebar di bawah harga, isi 1:2:…:n, quote-only, cap budget, warning size vs TVL. v4 = satu `modifyLiquidities`. v3 = beberapa NFT, di-batch `multicall`. |
-| **Portfolio** | Posisi dibaca dari chain. v4 dari log Transfer + `ownerOf`. v3 dari `tokenOfOwnerByIndex` (dua NPM). Fee v3 = static-call `collect` (nggak ngirim tx). PnL $, %, strip range, in/out of range. |
-| **Aksi** | **Close** · **Claim** · **Close+swap** (minOut = harga pool − fee − max loss) · **Re-entry** · **Cleanup** · **auto exit** TP. Semua di-`eth_call` dulu, revert = batal. |
+| **Portfolio** | Posisi dibaca dari chain. **Satu baris per pembukaan**: dua posisi di pool yang sama tetap dua baris, masing-masing PnL, tombol, dan rule auto sendiri. v4 dari log Transfer + `ownerOf`. v3 dari `tokenOfOwnerByIndex` (dua NPM). Fee v3 = static-call `collect` (nggak ngirim tx). |
+| **Aksi** | **Close** · **Claim** · **Close+swap** (minOut = harga pool − fee − max loss) · **Re-entry** (ladder) · **Rebalance** (satu range) · **Cleanup**. Semua di-`eth_call` dulu, revert = batal. |
+| **Tight** | Range sempit di sekitar harga: swap + mint dalam satu klik, dari tab 🎯 Tight atau tombol 🎯 di detail pool mana pun yang tanpa hook. |
+| **⚙ Auto** | Per posisi: TP, SL, dan aksi kalau harga keluar range (atas / bawah masing-masing: diam, rebalance, atau close + swap). Jalan di proses server, bukan di tab. |
 | **PIN, practice** | `ELYSIUM_PRACTICE_MODE` default **true**. Banner kuning di atas halaman. PIN buat trading dari HP. Key cuma dibaca Node. |
 | **Index health** | Chip ⛓ nulis jumlah pool v4/v3, jam histori, lag block, dan error kalau ada. Baris di bawah tabel: RPC publik vs Alchemy hari ini. |
 | **Data tambahan** | Umur pool, TVL + mcap dari DexScreener (chain `elysium`, udah dicek), APR dari fee 1 jam, jumlah trader 1 jam, nama hook v4 (sekali, disimpan di disk). Portfolio: nilai dalam $ dan HYPE, fee yang udah di-claim (log Collect v3) masuk PnL. |
@@ -113,7 +115,7 @@ Approve: v4 dan swap Uniswap resmi lewat Permit2. v3 ElysiumSwap (mint + SwapRou
 **Tes** (offline nggak nyentuh jaringan; live sim cuma `eth_call`):
 
 ```bash
-python3 -m unittest elysium_terminal.tests.test_elysium_terminal
+python3 -m unittest elysium_terminal.tests.test_elysium_terminal elysium_terminal.tests.test_tight elysium_terminal.tests.test_auto
 cd elysium_terminal/executor && node tests/test_offline.mjs
 cd elysium_terminal/executor && node tests/test_live_sim.mjs
 ```
@@ -125,27 +127,74 @@ cd elysium_terminal/executor && node tests/test_live_sim.mjs
 - Gate & flag ini nilai awal, bukan hasil backtest. Atur di ⚙.
 - Harga HYPE diambil dari pool USDC/HYPE atau USDC/WHYPE yang paling rame di index. Kalau index masih kosong, fallback-nya pool ElysiumSwap USDC/WHYPE 1% di atas.
 - Pool v4 yang fee LP-nya 0% (hook yang nentuin harga) kena SKIP. Pool ber-hook yang fee-nya normal kena flag, bukan skip. Mint ke hook bisa aja revert: simulasi yang nolak.
-- Deposit di Portfolio dihitung dari likuiditas (anggap slice-nya single-sided quote). Fee v3 yang sudah di-claim (event Collect) masuk PnL. Fee v4 yang sudah di-claim tidak: PositionManager tidak emit Collect, cuma perubahan likuiditas dan transfer token, jadi fee dan pokok tidak bisa dipisah tanpa baca tiap receipt.
-- Auto exit cuma jalan selama proses web-nya nyala.
+- Deposit di Portfolio: yang dicatat terminal saat buka. Posisi dari luar terminal dihitung dari likuiditas (anggap single-sided quote), ditandai `≈`. Fee v3 yang sudah di-claim (event Collect) masuk PnL. Fee v4 yang sudah di-claim tidak: PositionManager tidak emit Collect, cuma perubahan likuiditas dan transfer token, jadi fee dan pokok tidak bisa dipisah tanpa baca tiap receipt.
+- Rule ⚙ Auto cuma jalan selama proses web-nya nyala.
 - RPC publik rate-limited. `ALCHEMY_API_KEY` disaranin buat kirim tx. Baca tetap coba RPC publik dulu.
 - Umur pool v4 yang cuma ketemu lewat `poolKeys` (belum lewat event Initialize) bisa kosong. DexScreener ngisi kalau dia udah index. PING nggak masukin pool yang umurnya nggak ketahuan.
 
 ## Data
 
-`elysium_terminal/data/` (gitignore): `activity.json`, `poolkeys.json`, `ids_<wallet>.json`, `settings.json`, `watchlist.json`, `ui_prefs.json`, `auto_exit.json`, `decisions.jsonl`, `closes.jsonl`, `rpc_usage.jsonl`, `tight_config.json`, `tight_signals.json`, `tight_positions.json`, `tight_audit.jsonl`.
+`elysium_terminal/data/` (gitignore): `activity.json`, `poolkeys.json`, `ids_<wallet>.json`, `settings.json`, `watchlist.json`, `ui_prefs.json`, `decisions.jsonl`, `closes.jsonl`, `rpc_usage.jsonl`, `groups.json` (NFT mana yang satu posisi), `auto.json` (rule + batas auto), `auto_log.jsonl`, `tight_config.json`, `tight_signals.json`.
 
-## Tight range
+## Satu baris per posisi
 
-Tab **Tight** buat LP range sempit di sekitar harga sekarang. Bukan janji profit. Angka 5%/jam dan APR 43800% yang kelihatan di pool rame itu **fee seluruh pool dibagi TVL**, disetahunkan sederhana (`%/jam × 24 × 365`). Itu bukan fee posisi lo, bukan hasil yang dijamin, dan bukan patokan aman. Target %/jam bisa lo ganti. Default tampilannya 5, karena itu angka yang sering dipakai buat nyaring, bukan karena aman.
+Dulu Portfolio menggabung semua NFT di satu pool jadi satu baris ("2 slice"), walaupun itu dua posisi yang lo buka terpisah. Sekarang satu baris = satu pembukaan:
 
-- Lebar range dalam persen harga, terus di-snap ke tick spacing. Kalau spacing pool lebih kasar dari yang diminta, angkanya ditulis apa adanya, tidak dipaksa kelihatan sempit.
-- Panel nunjukin harga sekarang, range, di dalam atau di luar, dan jarak ke tepi.
-- **Review buka** dan **Review tutup + buka** nulis jumlah, slippage, fee swap yang ketahuan, dan tiap langkah. Close, swap, dan mint itu transaksi terpisah. Satu gagal, yang lain tidak otomatis kebatalkan atau keulang.
-- Tombol yang sama tidak mengirim dua kali: kunci disimpan, tx pending tidak diganti. Kalau proses mati setelah mulai tapi sebelum hash tersimpan, langkah itu dijeda, bukan dikirim ulang.
-- Pemicu pair cuma dari snapshot yang sudah ada (fee, volume, TVL, gerak harga di bucket 5 menit, umur data, jumlah sampel). Pool masuk daftar setelah beberapa kali lolos, dan keluar setelah beberapa kali gagal, biar spike tidak berkedip. Tidak ada entry otomatis dan tidak ada notifikasi dari daftar ini.
-- **Cek on-chain** cuma untuk shortlist yang lagi kelihatan, sekali, bukan poll per pool.
-- Pool ber-hook atau fee dinamis ditandai tidak didukung. Tidak dilaporkan sebagai berhasil.
+- Yang dibuka dari terminal ini dicatat di `data/groups.json` (NFT mana saja, kapan, berapa quote yang masuk). Itu juga yang dipakai buat umur dan deposit.
+- Yang dibuka dari tempat lain dikelompokkan dari fakta chain: NFT v4 yang di-mint di block yang sama = satu ladder. NFT v3 dengan id berurutan dan range yang nyambung = satu ladder. Sisanya berdiri sendiri.
+- Posisi kedua di pool yang sama dapat label `#2`. Close, Claim, Close+swap, Rebalance, dan ⚙ Auto cuma kena ke baris itu.
+- Deposit posisi dari luar terminal dihitung dari likuiditas seolah satu sisi, ditandai `≈`. Buat range yang di-mint dua sisi angka itu bisa kegedean, jadi PnL-nya kekecilan.
 
-Auto-rebalance **mati** dan **practice** secara default. Nyalakan dari panel, live butuh ketikan `SAYA PAHAM LIVE` plus `ELYSIUM_PRACTICE_MODE=false` di proses yang jalan. Ada batas tahan di luar range, cooldown, maks per hari, maks swap, maks notional, dan net minimum. Net itu parsial: proxy fee/TVL dikurangi fee swap. IL, adverse selection, dan gas tidak dipotong, karena tidak bisa dihitung jujur dari snapshot. Data basi, harga melonjak, RPC gagal, simulasi gagal, atau receipt gagal bikin jeda. Kill switch mematikan semuanya. Audit ada di `tight_audit.jsonl`.
+## Liquidity depth per posisi
 
-Loop-nya hidup di proses `python3 -m elysium_terminal web`, bukan di tab browser. Tab boleh ditutup. Prosesnya harus tetap jalan. Selama fitur ini mati, loop tidak baca chain. Selama nyala, dia pakai snapshot pool dan portfolio yang sama dengan halaman (sekitar sekali semenit), bukan scan per pool atau per block. RPC publik tetap didahulukan, Alchemy tetap kena cap harian. Practice berhenti setelah simulasi close, karena tidak ada token yang benar-benar keluar buat dibuka lagi.
+Tombol 📊 Depth di baris posisi membuka grafik likuiditas pool di sekitar posisi itu: batang abu = likuiditas pool per rentang harga, batang hijau = rentang yang kena range lu, garis putus-putus = harga pool sekarang. Di bawahnya ada porsi likuiditas lu dari yang aktif di harga sekarang (itu kira-kira bagian fee swap yang jatuh ke lu selama harga di situ).
+
+Datanya dibaca langsung dari pool (tick bitmap + `liquidityNet` tiap tick, jalan keluar dari tick sekarang), dua multicall, di-cache 20 detik, dan cuma dibaca selama grafiknya dibuka. Pool dengan tick yang sangat rapat dipotong di sekitar harga, dan grafiknya bilang begitu.
+
+## Tight range dan rebalance
+
+Range sempit di sekitar harga sekarang. Bukan janji profit. Angka %/jam di kartu itu **fee seluruh pool dibagi TVL**, bukan fee posisi lo, dan APR-nya cuma `%/jam × 24 × 365`. Target %/jam itu filter, bukan patokan aman.
+
+**Buka.** Tab 🎯 Tight, atau tombol 🎯 tight di detail pool mana pun yang tanpa hook dan tanpa fee dinamis. Isi ukuran, lebar (% harga, total kiri + kanan), slippage. Satu klik menjalankan:
+
+1. swap sebagian quote ke token lewat pool itu sendiri (minOut = harga pool − fee − slippage),
+2. mint range di sekitar harga saat itu.
+
+Mint cuma pakai quote yang lo minta plus token hasil swap tadi. Saldo wallet yang lain tidak ikut ditarik. Lebar di-snap ke garis grid terdekat (`tickSpacing`), dan kartunya nulis lebar yang beneran jadi.
+
+**Rebalance.** Tombol di baris posisi satu range: close (fee ikut) → swap ke komposisi range baru → mint di harga sekarang. Deposit awal dibawa ke posisi baru, jadi PnL-nya menghitung seluruh rangkaian rebalance, bukan cuma potongan terakhir.
+
+Close, swap, dan mint itu transaksi terpisah. Tiap-tiap disimulasikan dulu. Kalau satu gagal, yang sebelumnya tidak dibatalkan: hasilnya nulis berhenti di langkah mana, dan token yang sudah keluar ada di wallet (Cleanup bisa jual balik).
+
+## ⚙ Auto per posisi
+
+Tombol ⚙ Auto di tiap baris Portfolio (atau langsung di form buka tight):
+
+| Rule | Yang terjadi |
+| --- | --- |
+| Take profit / stop loss | PnL posisi itu lewat batas → close + swap ke quote. Langsung, tanpa nunggu. |
+| Harga **naik** lewat atas range | Posisi jadi 100% quote dan fee berhenti. Pilih: diam, rebalance, atau close + swap. |
+| Harga **turun** lewat bawah range | Posisi jadi 100% token. Pilih: diam, rebalance, atau close + swap. |
+
+Contoh yang sering dipakai: atas → rebalance (ngikutin harga naik, murah karena sudah quote semua), bawah → close + swap (berhenti ngejar turun).
+
+Batas buat aksi range, di tab 🎯 Tight (`data/auto.json`):
+
+- **tahan di luar range** (default 120 detik): harga yang cuma nyentuh tepi lalu balik tidak memicu apa-apa.
+- **jeda antar aksi** (600 detik) dan **maks per posisi per hari** (6).
+- **maks nilai posisi** ($2000): di atas itu auto tidak nyentuh.
+- **slippage swap maks** (100 bps) dan lebar default rebalance.
+- **⏸ Jeda semua auto**: satu tombol, juga ada di bar Portfolio.
+
+Yang perlu lo tahu:
+
+- Loop-nya hidup di proses `python3 -m elysium_terminal web`, dicek tiap menit (⚙ Settings → Web). Tab boleh ditutup, prosesnya harus jalan.
+- Practice mode: auto cuma mensimulasikan close, mencatatnya, dan tidak mengirim apa-apa.
+- Live (`ELYSIUM_PRACTICE_MODE=false`): begitu syarat kena, server mengirim transaksi pakai key di `.env` tanpa nanya lagi. Itu yang lo setujui waktu menyimpan rule.
+- Gagal sebelum ada yang terkirim (RPC, simulasi revert): dicoba lagi setelah jeda, maksimal 3 kali, lalu rule berhenti.
+- Berhenti di tengah (close masuk, swap atau mint tidak): **tidak** diulang otomatis. Rule jadi ⚠ dan nunggu lo klik "sudah dicek, lanjutkan".
+- Portfolio yang kebaca sebagian (RPC gagal di tengah) tidak dianggap "posisi sudah hilang". Auto nunggu baca berikutnya.
+- Rebalance cuma buat posisi satu range di pool tanpa hook. Ladder: close atau diam, atau pakai Re-entry.
+- Satu wallet, satu antrean: klik manual dan auto tidak pernah menandatangani bersamaan.
+- Take profit lama yang dipasang per pool (`data/auto_exit.json`) dipindah sekali jadi rule per posisi di pool itu.
+- Rebalance bolak-balik di pasar yang gergaji bisa makan fee swap dan IL lebih besar dari fee yang masuk. Batas di atas membatasi seberapa sering, bukan menjamin untung.

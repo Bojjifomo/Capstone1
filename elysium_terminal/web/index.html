@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <title>Elysium Terminal</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <header class="top">
@@ -95,7 +95,7 @@
   <section class="left hidden" id="viewPortfolio">
     <div class="bar">
       <span class="title">PORTFOLIO</span>
-      <span class="muted">ladder v4 + v3 · dibaca dari chain · exit dicek tiap refresh · 🎯 auto exit per ladder</span>
+      <span class="muted">satu baris per posisi · dibaca dari chain · ⚙ auto per posisi (TP, SL, rebalance / close saat keluar range)</span>
       <span class="spacer"></span>
       <input id="wallet" placeholder="wallet 0x…" autocomplete="off" spellcheck="false">
       <button class="btn" id="loadWallet">Load</button>
@@ -104,10 +104,10 @@
     <div class="tablewrap">
       <table id="positions">
         <thead><tr>
-          <th>TOKEN<small>slice · in range · umur</small></th>
+          <th>POSISI<small>NFT · in range · umur</small></th>
           <th class="r">PNL<small>$ · % · nilai · fee</small></th>
           <th>RANGE<small>mcap bawah ▮ atas · posisi harga</small></th>
-          <th>EXIT CHECK<small>alert · rule</small></th>
+          <th>STATUS<small>alert · range</small></th>
           <th><button class="btn" id="cleanupBtn" title="Jual sisa token di wallet ke USDC/HYPE">Cleanup</button></th>
         </tr></thead>
         <tbody></tbody>
@@ -122,7 +122,7 @@
   <section class="left hidden" id="viewTight">
     <div class="bar">
       <span class="title">TIGHT RANGE</span>
-      <span class="muted">bukan janji profit. Target %/jam cuma selera lo.</span>
+      <span class="muted">range sempit + auto rebalance. Bukan janji profit: target %/jam cuma filter.</span>
     </div>
     <div id="tightRoot"><div class="empty">Loading tight range…</div></div>
   </section>
@@ -161,6 +161,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

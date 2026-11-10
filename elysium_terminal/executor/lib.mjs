@@ -182,10 +182,23 @@ async function v3Describe(provider, pool) {
   return { dex: "v3", venue: name, key, manager: spec.npm, router: spec.router, swap: spec.swap };
 }
 
+// The caller may already know a v4 pool's key (--key '{"currency0":..}'). It is only used
+// when it hashes to the pool id, so a wrong hint cannot point a transaction at another pool.
+function hintedKey(id) {
+  try {
+    const raw = args().key;
+    if (!raw || raw === true) return null;
+    const k = JSON.parse(raw);
+    const key = { currency0: String(k.currency0).toLowerCase(), currency1: String(k.currency1).toLowerCase(),
+      fee: Number(k.fee), tickSpacing: Number(k.tickSpacing), hooks: String(k.hooks || ZERO).toLowerCase() };
+    return poolIdOf(key).toLowerCase() === id.toLowerCase() ? key : null;
+  } catch { return null; }
+}
+
 export async function describePool(provider, pool) {
   const id = String(pool || "");
   if (isV4(id)) {
-    const key = await poolKey(provider, id);
+    const key = hintedKey(id) || await poolKey(provider, id);
     return { dex: "v4", venue: "uniswap-v4", key, manager: POSITION_MANAGER, router: UNIVERSAL_ROUTER, swap: "v4", pool: id.toLowerCase() };
   }
   if (!/^0x[0-9a-fA-F]{40}$/.test(id)) throw new Error("--pool must be a 32-byte v4 id or a 20-byte v3 pool");
@@ -215,7 +228,7 @@ export async function balanceOf(provider, token, owner) {
 
 const sqrtAt = t => Math.pow(1.0001, t / 2);
 
-// Full width in percent of price, centered, snapped outward so the current tick stays inside.
+// Full width in percent of price, centered, snapped to the nearest grid lines with the current tick inside.
 // Same rounding as elysium_terminal/tight.py align_range.
 export function alignRange(currentTick, spacing, widthPct) {
   const sp = Math.abs(Number(spacing)) || 0;
@@ -227,8 +240,8 @@ export function alignRange(currentTick, spacing, widthPct) {
   const ln = Math.log(1.0001);
   const down = Math.log(1 / (1 - half)) / ln;
   const up = Math.log(1 + half) / ln;
-  let lo = Math.floor((currentTick - down) / sp) * sp;
-  let hi = Math.ceil((currentTick + up) / sp) * sp;
+  let lo = Math.floor((currentTick - down) / sp + 0.5) * sp;
+  let hi = Math.floor((currentTick + up) / sp + 0.5) * sp;
   if (!(lo <= currentTick && currentTick < hi)) {
     if (currentTick < lo) lo = Math.floor(currentTick / sp) * sp;
     if (currentTick >= hi) hi = Math.floor(currentTick / sp) * sp + sp;
@@ -242,22 +255,51 @@ export function alignRange(currentTick, spacing, widthPct) {
   return { ok: true, tickLower: lo, tickUpper: hi, requestedWidthPct: width, actualWidthPct: actual, spacingCoarse: actual > width * 1.5 };
 }
 
-// Biggest liquidity that fits both balances. Amounts use the same sqrt(1.0001^tick) unit as planLadder.
-export function mintAmounts(tick, lo, hi, bal0, bal1) {
-  const sp = sqrtAt(tick), sa = sqrtAt(lo), sb = sqrtAt(hi);
-  let per0, per1;
-  if (tick < lo) { per0 = (sb - sa) / (sa * sb); per1 = 0; }
-  else if (tick >= hi) { per0 = 0; per1 = sb - sa; }
-  else { per0 = (sb - sp) / (sp * sb); per1 = sp - sa; }
+// Per unit of liquidity, how much of each token a range needs at this price.
+// `sqrtP` is the real sqrt price (sqrtPriceX96 / 2^96), not the rounded tick.
+export function perLiquidity(sqrtP, lo, hi) {
+  const sa = sqrtAt(lo), sb = sqrtAt(hi);
+  if (sqrtP <= sa) return { per0: (sb - sa) / (sa * sb), per1: 0 };
+  if (sqrtP >= sb) return { per0: 0, per1: sb - sa };
+  return { per0: (sb - sqrtP) / (sqrtP * sb), per1: sqrtP - sa };
+}
+export const sqrtOf = sqrtPriceX96 => Number(sqrtPriceX96) / 2 ** 96;
+
+// Biggest liquidity that fits both budgets. `buffer` leaves room for the price to move
+// between this read and the transaction (v4 mints a fixed liquidity with max amounts).
+export function mintAmounts(sqrtP, lo, hi, bal0, bal1, buffer = 0) {
+  const { per0, per1 } = perLiquidity(sqrtP, lo, hi);
   const L0 = per0 > 0 ? Number(bal0) / per0 : Infinity;
   const L1 = per1 > 0 ? Number(bal1) / per1 : Infinity;
-  const L = Math.min(L0, L1);
+  const L = Math.min(L0, L1) * (1 - buffer);
   if (!Number.isFinite(L) || L <= 0) throw new Error("saldo tidak cukup buat mint range ini");
   return {
     liquidity: BigInt(Math.max(1, Math.floor(L * (1 - 1e-9)))),
     amount0: BigInt(Math.max(0, Math.floor(per0 * L))),
     amount1: BigInt(Math.max(0, Math.floor(per1 * L))),
   };
+}
+
+// Which way and how much to swap so (bal0, bal1) matches the mix the range needs.
+// Uses the pool price and fee only, so it is slightly off on a thin pool; the mint
+// takes what fits and the rest stays in the wallet.
+export function balancePlan(sqrtP, lo, hi, bal0, bal1, feeFrac = 0) {
+  const { per0, per1 } = perLiquidity(sqrtP, lo, hi);
+  const b0 = Number(bal0), b1 = Number(bal1), p = sqrtP * sqrtP, keep = 1 - feeFrac;
+  const total1 = b1 + b0 * p;
+  if (!(total1 > 0)) throw new Error("tidak ada saldo buat range ini");
+  let zeroForOne, amountIn;
+  if (per0 === 0) { zeroForOne = true; amountIn = b0; }
+  else if (per1 === 0) { zeroForOne = false; amountIn = b1; }
+  else {
+    const r = per1 / per0;
+    const x = (r * b0 - b1) / (p * keep + r);
+    if (x > 0) { zeroForOne = true; amountIn = x; }
+    else { zeroForOne = false; amountIn = (b1 - r * b0) / (1 + r * keep / p); }
+  }
+  amountIn = Math.max(0, amountIn);
+  const frac = (zeroForOne ? amountIn * p : amountIn) / total1;
+  return { zeroForOne, amountIn: BigInt(Math.floor(amountIn)), frac };
 }
 export const ticksBelow = pct => { const f = Math.min(99, Math.max(0, pct)) / 100; return f <= 0 ? 0 : Math.log(1 / (1 - f)) / Math.log(1.0001); };
 
@@ -324,10 +366,12 @@ export function openCalldataV4(key, plan, depositIsC0, owner, dl) {
   return { data: modifyLiquidities(acts, params, dl), value };
 }
 export function tightMintCalldataV4(key, lo, hi, liquidity, amount0, amount1, owner, dl) {
+  // amount0 / amount1 are the most the mint may take. Native HYPE that was not needed is swept back.
   const acts = [ACT.MINT, ACT.SETTLE_PAIR];
   const params = [P.mint(key, lo, hi, liquidity, amount0, amount1, owner), P.settlePair(key.currency0, key.currency1)];
-  const value = key.currency0.toLowerCase() === ZERO ? amount0 : 0n;
-  return { data: modifyLiquidities(acts, params, dl), value };
+  const native = key.currency0.toLowerCase() === ZERO;
+  if (native) { acts.push(ACT.SWEEP); params.push(P.sweep(ZERO, owner)); }
+  return { data: modifyLiquidities(acts, params, dl), value: native ? amount0 : 0n };
 }
 export function tightMintCalldataV3(key, lo, hi, amount0, amount1, owner, dl) {
   const mint = v3Npm.encodeFunctionData("mint", [[
@@ -386,6 +430,8 @@ export function closeCalldataV3(positions, recipient, dl, claimOnly = false) {
   }
   return v3Npm.encodeFunctionData("multicall", [calls]);
 }
+const wethIface = new ethers.Interface(["function deposit() payable"]);
+export const wrapTx = amount => ({ to: WHYPE, data: wethIface.encodeFunctionData("deposit", []), value: amount, label: "wrap HYPE → WHYPE" });
 export function swapCalldataV3Router(key, tokenIn, tokenOut, amountIn, minOut, recipient, dl) {
   const zeroForOne = tokenIn.toLowerCase() === key.currency0.toLowerCase();
   const limit = zeroForOne ? MIN_SQRT : MAX_SQRT;

@@ -1,6 +1,6 @@
 // Encoding + ladder math. No RPC, nothing is sent.
-import { planLadder, openCalldataV3, closeCalldataV3, swapCalldataV3Router, openCalldataV4, alignRange, mintAmounts,
-  tightMintCalldataV4, P, ZERO, WHYPE, USDC, deadline } from "../lib.mjs";
+import { planLadder, openCalldataV3, closeCalldataV3, swapCalldataV3Router, openCalldataV4, alignRange, mintAmounts, balancePlan,
+  perLiquidity, tightMintCalldataV4, P, ZERO, WHYPE, USDC, deadline } from "../lib.mjs";
 
 let fails = 0;
 const check = (name, ok, detail = "") => {
@@ -38,14 +38,38 @@ check("v4 open is modifyLiquidities", v4.data.startsWith("0xdd46508f"));
 check("v4 mint param helper is hex", P.mint(key, -200, 200, 1n, 1n, 0n, ZERO).startsWith("0x"));
 
 const band = alignRange(0, 1, 1);
-check("tight band matches python (-51, 50)", band.ok && band.tickLower === -51 && band.tickUpper === 50, JSON.stringify(band));
+check("tight band matches python (-50, 50)", band.ok && band.tickLower === -50 && band.tickUpper === 50, JSON.stringify(band));
 check("tight band contains the tick", band.tickLower <= 0 && 0 < band.tickUpper);
+const near = alignRange(53314, 60, 2);
+check("coarse grid snaps to the nearest lines, like python", near.tickLower === 53220 && near.tickUpper === 53400 && !near.spacingCoarse, JSON.stringify(near));
 const coarse = alignRange(100, 200, 0.2);
 check("coarse spacing is flagged", coarse.ok && coarse.spacingCoarse && coarse.tickLower % 200 === 0);
-const both = mintAmounts(0, -50, 50, 1_000_000n, 1_000_000n * 10n ** 12n);
+const both = mintAmounts(1, -50, 50, 1_000_000n, 1_000_000n * 10n ** 12n);
 check("two-sided mint uses both tokens", both.amount0 > 0n && both.amount1 > 0n && both.liquidity > 0n);
+const buffered = mintAmounts(1, -50, 50, 1_000_000n, 1_000_000n, 0.005);
+const exact = mintAmounts(1, -50, 50, 1_000_000n, 1_000_000n, 0);
+check("buffer leaves room for a price move", buffered.liquidity < exact.liquidity && buffered.amount0 <= 1_000_000n && buffered.amount1 <= 1_000_000n);
+
+// balancePlan: start with one token only, end with the mix the range needs
+const sp = 1.0001 ** (10 / 2);                       // price a little above the middle of [-50, 50)
+for (const [b0, b1, name] of [[1e9, 0, "only token0"], [0, 1e9, "only token1"], [4e8, 9e8, "both"]]) {
+  const bp = balancePlan(sp, -50, 50, BigInt(b0), BigInt(b1), 0.003);
+  const x = Number(bp.amountIn), p = sp * sp;
+  const a0 = bp.zeroForOne ? b0 - x : b0 + x * 0.997 / p;
+  const a1 = bp.zeroForOne ? b1 + x * p * 0.997 : b1 - x;
+  const { per0, per1 } = perLiquidity(sp, -50, 50);
+  check(`balance plan (${name}) lands on the range's mix`, Math.abs(a1 / a0 - per1 / per0) / (per1 / per0) < 1e-6 && bp.frac > 0 && bp.frac < 1,
+    `${bp.zeroForOne ? "0→1" : "1→0"} ${(bp.frac * 100).toFixed(1)}%`);
+  const m = mintAmounts(sp, -50, 50, BigInt(Math.floor(a0)), BigInt(Math.floor(a1)));
+  check(`  and the mint uses nearly all of it (${name})`, Number(m.amount0) > a0 * 0.999 && Number(m.amount1) > a1 * 0.999);
+}
+const below = balancePlan(1.0001 ** (-100 / 2), -50, 50, 0n, 10n ** 9n, 0.003);
+check("price below the range: everything goes to token0", !below.zeroForOne && below.amountIn === 10n ** 9n);
+
 const tm = tightMintCalldataV4(key, band.tickLower, band.tickUpper, both.liquidity, both.amount0, both.amount1, "0x" + "ab".repeat(20), deadline());
-check("tight v4 mint is modifyLiquidities", tm.data.startsWith("0xdd46508f"));
+check("tight v4 mint is modifyLiquidities", tm.data.startsWith("0xdd46508f") && tm.value === 0n);
+const tmNative = tightMintCalldataV4({ ...key, currency0: ZERO }, band.tickLower, band.tickUpper, both.liquidity, 123n, both.amount1, "0x" + "ab".repeat(20), deadline());
+check("native tight mint sends the max as value and adds a third action (sweep)", tmNative.value === 123n && tmNative.data.length > tm.data.length);
 
 console.log(fails ? `\n${fails} FAILED` : "\nOFFLINE ENCODING OK");
 process.exit(fails ? 1 : 0);

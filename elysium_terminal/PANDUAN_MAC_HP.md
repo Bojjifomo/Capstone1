@@ -10,7 +10,7 @@ MacBook ┘                     └── key cuma di sini
 
 RH Terminal boleh tetap nyala di port **8892**. Dua-duanya nggak saling baca key: Elysium cuma baca `ELYSIUM_PRIVATE_KEY` di `elysium_terminal/.env`.
 
-> Uang beneran kalau practice dimatiin. Pakai wallet LP khusus Elysium. **Auto exit cuma jalan selama Mac mini nyala dan servernya jalan.**
+> Uang beneran kalau practice dimatiin. Pakai wallet LP khusus Elysium. **Rule ⚙ Auto (TP, SL, rebalance) cuma jalan selama Mac mini nyala dan servernya jalan.**
 
 ---
 
@@ -120,7 +120,7 @@ Save, klik chip 🔑 (dia baca ulang, nggak perlu restart). Mulai dari size keci
 | --- | --- | --- |
 | Settings | `elysium_terminal/data/settings.json` | semua device |
 | Watchlist | `data/watchlist.json` | semua |
-| Auto exit | `data/auto_exit.json` | yang ngecek: server di Mac mini |
+| Rule ⚙ Auto per posisi | `data/auto.json` | yang ngecek: server di Mac mini |
 | Tight / auto-rebalance | `data/tight_config.json` | server di Mac mini. Tab boleh ditutup, proses Python harus tetap hidup. Mati secara default. |
 | $ / HYPE, tab, sort | `data/ui_prefs.json` | semua, habis refresh |
 

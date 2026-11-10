@@ -187,7 +187,7 @@ def cmd_portfolio(a, cfg):
     print(f"{wallet}: nilai {_money(pf['valueUsd'])} · fee {_money(pf['feesUsd'], 2)} · PnL {_money(pf['pnlUsd'], 2)}")
     for r in pf["rows"]:
         tag = "v4" if r["dex"] == "v4" else "v3"
-        print(f"{r['symbol'][:12]:12}/{r['quoteSymbol']:5} {tag} {r['posCount']} slice  {_money(r['valueUsd'])}  PnL {(r['pnlPct'] or 0):+.1f}%"
+        print(f"{r['symbol'][:12]:12}/{r['quoteSymbol']:5} {tag} {r['id']:10} {r['posCount']} NFT  {_money(r['valueUsd'])}  PnL {(r['pnlPct'] or 0):+.1f}%"
               f"  range {(r['rangePct'] if r['rangePct'] is not None else 0):.0f}% ({r['state']})  {' · '.join(e['msg'] for e in r['events'])}")
 
 
