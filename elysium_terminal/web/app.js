@@ -700,6 +700,72 @@ async function setAutoGlobal(patch) {
   } catch (e) { alert(e.message); }
 }
 
+// ---------- liquidity depth (per position) ----------
+state.depthOpen = store.get("depthOpen", {});   // id -> true while the chart is shown
+state.depth = {};                               // id -> last read (or { error })
+async function loadDepth(id) {
+  try { state.depth[id] = await getJson(`/api/depth?wallet=${encodeURIComponent(state.wallet)}&id=${encodeURIComponent(id)}`, null, 30000); }
+  catch (e) { state.depth[id] = Object.assign({}, state.depth[id], { error: e.message, t: Date.now() / 1000 }); }
+  paintDepth(id);
+}
+function toggleDepth(id) {
+  if (state.depthOpen[id]) delete state.depthOpen[id]; else state.depthOpen[id] = true;
+  store.set("depthOpen", state.depthOpen);
+  renderPortfolio();
+}
+function paintDepth(id) {
+  const p = rowOf(id);
+  document.querySelectorAll(`[data-depth="${id}"]`).forEach(el => { el.innerHTML = p ? depthChart(p, state.depth[id]) : ""; });
+}
+function depthChart(p, d) {
+  if (!d) return `<div class="muted">Baca liquidity depth dari pool…</div>`;
+  if (!d.segments) return `<div class="neg">Depth gagal: ${esc(d.error || "?")}</div>`;
+  const N = isPhone() ? 40 : 72, W = 720, H = 150, top = 26, base = H - 4;
+  const span = d.hi - d.lo, step = span / N;
+  // tick-weighted average liquidity per bar
+  const bars = [];
+  for (let i = 0; i < N; i++) {
+    const a = d.lo + i * step, b = a + step;
+    let sum = 0;
+    for (const s of d.segments) { const o = Math.min(b, s.b) - Math.max(a, s.a); if (o > 0) sum += s.L * o; }
+    bars.push({ a, b, L: sum / step });
+  }
+  const max = Math.max(...bars.map(x => x.L)) || 1;
+  // price rises left to right. When the quote is token0 a higher tick is a lower token price, so mirror.
+  const X = t => (p.flip ? (d.hi - t) : (t - d.lo)) / span * W;
+  const px = t => p.tokenUsd == null ? null : p.tokenUsd * Math.pow(1.0001, p.flip ? -(t - d.tick) : (t - d.tick));
+  const inMine = (a, b) => d.ranges.some(r => Math.min(b, r[1]) - Math.max(a, r[0]) > 0);
+  const bw = W / N;
+  const rects = bars.map(x => {
+    const h = Math.max(x.L > 0 ? 1.5 : 0.5, x.L / max * (base - top));
+    const x0 = Math.min(X(x.a), X(x.b));
+    return `<rect class="dbar ${inMine(x.a, x.b) ? "mine" : ""}" x="${(x0 + 0.5).toFixed(1)}" y="${(base - h).toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h.toFixed(1)}"><title>${fmtUsd(px(p.flip ? x.b : x.a))} → ${fmtUsd(px(p.flip ? x.a : x.b))}</title></rect>`;
+  }).join("");
+  const band = d.ranges.map(r => { const x0 = Math.min(X(r[0]), X(r[1])), x1 = Math.max(X(r[0]), X(r[1])); return `<rect class="dmine" x="${x0.toFixed(1)}" y="${top}" width="${Math.max(1, x1 - x0).toFixed(1)}" height="${base - top}"></rect>`; }).join("");
+  const xp = Math.max(1, Math.min(W - 1, X(d.tick + 0.5)));
+  const label = `harga pool ${fmtUsd(p.tokenUsd)}`;
+  const lw = label.length * 6.6 + 14, lx = Math.max(2, Math.min(W - lw - 2, xp - lw / 2));
+  const share = d.sharePct == null ? "" : d.mine > 0
+    ? ` · likuiditas lu di harga sekarang <b>${d.sharePct < 0.01 ? "<0.01" : d.sharePct.toFixed(2)}%</b> dari yang aktif`
+    : ` · posisi lu lagi tidak aktif di harga sekarang`;
+  const loPx = px(p.flip ? d.hi : d.lo), hiPx = px(p.flip ? d.lo : d.hi);
+  return `<svg class="depth" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="liquidity depth">
+      ${band}${rects}
+      <line class="dpx" x1="${xp.toFixed(1)}" x2="${xp.toFixed(1)}" y1="${top - 4}" y2="${base}"></line>
+    </svg>
+    <div class="dlabel" style="left:${(lx / W * 100).toFixed(2)}%">${label}</div>
+    <div class="daxis"><span>${fmtUsd(loPx)}</span><span class="muted"><i class="dkey mine"></i> range lu <i class="dkey"></i> likuiditas pool${share}${d.clipped ? " · dipotong di sekitar harga" : ""}${d.error ? ` · <span class="warn">refresh gagal</span>` : ""}</span><span>${fmtUsd(hiPx)}</span></div>`;
+}
+function depthBox(p) {
+  if (!state.depthOpen[p.id]) return "";
+  const d = state.depth[p.id];
+  if (!d || (Date.now() / 1000 - (d.t || 0) > 25 && !d.loading)) {
+    state.depth[p.id] = Object.assign({}, d, { loading: true, t: d && d.t });
+    setTimeout(() => loadDepth(p.id), 0);
+  }
+  return `<div class="depthbox"><div class="dtitle">LIQUIDITY DEPTH <span class="muted">${esc(p.symbol)} / ${esc(p.quoteSymbol)} · dibaca dari tick pool</span></div><div class="dwrap" data-depth="${p.id}">${depthChart(p, d && d.segments ? d : (d && d.error ? d : null))}</div></div>`;
+}
+
 // ---------- portfolio ----------
 let pfSeq = 0;
 async function loadPortfolio(force) {
@@ -781,6 +847,7 @@ function renderPortfolio() {
     const btns = `<button class="btn ${exit ? "danger" : ""}" data-act="close" data-id="${p.id}" ${dis}>${exit ? "Exit → close" : "Close"}</button>
       <button class="btn" data-act="claim" data-id="${p.id}" ${p.feesUsd > 0 && !busy ? "" : "disabled"}>Claim</button>
       <button class="btn" data-act="swap" data-id="${p.id}" ${dis} title="Close + jual token ke ${esc(p.quoteSymbol)}">Close+swap</button>
+      <button class="btn ${state.depthOpen[p.id] ? "on" : ""}" data-act="depth" data-id="${p.id}" title="Liquidity depth pool di sekitar posisi ini">📊 Depth</button>
       ${p.posCount > 1
         ? `<button class="btn go" data-act="reenter" data-id="${p.id}" ${dis} title="Close + jual token + buka ladder lagi di harga sekarang">Re-entry</button>`
         : `<button class="btn go" data-act="rebal" data-id="${p.id}" ${dis || (p.hooked || p.dynamicFee ? "disabled" : "")} title="Close + swap ke komposisi baru + buka range baru di harga sekarang">Rebalance</button>`}`;
@@ -788,9 +855,10 @@ function renderPortfolio() {
     cards.push(`<div class="lcard"><div class="lc1"><div><b class="psym">${head}</b><div class="sub">${sub}</div></div>
       <div class="r"><div class="pnlbig ${cls(p.pnlUsd)}">${p.pnlUsd > 0 ? "+" : ""}${mU(p.pnlUsd)}</div><div class="sub"><span class="${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span></div></div></div>
       <div class="lc2"><span><small>nilai</small>${mU(p.valueUsd)}</span><span><small>fee</small>${mU(p.feesUsd)}</span><span><small>deposit</small>${dep}</span><span><small>mcap</small>${mU(p.mcapUsd)}</span></div>
-      ${rangeStrip(p)}<div class="lc3">${status}</div><div class="lbtns">${btns}</div>${res}${autoCell(p)}</div>`);
+      ${rangeStrip(p)}${depthBox(p)}<div class="lc3">${status}</div><div class="lbtns">${btns}</div>${res}${autoCell(p)}</div>`);
     return `<tr class="${busy ? "busy" : ""}"><td><span class="sym">${head}</span><span class="sub">${sub}</span></td><td class="r">${pnl}</td><td>${rangeStrip(p)}</td><td>${status}</td>
-      <td>${btns}${res}${autoCell(p)}<a href="https://dexscreener.com/elysium/${p.pool}" target="_blank" rel="noopener">dex ↗</a></td></tr>`;
+      <td>${btns}${res}${autoCell(p)}<a href="https://dexscreener.com/elysium/${p.pool}" target="_blank" rel="noopener">dex ↗</a></td></tr>
+      ${state.depthOpen[p.id] ? `<tr class="depthrow"><td colspan="5">${depthBox(p)}</td></tr>` : ""}`;
   }).join("");
   $("#pfCards").innerHTML = cards.join("");
   for (const id of Object.keys(state.note)) if (!rowOf(id)) delete state.note[id];
@@ -1181,6 +1249,7 @@ const onPfClick = e => {
   if (a === "reenter") return swapPos(p, true);
   if (a === "rebal") return rebalancePos(p);
   if (a === "auto") return openAuto(p);
+  if (a === "depth") return toggleDepth(p.id);
   if (a === "resume") return resumeAuto(p.id);
 };
 $("#positions tbody").addEventListener("click", onPfClick);

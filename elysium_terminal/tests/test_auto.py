@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from elysium_terminal import auto, groups
+from elysium_terminal import auto, depth, groups
 
 POOL = "0x" + "ab" * 32
 PM = "0x1d1c51b9d07fd27d36412a2b66cc23d19eb3e518"
@@ -53,6 +53,25 @@ class Grouping(unittest.TestCase):
             self.assertEqual(by["v4-31"]["meta"]["depositQuote"], 1.5)
             groups.prune(Path(tmp), {(PM, 30)})
             self.assertEqual(groups.load(Path(tmp)), {})
+
+
+class Depth(unittest.TestCase):
+    def test_walks_liquidity_net_out_from_the_price(self):
+        # two positions: A = [-200, 200) with 100, B = [0, 400) with 50. Price at tick 10.
+        nets = {-200: 100, 0: 50, 200: -100, 400: -50}
+        segs = depth.segments(10, 150, nets, -600, 600)
+        self.assertEqual([(s["a"], s["b"], s["L"]) for s in segs],
+                         [(-600, -200, 0), (-200, 0, 100), (0, 200, 150), (200, 400, 50), (400, 600, 0)])
+
+    def test_price_exactly_on_an_initialized_tick(self):
+        segs = depth.segments(0, 150, {-200: 100, 0: 50, 200: -100, 400: -50}, -300, 300)
+        self.assertEqual([(s["a"], s["b"], s["L"]) for s in segs], [(-300, -200, 0), (-200, 0, 100), (0, 200, 150), (200, 300, 50)])
+
+    def test_window_keeps_range_and_price_in_view(self):
+        lo, hi = depth.window(53411, 53400, 53520, 60)
+        self.assertTrue(lo < 53400 and hi > 53520 and lo < 53411 < hi)
+        lo, hi = depth.window(60000, 53400, 53520, 60)        # price far above the range
+        self.assertTrue(lo < 53400 and hi > 60000)
 
 
 class Decide(unittest.TestCase):

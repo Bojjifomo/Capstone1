@@ -145,6 +145,12 @@ Dulu Portfolio menggabung semua NFT di satu pool jadi satu baris ("2 slice"), wa
 - Posisi kedua di pool yang sama dapat label `#2`. Close, Claim, Close+swap, Rebalance, dan ⚙ Auto cuma kena ke baris itu.
 - Deposit posisi dari luar terminal dihitung dari likuiditas seolah satu sisi, ditandai `≈`. Buat range yang di-mint dua sisi angka itu bisa kegedean, jadi PnL-nya kekecilan.
 
+## Liquidity depth per posisi
+
+Tombol 📊 Depth di baris posisi membuka grafik likuiditas pool di sekitar posisi itu: batang abu = likuiditas pool per rentang harga, batang hijau = rentang yang kena range lu, garis putus-putus = harga pool sekarang. Di bawahnya ada porsi likuiditas lu dari yang aktif di harga sekarang (itu kira-kira bagian fee swap yang jatuh ke lu selama harga di situ).
+
+Datanya dibaca langsung dari pool (tick bitmap + `liquidityNet` tiap tick, jalan keluar dari tick sekarang), dua multicall, di-cache 20 detik, dan cuma dibaca selama grafiknya dibuka. Pool dengan tick yang sangat rapat dipotong di sekitar harga, dan grafiknya bilang begitu.
+
 ## Tight range dan rebalance
 
 Range sempit di sekitar harga sekarang. Bukan janji profit. Angka %/jam di kartu itu **fee seluruh pool dibagi TVL**, bukan fee posisi lo, dan APR-nya cuma `%/jam × 24 × 365`. Target %/jam itu filter, bukan patokan aman.

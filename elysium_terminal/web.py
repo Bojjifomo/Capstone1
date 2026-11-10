@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import auto, chain, filters, groups, node, pools, portfolio, settings, tight
+from . import auto, chain, depth, filters, groups, node, pools, portfolio, settings, tight
 from .cli import DATA, append, env_report, load_config, load_env, make_index, notify, practice_mode
 
 STATIC = Path(__file__).resolve().parent / "web"
@@ -164,6 +164,44 @@ def _seen_tokens(tokens: list[str], pool_ids: list[str]) -> None:
         d.setdefault(t, p)
     if len(d) != n:
         _jsave("tokens_seen.json", d)
+
+
+# ------------------------------------------------------------------ depth ----
+DEPTH_TTL = 20
+_spacing_v3: dict[str, int] = {}
+
+
+def depth_of(wallet: str, gid: str) -> dict:
+    """Liquidity depth of the pool around one position, plus that position's share of it."""
+    row = next((r for r in portfolio_of(wallet)["rows"] if r["id"] == gid), None)
+    if row is None:
+        raise ValueError("posisi tidak ketemu (refresh portfolio)")
+    pool, lo, hi = row["pool"], row["tickLower"], row["tickUpper"]
+    if hi - lo > portfolio.LADDER_MAX_TICKS:
+        raise ValueError("range posisi ini terlalu lebar buat digambar (full range)")
+    key = ("depth", pool, lo, hi)
+    with _lock:
+        hit = _cache.get(key)
+    if hit and time.time() - hit["t"] < DEPTH_TTL:
+        d = hit["data"]
+    else:
+        if row["dex"] == "v4":
+            spacing = int(row["key"].get("tickSpacing") or 0)
+            tick = (chain.slot0s_v4([pool]).get(pool) or {}).get("tick")
+        else:
+            if pool not in _spacing_v3:
+                _spacing_v3[pool] = chain.to_int(chain.words(chain.eth_call(pool, "0x" + chain.SEL["tickSpacing"]))[0], 24, True)
+            spacing = _spacing_v3[pool]
+            tick = (chain.slot0s_v3([pool]).get(pool) or {}).get("tick")
+        if tick is None:
+            raise chain.RpcError("harga pool gagal dibaca")
+        d = depth.read(pool, row["dex"], spacing, tick, lo, hi)
+        d["t"] = time.time()
+        with _lock:
+            _cache[key] = {"t": d["t"], "data": d}
+    mine = sum(int(p["liquidity"]) for p in row["positions"] if p["tickLower"] <= d["tick"] < p["tickUpper"])
+    return {**d, "id": gid, "mine": mine, "sharePct": mine / d["active"] * 100 if d["active"] else None,
+            "ranges": [[p["tickLower"], p["tickUpper"]] for p in row["positions"]]}
 
 
 # ------------------------------------------------------------- executor ----
@@ -463,6 +501,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not (wallet.startswith("0x") and len(wallet) == 42):
                     return self._json({"error": "wallet address 0x… (42 karakter)"}, 400)
                 return self._json(_pf_view(portfolio_of(wallet, q.get("force") == "1")))
+            if u.path == "/api/depth":
+                try:
+                    return self._json(depth_of((q.get("wallet") or "").strip(), q.get("id") or ""))
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
             if u.path == "/api/prefs":
                 return self._json(_jload("ui_prefs.json", {}))
             if u.path == "/api/watchlist":
