@@ -1,5 +1,6 @@
 """JSON-RPC client: retries, batching, eth_getLogs that finds the provider's
 block-range limit on its own, and a pool that runs several RPCs as one."""
+import config
 import http.client
 import itertools
 import json
@@ -116,21 +117,55 @@ class RPC:
         self._pause_until = 0.0
 
     # ---- transport -------------------------------------------------------
+    def _note(self, msg):
+        fn = getattr(self, "log", None)
+        if fn:
+            try:
+                fn(msg)
+            except Exception:
+                pass
+
+    def _http(self, req):
+        """One POST. `timeout` is both the socket timeout and a wall-clock cap:
+        a server that dribbles a byte now and then never resets the cap, so a
+        stuck archive call can't sit in 'scoring' with no log line."""
+        timeout = max(1, self.timeout)
+        box = {}
+
+        def work():
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    box["out"] = json.load(resp)
+            except Exception as e:
+                box["err"] = e
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(timeout + 1)
+        if t.is_alive():
+            raise TimeoutError(f"{self.host}: no complete reply in {timeout}s")
+        if "err" in box:
+            raise box["err"]
+        return box["out"]
+
     def _post(self, payload):
         body = json.dumps(payload).encode()
         last = None
         cut = 0
         throttled = False
-        for attempt in range(9):  # 7 tries for broken connections, ~5 min of backing off for rate limits
+        # A pool member fails over quickly. A lone RPC still waits out a rate limit.
+        tries = 3 if not self.patient else 9
+        for attempt in range(tries):
             wait = self._pause_until - time.time()
             if wait > 0:
+                if wait > 2:
+                    self._note(f"  {self.host}: waiting {wait:.0f}s after a rate limit")
                 time.sleep(wait)
             req = urllib.request.Request(self.url, data=body, headers={
-                "content-type": "application/json", "user-agent": "rh-wallet-finder/1.0"})
+                "content-type": "application/json", "user-agent": "elysium-wallet-finder/1.0"})
             try:
                 with self._gate:
-                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                        out = json.load(resp)
+                    out = self._http(req)
                 n = len(payload) if isinstance(payload, list) else 1
                 with self._lock:
                     self.calls += n
@@ -158,8 +193,9 @@ class RPC:
                 _meter_hit(self.url, "quota" if _quota(reply) else "error")
                 if e.code in (500, 502, 503, 504):
                     last = f"HTTP {e.code} {reply[:160]}".strip()
-                    if attempt >= 6:
+                    if attempt >= tries - 3:
                         break
+                    self._note(f"  {self.host}: {last}; retry {attempt + 2}/{tries}")
                     self._backoff(attempt, False)
                     continue
                 try:
@@ -177,11 +213,16 @@ class RPC:
                     raise TruncatedError(f"{self.host}: reply cut off ({len(e.partial):,} bytes read)") from e
                 self._backoff(attempt, False)
             except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
-                # dropped / reset connections, TLS hiccups, timeouts, half-sent replies
+                # dropped / reset connections, TLS hiccups, timeouts, half-sent replies.
+                # A call that hit the wall-clock cap is not retried for long: the
+                # other RPC (or the public one) should get it instead.
                 _meter_hit(self.url, "error")
                 last = e
-                if attempt >= 6:
+                give_up = attempt >= (1 if isinstance(e, TimeoutError) else tries - 3)
+                if give_up:
+                    self._note(f"  {self.host}: giving up after {attempt + 1} try(s): {e}")
                     break
+                self._note(f"  {self.host}: {e}; retry {attempt + 2}/{tries}")
                 self._backoff(attempt, False)
         if throttled:
             raise ThrottledError(f"{self.host} kept rate limiting for 5 minutes ({last}). Add a second RPC "
@@ -397,9 +438,12 @@ class RPCPool:
     wait, for up to WAIT_S."""
     WAIT_S = 600
 
-    def __init__(self, rpcs, prefer=None):
+    def __init__(self, rpcs, prefer=None, fallback=None):
         self.members = list(rpcs)
         self.prefer = prefer  # index of the member that takes calls while it can (None: round robin)
+        # Index of a member used only when every other one is resting or has
+        # already failed this call (the public RPC, behind a paid pair).
+        self.fallback = fallback
         for m in self.members:
             m.patient = False
         self.host = " + ".join(m.host for m in self.members)
@@ -434,14 +478,22 @@ class RPCPool:
                 return None
             ready = [m for m in live if m.cool_until <= now]
             if ready:
+                primary = [m for m in ready if not self._is_fallback(m)]
+                use = primary or ready
+                if not primary and ready and not getattr(self, "_fallback_logged", False):
+                    ready[0]._note(f"  {ready[0].host}: the other RPCs are resting or failed; using this one")
+                    self._fallback_logged = True
                 if first:
-                    return ready[0]
-                if self.prefer is not None and self.members[self.prefer] in ready:
+                    return use[0]
+                if self.prefer is not None and self.members[self.prefer] in use:
                     return self.members[self.prefer]
-                return ready[next(self._turn) % len(ready)]
+                return use[next(self._turn) % len(use)]
             if now >= deadline:
                 return None
             time.sleep(max(0.05, min(deadline, min(m.cool_until for m in live)) - now))
+
+    def _is_fallback(self, m):
+        return self.fallback is not None and m is self.members[self.fallback]
 
     def _gave_up(self, last):
         if all(m.spent_until > time.time() for m in self.members):
@@ -542,13 +594,19 @@ class RPCPool:
 
 
 def make_rpcs(cfg):
-    """(logs RPC, calls RPC): one RPC, or RPC_URL + CALL_RPC_URL as one pool that
-    shares the work (the same object twice)."""
+    """(logs RPC, calls RPC). Two RPCs share the work. The public endpoint is
+    added behind them and is used only when both fail or are resting, so a paid
+    RPC that rejects archive eth_call doesn't stall scoring."""
     workers = int(cfg.get("RPC_WORKERS") or 6)
     urls = list(dict.fromkeys(u for u in (cfg["RPC_URL"], cfg.get("CALL_RPC_URL")) if u))
-    if len(urls) <= 1:
+    public = getattr(config, "PUBLIC_RPC", "") or ""
+    extra = [public] if public and public not in urls else []
+    if len(urls) + len(extra) <= 1:
         one = RPC(urls[0] if urls else "", workers=workers)
         return one, one
     prefer = {"rpc1": 0, "rpc2": 1}.get((cfg.get("CALL_SPLIT") or "share").lower())
-    pool = RPCPool([RPC(u, workers=workers) for u in urls], prefer=prefer)
+    if prefer is not None and prefer >= len(urls):
+        prefer = None
+    pool = RPCPool([RPC(u, workers=workers) for u in urls + extra],
+                   prefer=prefer, fallback=len(urls) if extra else None)
     return pool, pool

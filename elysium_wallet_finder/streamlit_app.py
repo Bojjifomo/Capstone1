@@ -636,6 +636,10 @@ def header(stt, w):
         st.markdown(f'<div class="notice">Worker error: {w.error}</div>', unsafe_allow_html=True)
     elif w and getattr(w, "notice", None):
         st.markdown(f'<div class="notice">{w.notice}</div>', unsafe_allow_html=True)
+    elif stt.get("hype_error") and not stt.get("eth_usd"):
+        st.markdown(f'<div class="notice">HYPE price unavailable, so HYPE-quoted positions can\'t be priced yet: '
+                    f'{stt["hype_error"]}. The public RPC is tried when your RPCs fail.</div>',
+                    unsafe_allow_html=True)
     if stt["scored"] and stt["rank_version"] != stt["rank_current"]:
         st.markdown('<div class="notice">These rankings were made by an older version of the app, so some figures '
                     'are off and every wallet sits in one class. The worker re-ranks with the current rules right '

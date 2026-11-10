@@ -274,10 +274,12 @@ class RpcTest(unittest.TestCase):
         cfg = {"RPC_URL": "https://a.example", "CALL_RPC_URL": "https://b.example", "RPC_WORKERS": "2"}
         logs, calls = R.make_rpcs(cfg)
         self.assertIs(logs, calls)
-        self.assertEqual(logs.host, "a.example + b.example")
+        self.assertEqual(logs.host, "a.example + b.example + rpc.elysium.kinetiq.xyz")
+        self.assertEqual(logs.fallback, 2)  # public RPC only after the two paid ones fail
         one, same = R.make_rpcs({**cfg, "CALL_RPC_URL": ""})
         self.assertIs(one, same)
-        self.assertIsInstance(one, R.RPC)
+        self.assertIsInstance(one, R.RPCPool)
+        self.assertEqual(one.fallback, 1)
         # price reads on one RPC, the other only while it rests (eth_getLogs still goes to RPC 1 first)
         self.assertEqual(R.make_rpcs({**cfg, "CALL_SPLIT": "rpc2"})[0].prefer, 1)
         self.assertIsNone(R.make_rpcs(cfg)[0].prefer)
@@ -289,6 +291,59 @@ class RpcTest(unittest.TestCase):
             self.assertTrue(p.call("eth_call", ["u"]).startswith("main"))  # resting: the other steps in
             self.assertTrue(p.batch([("eth_call", ["v"])])[0].startswith("main"))
             plan["backup"] = []
+
+    def test_stuck_rpc_hits_the_wall_clock_cap(self):
+        """A server that accepts and then says nothing must not hold scoring open."""
+        import socket
+        import threading
+        import time
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def hang():
+            try:
+                conn, _ = srv.accept()
+                time.sleep(30)
+                conn.close()
+            except OSError:
+                pass
+        threading.Thread(target=hang, daemon=True).start()
+        rpc = R.RPC(f"http://127.0.0.1:{port}", timeout=0.4, workers=1)
+        notes = []
+        rpc.log = notes.append
+        t0 = time.time()
+        with self.assertRaises(R.TransportError):
+            rpc.call("eth_chainId", [])
+        self.assertLess(time.time() - t0, 4)
+        self.assertTrue(notes)  # the retries are visible
+        srv.close()
+
+    def test_public_fallback_is_used_only_when_the_others_fail(self):
+        import io
+        import urllib.error
+        from unittest import mock
+        seen = []
+
+        def urlopen(req, timeout=None):
+            host = req.full_url.split("/")[2]
+            seen.append(host)
+            if host != "public.example":
+                raise urllib.error.URLError("timed out")
+            body = json.loads(req.data)
+            one = {"jsonrpc": "2.0", "id": body["id"], "result": "0x1"}
+            return io.BytesIO(json.dumps(one).encode())
+
+        ms = [R.RPC("http://paid.example", timeout=1), R.RPC("http://public.example", timeout=1)]
+        for m in ms:
+            m._backoff = lambda *a: None
+            m.patient = False
+        pool = R.RPCPool(ms, fallback=1)
+        with mock.patch("urllib.request.urlopen", urlopen):
+            self.assertEqual(pool.call("eth_chainId", []), "0x1")
+        self.assertIn("public.example", seen)
+        self.assertTrue(any(h != "public.example" for h in seen))
 
     def test_pool_get_logs_carries_on_elsewhere(self):
         ms = [R.RPC("https://main.example"), R.RPC("https://backup.example")]
@@ -708,7 +763,8 @@ class ScorerTest(unittest.TestCase):
             self.assertEqual(sc.promising([good, bad, mine], now - 30 * 86400), [mine, good])
             # a budget of 0 prices nothing at all
             out = sc.run(budget=0)
-            self.assertEqual((out["priced"], out["calls"], out["budget_hit"]), (0, 0, True))
+            self.assertEqual((out["priced"], out["budget_hit"]), (0, True))
+            self.assertLessEqual(out["calls"], 1)  # the HYPE quote only; pricing itself waits
             out = sc.run()
             priced = dict(con.execute("SELECT owner, SUM(valued=1) FROM positions GROUP BY owner").fetchall())
             # the losing wallet: its newest 20 only (its board figures are partial); the others: all 33
@@ -723,7 +779,8 @@ class ScorerTest(unittest.TestCase):
             self.assertEqual(sc.run()["priced"], 10)
             n = rpc.calls
             out = sc.run()
-            self.assertEqual((out["priced"], rpc.calls - n), (0, 0))  # nothing new, nothing due: no RPC at all
+            self.assertEqual(out["priced"], 0)
+            self.assertLessEqual(rpc.calls - n, 1)  # nothing new to price; at most the HYPE quote
             # the worker counts calls per UTC day
             W.count_calls(con, 120)
             W.count_calls(con, 30)

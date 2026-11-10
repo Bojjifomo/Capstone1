@@ -1,4 +1,5 @@
 """Background loop for the app: sync, score, repeat every SYNC_MINUTES."""
+import fcntl
 import threading
 import time
 import traceback
@@ -45,6 +46,23 @@ class Worker:
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
 
+    def _hold_lock(self):
+        """One worker per database. A second app (another port) logs and waits
+        instead of pricing the same positions twice."""
+        if getattr(self, "_lockf", None):
+            return True
+        try:
+            config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            fh = open(config.DATA_DIR / "worker.lock", "a+")
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        except OSError as e:
+            self.log(f"Couldn't lock the database ({e}); continuing anyway")
+            return True
+        self._lockf = fh
+        return True
+
     def kick(self):
         self._wake.set()
 
@@ -78,8 +96,22 @@ class Worker:
                 continue
             con = None
             try:
+                if not self._hold_lock():
+                    self.state = "idle"
+                    self.notice = ("Another Wallet Finder is already using this database "
+                                   "(an older window on another port). This one is not syncing, "
+                                   "so the two don't fight over SQLite or double the RPC load. "
+                                   "Close the other Terminal window.")
+                    self.log(self.notice)
+                    self._wake.wait(30)
+                    self._wake.clear()
+                    continue
                 con = db.connect()
                 rpc, call_rpc = make_rpcs(cfg)
+                for obj in (rpc, call_rpc):
+                    members = getattr(obj, "members", None) or [obj]
+                    for m in members:
+                        m.log = self.log
                 if not self._ranked_once:  # current rules on the board now, not after a long sync
                     self._ranked_once = True
                     self.state = "scoring"
@@ -110,6 +142,10 @@ class Worker:
                 self.error = None
                 spent = getattr(call_rpc, "exhausted", None)  # a pool member sitting out a spent quota
                 self.notice = None
+                hype_err = get_meta(con, "hype_error")
+                if hype_err and not get_meta(con, "eth_usd"):
+                    self.notice = f"HYPE price unavailable: {hype_err}"
+                    self.log("  " + self.notice)
                 if cap > 0 and calls_today(con) >= cap:
                     self.notice = (f"Today's RPC budget ({cap:,} calls) is used up: pricing waits until 00:00 UTC. "
                                    "New LP activity still syncs and the board shows everything priced so far.")

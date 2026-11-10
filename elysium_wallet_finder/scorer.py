@@ -221,6 +221,7 @@ class Scorer:
                 calls.append(("eth_call", [{"to": config.MULTICALL3, "data": C.encode_aggregate3(sub)},
                                            hex(blk - 1)]))
                 plan.append((part, pools, where))
+        self.log(f"    {len(calls):,} archive reads in flight")
         results = self.rpc.batch(calls, size=10)  # replies carry many reads each: keep a batch's reply small
         updates = []
         failed = 0
@@ -543,6 +544,30 @@ class Scorer:
                 rows.append((int(eb, 16) / 1e18 if eb else None, int(ub, 16) / 1e6 if ub else None, now, w))
         self.con.executemany("UPDATE wallets SET eth_bal=?, usd_bal=?, bal_ts=? WHERE addr=?", rows)
 
+    def quote_hype(self):
+        """USD per HYPE from the USDC/WHYPE pools, logged and stored before the
+        big pricing batch. A failure here is why the header shows '–'."""
+        try:
+            res = multicall(self.rpc, hype_calls(), "latest")
+            px = hype_usd(res)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)[:200]
+            self.log(f"  HYPE price failed: {msg}")
+            set_meta(self.con, "hype_error", msg)
+            self.con.commit()
+            return None
+        if not px:
+            msg = "USDC/WHYPE pool returned no price (the RPC may not be serving that call)"
+            self.log(f"  HYPE price failed: {msg}")
+            set_meta(self.con, "hype_error", msg)
+            self.con.commit()
+            return None
+        set_meta(self.con, "eth_usd", px)
+        set_meta(self.con, "hype_error", "")
+        self.con.commit()
+        self.log(f"  HYPE ${px:,.2f}")
+        return px
+
     # ---- the run ---------------------------------------------------------
     def run(self, stop=lambda: False, budget=None):
         """One pass: price what matters most first, refresh values, rank.
@@ -557,6 +582,7 @@ class Scorer:
         left = lambda: None if budget is None else budget - (self.rpc.calls - c0)  # noqa: E731
 
         self.drop_spiked_prices()
+        self.quote_hype()
         people, bots = self.candidates(now, w0)
         cands = people + bots
         bot_list, bots = bots, set(bots)
@@ -592,18 +618,18 @@ class Scorer:
                  f"pricing {len(todo):,} positions" + (f" ({len(older):,} of them older history)" if older else "")
                  + (f", within {budget:,} RPC calls" if budget is not None else ""))
 
-        t0, done = time.time(), set()
+        done = set()
         c = self.rpc.calls
         for i in range(0, len(todo), 400):
             if stop() or (left() is not None and left() <= 0):
                 break
             part = todo[i:i + 400]
+            end = min(i + 400, len(todo))
+            self.log(f"    pricing positions {i + 1:,}–{end:,} of {len(todo):,}…")
             n = self.value_events(part)
             done.update(part)
             con.commit()
-            if time.time() - t0 > 5:
-                self.log(f"    priced {min(i + 400, len(todo)):,}/{len(todo):,} positions ({n} reads)")
-                t0 = time.time()
+            self.log(f"    priced {end:,}/{len(todo):,} positions ({n} archive reads)")
         spent["prices"] = self.rpc.calls - c
 
         # open positions: the ones just priced always (they need a value to count);
