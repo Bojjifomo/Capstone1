@@ -18,6 +18,7 @@
   <div class="brand">◆ ELY <b>TERMINAL</b></div>
   <nav>
     <button class="tab on" data-view="pools">🧭 Pilih pool</button>
+    <button class="tab" data-view="tight">🎯 Tight</button>
     <button class="tab" data-view="portfolio">💼 Portfolio <span id="posCount" class="pill hidden">0</span></button>
   </nav>
   <div class="stat" id="stNet">posisi <b>--</b></div>
@@ -118,6 +119,14 @@
     <div class="note" id="pfRules"></div>
   </section>
 
+  <section class="left hidden" id="viewTight">
+    <div class="bar">
+      <span class="title">TIGHT RANGE</span>
+      <span class="muted">bukan janji profit. Target %/jam cuma selera lo.</span>
+    </div>
+    <div id="tightRoot"><div class="empty">Loading tight range…</div></div>
+  </section>
+
   <aside class="right" id="detail">
     <div class="empty">Klik pool buat detail, chart, dan plan zap.</div>
   </aside>
@@ -128,6 +137,7 @@
   <button data-view="pools" data-m="pass">✅<span>Pass</span></button>
   <button data-view="pools" data-m="ping">📡<span>PING</span></button>
   <button data-view="pools" data-m="watch">★<span>Watch</span></button>
+  <button data-view="tight">🎯<span>Tight</span></button>
   <button data-view="portfolio">💼<span>Portfolio</span></button>
 </nav>
 <div class="modal hidden" id="modal"><div class="card" id="modalCard"></div></div>
@@ -151,6 +161,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=1"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

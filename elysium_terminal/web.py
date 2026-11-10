@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import chain, filters, node, pools, portfolio, settings
+from . import chain, filters, node, pools, portfolio, settings, tight
 from .cli import DATA, append, env_report, load_config, load_env, make_index, notify, practice_mode
 
 STATIC = Path(__file__).resolve().parent / "web"
@@ -211,6 +211,149 @@ def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
     return fired
 
 
+def _tight_store() -> tight.Store:
+    return tight.Store(DATA)
+
+
+def _tight_view(width: str | None, target: str | None) -> dict:
+    """Signals from the pool snapshot already in memory. Does not start a new chain poll."""
+    store = _tight_store()
+    cfg = store.config()
+    screen = dict(cfg)
+    if width not in (None, ""):
+        screen["widthPct"] = tight.sanitize_config({"widthPct": width}, screen)["widthPct"]
+    if target not in (None, ""):
+        screen["targetPctPerHour"] = tight.sanitize_config({"targetPctPerHour": target}, screen)["targetPctPerHour"]
+    with _lock:
+        hit = _cache.get("pools")
+    data = hit["data"] if hit else pool_rows(False)
+    ix = STATE.get("ix")
+    now = time.time()
+    coverage = (data.get("index") or {}).get("coverageHours") or 0
+    fee_source = "index" if coverage >= 1 else "perkiraan volume × fee, jendela index belum sejam"
+    cards = []
+    for r in data.get("rows") or []:
+        if r.get("tick") is None:
+            continue
+        key = r.get("key") or {}
+        points = ix.series(r["pool"]) if ix is not None else []
+        cards.append(tight.screen_row({
+            "pool": r["pool"], "symbol": r.get("symbol"), "quoteSymbol": r.get("quoteSymbol"),
+            "dex": r.get("dex"), "tick": r.get("tick"), "tickSpacing": r.get("tickSpacing") or 0,
+            "fees1h": (r.get("fees") or {}).get("1h"), "tvlUsd": r.get("tvlUsd"),
+            "vol1h": (r.get("vol") or {}).get("1h"), "swaps1h": (r.get("swaps") or {}).get("1h"),
+            "feePpm": r.get("lpFee"), "feeSource": fee_source, "feeWindowSec": 3600,
+            "hooks": r.get("hooks"), "quoteIsToken0": key.get("currency0") == r.get("quote"),
+            "notionalUsd": data.get("sizeUsd"), "dynamicFee": r.get("dynamicFee"),
+        }, points, now, screen))
+    prev = store.signals()
+    nxt = {}
+    for c in cards:
+        st = tight.apply_hysteresis((prev.get(c["pool"]) if c.get("pool") else None),
+                                    bool(c["verdict"]["rawAbove"] and c["supported"]),
+                                    now, int(screen["enterPolls"]), int(screen["exitPolls"]))
+        if c.get("pool"):
+            nxt[c["pool"]] = st
+        c["listed"] = bool(st.get("on"))
+        c["passes"] = int(st.get("above") or 0)
+    store.save_signals(nxt)
+    keep = [c for c in cards if c["listed"] or c["verdict"]["status"] in ("lolos filter", "di bawah target")]
+    keep.sort(key=lambda c: (not c["listed"], -(c["verdict"]["grossPctPerHour"] or -1)))
+    age = None if not hit else max(0, now - hit["t"])
+    return {
+        "t": now, "cfg": cfg, "screen": {"widthPct": screen["widthPct"], "targetPctPerHour": screen["targetPctPerHour"]},
+        "rows": keep[:40], "scanned": len(cards), "listed": sum(1 for c in cards if c["listed"]),
+        "rejected": sum(1 for c in cards if c["verdict"]["status"] == "tidak cocok"),
+        "feeSource": fee_source, "snapshotAgeSec": age, "audit": store.audit_tail(12),
+        "flight": store.positions(), "liveAllowed": tight.live_allowed(cfg, practice_mode()),
+        "envPractice": practice_mode(),
+        "note": "Daftar ini tidak membuka posisi dan tidak mengirim notifikasi. %/jam adalah fee seluruh pool dibagi TVL, bukan fee posisi lo.",
+    }
+
+
+def _tight_execute(payload: dict, wallet: str) -> dict:
+    dry = bool(payload.get("dryRun")) or practice_mode()
+    step = payload.get("step")
+    if step == "close":
+        args = ["--pool", str(payload.get("pool") or ""), "--ids", str(int(payload["tokenId"]))]
+        script = "close.mjs"
+    elif step in ("swap", "mint"):
+        args = ["--pool", str(payload.get("pool") or ""), "--step", step,
+                "--usd", str(payload.get("usd") or 0), "--quote-usd", str(payload.get("quoteUsd") or 0),
+                "--swap-frac", str(payload.get("swapFrac") or 0),
+                "--slippage-bps", str(int(payload.get("slippageBps") or 100)),
+                "--lower", str(int(payload["tickLower"])), "--upper", str(int(payload["tickUpper"]))]
+        script = "tight.mjs"
+    else:
+        return {"ok": False, "unsupported": True, "error": f"langkah {step} tidak didukung"}
+    if dry:
+        args += ["--dry-run", "--owner", wallet]
+    res = node.run(script, args, timeout=180)
+    res["practice"] = practice_mode() or dry
+    return res
+
+
+def _receipt(tx_hash: str):
+    rc = chain.rpc("eth_getTransactionReceipt", [tx_hash])
+    if not rc:
+        return None
+    return {"ok": int(rc.get("status") or "0x0", 16) == 1}
+
+
+def _tight_loop() -> None:
+    """Runs only while this web process is up. Does nothing until auto-rebalance is turned on."""
+    while True:
+        time.sleep(60)
+        try:
+            store = _tight_store()
+            cfg = store.config()
+            if not cfg.get("enabled") or cfg.get("killed"):
+                continue
+            tw = node.trade_wallet()
+            if not tw.get("ok"):
+                store.audit({"ts": time.time(), "kind": "skip", "reason": "wallet tidak siap, tidak ada yang dikirim"})
+                continue
+            wallet = tw["address"]
+            try:
+                pf = portfolio_of(wallet, force=False)
+                data = pool_rows(False)
+            except Exception as exc:
+                store.audit({"ts": time.time(), "kind": "rpc-fail", "reason": str(exc)[:200]})
+                continue
+            by_pool = {r["pool"]: r for r in data.get("rows") or []}
+            positions, snaps = [], {}
+            saved = store.positions()
+            for g in pf.get("rows") or []:
+                row = by_pool.get(g["pool"]) or {}
+                fee, tvl = (row.get("fees") or {}).get("1h"), row.get("tvlUsd")
+                gross = (fee / tvl * 100) if fee is not None and tvl else None
+                for p in g.get("positions") or []:
+                    prev = (saved.get(str(p["tokenId"])) or {}).get("lastTick")
+                    move = None
+                    if prev is not None and g.get("tick") is not None:
+                        move = abs(1.0001 ** (g["tick"] - prev) - 1) * 100
+                    positions.append({
+                        "tokenId": p["tokenId"], "pool": g["pool"], "dex": p.get("dex") or g.get("dex"),
+                        "hooks": (g.get("key") or {}).get("hooks"), "dynamicFee": bool(row.get("dynamicFee")),
+                        "tickSpacing": (g.get("key") or {}).get("tickSpacing") or 0,
+                        "tickLower": p["tickLower"], "tickUpper": p["tickUpper"], "valueUsd": p.get("valueUsd"),
+                        "quoteIsToken0": (g.get("key") or {}).get("currency0") == g.get("quote"),
+                    })
+                    snaps[g["pool"]] = {"tick": g.get("tick"), "ageSec": max(0, time.time() - data.get("t", time.time())),
+                                        "rpcOk": True, "movePct": move, "grossPctPerHour": gross, "feePpm": row.get("lpFee")}
+                    store.save_position(p["tokenId"], {"lastTick": g.get("tick")})
+
+            def execute(payload, wallet=wallet, data=data):
+                payload = dict(payload)
+                row = by_pool.get(payload.get("pool")) or {}
+                payload["quoteUsd"] = row.get("quoteUsd") or data.get("hypeUsd") or 0
+                return _tight_execute(payload, wallet)
+
+            tight.run_once(store, positions, snaps, time.time(), execute, practice_mode(), _receipt)
+        except Exception as exc:
+            print(f"[tight] {exc}", file=sys.stderr, flush=True)
+
+
 def _auto_loop(cfg: dict) -> None:
     while True:
         try:
@@ -295,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
                 if ix is not None:
                     ix.poll_sec = 30 if time.time() - LAST_CLIENT < 90 else 180
                 return self._json({"ok": True})
+            if u.path == "/api/tight":
+                return self._json(_tight_view(q.get("width"), q.get("target")))
             if u.path == "/api/series":
                 pid = (q.get("pool") or "").lower()
                 if not pid:
@@ -358,6 +503,83 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "bad json"}, 400)
         cfg = self.cfg
         try:
+            if self.path == "/api/tight/plan":
+                with _lock:
+                    hit = _cache.get("pools")
+                if not hit:
+                    return self._json({"ok": False, "error": "snapshot pool belum ada. Buka tab Pool dulu."}, 400)
+                pool = str(body.get("pool") or "").lower()
+                row = next((r for r in hit["data"].get("rows") or [] if r["pool"] == pool), None)
+                if not row or row.get("tick") is None:
+                    return self._json({"ok": False, "error": "pool ini tidak ada di snapshot, atau tick-nya kosong"}, 400)
+                key = row.get("key") or {}
+                fee, tvl = (row.get("fees") or {}).get("1h"), row.get("tvlUsd")
+                gross = (fee / tvl * 100) if fee is not None and tvl else None
+                rev = tight.review_open(
+                    tick=int(row["tick"]), spacing=int(row.get("tickSpacing") or 0),
+                    width_pct=float(body.get("widthPct") or 1), usd=float(body.get("usd") or 0),
+                    quote_is_token0=key.get("currency0") == row.get("quote"),
+                    fee_ppm=row.get("lpFee"), slippage_bps=int(body.get("slippageBps") or 100),
+                    gross_pct_per_hour=gross, include_close=bool(body.get("close")))
+                rev["pool"] = pool
+                rev["symbol"] = row.get("symbol")
+                rev["quoteSymbol"] = row.get("quoteSymbol")
+                rev["quoteUsd"] = row.get("quoteUsd")
+                hooks = str(row.get("hooks") or chain.ZERO).lower()
+                rev["supported"] = (row.get("dex") in ("v3", "v4")) and hooks == chain.ZERO and not row.get("dynamicFee")
+                if rev.get("ok") and not rev["supported"]:
+                    rev["ok"] = False
+                    rev["unsupported"] = True
+                    rev["error"] = "pool ber-hook atau fee dinamis: tight open tidak didukung"
+                return self._json(rev)
+            if self.path == "/api/tight/settings":
+                why = self._trade_refused(body)
+                if why:
+                    return self._json({"ok": False, "error": why}, 403)
+                cfg = _tight_store().save_config(body)
+                if body.get("allowLive") and practice_mode():
+                    cfg = _tight_store().save_config({"forcePractice": True})
+                    cfg["note"] = "ELYSIUM_PRACTICE_MODE masih nyala di proses ini, jadi tetap simulasi."
+                return self._json({"ok": True, "cfg": cfg, "liveAllowed": tight.live_allowed(cfg, practice_mode())})
+            if self.path == "/api/tight/resume":
+                why = self._trade_refused(body)
+                if why:
+                    return self._json({"ok": False, "error": why}, 403)
+                if not body.get("confirmForget"):
+                    return self._json({"ok": False, "error": "konfirmasi dulu. Ini tidak mengulang tx yang tertinggal."}, 400)
+                store = _tight_store()
+                tid = str(body.get("tokenId") or "")
+                st = store.positions().get(tid) or {}
+                if st.get("pendingHash"):
+                    return self._json({"ok": False, "error": "masih ada tx pending. Tidak dilupakan dan tidak diganti."}, 400)
+                store.save_position(tid, {"paused": False, "pauseReason": "", "inflightKey": None, "unsupported": False})
+                store.audit({"ts": time.time(), "kind": "resume", "tokenId": tid})
+                return self._json({"ok": True})
+            if self.path == "/api/tight/verify":
+                why = self._trade_refused(body)
+                if why:
+                    return self._json({"ok": False, "error": why}, 403)
+                ids = [str(x).lower() for x in (body.get("pools") or [])][:8]
+                with _lock:
+                    hit = _cache.get("pools")
+                rows = {r["pool"]: r for r in (hit or {}).get("data", {}).get("rows") or []}
+                v4 = [i for i in ids if (rows.get(i) or {}).get("dex") != "v3"]
+                v3 = [i for i in ids if (rows.get(i) or {}).get("dex") == "v3"]
+                try:
+                    slots = {}
+                    if v4:
+                        slots.update(chain.slot0s_v4(v4))
+                    if v3:
+                        slots.update(chain.slot0s_v3(v3))
+                except Exception as exc:
+                    return self._json({"ok": False, "error": f"RPC gagal: {exc}"[:240]})
+                out = []
+                for i in ids:
+                    live = (slots.get(i) or {}).get("tick") if slots.get(i) else None
+                    cached = (rows.get(i) or {}).get("tick")
+                    out.append({"pool": i, "cachedTick": cached, "liveTick": live,
+                                "moved": live is not None and cached is not None and live != cached})
+                return self._json({"ok": True, "rows": out, "note": "Cuma shortlist yang lo kirim. Bukan poll baru."})
             if self.path == "/api/prefs":
                 if self.headers.get("X-ELY-Trade") != "1":
                     return self._json({"ok": False, "error": "missing header"}, 403)
@@ -395,6 +617,48 @@ class Handler(BaseHTTPRequestHandler):
                 if pct is not None and not 0.5 <= pct <= 500:
                     return self._json({"ok": False, "error": "target 0.5–500%"}, 400)
                 return self._json({"ok": True, "autoExit": auto_set(str(body["pool"]), str(body.get("symbol") or ""), pct)})
+            if self.path == "/api/trade/tight":
+                store = _tight_store()
+                if store.config().get("killed"):
+                    return self._json({"ok": False, "error": "kill switch nyala"}, 400)
+                step = str(body.get("step") or "")
+                pool = str(body.get("pool") or "")
+                token_id = str(body.get("tokenId") or f"open:{pool.lower()}")
+                key = str(body.get("key") or "")
+                if not key or step not in ("close", "swap", "mint"):
+                    return self._json({"ok": False, "error": "step atau kunci tidak lengkap"}, 400)
+                blocked = tight.manual_claim(store, key, token_id)
+                if blocked:
+                    return self._json(blocked, 409)
+                payload = {
+                    "step": step, "pool": pool, "tokenId": body.get("tokenId") or 0,
+                    "tickLower": body.get("tickLower"), "tickUpper": body.get("tickUpper"),
+                    "usd": body.get("usd"), "swapFrac": body.get("swapFrac") or 0,
+                    "slippageBps": body.get("slippageBps") or 100, "quoteUsd": body.get("quoteUsd") or 0,
+                    "dryRun": practice_mode(),
+                }
+                try:
+                    res = _tight_execute(payload, wallet)
+                except Exception as exc:
+                    res = {"ok": False, "error": str(exc)[:240]}
+                tight.manual_finish(store, token_id, key, res, time.time())
+                append("decisions.jsonl", {"ts": _now_iso(), "source": "tight", "pool": pool, "step": step,
+                                           "key": key, "ok": res.get("ok"), "hash": res.get("hash"),
+                                           "error": res.get("error"), "practice": res.get("practice")})
+                return self._json(res)
+            if self.path == "/api/trade/tight-receipt":
+                store = _tight_store()
+                tid = str(body.get("tokenId") or "")
+                st = store.positions().get(tid) or {}
+                h = st.get("pendingHash")
+                if not h:
+                    return self._json({"ok": True, "state": "idle", "doneSteps": st.get("doneSteps") or []})
+                try:
+                    rc = _receipt(h)
+                except Exception as exc:
+                    store.audit({"ts": time.time(), "kind": "rpc-fail", "tokenId": tid, "error": str(exc)[:200]})
+                    return self._json({"ok": False, "error": f"RPC gagal: {exc}"[:240]})
+                return self._json({"ok": True, "hash": h, **tight.resolve_receipt(store, tid, rc, time.time())})
             if self.path == "/api/trade/open":
                 pos = cfg["position"]
                 usd = float(body["usd"])
@@ -450,6 +714,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8893) -> None:
     print("Index swap: baca chain (pertama kali ±15–30 detik buat 1 jam terakhir)…", flush=True)
     ix.start()
     threading.Thread(target=_auto_loop, args=(cfg,), daemon=True, name="auto-exit").start()
+    threading.Thread(target=_tight_loop, daemon=True, name="tight-rebalance").start()
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"Elysium Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)

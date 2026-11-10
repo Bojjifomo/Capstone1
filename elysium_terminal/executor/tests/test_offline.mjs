@@ -1,5 +1,6 @@
 // Encoding + ladder math. No RPC, nothing is sent.
-import { planLadder, openCalldataV3, closeCalldataV3, swapCalldataV3Router, openCalldataV4, P, ZERO, WHYPE, USDC, deadline } from "../lib.mjs";
+import { planLadder, openCalldataV3, closeCalldataV3, swapCalldataV3Router, openCalldataV4, alignRange, mintAmounts,
+  tightMintCalldataV4, P, ZERO, WHYPE, USDC, deadline } from "../lib.mjs";
 
 let fails = 0;
 const check = (name, ok, detail = "") => {
@@ -35,6 +36,16 @@ check("SwapRouter exactInputSingle selector", swap.data.startsWith("0x414bf389")
 const v4 = openCalldataV4({ currency0: ZERO, currency1: USDC, fee: 3000, tickSpacing: 60, hooks: ZERO }, plan, true, "0x" + "ab".repeat(20), deadline());
 check("v4 open is modifyLiquidities", v4.data.startsWith("0xdd46508f"));
 check("v4 mint param helper is hex", P.mint(key, -200, 200, 1n, 1n, 0n, ZERO).startsWith("0x"));
+
+const band = alignRange(0, 1, 1);
+check("tight band matches python (-51, 50)", band.ok && band.tickLower === -51 && band.tickUpper === 50, JSON.stringify(band));
+check("tight band contains the tick", band.tickLower <= 0 && 0 < band.tickUpper);
+const coarse = alignRange(100, 200, 0.2);
+check("coarse spacing is flagged", coarse.ok && coarse.spacingCoarse && coarse.tickLower % 200 === 0);
+const both = mintAmounts(0, -50, 50, 1_000_000n, 1_000_000n * 10n ** 12n);
+check("two-sided mint uses both tokens", both.amount0 > 0n && both.amount1 > 0n && both.liquidity > 0n);
+const tm = tightMintCalldataV4(key, band.tickLower, band.tickUpper, both.liquidity, both.amount0, both.amount1, "0x" + "ab".repeat(20), deadline());
+check("tight v4 mint is modifyLiquidities", tm.data.startsWith("0xdd46508f"));
 
 console.log(fails ? `\n${fails} FAILED` : "\nOFFLINE ENCODING OK");
 process.exit(fails ? 1 : 0);

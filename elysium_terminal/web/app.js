@@ -744,19 +744,248 @@ function setMode(m) {
   document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === m));
   if (state.data) renderPools();
 }
+function tightPref(name, fallback) {
+  try { const v = localStorage.getItem(name); return v == null || v === "" ? fallback : v; } catch (e) { return fallback; }
+}
+function saveTightPref(name, value) { try { localStorage.setItem(name, value); } catch (e) {} }
+let tightTimer = null;
+async function loadTight() {
+  const root = $("#tightRoot");
+  const width = tightPref("elyterm.tightWidth", "1");
+  const target = tightPref("elyterm.tightTarget", "5");
+  try {
+    state.tight = await getJson(`/api/tight?width=${encodeURIComponent(width)}&target=${encodeURIComponent(target)}`, null, 20000);
+    renderTight();
+  } catch (e) {
+    root.innerHTML = `<div class="empty">Gagal ambil tight range: ${esc(e.message)}</div>`;
+  }
+}
+function renderTight() {
+  const d = state.tight;
+  if (!d) return;
+  const cfg = d.cfg || {};
+  const width = d.screen.widthPct;
+  const target = d.screen.targetPctPerHour;
+  const usd = tightPref("elyterm.tightUsd", String((state.data && state.data.sizeUsd) || 100));
+  const slip = tightPref("elyterm.tightSlip", String(cfg.maxSlippageBps || 100));
+  const live = d.liveAllowed;
+  const rows = d.rows || [];
+  $("#tightRoot").innerHTML = `
+    <div class="tightwrap">
+      <div class="tbox">
+        <h3>${live ? "LIVE" : "PRACTICE"} · auto-rebalance ${cfg.enabled ? "NYALA" : "mati"}${cfg.killed ? " · KILL" : ""}</h3>
+        <p class="muted">${esc(d.note || "")} Sumber fee: ${esc(d.feeSource || "?")}. ${d.snapshotAgeSec == null ? "" : "Snapshot pool " + Math.round(d.snapshotAgeSec) + " dtk."}</p>
+        <div class="tacts">
+          <label>lebar % <input id="tw" value="${width}" style="width:64px"></label>
+          <label>target %/jam <input id="tt" value="${target}" style="width:64px" title="Selera lo, bukan patokan aman"></label>
+          <label>usd <input id="tu" value="${esc(usd)}" style="width:72px"></label>
+          <label>slip bps <input id="ts" value="${esc(slip)}" style="width:64px"></label>
+          <button class="btn" id="tReload">Terapkan</button>
+          <button class="btn" id="tVerify">Cek on-chain shortlist</button>
+        </div>
+        <p class="muted">Discanning ${d.scanned} pool dari snapshot. ${d.listed} lagi di daftar (butuh beberapa kali lolos biar tidak kedip). ${d.rejected} ditolak. Tidak ada entry otomatis.</p>
+      </div>
+      <div class="tgrid">${rows.length ? rows.map(tightCard).join("") : `<div class="empty">Belum ada pool yang lolos filter. Yang ditolak tetap dihitung di atas, alasannya tidak disembunyikan: sampel tipis, data basi, spacing terlalu kasar, atau gerak harga lebih lebar dari range.</div>`}</div>
+      ${rebalanceBox(cfg, d)}
+    </div>`;
+  $("#tReload").onclick = () => {
+    saveTightPref("elyterm.tightWidth", $("#tw").value);
+    saveTightPref("elyterm.tightTarget", $("#tt").value);
+    saveTightPref("elyterm.tightUsd", $("#tu").value);
+    saveTightPref("elyterm.tightSlip", $("#ts").value);
+    loadTight();
+  };
+  $("#tVerify").onclick = verifyShortlist;
+  $("#tightRoot").querySelectorAll("[data-plan]").forEach(b => b.onclick = () => openTightPlan(b.dataset.plan, b.dataset.close === "1"));
+  $("#tightRoot").querySelectorAll("[data-watch]").forEach(b => b.onclick = () => {
+    const cur = (state.tight.cfg.watch || []).filter(w => String(w.tokenId) !== String(b.dataset.watch));
+    saveTightCfg({ watch: cur.concat([{ pool: b.dataset.pool, tokenId: b.dataset.watch, symbol: b.dataset.sym }]) });
+  });
+  const kill = $("#tKill");
+  if (kill) kill.onclick = () => saveTightCfg({ kill: true });
+  const en = $("#tEnable");
+  if (en) en.onclick = () => saveTightCfg({ enabled: !cfg.enabled, forcePractice: true });
+  const liveBtn = $("#tLive");
+  if (liveBtn) liveBtn.onclick = allowLive;
+  const forget = $("#tForget");
+  if (forget) forget.onclick = () => resumeTight($("#tForgetId").value);
+  clearTimeout(tightTimer);
+  if (state.view === "tight") tightTimer = setTimeout(loadTight, 20000);
+}
+function tightCard(c) {
+  const v = c.verdict || {};
+  const where = c.where;
+  const band = c.band;
+  const whereTxt = !where ? "harga tidak ketahuan" : where.inRange
+    ? `di dalam · ${where.priceToEdgePct.toFixed(2)}% dari tepi` : `di luar (${where.side})`;
+  const gross = v.grossPctPerHour == null ? "--" : v.grossPctPerHour.toFixed(2) + "%/jam";
+  const apr = v.simpleAprPct == null ? "--" : Math.round(v.simpleAprPct).toLocaleString("en-US") + "%";
+  return `<article class="tcard ${c.listed ? "listed" : ""}">
+    <h3>${esc(c.symbol || "?")} <span class="muted">${esc(c.quoteSymbol || "")} ${esc(c.dex || "")}</span> ${c.listed ? "· di daftar" : ""}</h3>
+    <div class="tnums">
+      <span><small>fee pool/TVL</small><b>${gross}</b></span>
+      <span><small>APR sederhana</small><b>${apr}</b></span>
+      <span><small>range tick</small><b>${band ? band.tickLower + " → " + band.tickUpper : "--"}</b></span>
+      <span><small>harga sekarang</small><b>${whereTxt}</b></span>
+    </div>
+    <div class="muted">${band ? "lebar minta " + band.requestedWidthPct + "% · kejajar " + band.actualWidthPct.toFixed(2) + "%" + (band.spacingCoarse ? " · spacing lebih kasar" : "") : "range tidak kejajar"} · ${esc(v.label || "")} · ${esc(v.confidence || "")}</div>
+    <div class="muted">${c.net && c.net.known ? "Net parsial " + fmtUsd(c.net.netUsd) + " atas ukuran default. Gas dan IL tidak masuk." : esc((c.net && c.net.note) || "")}</div>
+    ${(v.notes || []).concat(v.rejects || []).slice(0, 4).map(x => `<div class="muted">${esc(x)}</div>`).join("")}
+    <div class="tacts">
+      ${c.supported ? `<button class="btn go" data-plan="${esc(c.pool)}">Review buka</button>` : `<span class="muted">tidak didukung (hook / fee dinamis / spacing)</span>`}
+    </div>
+  </article>`;
+}
+function rebalanceBox(cfg, d) {
+  const watch = (cfg.watch || []).map(w => `#${w.tokenId} ${esc(w.symbol || "")}`).join(", ") || "belum ada";
+  const audit = (d.audit || []).slice(-6).map(a => `<div class="muted">${esc(a.kind || "")} ${esc(a.reason || a.error || a.step || "")}</div>`).join("") || `<div class="muted">audit kosong</div>`;
+  return `<div class="tbox">
+    <h3>Auto-rebalance</h3>
+    <p class="muted">Mati secara default. Practice secara default. Loop-nya jalan di proses Python di Mac ini, tab boleh ditutup, tapi prosesnya harus tetap hidup. Tidak mengganti tx yang masih pending. Bukan satu transaksi atomik: close, lalu swap, lalu mint, masing-masing sendiri, dan simulasi berhenti setelah close.</p>
+    <div class="tnums">
+      <span><small>tahan di luar</small><b>${cfg.persistenceSec}s</b></span>
+      <span><small>cooldown</small><b>${cfg.cooldownSec}s</b></span>
+      <span><small>maks / hari</small><b>${cfg.maxPerDay}</b></span>
+      <span><small>maks swap</small><b>${fmtUsd(cfg.maxSwapUsd)}</b></span>
+      <span><small>maks notional</small><b>${fmtUsd(cfg.maxNotionalUsd)}</b></span>
+      <span><small>net minimum</small><b>${fmtUsd(cfg.minNetUsd)}</b></span>
+    </div>
+    <p class="muted">Posisi yang diikutkan: ${watch}. Net minimum membandingkan proxy fee pool/TVL dikurangi fee swap. IL, adverse selection, dan gas tidak masuk. 0 = gate net mati.</p>
+    <div class="tacts">
+      <button class="btn" id="tEnable">${cfg.enabled ? "Matikan auto" : "Nyalakan auto (tetap practice)"}</button>
+      <button class="btn" id="tLive">Izinkan live…</button>
+      <button class="btn kill" id="tKill">Kill switch</button>
+    </div>
+    <div class="tacts">
+      <input id="tForgetId" placeholder="token id buat lepas jeda" style="width:180px">
+      <button class="btn" id="tForget">Lepas jeda</button>
+    </div>
+    <p class="muted">Posisi di portfolio (kalau sudah di-load):</p>
+    ${pfTightButtons()}
+    ${audit}
+  </div>`;
+}
+function pfTightButtons() {
+  const rows = (state.pf && state.pf.rows) || [];
+  if (!rows.length) return `<div class="muted">Load portfolio dulu kalau mau tutup cepat atau ikutkan posisi.</div>`;
+  return rows.map(p => (p.positions || []).map(pos => `<div class="tacts">
+      <span>${esc(p.symbol)} #${pos.tokenId} ${pos.inRange ? "di dalam" : "di luar"}</span>
+      <button class="btn" data-plan="${esc(p.pool)}" data-close="1">Review tutup + buka</button>
+      <button class="btn" data-watch="${pos.tokenId}" data-pool="${esc(p.pool)}" data-sym="${esc(p.symbol)}">Ikutkan</button>
+    </div>`).join("")).join("");
+}
+async function saveTightCfg(patch) {
+  if (!guard()) return;
+  try {
+    const r = await trade.call("/api/tight/settings", patch);
+    toast(r.cfg && r.cfg.note ? r.cfg.note : "Setting tersimpan");
+    loadTight();
+  } catch (e) { alert(e.message); }
+}
+async function allowLive() {
+  if (!guard()) return;
+  const typed = prompt("Buat live, ketik persis: SAYA PAHAM LIVE\nIni tetap butuh ELYSIUM_PRACTICE_MODE=false di proses yang jalan. Auto tidak menyala sendiri.");
+  if (typed !== "SAYA PAHAM LIVE") return alert("Tidak diubah.");
+  if (!confirm("Live artinya langkah yang lolos gate bisa terkirim beneran. Tetap satu per satu, bukan atomik. Lanjut?")) return;
+  await saveTightCfg({ allowLive: true, liveAck: typed });
+}
+async function resumeTight(id) {
+  if (!guard() || !id) return;
+  if (!confirm("Lepas jeda " + id + "?\nTx yang hash-nya tidak tersimpan tidak akan dikirim ulang otomatis. Kalau masih pending, permintaan ini ditolak.")) return;
+  try {
+    await trade.call("/api/tight/resume", { tokenId: id, confirmForget: true });
+    loadTight();
+  } catch (e) { alert(e.message); }
+}
+async function verifyShortlist() {
+  const ids = (state.tight && state.tight.rows || []).filter(r => r.listed || r.verdict.status === "lolos filter").map(r => r.pool).slice(0, 8);
+  if (!ids.length) return alert("Shortlist kosong. Tidak ada yang dicek.");
+  if (!guard()) return;
+  try {
+    const r = await trade.call("/api/tight/verify", { pools: ids });
+    alert((r.rows || []).map(x => `${x.pool.slice(0, 8)} cache ${x.cachedTick} live ${x.liveTick} ${x.moved ? "GESER" : "sama"}`).join("\n") || r.error);
+  } catch (e) { alert(e.message); }
+}
+async function openTightPlan(pool, withClose) {
+  const usd = parseFloat(tightPref("elyterm.tightUsd", "100")) || 0;
+  const width = parseFloat(tightPref("elyterm.tightWidth", "1")) || 1;
+  const slip = parseInt(tightPref("elyterm.tightSlip", "100"), 10) || 100;
+  let rev;
+  try {
+    rev = await post("/api/tight/plan", { pool, widthPct: width, usd, slippageBps: slip, close: !!withClose });
+  } catch (e) { return alert(e.message); }
+  if (!rev.ok) return alert(rev.error || "plan gagal");
+  const where = rev.where || {};
+  const band = rev.band || {};
+  const net = rev.net || {};
+  const steps = rev.steps || [];
+  $("#modalCard").innerHTML = `
+    <h3>${withClose ? "Tutup lalu buka" : "Buka"} ${esc(rev.symbol || "")} ${esc(rev.quoteSymbol || "")}</h3>
+    <p class="warn">Ini ${steps.length} transaksi terpisah, bukan atomik. Kalau salah satu gagal, yang sudah masuk tidak di-undo dan tidak dikirim ulang.</p>
+    <div class="tnums">
+      <span><small>tick sekarang</small><b>${rev.where ? "" : ""}${band.tickLower} → ${band.tickUpper}</b></span>
+      <span><small>harga</small><b>${where.inRange ? "di dalam" : "di luar"} · ${where.priceToEdgePct != null ? where.priceToEdgePct.toFixed(2) + "% ke tepi" : ""}</b></span>
+      <span><small>lebar kejajar</small><b>${band.actualWidthPct ? band.actualWidthPct.toFixed(2) + "%" : "--"}</b></span>
+      <span><small>slippage</small><b>${(rev.slippageBps / 100).toFixed(2)}%</b></span>
+    </div>
+    ${steps.map(s => `<div>${s.n}. <b>${esc(s.what)}</b> ${s.usd != null ? fmtUsd(s.usd) : ""}<div class="muted">${esc(s.note)}</div></div>`).join("")}
+    <p class="muted">${esc(rev.minOutNote || "")}<br>${esc(rev.gasNote || "")}<br>${esc(rev.costNote || "")}</p>
+    <p class="muted">${net.known ? `Net parsial ${fmtUsd(net.netUsd)} (gross proxy ${fmtUsd(net.grossUsd)} − fee swap ${fmtUsd(net.swapCostUsd)}). ${esc(net.note || "")}` : esc(net.note || "Net tidak ditampilkan.")}</p>
+    <div class="tacts" id="tStepBtns"></div>
+    <div class="res" id="tStepMsg"></div>
+    <div class="acts"><button class="btn" id="tClosePlan">Tutup</button></div>`;
+  $("#modal").classList.remove("hidden");
+  $("#tClosePlan").onclick = closeModal;
+  const box = $("#tStepBtns");
+  steps.forEach(s => {
+    const b = document.createElement("button");
+    b.className = "btn go";
+    b.textContent = (practice() ? "Simulasi " : "Kirim ") + s.what;
+    b.onclick = () => runTightStep(rev, s, withClose);
+    box.appendChild(b);
+  });
+}
+async function runTightStep(rev, step, withClose) {
+  if (!guard()) return;
+  const tokenId = withClose ? (prompt("Token id posisi yang ditutup?", "") || "") : `open:${rev.pool}`;
+  if (!tokenId) return;
+  const key = `manual:${tokenId}:${step.what}:${rev.band.tickLower}:${rev.band.tickUpper}`;
+  const verb = practice() ? "Simulasi" : "KIRIM BENERAN";
+  if (!confirm(`${verb} langkah ${step.n}: ${step.what}.\nBukan gabungan dengan langkah lain.\n${practice() ? "Practice: eth_call, tidak ada yang dikirim." : "Ini transaksi mainnet."}`)) return;
+  $("#tStepMsg").textContent = "Jalan…";
+  try {
+    const res = await trade.call("/api/trade/tight", {
+      key, step: step.what, pool: rev.pool, tokenId,
+      tickLower: rev.band.tickLower, tickUpper: rev.band.tickUpper, usd: parseFloat(tightPref("elyterm.tightUsd", "100")) || 0,
+      swapFrac: rev.swapFrac || 0, slippageBps: rev.slippageBps, quoteUsd: rev.quoteUsd || 0,
+    });
+    if (res.hash) {
+      $("#tStepMsg").innerHTML = `Terkirim ${txLink(res.hash)}. Cek receipt sebelum langkah berikutnya. Tidak dikirim ulang.`;
+      const rc = await trade.call("/api/trade/tight-receipt", { tokenId });
+      $("#tStepMsg").innerHTML += `<br>Receipt: ${esc(rc.state || rc.error || "")}`;
+    } else {
+      $("#tStepMsg").innerHTML = res.ok ? `Simulasi / selesai tanpa hash. ${esc(res.note || res.error || "")}${practiceNote(res)}` : `<span class="neg">${esc(res.error || "gagal")}</span>`;
+    }
+  } catch (e) { $("#tStepMsg").innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+}
 function setView(v) {
   state.view = v;
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   $("#viewPools").classList.toggle("hidden", v !== "pools");
   $("#viewPortfolio").classList.toggle("hidden", v !== "portfolio");
+  $("#viewTight").classList.toggle("hidden", v !== "tight");
   document.body.classList.toggle("pf", v === "portfolio");
+  document.body.classList.toggle("tight", v === "tight");
   store.set("view", v);
   paintBottom();
   if (v === "portfolio" && !state.pf && $("#wallet").value.trim()) loadPortfolio();
+  if (v === "tight") loadTight();
 }
 function paintBottom() {
   document.querySelectorAll("#bottomnav button").forEach(b => b.classList.toggle("on",
-    b.dataset.view === "portfolio" ? state.view === "portfolio" : state.view === "pools" && state.mode === b.dataset.m));
+    b.dataset.view === "tight" ? state.view === "tight"
+      : b.dataset.view === "portfolio" ? state.view === "portfolio"
+      : state.view === "pools" && state.mode === b.dataset.m));
 }
 function paintBell() {
   const b = $("#bellBtn");
@@ -882,6 +1111,7 @@ $("#wallet").addEventListener("keydown", e => { if (e.key === "Enter") loadPortf
 document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   document.body.classList.remove("sheet");
   if (b.dataset.view === "portfolio") return setView("portfolio");
+  if (b.dataset.view === "tight") return setView("tight");
   setView("pools");
   setMode(b.dataset.m);
 });
