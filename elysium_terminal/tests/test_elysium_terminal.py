@@ -222,6 +222,24 @@ class SwapIndex(unittest.TestCase):
             self.assertIn(pool, again.v3pools)
 
 
+class SeriesAndTraders(unittest.TestCase):
+    def test_series_is_local_and_traders_reload(self):
+        with tempfile.TemporaryDirectory() as d:
+            ix = activity.Index(Path(d))
+            b = int(time.time() // 300 * 300)
+            pid = "0x" + "ab" * 32
+            ix.pools[pid] = {"b": {b: [3, 4.5, 0.2, 1 << 96, 2, 1], b + 300: [1, 1.0, 0.05, 1 << 96, 1, 0]}, "last": {}}
+            ix.traders[pid] = {"0x" + "11" * 20: b}
+            ix.head, ix.started = 10, time.time()
+            ix.save()
+            again = activity.Index(Path(d))
+            self.assertEqual(again.traders[pid]["0x" + "11" * 20], b)
+            pts = again.series(pid)
+            self.assertEqual(len(pts), 2)
+            self.assertAlmostEqual(pts[0]["px"], 1.0)
+            self.assertEqual(pts[0]["vol"], 4.5)
+
+
 class ResolveDoesNotCacheFailures(unittest.TestCase):
     def test_failed_init_is_retried(self):
         tok = "0x" + "11" * 20

@@ -83,6 +83,7 @@ class Index:
                 self.ref, self.spb = tuple(d["ref"]) if d.get("ref") else None, d.get("spb", self.spb)
                 self.pools = {p: {"b": {int(b): v for b, v in x["b"].items()}, "last": x.get("last") or {}}
                               for p, x in d["pools"].items()}
+                self.traders = {p: {a: int(ts) for a, ts in (book or {}).items()} for p, book in (d.get("traders") or {}).items()}
         except (OSError, ValueError, KeyError, TypeError):
             pass
         if rescan:
@@ -92,8 +93,12 @@ class Index:
     def save(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         with self.lock:
+            cut = time.time() - 3600 - BUCKET
+            traders = {p: {a: ts for a, ts in book.items() if ts >= cut} for p, book in self.traders.items()}
+            traders = {p: book for p, book in traders.items() if book}
             snap = {"savedAt": time.time(), "head": self.head, "v3LogHead": self.v3_log_head,
-                    "started": self.started, "ref": self.ref, "spb": self.spb, "pools": self.pools}
+                    "started": self.started, "ref": self.ref, "spb": self.spb, "pools": self.pools,
+                    "traders": traders}
             blob = {"v3Scanned": self.v3_scanned, "v3": self.v3pools, "keys": self.keys}
         tmp = self.dir / "activity.json.tmp"
         tmp.write_text(json.dumps(snap, separators=(",", ":")))
@@ -430,6 +435,24 @@ class Index:
                 continue
             out.append({"pool": pid, "key": key, "quoteSide": q, "quote": qaddr, "quoteUsd": usd,
                         "last": p["last"], "win": win, "traders1h": traders})
+        return out
+
+    def series(self, pid: str) -> list[dict]:
+        """Price (relative) and quote volume from buckets already in memory. No RPC."""
+        with self.lock:
+            p = self.pools.get(pid.lower())
+            if not p:
+                return []
+            items = sorted(p["b"].items())
+        base = None
+        out = []
+        for b, c in items:
+            sqrt = c[3] if len(c) > 3 else 0
+            px = (sqrt / 2 ** 96) ** 2 if sqrt else None
+            if base is None and px:
+                base = px
+            out.append({"t": int(b), "px": (px / base) if px and base else None,
+                        "vol": c[1], "swaps": c[0]})
         return out
 
     def pool_ids(self) -> set[str]:

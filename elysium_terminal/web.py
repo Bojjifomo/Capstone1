@@ -295,6 +295,11 @@ class Handler(BaseHTTPRequestHandler):
                 if ix is not None:
                     ix.poll_sec = 30 if time.time() - LAST_CLIENT < 90 else 180
                 return self._json({"ok": True})
+            if u.path == "/api/series":
+                pid = (q.get("pool") or "").lower()
+                if not pid:
+                    return self._json({"error": "pool?"}, 400)
+                return self._json({"pool": pid, "points": STATE["ix"].series(pid)})
             if u.path == "/api/pools":
                 return self._json(pool_rows(q.get("force") == "1"))
             if u.path == "/api/search":

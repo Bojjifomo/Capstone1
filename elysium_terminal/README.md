@@ -36,6 +36,10 @@ Yang nggak di-fetch ulang: symbol/decimals token (`data/token_meta.json`), nama 
 
 DexScreener `elysium` dipakai buat TVL, mcap, icon. Holder count nggak ada sumber gratis yang murah di chain ini, jadi belum.
 
+Chart di panel kanan digambar dari bucket 5 menit yang sudah ada di index (harga relatif + volume). Nol request RPC, nol Alchemy. Tombol ⚡ di baris pool langsung simulasi/kirim ukuran itu (satu konfirmasi). ✏️ tetap buka plan lengkap. Kolom dan filter dex tersimpan di browser itu saja (`localStorage`), jadi iPhone dan Mac boleh beda. Banner kuning = PRACTICE, merah = LIVE. Jumlah trader 1 jam ikut tersimpan di `activity.json`, nggak hilang pas restart.
+
+Fee v3 yang sudah di-claim (event Collect) masuk PnL. Fee v4 yang sudah di-claim tidak: PositionManager di chain ini tidak emit event Collect, cuma Transfer + perubahan likuiditas, jadi fee dan pokok tidak bisa dipisah tanpa baca tiap receipt.
+
 ## Yang udah dicek on-chain (9 Nov 2026)
 
 RPC publik `https://rpc.elysium.kinetiq.xyz` balas **chain id 99901**. Block time yang keukur ±0.10 detik.

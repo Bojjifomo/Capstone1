@@ -200,6 +200,9 @@ function rowsView() {
     if (tvlMin && !((r.tvlUsd || 0) >= tvlMin)) return false;
     if (quote === "HYPE" && r.quoteSymbol !== "HYPE" && r.quoteSymbol !== "WHYPE") return false;
     if (quote === "USDC" && r.quoteSymbol !== "USDC") return false;
+    const dex = ($("#dex") && $("#dex").value) || "";
+    if (dex === "v4" && r.dex !== "v4") return false;
+    if (dex === "v3" && r.dex === "v4") return false;
     return match(r);
   });
   const w = state.win, key = state.sort.key;
@@ -286,7 +289,11 @@ function renderPools() {
     : state.mode === "ping" ? "Nggak ada pool yang lolos filter PING sekarang (atur di ⚙)."
     : ix0.error ? "Index error: " + ix0.error
     : !d.rows.length ? "Index swap masih baca chain… pool nambah sendiri, jangan di-refresh berkali-kali." : "Nggak ada pool yang cocok sama filter.";
-  document.querySelectorAll("#pools th").forEach(th => th.classList.toggle("sorted", state.mode !== "ping" && !state.search && th.dataset.sort === state.sort.key));
+  document.querySelectorAll("#pools th").forEach(th => {
+    const on = state.mode !== "ping" && !state.search && th.dataset.sort === state.sort.key;
+    th.classList.toggle("sorted", on);
+    if (on) th.dataset.dir = state.sort.desc ? "desc" : "asc";
+  });
   document.querySelectorAll("#pools th .wl").forEach(x => { x.textContent = w.toUpperCase(); });
   const size = d.sizeUsd, cards = [];
   const fresh = new Set((d.ping && d.ping.new) || []);
@@ -301,17 +308,17 @@ function renderPools() {
     const zap = `<div class="zap"><button data-zap="${size / 2}">⚡${mU(size / 2)}</button><button data-zap="${size}">⚡${mU(size)}</button><button class="edit" data-zap="ask">✏️</button></div>`;
     cards.push(`<div class="pcard ${r.pool === state.sel ? "sel" : ""}" data-pool="${r.pool}">
       <div class="pc1">${star}${icon}<b class="psym">${esc(r.symbol)}</b>${qchip(r)}${rank}<span class="spacer"></span><span class="badge ${v.level}">${v.level}</span></div>
-      <div class="pc2"><span><small>TVL</small>${mU(r.tvlUsd)}</span><span><small>fee ${w}</small><b class="pos">${fmtPct(r.feePctDay[w], 1)}</b>/hr</span>
-        <span><small>1 jam</small>${fmtPct(fee1hPct, 2)}</span><span><small>mcap</small>${mU(r.mcapUsd)}</span></div>
+      <div class="pc2"><span class="col-tvl"><small>TVL</small>${mU(r.tvlUsd)}</span><span class="col-fees"><small>fee ${w}</small><b class="pos">${fmtPct(r.feePctDay[w], 1)}</b>/hr</span>
+        <span class="col-fee1h"><small>1 jam</small>${fmtPct(fee1hPct, 2)}</span><span class="col-mcap"><small>mcap</small>${mU(r.mcapUsd)}</span></div>
       <div class="pc3">${sub}</div>
       ${reasons ? `<div class="pc3 muted">${esc(reasons)}</div>` : ""}${zap}</div>`);
     return `<tr data-pool="${r.pool}" class="${r.pool === state.sel ? "sel" : ""}">
       <td><span class="sym">${star}${icon}${esc(r.symbol)}${qchip(r)}${rank}</span><span class="sub">${sub} · …${r.pool.slice(-6)}</span></td>
-      <td class="r"><span class="big">${mU(r.tvlUsd)}</span><span class="sub">vol ${mU(r.vol[w])}</span></td>
-      <td class="r"><span class="big pos">${mU(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/hari</span></td>
-      <td class="r"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${mU(r.fees["1h"])} · ${r.swaps["1h"] ?? "--"} swap</span></td>
-      <td class="r"><span class="big">${mU(r.mcapUsd)}</span><span class="sub">${spark(r)} <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)}</span></span></td>
-      <td><span class="badge ${v.level}">● ${v.level} ${v.score > 0 ? "+" : ""}${v.score}</span><span class="reasons">${esc(reasons)}</span></td>
+      <td class="r col-tvl"><span class="big">${mU(r.tvlUsd)}</span><span class="sub">vol ${mU(r.vol[w])}</span></td>
+      <td class="r col-fees"><span class="big pos">${mU(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/hari</span></td>
+      <td class="r col-fee1h"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${mU(r.fees["1h"])} · ${r.swaps["1h"] ?? "--"} swap</span></td>
+      <td class="r col-mcap"><span class="big">${mU(r.mcapUsd)}</span><span class="sub">${spark(r)} <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)}</span></span></td>
+      <td class="col-score"><span class="badge ${v.level}">● ${v.level} ${v.score > 0 ? "+" : ""}${v.score}</span><span class="reasons">${esc(reasons)}</span></td>
       <td>${zap}</td></tr>`;
   }).join("");
   $("#poolCards").innerHTML = cards.join("");
@@ -327,7 +334,6 @@ function renderDetail(r, keepChart) {
     WAIT: "Belum: ada gate yang belum lolos (bisa berubah).", SKIP: "Skip: fee LP 0% / hook, atau fee tier honeypot." }[v.level];
   const li = [...v.reasons.map(x => `<li class="${x.ok ? "" : x.flag ? "flag" : "bad"}">${esc(nice(x.text))}</li>`),
     ...v.info.map(x => `<li class="info ${x.ok ? "" : "bad"}">${esc(x.text)}</li>`)].join("");
-  const chart = `https://dexscreener.com/elysium/${r.pool}?embed=1&theme=dark&trades=0&info=0`;
   const old = keepChart ? $("#detail .chart") : null;
   const pg = pingOf(r.pool);
   const tx = r.txns && r.txns.h1 ? `${r.txns.h1.buys} buy / ${r.txns.h1.sells} sell (1 jam)` : "";
@@ -357,8 +363,38 @@ function renderDetail(r, keepChart) {
     </div>
     <div class="note">Zap = ladder ${esc(r.quoteSymbol)}-only (slice sama lebar, isi 1:2:…:n, paling dalam paling gede). v4 lewat PositionManager, v3 lewat NFT multicall. Key cuma di executor.
       Disimulasikan dulu sebelum dikirim. Ubah bentuk default di ⚙. Gate & flag ini nilai awal, bukan hasil backtest: atur sesuai pengalaman lu.</div>
-    <div class="chart"><iframe src="${chart}" title="chart" loading="lazy"></iframe></div>`;
-  if (old && old.querySelector("iframe").src === chart) $("#detail .chart").replaceWith(old);
+    <div class="chart" id="miniChart"><div class="empty">Chart dari index…</div></div>`;
+  if (old) $("#detail .chart").replaceWith(old);
+  else loadSeries(r.pool);
+}
+
+let chartSeq = 0;
+function sparkChart(pts) {
+  const priced = pts.filter(p => p.px != null);
+  if (priced.length < 2) return `<div class="empty">Belum cukup history di index buat chart ini.</div>`;
+  const w = 640, h = 160, pad = 8;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  const X = t => pad + (t - t0) / (t1 - t0 || 1) * (w - pad * 2);
+  const pxs = priced.map(p => p.px);
+  const lo = Math.min(...pxs), hi = Math.max(...pxs), span = hi - lo || 1e-9;
+  const Y = px => h - pad - (px - lo) / span * (h - pad * 2 - 28);
+  const vmax = Math.max(...pts.map(p => p.vol || 0)) || 1;
+  const bars = pts.map(p => `<rect class="vbar" x="${X(p.t).toFixed(1)}" y="${(h - 4 - (p.vol || 0) / vmax * 36).toFixed(1)}" width="3" height="${((p.vol || 0) / vmax * 36).toFixed(1)}"></rect>`).join("");
+  const d = priced.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.px).toFixed(1)}`).join("");
+  const up = priced[priced.length - 1].px >= priced[0].px;
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="harga dan volume dari index">${bars}<path d="${d}" fill="none" stroke="${up ? "#3ddc84" : "#ff5a5f"}" stroke-width="1.6"></path></svg><div class="muted" style="padding:4px 10px 8px">Harga relatif + volume quote, dari bucket 5 menit yang sudah di index. Bukan chart DexScreener, 0 request RPC.</div>`;
+}
+async function loadSeries(pool) {
+  const seq = ++chartSeq;
+  const box = $("#miniChart");
+  if (!box) return;
+  try {
+    const d = await getJson(`/api/series?pool=${encodeURIComponent(pool)}`, null, 15000);
+    if (seq !== chartSeq || !$("#miniChart")) return;
+    $("#miniChart").innerHTML = sparkChart(d.points || []);
+  } catch (e) {
+    if (seq === chartSeq && $("#miniChart")) $("#miniChart").innerHTML = `<div class="empty">Chart gagal: ${esc(e.message)}</div>`;
+  }
 }
 
 // ---------- trading ----------
@@ -392,14 +428,34 @@ function paintWallet() {
   b.classList.toggle("on", trade.ready());
   b.textContent = t.enabled ? `🔑 ${short(t.wallet)}${trade.ready() ? "" : " · read-only"}` : "🔒 read-only";
   b.title = trade.ready() ? `Trading wallet ${t.wallet}${t.pin ? " (PIN aktif)" : ""}` : trade.why();
-  $("#practiceChip").classList.toggle("hidden", !practice());
+  const live = !!(t.practice === false);
+  const chip = $("#practiceChip");
+  chip.classList.toggle("hidden", false);
+  chip.classList.toggle("live", live);
+  chip.textContent = live ? "LIVE" : "PRACTICE";
   const bar = $("#practiceBar");
-  if (bar) bar.classList.toggle("hidden", !practice());
+  if (bar) {
+    bar.classList.toggle("live", live);
+    bar.textContent = live
+      ? "LIVE — tombol mengirim transaksi beneran ke Elysium."
+      : "PRACTICE — tombol cuma simulasi (eth_call). Nggak ada yang dikirim.";
+  }
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
+async function quickZap(r, size) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  const verb = practice() ? "Simulasi" : "KIRIM BENERAN";
+  if (!confirm(`${verb}: ladder ${r.symbol}/${r.quoteSymbol} ${fmtUsd(size)}\n${practice() ? "Practice: eth_call, tidak ada yang dikirim." : "Ini transaksi mainnet."}`)) return;
+  toast(practice() ? "Simulasi ladder…" : "Kirim ladder…");
+  try {
+    const s = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, usd: size, override: false });
+    toast(s.ok ? (s.dryRun ? `✓ Simulasi ${r.symbol} lolos` : `✓ Ladder ${r.symbol} kebuka`) : `✗ ${s.error || "gagal"}`);
+    if (!s.ok) alert(s.error || "gagal");
+  } catch (e) { toast("✗ " + e.message); alert(e.message); }
+}
 function openZap(r, size) {
   $("#modalCard").classList.remove("wide");
   const d = state.data, maxUsd = d.maxPositionUsd, pos = posCfg();
@@ -745,18 +801,37 @@ document.addEventListener("click", e => {
 }, true);
 $("#q").addEventListener("input", () => { if (state.search && !$("#q").value.trim()) { state.search = null; } if (state.data) renderPools(); });
 $("#q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch($("#q").value.trim()); });
-["#hideSkip", "#tvl", "#quote"].forEach(s => $(s).addEventListener("change", () => {
+["#hideSkip", "#tvl", "#quote", "#dex"].forEach(s => $(s).addEventListener("change", () => {
   store.set("filters", { skip: $("#hideSkip").checked, quote: $("#quote").value });
   store.set("tvl", $("#tvl").value);
+  try { localStorage.setItem("elyterm.dex", $("#dex").value); } catch (e) {}
   if (state.data) renderPools();
 }));
+function applyCols() {
+  let cols = null;
+  try { cols = JSON.parse(localStorage.getItem("elyterm.cols") || "null"); } catch (e) {}
+  document.querySelectorAll("#cols input").forEach(el => {
+    const on = !cols || cols[el.dataset.col] !== false;
+    el.checked = on;
+    document.body.classList.toggle("hide-" + el.dataset.col, !on);
+  });
+}
+$("#cols").addEventListener("change", () => {
+  const cols = {};
+  document.querySelectorAll("#cols input").forEach(el => { cols[el.dataset.col] = el.checked; });
+  try { localStorage.setItem("elyterm.cols", JSON.stringify(cols)); } catch (e) {}
+  applyCols();
+});
 const onPoolClick = e => {
   const tr = e.target.closest("tr, .pcard");
   if (!tr || !state.data) return;
   const r = findRow(tr.dataset.pool);
   if (!r) return;
   const z = e.target.closest("[data-zap]");
-  if (z) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeUsd : parseFloat(z.dataset.zap));
+  if (z) {
+    if (z.dataset.zap === "ask") return openZap(r, state.data.sizeUsd);
+    return quickZap(r, parseFloat(z.dataset.zap));
+  }
   renderDetail(r);
 };
 $("#pools tbody").addEventListener("click", onPoolClick);
@@ -764,7 +839,7 @@ $("#poolCards").addEventListener("click", onPoolClick);
 $("#detail").addEventListener("click", async e => {
   if (e.target.closest("[data-closesheet]")) { document.body.classList.remove("sheet"); return; }
   const z = e.target.closest("[data-zap]"), r = state.sel && findRow(state.sel);
-  if (z && r) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeUsd : parseFloat(z.dataset.zap));
+  if (z && r) return z.dataset.zap === "ask" ? openZap(r, state.data.sizeUsd) : quickZap(r, parseFloat(z.dataset.zap));
   const c = e.target.closest("[data-copy]");
   if (c) { try { await navigator.clipboard.writeText(c.dataset.copy); c.textContent = "copied ✓"; } catch (err) {} }
 });
@@ -817,6 +892,8 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   state.win = store.get("win", "1h");
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);
+  try { if (localStorage.getItem("elyterm.dex") != null) $("#dex").value = localStorage.getItem("elyterm.dex"); } catch (e) {}
+  applyCols();
   const f = store.get("filters", null);
   if (f) { $("#hideSkip").checked = f.skip !== false; $("#quote").value = f.quote || ""; }
   $("#tvl").value = store.get("tvl", "2000");
