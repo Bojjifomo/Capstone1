@@ -125,11 +125,27 @@ cd elysium_terminal/executor && node tests/test_live_sim.mjs
 - Gate & flag ini nilai awal, bukan hasil backtest. Atur di ⚙.
 - Harga HYPE diambil dari pool USDC/HYPE atau USDC/WHYPE yang paling rame di index. Kalau index masih kosong, fallback-nya pool ElysiumSwap USDC/WHYPE 1% di atas.
 - Pool v4 yang fee LP-nya 0% (hook yang nentuin harga) kena SKIP. Pool ber-hook yang fee-nya normal kena flag, bukan skip. Mint ke hook bisa aja revert: simulasi yang nolak.
-- Deposit di Portfolio dihitung dari likuiditas (anggap slice-nya single-sided quote). Fee yang udah di-claim belum masuk PnL.
+- Deposit di Portfolio dihitung dari likuiditas (anggap slice-nya single-sided quote). Fee v3 yang sudah di-claim (event Collect) masuk PnL. Fee v4 yang sudah di-claim tidak: PositionManager tidak emit Collect, cuma perubahan likuiditas dan transfer token, jadi fee dan pokok tidak bisa dipisah tanpa baca tiap receipt.
 - Auto exit cuma jalan selama proses web-nya nyala.
 - RPC publik rate-limited. `ALCHEMY_API_KEY` disaranin buat kirim tx. Baca tetap coba RPC publik dulu.
 - Umur pool v4 yang cuma ketemu lewat `poolKeys` (belum lewat event Initialize) bisa kosong. DexScreener ngisi kalau dia udah index. PING nggak masukin pool yang umurnya nggak ketahuan.
 
 ## Data
 
-`elysium_terminal/data/` (gitignore): `activity.json`, `poolkeys.json`, `ids_<wallet>.json`, `settings.json`, `watchlist.json`, `ui_prefs.json`, `auto_exit.json`, `decisions.jsonl`, `closes.jsonl`, `rpc_usage.jsonl`.
+`elysium_terminal/data/` (gitignore): `activity.json`, `poolkeys.json`, `ids_<wallet>.json`, `settings.json`, `watchlist.json`, `ui_prefs.json`, `auto_exit.json`, `decisions.jsonl`, `closes.jsonl`, `rpc_usage.jsonl`, `tight_config.json`, `tight_signals.json`, `tight_positions.json`, `tight_audit.jsonl`.
+
+## Tight range
+
+Tab **Tight** buat LP range sempit di sekitar harga sekarang. Bukan janji profit. Angka 5%/jam dan APR 43800% yang kelihatan di pool rame itu **fee seluruh pool dibagi TVL**, disetahunkan sederhana (`%/jam × 24 × 365`). Itu bukan fee posisi lo, bukan hasil yang dijamin, dan bukan patokan aman. Target %/jam bisa lo ganti. Default tampilannya 5, karena itu angka yang sering dipakai buat nyaring, bukan karena aman.
+
+- Lebar range dalam persen harga, terus di-snap ke tick spacing. Kalau spacing pool lebih kasar dari yang diminta, angkanya ditulis apa adanya, tidak dipaksa kelihatan sempit.
+- Panel nunjukin harga sekarang, range, di dalam atau di luar, dan jarak ke tepi.
+- **Review buka** dan **Review tutup + buka** nulis jumlah, slippage, fee swap yang ketahuan, dan tiap langkah. Close, swap, dan mint itu transaksi terpisah. Satu gagal, yang lain tidak otomatis kebatalkan atau keulang.
+- Tombol yang sama tidak mengirim dua kali: kunci disimpan, tx pending tidak diganti. Kalau proses mati setelah mulai tapi sebelum hash tersimpan, langkah itu dijeda, bukan dikirim ulang.
+- Pemicu pair cuma dari snapshot yang sudah ada (fee, volume, TVL, gerak harga di bucket 5 menit, umur data, jumlah sampel). Pool masuk daftar setelah beberapa kali lolos, dan keluar setelah beberapa kali gagal, biar spike tidak berkedip. Tidak ada entry otomatis dan tidak ada notifikasi dari daftar ini.
+- **Cek on-chain** cuma untuk shortlist yang lagi kelihatan, sekali, bukan poll per pool.
+- Pool ber-hook atau fee dinamis ditandai tidak didukung. Tidak dilaporkan sebagai berhasil.
+
+Auto-rebalance **mati** dan **practice** secara default. Nyalakan dari panel, live butuh ketikan `SAYA PAHAM LIVE` plus `ELYSIUM_PRACTICE_MODE=false` di proses yang jalan. Ada batas tahan di luar range, cooldown, maks per hari, maks swap, maks notional, dan net minimum. Net itu parsial: proxy fee/TVL dikurangi fee swap. IL, adverse selection, dan gas tidak dipotong, karena tidak bisa dihitung jujur dari snapshot. Data basi, harga melonjak, RPC gagal, simulasi gagal, atau receipt gagal bikin jeda. Kill switch mematikan semuanya. Audit ada di `tight_audit.jsonl`.
+
+Loop-nya hidup di proses `python3 -m elysium_terminal web`, bukan di tab browser. Tab boleh ditutup. Prosesnya harus tetap jalan. Selama fitur ini mati, loop tidak baca chain. Selama nyala, dia pakai snapshot pool dan portfolio yang sama dengan halaman (sekitar sekali semenit), bukan scan per pool atau per block. RPC publik tetap didahulukan, Alchemy tetap kena cap harian. Practice berhenti setelah simulasi close, karena tidak ada token yang benar-benar keluar buat dibuka lagi.

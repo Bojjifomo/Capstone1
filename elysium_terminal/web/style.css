@@ -54,6 +54,23 @@ body.hide-tvl .col-tvl, body.hide-fees .col-fees, body.hide-fee1h .col-fee1h, bo
 .cols summary { cursor: pointer; list-style: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
 .cols summary::-webkit-details-marker { display: none; }
 .cols label { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
+body.tight main { grid-template-columns: 1fr; }
+body.tight .right { display: none; }
+.tightwrap { padding: 10px 12px 24px; display: flex; flex-direction: column; gap: 10px; }
+.tgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+.tcard, .tbox { border: 1px solid var(--line); border-radius: 12px; background: var(--row); padding: 10px 12px; }
+.tcard.listed { border-color: var(--accent); }
+.tcard h3, .tbox h3 { margin: 0 0 6px; font-size: 14px; }
+.tnums { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin: 6px 0; }
+.tnums small { display: block; color: var(--faint); font-size: 10.5px; }
+.treasons { margin: 6px 0 0; padding-left: 16px; color: var(--muted); }
+.tacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tacts .btn, .tbox .btn { padding: 8px 10px; }
+.kill { background: #3a1416; color: #ffb4b6; border-color: #6b2b2e; }
+@media (max-width: 760px) {
+  .tgrid { grid-template-columns: 1fr; }
+  .tacts .btn, .tbox .btn { flex: 1 1 100%; }
+}
 .chart svg { width: 100%; height: 160px; display: block; }
 .chart .vbar { fill: #243044; }
 .chip.practice.live { color: #ff8d90; border-color: #6b2b2e; background: #2a1214; }

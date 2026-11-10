@@ -214,6 +214,51 @@ export async function balanceOf(provider, token, owner) {
 }
 
 const sqrtAt = t => Math.pow(1.0001, t / 2);
+
+// Full width in percent of price, centered, snapped outward so the current tick stays inside.
+// Same rounding as elysium_terminal/tight.py align_range.
+export function alignRange(currentTick, spacing, widthPct) {
+  const sp = Math.abs(Number(spacing)) || 0;
+  const width = Number(widthPct);
+  if (!sp) return { ok: false, error: "tick spacing tidak ada" };
+  if (!(width > 0) || width >= 180) return { ok: false, error: "lebar range harus lebih dari 0 dan di bawah 180%" };
+  const half = width / 2 / 100;
+  if (half >= 0.9) return { ok: false, error: "lebar range terlalu besar" };
+  const ln = Math.log(1.0001);
+  const down = Math.log(1 / (1 - half)) / ln;
+  const up = Math.log(1 + half) / ln;
+  let lo = Math.floor((currentTick - down) / sp) * sp;
+  let hi = Math.ceil((currentTick + up) / sp) * sp;
+  if (!(lo <= currentTick && currentTick < hi)) {
+    if (currentTick < lo) lo = Math.floor(currentTick / sp) * sp;
+    if (currentTick >= hi) hi = Math.floor(currentTick / sp) * sp + sp;
+  }
+  if (hi <= lo) hi = lo + sp;
+  const MIN = -887272, MAX = 887272;
+  lo = Math.max(lo, Math.ceil(MIN / sp) * sp);
+  hi = Math.min(hi, Math.floor(MAX / sp) * sp);
+  if (hi <= lo || !(lo <= currentTick && currentTick < hi)) return { ok: false, error: "range tidak muat di grid tick" };
+  const actual = (Math.pow(1.0001, hi - lo) - 1) * 100;
+  return { ok: true, tickLower: lo, tickUpper: hi, requestedWidthPct: width, actualWidthPct: actual, spacingCoarse: actual > width * 1.5 };
+}
+
+// Biggest liquidity that fits both balances. Amounts use the same sqrt(1.0001^tick) unit as planLadder.
+export function mintAmounts(tick, lo, hi, bal0, bal1) {
+  const sp = sqrtAt(tick), sa = sqrtAt(lo), sb = sqrtAt(hi);
+  let per0, per1;
+  if (tick < lo) { per0 = (sb - sa) / (sa * sb); per1 = 0; }
+  else if (tick >= hi) { per0 = 0; per1 = sb - sa; }
+  else { per0 = (sb - sp) / (sp * sb); per1 = sp - sa; }
+  const L0 = per0 > 0 ? Number(bal0) / per0 : Infinity;
+  const L1 = per1 > 0 ? Number(bal1) / per1 : Infinity;
+  const L = Math.min(L0, L1);
+  if (!Number.isFinite(L) || L <= 0) throw new Error("saldo tidak cukup buat mint range ini");
+  return {
+    liquidity: BigInt(Math.max(1, Math.floor(L * (1 - 1e-9)))),
+    amount0: BigInt(Math.max(0, Math.floor(per0 * L))),
+    amount1: BigInt(Math.max(0, Math.floor(per1 * L))),
+  };
+}
 export const ticksBelow = pct => { const f = Math.min(99, Math.max(0, pct)) / 100; return f <= 0 ? 0 : Math.log(1 / (1 - f)) / Math.log(1.0001); };
 
 // Same ladder as RH Pool: equal-width slices from `top`% to `bottom`% below the price,
@@ -277,6 +322,18 @@ export function openCalldataV4(key, plan, depositIsC0, owner, dl) {
   if (native) { acts.push(ACT.SWEEP); params.push(P.sweep(ZERO, owner)); }
   const value = native ? plan.slices.reduce((a, s) => a + s.amount, 0n) : 0n;
   return { data: modifyLiquidities(acts, params, dl), value };
+}
+export function tightMintCalldataV4(key, lo, hi, liquidity, amount0, amount1, owner, dl) {
+  const acts = [ACT.MINT, ACT.SETTLE_PAIR];
+  const params = [P.mint(key, lo, hi, liquidity, amount0, amount1, owner), P.settlePair(key.currency0, key.currency1)];
+  const value = key.currency0.toLowerCase() === ZERO ? amount0 : 0n;
+  return { data: modifyLiquidities(acts, params, dl), value };
+}
+export function tightMintCalldataV3(key, lo, hi, amount0, amount1, owner, dl) {
+  const mint = v3Npm.encodeFunctionData("mint", [[
+    key.currency0, key.currency1, key.fee, lo, hi, amount0, amount1, 0, 0, owner, dl,
+  ]]);
+  return { data: v3Npm.encodeFunctionData("multicall", [[mint]]), value: 0n };
 }
 export function closeCalldataV4(positions, recipient, dl, claimOnly = false) {
   const byPool = new Map();

@@ -102,6 +102,7 @@ PRACTICE nyala:
 
 1. Tab Pool → ⚡ zap → **Simulasi ladder** → harus ada "simulasi lolos", atau alasan yang jelas (saldo 0, perlu approve).
 2. Portfolio → Close / Claim / Close+swap cuma simulasi.
+3. Tab Tight cuma nampilin peluang dan review. Auto-rebalance mati. Jangan dinyalain kalau belum baca catatannya di README: itu bukan janji profit, dan live butuh ketikan plus practice dimatikan.
 
 Yakin? Di `.env`:
 
@@ -120,6 +121,7 @@ Save, klik chip 🔑 (dia baca ulang, nggak perlu restart). Mulai dari size keci
 | Settings | `elysium_terminal/data/settings.json` | semua device |
 | Watchlist | `data/watchlist.json` | semua |
 | Auto exit | `data/auto_exit.json` | yang ngecek: server di Mac mini |
+| Tight / auto-rebalance | `data/tight_config.json` | server di Mac mini. Tab boleh ditutup, proses Python harus tetap hidup. Mati secara default. |
 | $ / HYPE, tab, sort | `data/ui_prefs.json` | semua, habis refresh |
 
 Refresh pool + portfolio tiap 2 menit (⚙ → Web).
