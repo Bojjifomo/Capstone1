@@ -189,6 +189,47 @@ def unclaimed_v3(wallet: str, positions: list[dict]) -> dict[tuple, tuple[int, i
     return out
 
 
+def claimed_v3(data: Path, npm: str, ids: list[int]) -> dict[int, tuple[int, int]]:
+    """Fees already collected, from NPM Collect logs. Incremental: only new blocks each call."""
+    path = data / f"claimed_{npm.lower()}.json"
+    try:
+        st = json.loads(path.read_text())
+    except (OSError, ValueError):
+        st = {"scannedTo": 0, "amt": {}}
+    if not ids:
+        return {}
+    head = chain.block_number()
+    start = int(st.get("scannedTo") or 0) + 1
+    if start <= head:
+        id_topics = ["0x" + chain.u256(i) for i in ids[:80]]
+        try:
+            logs = chain.get_logs(npm, [chain.TOPIC["v3Collect"], id_topics], max(1, start), head, chunk=250_000, pause=0)
+        except Exception:
+            logs = None
+        if logs is not None:
+            for lg in logs:
+                topics = lg.get("topics") or []
+                if len(topics) < 2:
+                    continue
+                tid = str(int(topics[1], 16))
+                w = chain.words(lg.get("data") or "0x")
+                if len(w) < 3:
+                    continue
+                prev = st["amt"].get(tid) or [0, 0]
+                st["amt"][tid] = [prev[0] + chain.to_int(w[1]), prev[1] + chain.to_int(w[2])]
+            st["scannedTo"] = head
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(st))
+            except OSError:
+                pass
+    out = {}
+    for i in ids:
+        a = st["amt"].get(str(i)) or [0, 0]
+        out[i] = (int(a[0]), int(a[1]))
+    return out
+
+
 def wallet_balances(wallet: str) -> dict:
     calls = [(chain.MULTICALL3, chain.SEL["getEthBalance"] + chain.addr_word(wallet)),
              (chain.USDC, chain.SEL["balanceOf"] + chain.addr_word(wallet)),
@@ -230,6 +271,13 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
     v3s = [p for p in pos if p["dex"] == "v3"]
     fees = unclaimed_v4(v4s)
     fees.update(unclaimed_v3(wallet, v3s))
+    claimed: dict = {}
+    by_npm: dict[str, list[int]] = {}
+    for p in v3s:
+        by_npm.setdefault(p["manager"], []).append(p["tokenId"])
+    for npm, idlist in by_npm.items():
+        for tid, pair in claimed_v3(data, npm, idlist).items():
+            claimed[("v3", npm, tid)] = pair
     pools = sorted({p["pool"] for p in pos})
     s0 = {}
     if v4s:
@@ -261,6 +309,8 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         fkey = ("v4", p["tokenId"]) if p["dex"] == "v4" else ("v3", p["manager"], p["tokenId"])
         f0, f1 = fees.get(fkey, (0, 0))
         fq, ft = (f0, f1) if q == 0 else (f1, f0)
+        c0, c1 = claimed.get(fkey, (0, 0))
+        cq, ct = (c0, c1) if q == 0 else (c1, c0)
         to_usd = lambda rq, rt: ((rq / 10 ** dq) + (rt / 10 ** dt) * (tok_q or 0)) * qusd if qusd else None
         dep = ladder_deposit_usd(p["liquidity"], p["tickLower"], p["tickUpper"], q, dq, qusd)
         in_range = p["tickLower"] <= sl["tick"] < p["tickUpper"]
@@ -269,7 +319,7 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
             "token": taddr, "quote": qaddr, "quoteSymbol": chain.QUOTE_SYMBOL.get(qaddr, "?"),
             "symbol": (meta.get(taddr) or {}).get("symbol") or taddr[2:8], "quoteSide": q, "flip": q == 0,
             "tick": sl["tick"], "lpFeePct": (sl.get("lpFee") or k.get("fee") or 0) / 1e4, "positions": [],
-            "valueUsd": 0.0, "feesUsd": 0.0, "depositUsd": 0.0, "inRangeCount": 0,
+            "valueUsd": 0.0, "feesUsd": 0.0, "claimedUsd": 0.0, "depositUsd": 0.0, "inRangeCount": 0,
             "tokenUsd": tok_q * qusd if tok_q and qusd else None,
             "amountQuote": 0.0, "amountToken": 0.0, "feesQuote": 0.0, "feesToken": 0.0, "mintedAt": None,
             "supply": (meta.get(taddr) or {}).get("supply"), "decimals": dt,
@@ -277,9 +327,11 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         mt = mint_blocks.get(p["tokenId"]) if p["dex"] == "v4" else None
         g["positions"].append({"tokenId": p["tokenId"], "tickLower": p["tickLower"], "tickUpper": p["tickUpper"],
                                "liquidity": str(p["liquidity"]), "inRange": in_range, "mintedAt": mt,
-                               "valueUsd": to_usd(aq, at), "feesUsd": to_usd(fq, ft), "depositUsd": dep,
+                               "valueUsd": to_usd(aq, at), "feesUsd": to_usd(fq, ft),
+                               "claimedUsd": to_usd(cq, ct), "depositUsd": dep,
                                "dex": p["dex"], "manager": p["manager"]})
-        for field, val in (("valueUsd", to_usd(aq, at)), ("feesUsd", to_usd(fq, ft)), ("depositUsd", dep)):
+        for field, val in (("valueUsd", to_usd(aq, at)), ("feesUsd", to_usd(fq, ft)),
+                           ("claimedUsd", to_usd(cq, ct)), ("depositUsd", dep)):
             if val is not None and g[field] is not None:
                 g[field] += val
             else:
@@ -298,7 +350,8 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
             frac = 1 - frac
         g.update(tickLower=lo, tickUpper=hi, posCount=len(g["positions"]),
                  rangePct=frac * 100 if frac is not None else None,
-                 pnlUsd=(g["valueUsd"] + g["feesUsd"] - g["depositUsd"]) if None not in (g["valueUsd"], g["feesUsd"], g["depositUsd"]) else None)
+                 pnlUsd=(g["valueUsd"] + (g["feesUsd"] or 0) + (g["claimedUsd"] or 0) - g["depositUsd"])
+                 if None not in (g["valueUsd"], g["depositUsd"]) else None)
         g["pnlPct"] = g["pnlUsd"] / g["depositUsd"] * 100 if g["pnlUsd"] is not None and g["depositUsd"] else None
         g["heldHours"] = None
         if g["supply"] and g["tokenUsd"]:
@@ -320,7 +373,9 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
         vals = [r[k] for r in rows if r[k] is not None]
         return sum(vals) if vals else None
     bal = wallet_balances(wallet)
+    value = tot("valueUsd")
     return {"wallet": wallet.lower(), "t": now, "rows": rows, "ethUsd": hype, "hypeUsd": hype,
+            "valueHype": (value / hype) if value and hype else None,
             "valueUsd": tot("valueUsd"), "feesUsd": tot("feesUsd"), "depositUsd": tot("depositUsd"),
             "pnlUsd": tot("pnlUsd"), "balances": bal, "exitsCfg": cfg["exits"],
             "walletUsd": (bal["usdc"] or 0) + ((bal["hype"] or 0) + (bal["whype"] or 0)) * (hype or 0)}

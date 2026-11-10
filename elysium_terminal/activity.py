@@ -48,8 +48,10 @@ class Index:
         self.poll_sec = poll_sec
         self.lock = threading.Lock()
         self.head = 0
+        self.v3_log_head = 0
         self.v3_scanned = 0
         self.ref = None
+        self.traders: dict[str, dict[str, int]] = {}
         self.spb = 0.103
         self.started = time.time()
         self.pools: dict[str, dict] = {}
@@ -59,28 +61,44 @@ class Index:
         self._load()
 
     def _load(self) -> None:
+        rescan = False
         try:
             raw = json.loads((self.dir / "poolkeys.json").read_text())
             self.v3pools = raw.get("v3") or {}
             self.v3_scanned = int(raw.get("v3Scanned") or 0)
-            self.keys = raw.get("keys") or {}
+            keys = raw.get("keys") or {}
+            # A null key used to mean "lookup failed" as well as "not a quote pool".
+            # Failures were then never retried, which is how the table got stuck at 1 pool.
+            bad = [i for i, v in keys.items() if not v]
+            self.keys = {i: v for i, v in keys.items() if v}
+            if len(bad) > 10 and len(bad) > len(self.keys):
+                rescan = True
         except (OSError, ValueError):
             pass
         try:
             d = json.loads((self.dir / "activity.json").read_text())
             if time.time() - d.get("savedAt", 0) < KEEP:
                 self.head, self.started = d["head"], d["started"]
+                self.v3_log_head = int(d.get("v3LogHead") or d["head"])
                 self.ref, self.spb = tuple(d["ref"]) if d.get("ref") else None, d.get("spb", self.spb)
                 self.pools = {p: {"b": {int(b): v for b, v in x["b"].items()}, "last": x.get("last") or {}}
                               for p, x in d["pools"].items()}
+                self.traders = {p: {a: int(ts) for a, ts in (book or {}).items()} for p, book in (d.get("traders") or {}).items()}
         except (OSError, ValueError, KeyError, TypeError):
             pass
+        if rescan:
+            self.head = 0
+            self.v3_log_head = 0
 
     def save(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            snap = {"savedAt": time.time(), "head": self.head, "started": self.started, "ref": self.ref,
-                    "spb": self.spb, "pools": self.pools}
+            cut = time.time() - 3600 - BUCKET
+            traders = {p: {a: ts for a, ts in book.items() if ts >= cut} for p, book in self.traders.items()}
+            traders = {p: book for p, book in traders.items() if book}
+            snap = {"savedAt": time.time(), "head": self.head, "v3LogHead": self.v3_log_head,
+                    "started": self.started, "ref": self.ref, "spb": self.spb, "pools": self.pools,
+                    "traders": traders}
             blob = {"v3Scanned": self.v3_scanned, "v3": self.v3pools, "keys": self.keys}
         tmp = self.dir / "activity.json.tmp"
         tmp.write_text(json.dumps(snap, separators=(",", ":")))
@@ -122,28 +140,62 @@ class Index:
                     self.keys.setdefault(pool, None)
         self.v3_scanned = head
 
+    def _note_err(self, exc: BaseException) -> None:
+        with self.lock:
+            self.status["error"] = str(exc)[:200]
+            self.status["retries"] = int(self.status.get("retries") or 0) + 1
+            self.status["lastPoll"] = time.time()
+
+    def _store_key(self, pid: str, key: dict | None) -> None:
+        if not key:
+            return
+        if chain.quote_side(key) is None:
+            self.keys[pid] = None
+            return
+        self._touch_created(key)
+        self.keys[pid] = key
+
     def _resolve_v4(self, ids: list[str]) -> None:
+        """Resolve pool keys. A failed lookup is left missing so the next poll retries it.
+        Only a decoded key (quote or not) is cached."""
         missing = [i for i in ids if i not in self.keys]
         if not missing:
             return
-        for i in range(0, len(missing), 300):
-            part = missing[i:i + 300]
-            got = chain.pool_keys(part)
-            still = [i for i in part if not got.get(i)]
-            if still:
+        for i in range(0, len(missing), 80):
+            part = missing[i:i + 80]
+            try:
+                got = chain.pool_keys(part)
+            except Exception as exc:
+                self._note_err(exc)
+                return
+            need = [pid for pid in part if not got.get(pid)]
+            found: dict = {}
+            searched: set = set()
+            if need:
                 try:
-                    got.update(chain.v4_keys_from_init(still))
-                except Exception:
-                    pass
-            quoted = [pid for pid, key in got.items() if key and chain.quote_side(key) is not None]
-            s0 = chain.slot0s_v4(quoted) if quoted else {}
-            for pid, key in got.items():
-                if pid in quoted and key is not None:
-                    key["pf"] = (s0.get(pid) or {}).get("protocolFee", 0)
-                    self._touch_created(key)
-                self.keys[pid] = key if pid in quoted else None
-            for pid in part:
-                self.keys.setdefault(pid, None)
+                    found, searched = chain.v4_keys_from_init(need, head=self.status.get("chainHead") or None, max_requests=6)
+                except Exception as exc:
+                    self._note_err(exc)
+                    searched = set()
+            quoted = []
+            for pid, key in list(got.items()) + list(found.items()):
+                if key:
+                    self._store_key(pid, key)
+                    if self.keys.get(pid):
+                        quoted.append(pid)
+            for pid in need:
+                if pid in searched and pid not in found and pid not in self.keys:
+                    self.keys[pid] = None
+            if quoted:
+                try:
+                    s0 = chain.slot0s_v4(quoted)
+                except Exception as exc:
+                    self._note_err(exc)
+                    s0 = {}
+                for pid in quoted:
+                    key = self.keys.get(pid)
+                    if key:
+                        key["pf"] = (s0.get(pid) or {}).get("protocolFee", 0)
 
     def _fold(self, logs: list[dict], dex: str) -> int:
         n = 0
@@ -178,6 +230,15 @@ class Index:
                 buy = amt_raw > 0
             blk = int(lg["blockNumber"], 16)
             b = int(self.ts_of(blk) // BUCKET * BUCKET)
+            sender = ""
+            topics = lg.get("topics") or []
+            if dex == "v4" and len(topics) > 2:
+                sender = "0x" + topics[2][-40:]
+            elif dex == "v3" and len(topics) > 1:
+                sender = "0x" + topics[1][-40:]
+            if sender and sender != chain.ZERO:
+                book = self.traders.setdefault(pid, {})
+                book[sender] = b
             p = self.pools.setdefault(pid, {"b": {}, "last": {}})
             cell = p["b"].setdefault(b, [0, 0.0, 0.0, 0, 0, 0])
             while len(cell) < 6:
@@ -195,43 +256,100 @@ class Index:
             n += 1
         return n
 
+    def _chunk_loop(self, start: int, end: int, chunk: int, fetch, fold_dex: str) -> int:
+        """Read logs in chunks. head/cursor advances after each chunk that succeeds,
+        so a rate limit keeps what was already folded and the next poll continues."""
+        a, step, n = start, chunk, 0
+        while a <= end:
+            b = min(end, a + step - 1)
+            try:
+                logs = fetch(a, b)
+            except chain.RpcError as exc:
+                msg = str(exc).lower()
+                if any(s in msg for s in ("exceed", "limit", "range", "10000", "more than")) and step > 200:
+                    step = max(200, step // 2)
+                    with self.lock:
+                        self.status["retries"] = int(self.status.get("retries") or 0) + 1
+                    continue
+                self._note_err(exc)
+                break
+            if fold_dex == "v4":
+                new = []
+                seen = set()
+                for lg in logs:
+                    pid = (lg.get("topics") or ["", ""])[1].lower()
+                    if pid and pid not in self.keys and pid not in seen:
+                        seen.add(pid)
+                        new.append(pid)
+                if new:
+                    self._resolve_v4(new)
+            elif fold_dex == "v3":
+                traded = list({lg["address"].lower() for lg in logs if lg["address"].lower() in self.v3pools})
+                if traded:
+                    try:
+                        s0 = chain.slot0s_v3(traded)
+                    except Exception as exc:
+                        self._note_err(exc)
+                        s0 = {}
+                    for pid, sl in s0.items():
+                        key = self.v3pools.get(pid)
+                        if key and sl:
+                            key["pf"] = sl.get("feeProtocol", 0)
+            with self.lock:
+                n += self._fold(logs, fold_dex)
+                if fold_dex == "v4":
+                    self.head = b
+                else:
+                    self.v3_log_head = b
+                self.status["logs"] = int(self.status.get("logs") or 0) + len(logs)
+            a = b + 1
+        return n
+
     def poll(self) -> int:
         head = chain.block_number()
         self._calibrate(head)
+        with self.lock:
+            self.status["chainHead"] = head
+            self.status["error"] = None
         if not self.head or (head - self.head) * self.spb > KEEP:
             self.head = max(1, head - int(self.backfill_hours * 3600 / self.spb))
+            self.v3_log_head = self.head
             self.started = self.ts_of(self.head)
         start = self.head + 1
-        self._sync_v3(head)
-        if start > head:
+        n = 0
+        if start <= head:
             with self.lock:
-                self.status.update(state="live", error=None, lastPoll=time.time(), logs=0, head=head)
-            return 0
-        v4_logs = chain.get_logs(chain.V4_POOL_MANAGER, [chain.TOPIC["v4Swap"]], start, head, chunk=1200, pause=0.02)
-        new_v4 = list({lg["topics"][1].lower() for lg in v4_logs if lg["topics"][1].lower() not in self.keys})
-        if new_v4:
-            self._resolve_v4(new_v4)
-        # Refresh the v3 protocol fee for pools that actually traded. One multicall, not per swap.
-        v3_logs = chain.get_logs(None, [chain.TOPIC["v3Swap"]], start, head, chunk=8000, pause=0.02)
-        traded = list({lg["address"].lower() for lg in v3_logs if lg["address"].lower() in self.v3pools})
-        if traded:
-            s0 = chain.slot0s_v3(traded)
-            for pid, sl in s0.items():
-                key = self.v3pools.get(pid)
-                if key and sl:
-                    key["pf"] = sl.get("feeProtocol", 0)
-                    self.keys[pid] = key if chain.quote_side(key) is not None else None
+                self.status["phase"] = "backfill" if (head - self.head) * self.spb > 90 else "live"
+            n += self._chunk_loop(
+                start, head, 1200,
+                lambda a, b: chain.get_logs(chain.V4_POOL_MANAGER, [chain.TOPIC["v4Swap"]], a, b, chunk=b - a + 1, pause=0),
+                "v4")
+        try:
+            self._sync_v3(head)
+        except Exception as exc:
+            self._note_err(exc)
+        v3_start = (self.v3_log_head or self.head) + 1
+        if v3_start <= head:
+            n += self._chunk_loop(
+                v3_start, head, 4000,
+                lambda a, b: chain.get_logs(None, [chain.TOPIC["v3Swap"]], a, b, chunk=b - a + 1, pause=0),
+                "v3")
         with self.lock:
-            n = self._fold(v4_logs, "v4") + self._fold(v3_logs, "v3")
-            self.head = head
             cut = time.time() - KEEP - BUCKET
             for pid in list(self.pools):
                 bs = self.pools[pid]["b"]
-                for b in [b for b in bs if b < cut]:
-                    del bs[b]
+                for bkt in [b for b in bs if b < cut]:
+                    del bs[bkt]
                 if not bs:
                     del self.pools[pid]
-            self.status.update(state="live", error=None, lastPoll=time.time(), logs=len(v4_logs) + len(v3_logs), head=head)
+            for pid, book in list(self.traders.items()):
+                for addr in [a for a, ts in book.items() if ts < cut]:
+                    del book[addr]
+                if not book:
+                    del self.traders[pid]
+            lag = max(0, head - self.head)
+            self.status.update(state="live" if lag < 30 else "backfill", lastPoll=time.time(), head=self.head,
+                               chainHead=head, lagBlocks=lag, phase="live" if lag < 30 else "backfill")
         return n
 
     def run_forever(self) -> None:
@@ -303,8 +421,8 @@ class Index:
         now = time.time()
         out = []
         with self.lock:
-            items = [(pid, p, self.keys.get(pid)) for pid, p in self.pools.items()]
-        for pid, p, key in items:
+            items = [(pid, p, self.keys.get(pid), len(self.traders.get(pid) or {})) for pid, p in self.pools.items()]
+        for pid, p, key, traders in items:
             if not key:
                 continue
             q = chain.quote_side(key)
@@ -316,7 +434,25 @@ class Index:
             if win["24h"]["swaps"] < min_swaps_24h:
                 continue
             out.append({"pool": pid, "key": key, "quoteSide": q, "quote": qaddr, "quoteUsd": usd,
-                        "last": p["last"], "win": win})
+                        "last": p["last"], "win": win, "traders1h": traders})
+        return out
+
+    def series(self, pid: str) -> list[dict]:
+        """Price (relative) and quote volume from buckets already in memory. No RPC."""
+        with self.lock:
+            p = self.pools.get(pid.lower())
+            if not p:
+                return []
+            items = sorted(p["b"].items())
+        base = None
+        out = []
+        for b, c in items:
+            sqrt = c[3] if len(c) > 3 else 0
+            px = (sqrt / 2 ** 96) ** 2 if sqrt else None
+            if base is None and px:
+                base = px
+            out.append({"t": int(b), "px": (px / base) if px and base else None,
+                        "vol": c[1], "swaps": c[0]})
         return out
 
     def pool_ids(self) -> set[str]:

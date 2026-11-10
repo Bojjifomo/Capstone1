@@ -34,6 +34,7 @@
   <div class="chip" id="stCap" title="max posisi = bankroll × loss budget ÷ 0.9">max --</div>
   <div class="chip live" id="stAge">● --</div>
 </header>
+<div id="practiceBar" class="practicebar">PRACTICE — tombol cuma simulasi (eth_call). Nggak ada yang dikirim.</div>
 
 <main>
   <section class="left" id="viewPools">
@@ -56,7 +57,16 @@
         <option value="5000">$5k</option><option value="10000">$10k</option><option value="25000">$25k</option>
       </select></label>
       <label>quote <select id="quote"><option value="">semua</option><option value="USDC">USDC</option><option value="HYPE">HYPE</option></select></label>
+      <label>dex <select id="dex" title="Tersimpan di browser ini, bukan di Mac lain"><option value="">semua</option><option value="v4">v4</option><option value="v3">v3</option></select></label>
       <label><input type="checkbox" id="hideSkip" checked> hide SKIP</label>
+      <details class="cols" id="cols" title="Kolom ini cuma di browser ini">
+        <summary>kolom</summary>
+        <label><input type="checkbox" data-col="tvl" checked> TVL</label>
+        <label><input type="checkbox" data-col="fees" checked> Fees</label>
+        <label><input type="checkbox" data-col="fee1h" checked> Fee 1 jam</label>
+        <label><input type="checkbox" data-col="mcap" checked> Mcap</label>
+        <label><input type="checkbox" data-col="score" checked> Entry</label>
+      </details>
       <span class="muted" id="count">--</span>
     </div>
     <div class="bar searchbar hidden" id="searchInfo"></div>
@@ -65,11 +75,11 @@
       <table id="pools">
         <thead><tr>
           <th data-sort="symbol">POOL<small>fee · age · 24h</small></th>
-          <th class="r" data-sort="tvlUsd">TVL<small>vol <span class="wl">1H</span></small></th>
-          <th class="r" data-sort="fees">FEES <span class="wl">1H</span><small>% / hari</small></th>
-          <th class="r" data-sort="fee1h">FEE 1 JAM<small>% TVL · $ · swaps</small></th>
-          <th class="r" data-sort="mcapUsd">MCAP<small>24h</small></th>
-          <th data-sort="score">ENTRY CHECK<small>gate · flag · alasan</small></th>
+          <th class="r col-tvl" data-sort="tvlUsd">TVL<small>vol <span class="wl">1H</span></small></th>
+          <th class="r col-fees" data-sort="fees">FEES <span class="wl">1H</span><small>% / hari</small></th>
+          <th class="r col-fee1h" data-sort="fee1h">FEE 1 JAM<small>% TVL · $ · swaps</small></th>
+          <th class="r col-mcap" data-sort="mcapUsd">MCAP<small>24h</small></th>
+          <th class="col-score" data-sort="score">ENTRY CHECK<small>gate · flag · alasan</small></th>
           <th>ZAP<small>ladder, lu konfirmasi</small></th>
         </tr></thead>
         <tbody></tbody>
@@ -78,6 +88,7 @@
       <div class="empty" id="poolsEmpty">Loading… (pertama kali index swap baca 1 jam terakhir dari Elysium, bisa sampai semenit)</div>
     </div>
     <div class="idxline" id="idxLine"></div>
+    <div class="idxline" id="rpcLine"></div>
   </section>
 
   <section class="left hidden" id="viewPortfolio">

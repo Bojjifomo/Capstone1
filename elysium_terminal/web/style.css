@@ -47,6 +47,17 @@ table { width: 100%; border-collapse: collapse; }
 th { position: sticky; top: 0; background: var(--bg); z-index: 1; text-align: left; font-weight: 500; font-size: 10.5px; letter-spacing: .06em; color: var(--muted); padding: 8px 8px; border-bottom: 1px solid var(--line); cursor: pointer; white-space: nowrap; }
 th small { display: block; color: var(--faint); letter-spacing: 0; font-size: 10px; }
 th.sorted { color: var(--accent); }
+th.sorted[data-dir="desc"]::after { content: " ↓"; }
+th.sorted[data-dir="asc"]::after { content: " ↑"; }
+body.hide-tvl .col-tvl, body.hide-fees .col-fees, body.hide-fee1h .col-fee1h, body.hide-mcap .col-mcap, body.hide-score .col-score { display: none; }
+.cols { position: relative; font-size: 12px; color: var(--muted); }
+.cols summary { cursor: pointer; list-style: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.cols summary::-webkit-details-marker { display: none; }
+.cols label { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
+.chart svg { width: 100%; height: 160px; display: block; }
+.chart .vbar { fill: #243044; }
+.chip.practice.live { color: #ff8d90; border-color: #6b2b2e; background: #2a1214; }
+.practicebar.live { background: #3a1416; color: #ffb4b6; }
 th.r, td.r { text-align: right; }
 td { padding: 8px 8px; border-bottom: 1px solid #1a2029; vertical-align: top; white-space: nowrap; }
 tbody tr { background: var(--row); cursor: pointer; }
@@ -93,7 +104,7 @@ ul.rs li.info { color: var(--muted); }
 .zapbig button { background: #10161d; border: 1px solid #2b5a3f; color: var(--green); border-radius: 18px; padding: 7px 16px; cursor: pointer; }
 .zapbig button.edit { border-color: #2c3746; color: var(--muted); }
 .note { color: var(--faint); font-size: 11.5px; padding: 8px 16px 12px; }
-.chart { height: 470px; border-top: 1px solid var(--line); }
+.chart { height: auto; min-height: 120px; border-top: 1px solid var(--line); }
 .chart iframe { width: 100%; height: 100%; border: 0; }
 
 /* range bar */
@@ -242,7 +253,11 @@ button.chip { background: transparent; cursor: pointer; font: inherit; }
   .dh { flex-wrap: wrap; }
   .dh .name { font-size: 18px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
-  .chart { height: 380px; }
+  .chart { height: auto; }
+  .practicebar { font-size: 12px; text-align: left; }
+  .idxline { white-space: normal; overflow-wrap: anywhere; }
+  .cols { width: 100%; }
+  .filters .cols label { display: inline-flex; margin-right: 8px; }
   .zapbig button { flex: 1 1 100%; padding: 12px; }
   /* bottom tab bar */
   .bottomnav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: #0b0e12; border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
@@ -260,6 +275,8 @@ button.chip { background: transparent; cursor: pointer; font: inherit; }
 /* ---------- RH Terminal additions ---------- */
 .brand b { color: var(--accent); }
 .chip.practice { border-color: #6b5a24; color: var(--yellow); }
+.practicebar { background: #3a3010; color: var(--yellow); text-align: center; font-size: 12.5px; padding: 6px 12px; }
+.idxline.bad { color: var(--red); }
 .chip.idx { cursor: pointer; }
 .chip.idx.err { color: var(--red); border-color: #6b2b2e; }
 .qchip { display: inline-block; border: 1px solid #2c3746; border-radius: 4px; padding: 0 5px; font-size: 10.5px; color: var(--muted); margin-left: 6px; }

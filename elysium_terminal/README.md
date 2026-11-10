@@ -12,7 +12,33 @@ port sendiri, env sendiri.
 | **Zap ladder** | Slice sama lebar di bawah harga, isi 1:2:…:n, quote-only, cap budget, warning size vs TVL. v4 = satu `modifyLiquidities`. v3 = beberapa NFT, di-batch `multicall`. |
 | **Portfolio** | Posisi dibaca dari chain. v4 dari log Transfer + `ownerOf`. v3 dari `tokenOfOwnerByIndex` (dua NPM). Fee v3 = static-call `collect` (nggak ngirim tx). PnL $, %, strip range, in/out of range. |
 | **Aksi** | **Close** · **Claim** · **Close+swap** (minOut = harga pool − fee − max loss) · **Re-entry** · **Cleanup** · **auto exit** TP. Semua di-`eth_call` dulu, revert = batal. |
-| **PIN, practice** | `ELYSIUM_PRACTICE_MODE` default **true**. PIN buat trading dari HP. Key cuma dibaca Node. |
+| **PIN, practice** | `ELYSIUM_PRACTICE_MODE` default **true**. Banner kuning di atas halaman. PIN buat trading dari HP. Key cuma dibaca Node. |
+| **Index health** | Chip ⛓ nulis jumlah pool v4/v3, jam histori, lag block, dan error kalau ada. Baris di bawah tabel: RPC publik vs Alchemy hari ini. |
+| **Data tambahan** | Umur pool, TVL + mcap dari DexScreener (chain `elysium`, udah dicek), APR dari fee 1 jam, jumlah trader 1 jam, nama hook v4 (sekali, disimpan di disk). Portfolio: nilai dalam $ dan HYPE, fee yang udah di-claim (log Collect v3) masuk PnL. |
+
+## Kenapa tadi cuma 1 pool
+
+Index swap nyimpen pool yang **gagal** di-resolve (RPC publik ke-limit, atau `eth_getLogs` Initialize kepanjangan di chain 100ms) sebagai “bukan pool USDC/HYPE”. Abis itu head-nya sudah maju, jadi jam itu nggak di-scan ulang. Hasilnya tabel nempel di 1 pool.
+
+Sekarang lookup yang gagal **nggak** di-cache. Scan-nya per chunk, head cuma maju kalau chunk itu berhasil, jadi poll berikutnya nerusin. Cache lama yang isinya null kebanyakan dibuang pas start, terus di-backfill lagi. Hapus `elysium_terminal/data/poolkeys.json` sama `activity.json` cuma kalau lo mau paksa scan dari nol.
+
+## RPC, biar Alchemy nggak boros
+
+Baca selalu **RPC publik dulu**. Alchemy cuma fallback, dan cuma kalau belum kena cap harian.
+
+```
+ELYSIUM_ALCHEMY_DAILY_CAP=1500
+```
+
+Itu jumlah request Alchemy per hari UTC, default 1500. Kecapai, sisa hari itu publik aja (atau gagal kalau publik juga mati). Pemakaian tertulis di `data/rpc_budget.json` dan `data/rpc_usage.jsonl`, keliatan di `doctor` dan di baris bawah tabel.
+
+Yang nggak di-fetch ulang: symbol/decimals token (`data/token_meta.json`), nama hook (`data/hooks.json`), pool key, NFT id, fee claimed. Tab browser yang ketutup berhenti nanya pool/portfolio. Kalau nggak ada browser ±90 detik, index swap ngendor jadi 3 menit.
+
+DexScreener `elysium` dipakai buat TVL, mcap, icon. Holder count nggak ada sumber gratis yang murah di chain ini, jadi belum.
+
+Chart di panel kanan digambar dari bucket 5 menit yang sudah ada di index (harga relatif + volume). Nol request RPC, nol Alchemy. Tombol ⚡ di baris pool langsung simulasi/kirim ukuran itu (satu konfirmasi). ✏️ tetap buka plan lengkap. Kolom dan filter dex tersimpan di browser itu saja (`localStorage`), jadi iPhone dan Mac boleh beda. Banner kuning = PRACTICE, merah = LIVE. Jumlah trader 1 jam ikut tersimpan di `activity.json`, nggak hilang pas restart.
+
+Fee v3 yang sudah di-claim (event Collect) masuk PnL. Fee v4 yang sudah di-claim tidak: PositionManager di chain ini tidak emit event Collect, cuma Transfer + perubahan likuiditas, jadi fee dan pokok tidak bisa dipisah tanpa baca tiap receipt.
 
 ## Yang udah dicek on-chain (9 Nov 2026)
 

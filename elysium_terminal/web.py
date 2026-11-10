@@ -31,7 +31,8 @@ from .cli import DATA, append, env_report, load_config, load_env, make_index, no
 
 STATIC = Path(__file__).resolve().parent / "web"
 POOL_TTL = 30
-PF_TTL = 30
+PF_TTL = 90
+LAST_CLIENT = 0.0
 
 _lock = threading.Lock()
 _cache: dict = {}
@@ -287,6 +288,18 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         try:
+            if u.path == "/api/heartbeat":
+                global LAST_CLIENT
+                LAST_CLIENT = time.time()
+                ix = STATE.get("ix")
+                if ix is not None:
+                    ix.poll_sec = 30 if time.time() - LAST_CLIENT < 90 else 180
+                return self._json({"ok": True})
+            if u.path == "/api/series":
+                pid = (q.get("pool") or "").lower()
+                if not pid:
+                    return self._json({"error": "pool?"}, 400)
+                return self._json({"pool": pid, "points": STATE["ix"].series(pid)})
             if u.path == "/api/pools":
                 return self._json(pool_rows(q.get("force") == "1"))
             if u.path == "/api/search":

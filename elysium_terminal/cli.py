@@ -244,6 +244,8 @@ def cmd_doctor(a, cfg):
         print(f"  WHYPE: {meta.get(chain.WHYPE, {}).get('symbol')} decimals {meta.get(chain.WHYPE, {}).get('decimals')}")
         px = chain.hype_usd_from_slot()
         print("  HYPE dari pool USDC/WHYPE 1%:", f"${px:,.2f}" if px else "nggak kebaca")
+        b = chain.budget_view()
+        print(f"  RPC hari ini ({b['day']} UTC): publik {b['public']} · Alchemy {b['alchemy']}/{b['alchemyCap']} · cap-skip {b['skipped']} · error {b['errors']}")
     except Exception as e:
         print("  RPC: GAGAL", e)
 

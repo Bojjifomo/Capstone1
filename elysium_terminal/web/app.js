@@ -200,6 +200,9 @@ function rowsView() {
     if (tvlMin && !((r.tvlUsd || 0) >= tvlMin)) return false;
     if (quote === "HYPE" && r.quoteSymbol !== "HYPE" && r.quoteSymbol !== "WHYPE") return false;
     if (quote === "USDC" && r.quoteSymbol !== "USDC") return false;
+    const dex = ($("#dex") && $("#dex").value) || "";
+    if (dex === "v4" && r.dex !== "v4") return false;
+    if (dex === "v3" && r.dex === "v4") return false;
     return match(r);
   });
   const w = state.win, key = state.sort.key;
@@ -224,11 +227,18 @@ function renderTop() {
     $("#stCap").textContent = `max ${mU(d.maxPositionUsd)} / posisi`;
     const ix = d.index || {};
     const chip = $("#idxChip");
-    chip.textContent = `⛓ ${ix.pools || 0} pool · ${(ix.coverageHours || 0).toFixed(1)}h`;
-    chip.classList.toggle("err", !!ix.error);
-    chip.title = ix.error ? `Index error: ${ix.error}` : `Index swap: ${ix.pools} pool USDC/HYPE (v3+v4) yang trading, histori ${ix.coverageHours} jam, block ${ix.head || "?"}. Klik = refresh.`;
-    $("#idxLine").textContent = `Index swap dari chain: ${ix.pools || 0} pool aktif · histori ${(ix.coverageHours || 0).toFixed(1)} jam (makin lama server nyala, makin lengkap sampai 24 jam) · `
-      + `poll terakhir ${ix.lastPoll ? Math.round(Date.now() / 1000 - ix.lastPoll) + " detik lalu" : "--"}${ix.error ? " · error: " + ix.error : ""}`;
+    const lag = ix.lagBlocks != null ? ` · lag ${ix.lagBlocks} blk` : "";
+    chip.textContent = `⛓ ${ix.pools || 0} pool · v4 ${ix.poolsV4 || 0} · v3 ${ix.poolsV3 || 0} · ${(ix.coverageHours || 0).toFixed(1)}h${lag}`;
+    chip.classList.toggle("err", !!ix.error || ix.phase === "backfill");
+    chip.title = ix.error ? `Index error: ${ix.error}` : `Head ${ix.head || "?"} / chain ${ix.chainHead || "?"} · retry ${ix.retries || 0}. Klik = refresh.`;
+    const line = $("#idxLine");
+    line.textContent = `Index: ${ix.phase || "?"} · head ${ix.head || "?"} / ${ix.chainHead || "?"} · histori ${(ix.coverageHours || 0).toFixed(1)} jam`
+      + ` · retry ${ix.retries || 0}${ix.error ? " · " + ix.error : ""}`;
+    line.classList.toggle("bad", !!ix.error);
+    const rpc = d.rpc || {};
+    const rpcEl = $("#rpcLine");
+    if (rpcEl) rpcEl.textContent = `RPC hari ini (UTC): publik ${rpc.public || 0} · Alchemy ${rpc.alchemy || 0}/${rpc.alchemyCap || 0}`
+      + ` · dilewati karena cap ${rpc.skipped || 0} · error ${rpc.errors || 0}`;
   }
   const pf = state.pf;
   if (pf && !pf.error) {
@@ -273,11 +283,17 @@ function renderPools() {
   renderSearchInfo();
   $("#count").textContent = state.search ? "" : `${rows.length} dari ${d.rows.length} pool`;
   $("#poolsEmpty").classList.toggle("hidden", rows.length > 0);
+  const ix0 = d.index || {};
   if (!rows.length) $("#poolsEmpty").textContent = state.search ? "Nggak ada pool USDC/HYPE (v3/v4) buat itu."
     : state.mode === "watch" ? "Belum ada pool di watchlist: klik ☆ di pool yang mau lu mainin."
     : state.mode === "ping" ? "Nggak ada pool yang lolos filter PING sekarang (atur di ⚙)."
-    : !d.rows.length ? "Index swap masih baca chain… (±15–30 detik)" : "Nggak ada pool yang cocok sama filter.";
-  document.querySelectorAll("#pools th").forEach(th => th.classList.toggle("sorted", state.mode !== "ping" && !state.search && th.dataset.sort === state.sort.key));
+    : ix0.error ? "Index error: " + ix0.error
+    : !d.rows.length ? "Index swap masih baca chain… pool nambah sendiri, jangan di-refresh berkali-kali." : "Nggak ada pool yang cocok sama filter.";
+  document.querySelectorAll("#pools th").forEach(th => {
+    const on = state.mode !== "ping" && !state.search && th.dataset.sort === state.sort.key;
+    th.classList.toggle("sorted", on);
+    if (on) th.dataset.dir = state.sort.desc ? "desc" : "asc";
+  });
   document.querySelectorAll("#pools th .wl").forEach(x => { x.textContent = w.toUpperCase(); });
   const size = d.sizeUsd, cards = [];
   const fresh = new Set((d.ping && d.ping.new) || []);
@@ -288,21 +304,21 @@ function renderPools() {
     const icon = r.icon ? `<img src="${esc(r.icon)}" alt="" loading="lazy">` : `<span class="ph"></span>`;
     const rank = pg ? `<span class="rank ${fresh.has(r.pool) ? "new" : ""}" title="PING #${pg.rank}">📡#${pg.rank}</span>` : "";
     const star = `<button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>`;
-    const sub = `${r.lpFeePct}%${r.dynamicFee ? " dyn" : ""} · ${age(r.ageHours)} · <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24h</span>`;
+    const sub = `${r.lpFeePct}%${r.dynamicFee ? " dyn" : ""} · ${age(r.ageHours)} · <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24h</span>${r.traders1h ? " · " + r.traders1h + " trader" : ""}${r.feeApr ? " · APR " + fmtPct(r.feeApr, 0) : ""}`;
     const zap = `<div class="zap"><button data-zap="${size / 2}">⚡${mU(size / 2)}</button><button data-zap="${size}">⚡${mU(size)}</button><button class="edit" data-zap="ask">✏️</button></div>`;
     cards.push(`<div class="pcard ${r.pool === state.sel ? "sel" : ""}" data-pool="${r.pool}">
       <div class="pc1">${star}${icon}<b class="psym">${esc(r.symbol)}</b>${qchip(r)}${rank}<span class="spacer"></span><span class="badge ${v.level}">${v.level}</span></div>
-      <div class="pc2"><span><small>TVL</small>${mU(r.tvlUsd)}</span><span><small>fee ${w}</small><b class="pos">${fmtPct(r.feePctDay[w], 1)}</b>/hr</span>
-        <span><small>1 jam</small>${fmtPct(fee1hPct, 2)}</span><span><small>mcap</small>${mU(r.mcapUsd)}</span></div>
+      <div class="pc2"><span class="col-tvl"><small>TVL</small>${mU(r.tvlUsd)}</span><span class="col-fees"><small>fee ${w}</small><b class="pos">${fmtPct(r.feePctDay[w], 1)}</b>/hr</span>
+        <span class="col-fee1h"><small>1 jam</small>${fmtPct(fee1hPct, 2)}</span><span class="col-mcap"><small>mcap</small>${mU(r.mcapUsd)}</span></div>
       <div class="pc3">${sub}</div>
       ${reasons ? `<div class="pc3 muted">${esc(reasons)}</div>` : ""}${zap}</div>`);
     return `<tr data-pool="${r.pool}" class="${r.pool === state.sel ? "sel" : ""}">
       <td><span class="sym">${star}${icon}${esc(r.symbol)}${qchip(r)}${rank}</span><span class="sub">${sub} · …${r.pool.slice(-6)}</span></td>
-      <td class="r"><span class="big">${mU(r.tvlUsd)}</span><span class="sub">vol ${mU(r.vol[w])}</span></td>
-      <td class="r"><span class="big pos">${mU(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/hari</span></td>
-      <td class="r"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${mU(r.fees["1h"])} · ${r.swaps["1h"] ?? "--"} swap</span></td>
-      <td class="r"><span class="big">${mU(r.mcapUsd)}</span><span class="sub">${spark(r)} <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)}</span></span></td>
-      <td><span class="badge ${v.level}">● ${v.level} ${v.score > 0 ? "+" : ""}${v.score}</span><span class="reasons">${esc(reasons)}</span></td>
+      <td class="r col-tvl"><span class="big">${mU(r.tvlUsd)}</span><span class="sub">vol ${mU(r.vol[w])}</span></td>
+      <td class="r col-fees"><span class="big pos">${mU(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/hari</span></td>
+      <td class="r col-fee1h"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${mU(r.fees["1h"])} · ${r.swaps["1h"] ?? "--"} swap</span></td>
+      <td class="r col-mcap"><span class="big">${mU(r.mcapUsd)}</span><span class="sub">${spark(r)} <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)}</span></span></td>
+      <td class="col-score"><span class="badge ${v.level}">● ${v.level} ${v.score > 0 ? "+" : ""}${v.score}</span><span class="reasons">${esc(reasons)}</span></td>
       <td>${zap}</td></tr>`;
   }).join("");
   $("#poolCards").innerHTML = cards.join("");
@@ -318,7 +334,6 @@ function renderDetail(r, keepChart) {
     WAIT: "Belum: ada gate yang belum lolos (bisa berubah).", SKIP: "Skip: fee LP 0% / hook, atau fee tier honeypot." }[v.level];
   const li = [...v.reasons.map(x => `<li class="${x.ok ? "" : x.flag ? "flag" : "bad"}">${esc(nice(x.text))}</li>`),
     ...v.info.map(x => `<li class="info ${x.ok ? "" : "bad"}">${esc(x.text)}</li>`)].join("");
-  const chart = `https://dexscreener.com/elysium/${r.pool}?embed=1&theme=dark&trades=0&info=0`;
   const old = keepChart ? $("#detail .chart") : null;
   const pg = pingOf(r.pool);
   const tx = r.txns && r.txns.h1 ? `${r.txns.h1.buys} buy / ${r.txns.h1.sells} sell (1 jam)` : "";
@@ -335,11 +350,11 @@ function renderDetail(r, keepChart) {
       <div><label class="muted">harga</label><b>${mU(r.priceUsd)}</b><span class="${cls(r.chg["1h"])}">${fmtPct(r.chg["1h"], 1, true)} 1j</span></div>
       <div><label class="muted">mcap</label><b>${mU(r.mcapUsd)}</b><span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24j</span></div>
       <div><label class="muted">TVL</label><b>${mU(r.tvlUsd)}</b><span class="muted">umur ${age(r.ageHours)}</span></div>
-      <div><label class="muted">fee / hari (1j)</label><b class="pos">${fmtPct(r.feePctDay["1h"], 2)}</b><span class="muted">24j ${fmtPct(r.feePctDay["24h"], 2)}</span></div>
+      <div><label class="muted">fee / hari (1j)</label><b class="pos">${fmtPct(r.feePctDay["1h"], 2)}</b><span class="muted">APR ${fmtPct(r.feeApr, 0)} · 24j ${fmtPct(r.feePctDay["24h"], 2)}</span></div>
     </div>
     <div class="vbox ${v.level}"><span class="lv">${v.level}</span>${label} <span class="muted">skor ${v.score > 0 ? "+" : ""}${v.score}</span></div>
     <ul class="rs">${li}</ul>
-    <div class="pinfo">Fee ${mU(r.fees["5m"])} / 5m · ${mU(r.fees["1h"])} / jam · ${mU(r.fees["24h"])} / 24j · ${r.swaps["1h"] ?? "--"} swap 1 jam${tx ? " · " + tx : ""}${r.sizeVsTvlPct != null ? ` · size ${r.sizeVsTvlPct}% dari TVL` : ""}</div>
+    <div class="pinfo">Fee ${mU(r.fees["5m"])} / 5m · ${mU(r.fees["1h"])} / jam · ${mU(r.fees["24h"])} / 24j · ${r.swaps["1h"] ?? "--"} swap 1 jam · ${r.traders1h || 0} trader${tx ? " · " + tx : ""}${r.hookName ? " · hook " + esc(r.hookName) : (r.hooks && r.hooks !== "0x0000000000000000000000000000000000000000" ? " · hook " + short(r.hooks) : "")}${r.sizeVsTvlPct != null ? ` · size ${r.sizeVsTvlPct}% dari TVL` : ""}</div>
     ${pg ? `<div class="pinfo">📡 <b>PING #${pg.rank}</b></div>` : ""}
     <div class="zapbig">
       <button data-zap="${size / 2}">⚡ ${mU(size / 2)} · ${ladderLabel()}</button>
@@ -348,8 +363,38 @@ function renderDetail(r, keepChart) {
     </div>
     <div class="note">Zap = ladder ${esc(r.quoteSymbol)}-only (slice sama lebar, isi 1:2:…:n, paling dalam paling gede). v4 lewat PositionManager, v3 lewat NFT multicall. Key cuma di executor.
       Disimulasikan dulu sebelum dikirim. Ubah bentuk default di ⚙. Gate & flag ini nilai awal, bukan hasil backtest: atur sesuai pengalaman lu.</div>
-    <div class="chart"><iframe src="${chart}" title="chart" loading="lazy"></iframe></div>`;
-  if (old && old.querySelector("iframe").src === chart) $("#detail .chart").replaceWith(old);
+    <div class="chart" id="miniChart"><div class="empty">Chart dari index…</div></div>`;
+  if (old) $("#detail .chart").replaceWith(old);
+  else loadSeries(r.pool);
+}
+
+let chartSeq = 0;
+function sparkChart(pts) {
+  const priced = pts.filter(p => p.px != null);
+  if (priced.length < 2) return `<div class="empty">Belum cukup history di index buat chart ini.</div>`;
+  const w = 640, h = 160, pad = 8;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  const X = t => pad + (t - t0) / (t1 - t0 || 1) * (w - pad * 2);
+  const pxs = priced.map(p => p.px);
+  const lo = Math.min(...pxs), hi = Math.max(...pxs), span = hi - lo || 1e-9;
+  const Y = px => h - pad - (px - lo) / span * (h - pad * 2 - 28);
+  const vmax = Math.max(...pts.map(p => p.vol || 0)) || 1;
+  const bars = pts.map(p => `<rect class="vbar" x="${X(p.t).toFixed(1)}" y="${(h - 4 - (p.vol || 0) / vmax * 36).toFixed(1)}" width="3" height="${((p.vol || 0) / vmax * 36).toFixed(1)}"></rect>`).join("");
+  const d = priced.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.px).toFixed(1)}`).join("");
+  const up = priced[priced.length - 1].px >= priced[0].px;
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="harga dan volume dari index">${bars}<path d="${d}" fill="none" stroke="${up ? "#3ddc84" : "#ff5a5f"}" stroke-width="1.6"></path></svg><div class="muted" style="padding:4px 10px 8px">Harga relatif + volume quote, dari bucket 5 menit yang sudah di index. Bukan chart DexScreener, 0 request RPC.</div>`;
+}
+async function loadSeries(pool) {
+  const seq = ++chartSeq;
+  const box = $("#miniChart");
+  if (!box) return;
+  try {
+    const d = await getJson(`/api/series?pool=${encodeURIComponent(pool)}`, null, 15000);
+    if (seq !== chartSeq || !$("#miniChart")) return;
+    $("#miniChart").innerHTML = sparkChart(d.points || []);
+  } catch (e) {
+    if (seq === chartSeq && $("#miniChart")) $("#miniChart").innerHTML = `<div class="empty">Chart gagal: ${esc(e.message)}</div>`;
+  }
 }
 
 // ---------- trading ----------
@@ -383,12 +428,34 @@ function paintWallet() {
   b.classList.toggle("on", trade.ready());
   b.textContent = t.enabled ? `🔑 ${short(t.wallet)}${trade.ready() ? "" : " · read-only"}` : "🔒 read-only";
   b.title = trade.ready() ? `Trading wallet ${t.wallet}${t.pin ? " (PIN aktif)" : ""}` : trade.why();
-  $("#practiceChip").classList.toggle("hidden", !practice());
+  const live = !!(t.practice === false);
+  const chip = $("#practiceChip");
+  chip.classList.toggle("hidden", false);
+  chip.classList.toggle("live", live);
+  chip.textContent = live ? "LIVE" : "PRACTICE";
+  const bar = $("#practiceBar");
+  if (bar) {
+    bar.classList.toggle("live", live);
+    bar.textContent = live
+      ? "LIVE — tombol mengirim transaksi beneran ke Elysium."
+      : "PRACTICE — tombol cuma simulasi (eth_call). Nggak ada yang dikirim.";
+  }
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
+async function quickZap(r, size) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  const verb = practice() ? "Simulasi" : "KIRIM BENERAN";
+  if (!confirm(`${verb}: ladder ${r.symbol}/${r.quoteSymbol} ${fmtUsd(size)}\n${practice() ? "Practice: eth_call, tidak ada yang dikirim." : "Ini transaksi mainnet."}`)) return;
+  toast(practice() ? "Simulasi ladder…" : "Kirim ladder…");
+  try {
+    const s = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, usd: size, override: false });
+    toast(s.ok ? (s.dryRun ? `✓ Simulasi ${r.symbol} lolos` : `✓ Ladder ${r.symbol} kebuka`) : `✗ ${s.error || "gagal"}`);
+    if (!s.ok) alert(s.error || "gagal");
+  } catch (e) { toast("✗ " + e.message); alert(e.message); }
+}
 function openZap(r, size) {
   $("#modalCard").classList.remove("wide");
   const d = state.data, maxUsd = d.maxPositionUsd, pos = posCfg();
@@ -567,7 +634,7 @@ function renderPortfolio() {
   if (!pf) return;
   if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error; $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
   const pnlPct = pf.depositUsd ? pf.pnlUsd / pf.depositUsd * 100 : null, b = pf.balances || {};
-  $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b></span>
+  $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b>${pf.valueHype != null ? ` <span class="muted">${fmtEth(pf.valueHype)}</span>` : ""}</span>
     <span>fees unclaimed <b class="pos">${mU(pf.feesUsd)}</b></span>
     <span>PnL <b class="big ${cls(pf.pnlUsd)}">${pf.pnlUsd > 0 ? "+" : ""}${mU(pf.pnlUsd)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span></span>
     <span>deposit <b>${mU(pf.depositUsd)}</b></span>
@@ -586,7 +653,7 @@ function renderPortfolio() {
     const head = `${esc(p.symbol)}${qchip(p)}${pg ? `<span class="rank">📡#${pg.rank}</span>` : ""}`;
     const sub = `${p.posCount} slice · ${p.inRangeCount} in range · ${age(p.heldHours)} · fee ${p.lpFeePct}%`;
     const pnl = `<span class="big ${cls(p.pnlUsd)}">${p.pnlUsd > 0 ? "+" : ""}${mU(p.pnlUsd)}</span><span class="sub"><span class="${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span> · ${mAlt(p.pnlUsd)}</span>
-      <span class="sub">nilai ${mU(p.valueUsd)} · fee <span class="pos">${mU(p.feesUsd)}</span>${p.feePctDay != null ? ` (${fmtPct(p.feePctDay, 2)}/hr)` : ""} · deposit ${mU(p.depositUsd)}</span>`;
+      <span class="sub">nilai ${mU(p.valueUsd)} · fee <span class="pos">${mU(p.feesUsd)}</span>${p.claimedUsd ? ` · claimed ${mU(p.claimedUsd)}` : ""}${p.feePctDay != null ? ` (${fmtPct(p.feePctDay, 2)}/hr)` : ""} · deposit ${mU(p.depositUsd)}</span>`;
     const btns = `<button class="btn ${exit ? "danger" : ""}" data-close="${p.pool}">${exit ? "Exit → close" : "Close"}</button>
       <button class="btn" data-claim="${p.pool}" ${p.feesUsd > 0 ? "" : "disabled"}>Claim</button>
       <button class="btn" data-swap="${p.pool}" title="Close semua slice + jual token">Close+swap</button>
@@ -734,18 +801,37 @@ document.addEventListener("click", e => {
 }, true);
 $("#q").addEventListener("input", () => { if (state.search && !$("#q").value.trim()) { state.search = null; } if (state.data) renderPools(); });
 $("#q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch($("#q").value.trim()); });
-["#hideSkip", "#tvl", "#quote"].forEach(s => $(s).addEventListener("change", () => {
+["#hideSkip", "#tvl", "#quote", "#dex"].forEach(s => $(s).addEventListener("change", () => {
   store.set("filters", { skip: $("#hideSkip").checked, quote: $("#quote").value });
   store.set("tvl", $("#tvl").value);
+  try { localStorage.setItem("elyterm.dex", $("#dex").value); } catch (e) {}
   if (state.data) renderPools();
 }));
+function applyCols() {
+  let cols = null;
+  try { cols = JSON.parse(localStorage.getItem("elyterm.cols") || "null"); } catch (e) {}
+  document.querySelectorAll("#cols input").forEach(el => {
+    const on = !cols || cols[el.dataset.col] !== false;
+    el.checked = on;
+    document.body.classList.toggle("hide-" + el.dataset.col, !on);
+  });
+}
+$("#cols").addEventListener("change", () => {
+  const cols = {};
+  document.querySelectorAll("#cols input").forEach(el => { cols[el.dataset.col] = el.checked; });
+  try { localStorage.setItem("elyterm.cols", JSON.stringify(cols)); } catch (e) {}
+  applyCols();
+});
 const onPoolClick = e => {
   const tr = e.target.closest("tr, .pcard");
   if (!tr || !state.data) return;
   const r = findRow(tr.dataset.pool);
   if (!r) return;
   const z = e.target.closest("[data-zap]");
-  if (z) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeUsd : parseFloat(z.dataset.zap));
+  if (z) {
+    if (z.dataset.zap === "ask") return openZap(r, state.data.sizeUsd);
+    return quickZap(r, parseFloat(z.dataset.zap));
+  }
   renderDetail(r);
 };
 $("#pools tbody").addEventListener("click", onPoolClick);
@@ -753,7 +839,7 @@ $("#poolCards").addEventListener("click", onPoolClick);
 $("#detail").addEventListener("click", async e => {
   if (e.target.closest("[data-closesheet]")) { document.body.classList.remove("sheet"); return; }
   const z = e.target.closest("[data-zap]"), r = state.sel && findRow(state.sel);
-  if (z && r) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeUsd : parseFloat(z.dataset.zap));
+  if (z && r) return z.dataset.zap === "ask" ? openZap(r, state.data.sizeUsd) : quickZap(r, parseFloat(z.dataset.zap));
   const c = e.target.closest("[data-copy]");
   if (c) { try { await navigator.clipboard.writeText(c.dataset.copy); c.textContent = "copied ✓"; } catch (err) {} }
 });
@@ -806,6 +892,8 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   state.win = store.get("win", "1h");
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);
+  try { if (localStorage.getItem("elyterm.dex") != null) $("#dex").value = localStorage.getItem("elyterm.dex"); } catch (e) {}
+  applyCols();
   const f = store.get("filters", null);
   if (f) { $("#hideSkip").checked = f.skip !== false; $("#quote").value = f.quote || ""; }
   $("#tvl").value = store.get("tvl", "2000");
@@ -827,7 +915,10 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   loadWatch();
   if ($("#wallet").value.trim()) loadPortfolio();
   const every = Math.max(1, +((state.cfg && state.cfg.cfg && state.cfg.cfg.web && state.cfg.cfg.web.refreshMin) || 2)) * 60000;
-  setInterval(() => loadPools(), every);
-  setInterval(() => { if (state.wallet) loadPortfolio(); }, every);
+  const beat = () => { if (!document.hidden) fetch("/api/heartbeat").catch(() => {}); };
+  beat();
+  setInterval(beat, 20000);
+  setInterval(() => { if (!document.hidden) loadPools(); }, every);
+  setInterval(() => { if (!document.hidden && state.wallet) loadPortfolio(); }, every * 2);
   setInterval(tickAge, 5000);
 })();
