@@ -1,0 +1,27 @@
+# Theme for rh_wallet_finder/streamlit_app.py (read when Streamlit runs from this folder;
+# `python3 finder.py` and "Buka Wallet Finder.command" both do).
+[theme]
+base = "dark"
+primaryColor = "#ffc533"
+backgroundColor = "#090d14"
+secondaryBackgroundColor = "#0f151f"
+textColor = "#e8edf5"
+borderColor = "#1e2938"
+showWidgetBorder = true
+baseRadius = "0.15rem"
+buttonRadius = "0.15rem"
+linkColor = "#5aa2ff"
+blueColor = "#3987e5"
+redColor = "#e66767"
+dataframeBorderColor = "#1e2938"
+dataframeHeaderBackgroundColor = "#131b27"
+dataframeHeaderTextColor = "#b4bfcd"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+runOnSave = false
