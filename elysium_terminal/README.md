@@ -11,9 +11,9 @@ port sendiri, env sendiri.
 | **PING, watch, search** | Top pool yang lolos gate. Watchlist di Mac. Search nama / CA / pool id (DexScreener chain `elysium` + yang ada di index). |
 | **Zap ladder** | Slice sama lebar di bawah harga, isi 1:2:…:n, quote-only, cap budget, warning size vs TVL. v4 = satu `modifyLiquidities`. v3 = beberapa NFT, di-batch `multicall`. |
 | **Portfolio** | Posisi dibaca dari chain. **Satu baris per pembukaan**: dua posisi di pool yang sama tetap dua baris, masing-masing PnL, tombol, dan rule auto sendiri. v4 dari log Transfer + `ownerOf`. v3 dari `tokenOfOwnerByIndex` (dua NPM). Fee v3 = static-call `collect` (nggak ngirim tx). |
-| **Aksi** | **Close** · **Claim** · **Close+swap** (minOut = harga pool − fee − max loss) · **Re-entry** (ladder) · **Rebalance** (satu range) · **Cleanup**. Semua di-`eth_call` dulu, revert = batal. |
+| **Aksi** | **Close** · **Claim** · **Close+swap** (minOut = harga pool − fee − max loss) · **Re-entry** (range yang sama, quote saja, di harga sekarang) · **Cleanup**. Semua di-`eth_call` dulu, revert = batal. |
 | **Tight** | Range sempit di sekitar harga: swap + mint dalam satu klik, dari tab 🎯 Tight atau tombol 🎯 di detail pool mana pun yang tanpa hook. |
-| **⚙ Auto** | Per posisi: TP, SL, dan aksi kalau harga keluar range (atas / bawah masing-masing: diam, rebalance, atau close + swap). Jalan di proses server, bukan di tab. |
+| **⚙ Auto** | Per posisi: TP, SL, dan aksi kalau harga keluar range (atas / bawah masing-masing: diam, re-entry, atau close + swap). Jalan di proses server, bukan di tab. |
 | **PIN, practice** | `ELYSIUM_PRACTICE_MODE` default **true**. Banner kuning di atas halaman. PIN buat trading dari HP. Key cuma dibaca Node. |
 | **Index health** | Chip ⛓ nulis jumlah pool v4/v3, jam histori, lag block, dan error kalau ada. Baris di bawah tabel: RPC publik vs Alchemy hari ini. |
 | **Data tambahan** | Umur pool, TVL + mcap dari DexScreener (chain `elysium`, udah dicek), APR dari fee 1 jam, jumlah trader 1 jam, nama hook v4 (sekali, disimpan di disk). Portfolio: nilai dalam $ dan HYPE, fee yang udah di-claim (log Collect v3) masuk PnL. |
@@ -142,7 +142,7 @@ Dulu Portfolio menggabung semua NFT di satu pool jadi satu baris ("2 slice"), wa
 
 - Yang dibuka dari terminal ini dicatat di `data/groups.json` (NFT mana saja, kapan, berapa quote yang masuk). Itu juga yang dipakai buat umur dan deposit.
 - Yang dibuka dari tempat lain dikelompokkan dari fakta chain: NFT v4 yang di-mint di block yang sama = satu ladder. NFT v3 dengan id berurutan dan range yang nyambung = satu ladder. Sisanya berdiri sendiri.
-- Posisi kedua di pool yang sama dapat label `#2`. Close, Claim, Close+swap, Rebalance, dan ⚙ Auto cuma kena ke baris itu.
+- Posisi kedua di pool yang sama dapat label `#2`. Close, Claim, Close+swap, Re-entry, dan ⚙ Auto cuma kena ke baris itu.
 - Deposit posisi dari luar terminal dihitung dari likuiditas seolah satu sisi, ditandai `≈`. Buat range yang di-mint dua sisi angka itu bisa kegedean, jadi PnL-nya kekecilan.
 
 ## Liquidity depth per posisi
@@ -151,20 +151,29 @@ Tombol 📊 Depth di baris posisi membuka grafik likuiditas pool di sekitar posi
 
 Datanya dibaca langsung dari pool (tick bitmap + `liquidityNet` tiap tick, jalan keluar dari tick sekarang), dua multicall, di-cache 20 detik, dan cuma dibaca selama grafiknya dibuka. Pool dengan tick yang sangat rapat dipotong di sekitar harga, dan grafiknya bilang begitu.
 
-## Tight range dan rebalance
+## Re-entry
 
-Range sempit di sekitar harga sekarang. Bukan janji profit. Angka %/jam di kartu itu **fee seluruh pool dibagi TVL**, bukan fee posisi lo, dan APR-nya cuma `%/jam × 24 × 365`. Target %/jam itu filter, bukan patokan aman.
+Tombol **Re-entry** ada di tiap baris Portfolio, ladder maupun satu range:
 
-**Buka.** Tab 🎯 Tight, atau tombol 🎯 tight di detail pool mana pun yang tanpa hook dan tanpa fee dinamis. Isi ukuran, lebar (% harga, total kiri + kanan), slippage. Satu klik menjalankan:
+1. close posisi itu (fee ikut),
+2. jual token yang keluar ke quote (batal kalau lebih jelek dari max loss di bawah harga pool),
+3. buka lagi **bentuk yang sama**: jumlah range sama, lebar tiap range (dalam tick) sama, pembagian isi antar range sama, ditaruh tepat di bawah harga sekarang.
 
-1. swap sebagian quote ke token lewat pool itu sendiri (minOut = harga pool − fee − slippage),
-2. mint range di sekitar harga saat itu.
+Kalau range-nya sudah tepat di samping harga dengan bentuk yang sama, re-entry tidak melakukan apa-apa (tidak ada transaksi), baik dari tombol maupun dari auto.
 
-Mint cuma pakai quote yang lo minta plus token hasil swap tadi. Saldo wallet yang lain tidak ikut ditarik. Lebar di-snap ke garis grid terdekat (`tickSpacing`), dan kartunya nulis lebar yang beneran jadi.
+Posisi barunya quote saja (USDC / HYPE). Tidak ada token yang dibeli saat masuk: token baru kepegang kalau harga turun masuk ke range, sama seperti zap ladder. Deposit awal dibawa ke posisi baru, jadi PnL-nya menghitung seluruh rangkaian re-entry.
 
-**Rebalance.** Tombol di baris posisi satu range: close (fee ikut) → swap ke komposisi range baru → mint di harga sekarang. Deposit awal dibawa ke posisi baru, jadi PnL-nya menghitung seluruh rangkaian rebalance, bukan cuma potongan terakhir.
+Rebalance dua sisi (tutup, tukar separuh ke token, buka range di tengah harga) sudah dibuang: tiap kali jalan, posisi barunya langsung megang token.
 
-Close, swap, dan mint itu transaksi terpisah. Tiap-tiap disimulasikan dulu. Kalau satu gagal, yang sebelumnya tidak dibatalkan: hasilnya nulis berhenti di langkah mana, dan token yang sudah keluar ada di wallet (Cleanup bisa jual balik).
+Close, jual, dan buka itu transaksi terpisah. Tiap-tiap disimulasikan dulu. Kalau satu gagal, yang sebelumnya tidak dibatalkan, dan token yang sudah keluar ada di wallet (Cleanup bisa jual balik).
+
+## Tight range (dua sisi)
+
+Range sempit yang harganya di tengah. **Buka dari sini berarti sebagian quote ditukar ke token dulu**, jadi posisi langsung megang token. Kalau itu bukan yang lo mau, pakai zap ladder (quote saja) dan Re-entry.
+
+Angka %/jam di kartu itu **fee seluruh pool dibagi TVL**, bukan fee posisi lo, dan APR-nya cuma `%/jam × 24 × 365`. Target %/jam itu filter, bukan patokan aman.
+
+Tab 🎯 Tight, atau tombol 🎯 tight di detail pool mana pun yang tanpa hook dan tanpa fee dinamis. Isi ukuran, lebar (% harga, total kiri + kanan), slippage. Satu klik: swap sebagian quote ke token lewat pool itu sendiri (minOut = harga pool − fee − slippage), lalu mint range di sekitar harga saat itu. Mint cuma pakai quote yang lo minta plus token hasil swap tadi. Lebar di-snap ke garis grid terdekat (`tickSpacing`).
 
 ## ⚙ Auto per posisi
 
@@ -173,17 +182,17 @@ Tombol ⚙ Auto di tiap baris Portfolio (atau langsung di form buka tight):
 | Rule | Yang terjadi |
 | --- | --- |
 | Take profit / stop loss | PnL posisi itu lewat batas → close + swap ke quote. Langsung, tanpa nunggu. |
-| Harga **naik** lewat atas range | Posisi jadi 100% quote dan fee berhenti. Pilih: diam, rebalance, atau close + swap. |
-| Harga **turun** lewat bawah range | Posisi jadi 100% token. Pilih: diam, rebalance, atau close + swap. |
+| Harga **naik** lewat atas range | Posisi jadi 100% quote dan fee berhenti. Pilih: diam, re-entry, atau close + swap. |
+| Harga **turun** lewat bawah range | Posisi jadi 100% token. Pilih: diam, re-entry, atau close + swap. |
 
-Contoh yang sering dipakai: atas → rebalance (ngikutin harga naik, murah karena sudah quote semua), bawah → close + swap (berhenti ngejar turun).
+Contoh yang sering dipakai: atas → re-entry (ngikutin harga naik; tidak ada yang perlu dijual karena sudah quote semua), bawah → close + swap (berhenti ngejar turun). Re-entry di sini sama persis dengan tombolnya: range yang sama, quote saja.
 
 Batas buat aksi range, di tab 🎯 Tight (`data/auto.json`):
 
 - **tahan di luar range** (default 120 detik): harga yang cuma nyentuh tepi lalu balik tidak memicu apa-apa.
 - **jeda antar aksi** (600 detik) dan **maks per posisi per hari** (6).
 - **maks nilai posisi** ($2000): di atas itu auto tidak nyentuh.
-- **slippage swap maks** (100 bps) dan lebar default rebalance.
+- **slippage swap** (100 bps) buat buka tight. Jual token saat re-entry / close + swap pakai max loss dari ⚙ Settings.
 - **⏸ Jeda semua auto**: satu tombol, juga ada di bar Portfolio.
 
 Yang perlu lo tahu:
@@ -194,7 +203,7 @@ Yang perlu lo tahu:
 - Gagal sebelum ada yang terkirim (RPC, simulasi revert): dicoba lagi setelah jeda, maksimal 3 kali, lalu rule berhenti.
 - Berhenti di tengah (close masuk, swap atau mint tidak): **tidak** diulang otomatis. Rule jadi ⚠ dan nunggu lo klik "sudah dicek, lanjutkan".
 - Portfolio yang kebaca sebagian (RPC gagal di tengah) tidak dianggap "posisi sudah hilang". Auto nunggu baca berikutnya.
-- Rebalance cuma buat posisi satu range di pool tanpa hook. Ladder: close atau diam, atau pakai Re-entry.
+- Rule lama yang isinya "rebalance" sekarang dibaca sebagai re-entry.
 - Satu wallet, satu antrean: klik manual dan auto tidak pernah menandatangani bersamaan.
 - Take profit lama yang dipasang per pool (`data/auto_exit.json`) dipindah sekali jadi rule per posisi di pool itu.
-- Rebalance bolak-balik di pasar yang gergaji bisa makan fee swap dan IL lebih besar dari fee yang masuk. Batas di atas membatasi seberapa sering, bukan menjamin untung.
+- Re-entry bolak-balik di pasar yang gergaji bisa makan fee swap dan IL lebih besar dari fee yang masuk. Batas di atas membatasi seberapa sering, bukan menjamin untung.

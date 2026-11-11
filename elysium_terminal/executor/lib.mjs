@@ -335,6 +335,37 @@ export function planLadder(key, currentTick, depositRaw, depositIsC0, { slices, 
   return { slices: out, step, span, topTicks, realEnd: out[out.length - 1].farPct };
 }
 
+// Re-entry: the same shape as the positions that were just closed, moved to the current price.
+// Each old range keeps its width in ticks and its share of the deposit; they are stacked from
+// the price outward, nearest first. Single-sided in the deposit currency, like planLadder,
+// so nothing has to be swapped into the other token.
+export function planSame(key, currentTick, depositRaw, depositIsC0, olds) {
+  const sp = Math.abs(key.tickSpacing) || 1;
+  const list = olds.map(o => {
+    const sa = sqrtAt(o.tickLower), sb = sqrtAt(o.tickUpper), L = Number(o.liquidity);
+    return { lo: o.tickLower, hi: o.tickUpper, width: Math.max(sp, Math.round((o.tickUpper - o.tickLower) / sp) * sp),
+      weight: depositIsC0 ? L * (1 / sa - 1 / sb) : L * (sb - sa) };
+  }).filter(o => o.width > 0);
+  if (!list.length) throw new Error("no previous range to copy");
+  list.sort((a, b) => depositIsC0 ? a.lo - b.lo : b.hi - a.hi);
+  let total = list.reduce((a, o) => a + o.weight, 0);
+  if (!(total > 0)) { list.forEach(o => { o.weight = 1; }); total = list.length; }
+  let edge = depositIsC0 ? Math.ceil((currentTick + 1) / sp) * sp : Math.floor(currentTick / sp) * sp;
+  const out = [];
+  for (const o of list) {
+    const lo = depositIsC0 ? edge : edge - o.width, hi = depositIsC0 ? edge + o.width : edge;
+    edge = depositIsC0 ? hi : lo;
+    const amount = BigInt(Math.floor(Number(depositRaw) * o.weight / total));
+    if (amount <= 0n) continue;
+    const sa = sqrtAt(lo), sb = sqrtAt(hi);
+    const L = depositIsC0 ? Number(amount) / (1 / sa - 1 / sb) : Number(amount) / (sb - sa);
+    if (!Number.isFinite(L) || L <= 0) continue;
+    out.push({ tickLower: lo, tickUpper: hi, amount, liquidity: BigInt(Math.floor(L * (1 - 1e-9))) });
+  }
+  if (!out.length) throw new Error("deposit too small to re-open");
+  return { slices: out };
+}
+
 const keyTuple = k => [k.currency0, k.currency1, k.fee, k.tickSpacing, k.hooks || ZERO];
 const enc = (types, vals) => ab.encode(types, vals);
 export const P = {
