@@ -71,7 +71,7 @@ class FakeChain:
         c0, c1 = (COIN, usdg) if usdg_token1 else (usdg, COIN)
         self.keys = {POOL[2:52]: (c0, c1, FEE), POOL2[2:52]: (RH.WETH, COIN, 3000)}  # POOL2: tanpa USDG
         self.missing_receipts = set()
-        self.burned, self.owners, self.down = set(), {}, False
+        self.burned, self.owners, self.down, self.odd_errors = set(), {}, False, set()
         self.calls = []
 
     def call(self, method, params):
@@ -96,7 +96,9 @@ class FakeChain:
         if tx["to"] == RH.POSITION_MANAGER and sel == W.SEL_OWNER_OF:
             tid = int(arg, 16)
             if tid in self.burned:
-                raise W.R.RPCError("eth_call: execution reverted")
+                raise W.R.RPCError("eth_call: execution reverted: NOT_MINTED")
+            if tid in self.odd_errors:
+                raise W.R.RPCError("eth_call: header not found")
             if self.down:
                 raise W.R.TransportError("rpc down")
             return "0x" + C.addr_word(self.owners.get(tid, WALLET))
@@ -492,6 +494,31 @@ class AutoCallTest(unittest.TestCase):
         text = self.tg.to(FAN)[-1]
         self.assertIn("(2)", text)
         self.assertIn("HYDX · 👀 degen", text)
+
+    def test_other_rpc_errors_never_close_a_position(self):
+        """Rekap 'cuma V4': posisi yang masih kebuka nggak boleh hilang gara-gara RPC error yang bukan NOT_MINTED."""
+        chain = FakeChain()
+        self.bot.watcher = W.Watcher(chain, chain, [WALLET], self.store)
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [11], "pos": dict(self.pos)})
+        chain.odd_errors.add(11)
+        self.bot.prune_closed()
+        self.assertEqual(self.store.get("hydx")["status"], "open")
+        chain.odd_errors.clear()
+        chain.burned.add(11)
+        self.bot.prune_closed()
+        self.assertEqual(self.store.get("hydx")["status"], "closed")
+
+    def test_second_instance_is_refused(self):
+        path = Path(self.tmp.name) / "state.lock"
+        first, _ = B.single_instance(path)
+        self.assertIsNotNone(first)
+        second, other = B.single_instance(path)
+        self.assertIsNone(second)
+        self.assertEqual(other, str(B.os.getpid()))
+        first.close()  # bot pertama mati -> kunci lepas
+        third, _ = B.single_instance(path)
+        self.assertIsNotNone(third)
+        third.close()
 
     def test_hourly_recap(self):
         self.bot.recap_seconds = 3600

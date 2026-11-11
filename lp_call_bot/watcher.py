@@ -232,8 +232,9 @@ class Watcher:
                 {"to": RH.POSITION_MANAGER, "data": "0x" + SEL_OWNER_OF + C.word(int(token_id))}, "latest"])
         except R.TransportError:
             return None
-        except R.RPCError:  # revert: NFT udah nggak ada (diburn)
-            return False
+        except R.RPCError as e:  # cuma revert NOT_MINTED = NFT beneran udah diburn; error lain = nggak tau
+            msg = str(e).lower()
+            return False if ("revert" in msg and "not_minted" in msg) or "nonexistent token" in msg else None
         if not ret or len(ret) < 66:
             return False
         return ("0x" + ret[-40:]).lower() == wallet.lower()
