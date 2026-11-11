@@ -13,6 +13,20 @@ window.addEventListener("error", e => showFatal(e.message + (e.filename ? ` (${e
 window.addEventListener("unhandledrejection", e => showFatal((e.reason && e.reason.message) || e.reason));
 
 const $ = s => document.querySelector(s);
+// Rows of the list plus the pools fetched for "semua pool token ini" (a token's quieter pools the list prefilters out).
+const extraRows = new Map();
+const rowOf = pool => (state.data && state.data.rows.find(x => x.pool === pool)) || extraRows.get(pool) || null;
+const tokenPoolsCache = new Map();          // mint -> {t, rows, other}
+const expanded = new Set();                 // mints whose other pools are shown under their row
+async function loadTokenPools(mint, force) {
+  const c = tokenPoolsCache.get(mint);
+  if (c && !force && Date.now() - c.at < 120000) return c;
+  const d = await getJson(`/api/token_pools?mint=${encodeURIComponent(mint)}`);
+  d.at = Date.now();
+  for (const r of d.rows) if (!state.data || !state.data.rows.some(x => x.pool === r.pool)) extraRows.set(r.pool, r);
+  tokenPoolsCache.set(mint, d);
+  return d;
+}
 const isPhone = () => window.matchMedia("(max-width: 760px)").matches;
 const state = {
   view: "pools", win: "24h", sort: { key: "fees", desc: true }, data: null, sel: null,
@@ -139,7 +153,7 @@ async function loadPools(force) {
     renderPools();
     if (state.pf) renderPortfolio();
     if (state.sel) {
-      const r = state.data.rows.find(x => x.pool === state.sel);
+      const r = rowOf(state.sel);
       if (r) renderDetail(r, true);
     }
   } catch (e) {
@@ -176,7 +190,7 @@ async function toggleWatch(pool, symbol) {
   state.watch = on ? [...state.watch, { pool, symbol, addedAt: Date.now() / 1000 }] : state.watch.filter(w => w.pool !== pool);
   store.set("watch", state.watch);
   renderPools();
-  if (state.sel === pool) { const r = state.data.rows.find(x => x.pool === pool); if (r) renderDetail(r, true); }
+  if (state.sel === pool) { const r = rowOf(pool); if (r) renderDetail(r, true); }
   try {
     const res = await trade.call("/api/watchlist", { pool, symbol, on });
     state.watch = res.rows || state.watch;
@@ -289,7 +303,9 @@ function renderPools() {
   const size = d.sizeSol;
   const fresh = new Set((state.ping && state.ping.new) || []);
   const cards = [];
-  $("#pools tbody").innerHTML = rows.map(r => {
+  const shown = new Set(rows.map(r => r.pool));
+  const html = [];
+  const one = (r, sib) => {
     const v = r.verdict, pg = pingOf(r.pool);
     const reasons = [...v.reasons.filter(x => !x.ok), ...v.info].slice(0, 2).map(x => nice(x.text)).join(" · ")
       || v.reasons.filter(x => x.ok).map(x => "gates pass").join("");
@@ -299,17 +315,18 @@ function renderPools() {
     const sub2 = pg ? ` · vol/TVL 1h ${fmtPct(pg.volTvl1h, 0)}` : "";
     const star = `<button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>`;
     // phone: one card per pool, everything readable without scrolling sideways
-    cards.push(`<div class="pcard ${r.pool === state.sel ? "sel" : ""}" data-pool="${r.pool}">
+    const sibBtn = sib ? `<span class="sibtag">↳ pool lain</span>` : `<button class="sib ${expanded.has(r.tokenMint) ? "on" : ""}" data-sib="${r.tokenMint}" title="semua pool DLMM token ini, termasuk yang kesaring">${expanded.has(r.tokenMint) ? "▴" : "▾"} semua pool</button>`;
+    cards.push(`<div class="pcard ${r.pool === state.sel ? "sel" : ""} ${sib ? "sibrow" : ""}" data-pool="${r.pool}">
       <div class="pc1">${star}${icon}<b class="psym">${esc(r.symbol)}</b>${rank}<span class="spacer"></span><span class="badge ${v.level}">${v.level}</span></div>
       <div class="pc2"><span><small>TVL</small>${mU(r.tvlUsd)}</span><span><small>fee ${w}</small><b class="pos">${fmtPct(r.feePctDay[w], 1)}</b>/d</span>
         <span><small>1 jam</small>${fmtPct(fee1hPct, 2)}</span><span><small>mcap</small>${mU(r.mcapUsd)}</span></div>
-      <div class="pc3">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2}</div>
+      <div class="pc3">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2} ${sibBtn}</div>
       ${reasons ? `<div class="pc3 muted">${esc(reasons)}</div>` : ""}
       <div class="zap"><button data-zap="${size / 2}">⚡${mS(size / 2, 2)}</button><button data-zap="${size}">⚡${mS(size, 2)}</button><button class="edit" data-zap="ask">✏️</button></div>
     </div>`);
-    return `<tr data-pool="${r.pool}" class="${r.pool === state.sel ? "sel" : ""}">
+    html.push(`<tr data-pool="${r.pool}" class="${r.pool === state.sel ? "sel" : ""} ${sib ? "sibrow" : ""}">
       <td><span class="sym"><button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>${icon}${esc(r.symbol)}${rank}</span>
-        <span class="sub">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2} · …${r.pool.slice(-6)}</span></td>
+        <span class="sub">${r.binStep} · ${r.baseFeePct}% · ${age(r.poolAgeHours)} · <span class="${cls(r.priceChg24h)}">${fmtPct(r.priceChg24h, 0, true)} 24h</span>${sub2} · …${r.pool.slice(-6)} ${sibBtn}</span></td>
       <td class="r"><span class="big">${mU(r.tvlUsd)}</span><span class="sub">vol ${mU(r.vol24)}</span></td>
       <td class="r"><span class="big pos">${mU(r.fees[w])}</span><span class="sub">${fmtPct(r.feePctDay[w], 2)}/day</span></td>
       <td class="r"><span class="big pos">${fmtPct(fee1hPct, 2)}</span><span class="sub">${mU(r.fees["1h"])} / jam</span></td>
@@ -319,8 +336,19 @@ function renderPools() {
         <button data-zap="${size / 2}">⚡${mS(size / 2, 2)}</button>
         <button data-zap="${size}">⚡${mS(size, 2)}</button>
         <button class="edit" data-zap="ask">✏️</button></div></td>
-    </tr>`;
-  }).join("");
+    </tr>`);
+  };
+  for (const r of rows) {
+    one(r, false);
+    if (expanded.has(r.tokenMint)) {
+      const tp = tokenPoolsCache.get(r.tokenMint);
+      const sibs = tp ? tp.rows.filter(x => !shown.has(x.pool)) : null;
+      if (!sibs) html.push(`<tr class="sibrow"><td colspan="7" class="muted">↳ ambil pool lain…</td></tr>`);
+      else if (!sibs.length) html.push(`<tr class="sibrow"><td colspan="7" class="muted">↳ token ini nggak punya pool DLMM SOL lain${tp.other && tp.other.length ? ` (DEX lain: ${tp.other.map(o => esc(o.dex)).join(", ")}, lihat detail)` : ""}</td></tr>`);
+      for (const x of sibs || []) { shown.add(x.pool); one(x, true); }
+    }
+  }
+  $("#pools tbody").innerHTML = html.join("");
   $("#poolCards").innerHTML = cards.join("");
 }
 
@@ -353,6 +381,7 @@ function renderDetail(r, keepChart) {
     <div class="vbox ${v.level}"><span class="lv">${v.level}</span>${label} <span class="muted">skor ${v.score > 0 ? "+" : ""}${v.score}</span></div>
     <ul class="rs">${li}</ul>
     ${pingLine(r)}
+    <div class="allpools" id="allPools"><div class="muted">Semua pool ${esc(r.symbol)}…</div></div>
     <div class="zapbig">
       <button data-zap="${size / 2}">⚡ ${mS(size / 2, 2)} · ${ladderLabel()}</button>
       <button data-zap="${size}">⚡ ${mS(size, 2)} · ${ladderLabel()}</button>
@@ -362,6 +391,23 @@ function renderDetail(r, keepChart) {
       Skor cuma konteks: spec nggak nemu sinyal entry yang tahan di token baru, jadi level ditentuin gate + flag aja.</div>
     <div class="chart"><iframe src="${chart}" title="chart" loading="lazy"></iframe></div>`;
   if (old && old.querySelector("iframe").src === chart) $("#detail .chart").replaceWith(old);
+  renderAllPools(r);
+}
+
+// Detail: every DLMM SOL pool of this token (zap any of them) and its pools on other venues (context).
+async function renderAllPools(r) {
+  let tp;
+  try { tp = await loadTokenPools(r.tokenMint); } catch (e) { const el = $("#allPools"); if (el) el.innerHTML = `<div class="neg">Gagal ambil pool: ${esc(e.message)}</div>`; return; }
+  const el = $("#allPools");
+  if (!el || state.sel !== r.pool) return;
+  const w = state.win, size = state.data.sizeSol;
+  const list = tp.rows.map(x => `<div class="ap ${x.pool === r.pool ? "cur" : ""}" data-pick="${x.pool}">
+      <span><b>${x.binStep}</b> · ${x.baseFeePct}%</span><span>TVL ${mU(x.tvlUsd)}</span><span class="pos">${fmtPct(x.feePctDay[w], 1)}/d</span>
+      <span class="badge ${x.verdict.level}">${x.verdict.level}</span>
+      <span class="zap"><button data-zapp="${x.pool}" data-amt="${size / 2}">⚡½</button><button data-zapp="${x.pool}" data-amt="${size}">⚡</button></span></div>`).join("");
+  const other = (tp.other || []).map(o => `<a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.dex)}${o.labels.length ? " " + esc(o.labels.join("/")) : ""} · ${esc(o.quote)} · liq ${mU(o.liqUsd)} · vol ${mU(o.vol24)} ↗</a>`).join("");
+  el.innerHTML = `<div class="aph">Semua pool DLMM ${esc(r.symbol)} / SOL <span class="muted">(${tp.rows.length}, termasuk yang kesaring di list)</span></div>${list || '<div class="muted">nggak ada</div>'}
+    ${other ? `<div class="aph">DEX lain <span class="muted">(info, terminal LP di DLMM)</span></div><div class="apo">${other}</div>` : ""}`;
 }
 
 function pingLine(r) {
@@ -553,6 +599,7 @@ async function cleanupWallet(btn) {
     const sold = (s.tokens || []).filter(t => /^sold/.test(t.status)).length;
     alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n` + (s.tokens || []).map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`).join("\n") : "Gagal: " + (s.error || "?"));
     loadPortfolio();
+    loadLeftovers();
   } catch (e) { alert("Gagal: " + (e.message || e)); }
   finally { btn.disabled = false; btn.textContent = old; }
 }
@@ -593,6 +640,7 @@ function autoExitCell(p, pnlPct) {
     const left = pnlPct != null ? a.pct - pnlPct : null;
     st = `<span class="tp on">🎯 nyala · close+swap di +${a.pct}%${left != null ? ` (kurang ${left.toFixed(2)}%)` : ""}</span>`;
   } else if (a && a.status === "firing") st = `<span class="tp warn">⏳ lagi close + swap…</span>`;
+  else if (a && a.status === "selling") st = `<span class="tp warn">⏳ ${esc(a.msg || "token lagi dicoba jual")}</span>`;
   else if (a && a.status === "done") st = `<span class="tp pos">✓ auto exit: ${esc(a.msg || "")}</span>`;
   else if (a && a.status === "failed") st = `<span class="tp neg">✗ auto exit gagal: ${esc(a.msg || "")}</span>`;
   return `<div class="tpbox"><select class="tpsel" data-tp="${p.pool}" data-sym="${esc(p.symbol)}" title="Auto exit: close semua slice + jual token ke SOL saat PnL ladder ≥ target. Dicek server tiap ${state.pf.autoExitCheckMin || 2} menit (tanpa RPC) selama DLMM Web jalan.">${opts}</select>${st}</div>`;
@@ -609,6 +657,50 @@ async function setAutoExit(sel) {
   renderPortfolio();
 }
 
+// Tokens left in the wallet (what a close left behind), each with its own "Jual ke SOL" button, and
+// the last sales with their exact outcome (data/swaps.jsonl), so a sale that did not happen says why.
+async function loadLeftovers() {
+  const el = $("#pfTokens");
+  if (!el || !state.wallet) return;
+  try {
+    const d = await getJson(`/api/leftovers?wallet=${encodeURIComponent(state.wallet)}`);
+    state.leftovers = d;
+    renderLeftovers();
+  } catch (e) { el.innerHTML = `<div class="muted">Token sisa: ${esc(e.message)}</div>`; }
+}
+function renderLeftovers() {
+  const d = state.leftovers, el = $("#pfTokens");
+  if (!d || !el) return;
+  const mine = trade.ready() && trade.info.wallet === state.wallet;
+  // worth showing: ≥ $0.10 or no price known; the rest is dust (Cleanup leaves it too)
+  const worth = d.rows.filter(t => t.valueUsd == null || t.valueUsd >= 0.1);
+  const dust = d.rows.length - worth.length;
+  const rows = worth.slice(0, 15).map(t => `<div class="tk"><span class="tks"><b>${esc(t.symbol || short(t.mint))}</b><span class="sub">${t.ui.toLocaleString(undefined, { maximumFractionDigits: 2 })} · ${short(t.mint)}</span></span>
+      <span class="r">${t.valueUsd != null ? (solUsd() && state.unit !== "usd" ? fmtSol(t.valueUsd / solUsd(), 4) : fmtUsd(t.valueUsd)) : "--"}</span>
+      ${mine ? `<button class="btn go" data-sell="${t.mint}" data-sym="${esc(t.symbol || short(t.mint))}">Jual ke SOL</button>` : ""}<span class="tkres" data-res="${t.mint}"></span></div>`).join("");
+  const sales = (d.sales || []).slice(0, 5).map(x => `<div class="sale ${x.ok ? "pos" : "neg"}">${new Date(x.ts).toLocaleTimeString()} · ${esc(short(x.mint))} · ${x.ok
+    ? `✓ ◎${(x.sol || 0).toFixed(4)} via ${esc(x.via)} <a href="https://solscan.io/tx/${esc(x.signature)}" target="_blank" rel="noopener">tx ↗</a>`
+    : `✗ ${esc((x.error || "").slice(0, 160))}`}</div>`).join("");
+  el.innerHTML = (rows ? `<div class="tkh">Token sisa di wallet <span class="muted">(belum SOL${dust ? ` · ${dust} token receh < $0.10 disembunyiin` : ""})</span></div>${rows}` : "")
+    + (sales ? `<div class="tkh">Penjualan terakhir</div>${sales}` : "");
+}
+async function sellToken(btn) {
+  if (!trade.ready()) { alert(trade.why()); return; }
+  const sym = btn.dataset.sym;
+  if (!confirm(`Jual semua ${sym} ke SOL?\nJupiter dulu, kalau gagal langsung ke pool Meteora. Batal kalau harganya > batas max loss di bawah harga pool.`)) return;
+  const res = document.querySelector(`[data-res="${btn.dataset.sell}"]`);
+  btn.disabled = true;
+  res.textContent = "jual…";
+  try {
+    const s = await trade.call("/api/trade/sell", { mint: btn.dataset.sell });
+    res.innerHTML = s.ok ? (s.signature ? `<span class="pos">✓ ◎${(s.sol || 0).toFixed(4)} via ${esc(s.via)}</span> ${solscan(s.signature)}` : `<span class="muted">${esc(s.note || "udah nggak ada")}</span>`)
+      : `<span class="neg">✗ ${esc(s.error || "gagal")}</span>`;
+    setTimeout(() => { loadLeftovers(); loadPortfolio(); }, 5000);
+  } catch (e) { res.innerHTML = `<span class="neg">✗ ${esc(e.message)}</span>`; }
+  finally { btn.disabled = false; }
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-sell]"); if (b) sellToken(b); });
+
 // ---------- portfolio ----------
 async function loadPortfolio() {
   const w = $("#wallet").value.trim();
@@ -624,6 +716,7 @@ async function loadPortfolio() {
   }
   renderPortfolio();
   renderTop();
+  loadLeftovers();
 }
 function renderPortfolio() {
   const pf = state.pf;
@@ -696,6 +789,10 @@ function renderPortfolio() {
   }
   for (const k of Object.keys(seen)) if (Date.now() - seen[k] > 3 * 864e5) delete seen[k];
   store.set("seenAlerts", seen);
+  // Auto exits of ladders that are gone from the list (closed): what happened to them, last 24 h.
+  const gone = Object.entries(pf.autoExit || {}).filter(([pool, e]) => !groups.has(pool) && e.status !== "armed"
+    && (Date.now() / 1000 - (e.firedAt || e.armedAt || 0)) < 86400);
+  $("#pfAuto").innerHTML = gone.map(([pool, e]) => `<div class="tp ${e.status === "done" ? "pos" : e.status === "failed" ? "neg" : "warn"}">🎯 ${esc(e.symbol || short(pool))}: ${esc(e.msg || e.status)}</div>`).join("");
   const x = pf.exitsCfg || {};
   $("#pfRules").textContent = `Exit rules: alert PnL ≤ ${x.alertAtPnlPct}% · alert 1/3 bawah range · close kalau ${x.closeBelowRangeAfterMin} menit di bawah range (SOL-only) · `
     + `TP ${x.takeProfitPct != null ? x.takeProfitPct : "off"} · SL ${x.stopLossPct != null ? x.stopLossPct : "off"}. Close di sini pakai key di .env (lu konfirmasi). Yang nutup sendiri 24 jam: "monitor --mode auto" di Mac.`;
@@ -759,7 +856,7 @@ function setUnit(u) {
   renderTop();
   if (state.data) renderPools();
   if (state.pf) renderPortfolio();
-  if (state.sel && state.data) { const r = state.data.rows.find(x => x.pool === state.sel); if (r) renderDetail(r, true); }
+  if (state.sel && state.data) { const r = rowOf(state.sel); if (r) renderDetail(r, true); }
 }
 function setMode(m) {
   state.mode = m;
@@ -814,7 +911,7 @@ document.addEventListener("click", e => {
   const st = e.target.closest("[data-star]");
   if (!st || !state.data) return;
   e.stopPropagation();
-  const r = state.data.rows.find(x => x.pool === st.dataset.star);
+  const r = rowOf(st.dataset.star);
   toggleWatch(st.dataset.star, r ? r.symbol : "");
 }, true);
 ["#q", "#hideSkip"].forEach(s => $(s).addEventListener("input", () => {
@@ -823,9 +920,19 @@ document.addEventListener("click", e => {
 }));
 $("#tvl").onchange = () => { store.set("tvl", $("#tvl").value); loadPools(); };
 const onPoolClick = e => {
+  const sb = e.target.closest("[data-sib]");
+  if (sb) {
+    e.stopPropagation();
+    const mint = sb.dataset.sib;
+    if (expanded.has(mint)) { expanded.delete(mint); return renderPools(); }
+    expanded.add(mint);
+    renderPools();
+    loadTokenPools(mint).then(renderPools).catch(err => { toast("Gagal ambil pool: " + err.message); expanded.delete(mint); renderPools(); });
+    return;
+  }
   const tr = e.target.closest("tr, .pcard");
   if (!tr || !state.data) return;
-  const r = state.data.rows.find(x => x.pool === tr.dataset.pool);
+  const r = rowOf(tr.dataset.pool);
   const z = e.target.closest("[data-zap]");
   if (z) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeSol : parseFloat(z.dataset.zap));
   renderDetail(r);
@@ -833,9 +940,13 @@ const onPoolClick = e => {
 $("#pools tbody").addEventListener("click", onPoolClick);
 $("#poolCards").addEventListener("click", onPoolClick);
 $("#detail").addEventListener("click", async e => {
+  const zp = e.target.closest("[data-zapp]");
+  if (zp) { const x = rowOf(zp.dataset.zapp); if (x) openZap(x, parseFloat(zp.dataset.amt)); return; }
+  const pk = e.target.closest("[data-pick]");
+  if (pk) { const x = rowOf(pk.dataset.pick); if (x && x.pool !== state.sel) renderDetail(x); return; }
   if (e.target.closest("[data-closesheet]")) { document.body.classList.remove("sheet"); return; }
   const z = e.target.closest("[data-zap]");
-  const r = state.data && state.data.rows.find(x => x.pool === state.sel);
+  const r = state.data && rowOf(state.sel);
   if (z && r) return openZap(r, z.dataset.zap === "ask" ? state.data.sizeSol : parseFloat(z.dataset.zap));
   const c = e.target.closest("[data-copy]");
   if (c) { try { await navigator.clipboard.writeText(c.dataset.copy); c.textContent = "copied ✓"; } catch (err) {} }

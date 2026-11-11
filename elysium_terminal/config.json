@@ -1,0 +1,56 @@
+{
+  "_note": "Elysium Terminal defaults. Gates and flags are starting values, not a backtest: change them in Settings (data/settings.json).",
+  "universe": {
+    "quotes": ["USDC", "HYPE", "WHYPE"],
+    "minLpFeePct": 0.05,
+    "maxLpFeePct": 15
+  },
+  "scan": {
+    "backfillHours": 1,
+    "pollSec": 30,
+    "maxPools": 300
+  },
+  "gates": {
+    "minPoolAgeMinutes": 60,
+    "minTvlUsd": 2000,
+    "minMcapUsd": null,
+    "minFeePctDay": 2
+  },
+  "flags": {
+    "pump1hPct": 25,
+    "drop6hPct": -17,
+    "minTvlUsd": 10000,
+    "sellsShare1hPct": 65,
+    "hookPool": true,
+    "nightEntryLocalHours": null,
+    "utcOffsetHours": 7
+  },
+  "position": {
+    "defaultSizeUsd": 400,
+    "ladderSlices": 5,
+    "rangeTopPct": 0,
+    "rangeBottomPct": -60,
+    "bankrollUsd": 8000,
+    "lossBudgetPct": 5
+  },
+  "ping": {
+    "top": 10,
+    "sortBy": "fee1hPct",
+    "minTvlUsd": 5000,
+    "minMcapUsd": 100000,
+    "maxMcapUsd": null,
+    "minPoolAgeHours": 1,
+    "maxPoolAgeHours": null,
+    "minFees1hUsd": 5,
+    "requireGates": true
+  },
+  "exits": {
+    "alertAtPnlPct": -10,
+    "alertBottomThirdOfRange": true,
+    "alertFullyConverted": true,
+    "takeProfitPct": null,
+    "stopLossPct": null
+  },
+  "web": {"refreshMin": 2, "autoExitCheckMin": 1},
+  "trade": {"maxLossPct": 5, "gasReserveHype": 0.01}
+}

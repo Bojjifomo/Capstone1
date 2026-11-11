@@ -256,3 +256,29 @@ button.chip { background: transparent; cursor: pointer; font: inherit; }
   .sgrid { grid-template-columns: 1fr; }
   .toast { left: 10px; right: 10px; bottom: calc(74px + env(safe-area-inset-bottom)); }
 }
+#pfAuto:empty { display: none; }
+
+/* other pools of the same token */
+.sib { background: transparent; border: 1px solid #2c3746; border-radius: 10px; color: var(--blue); font-size: 10.5px; padding: 0 6px; cursor: pointer; margin-left: 4px; }
+.sib.on { border-color: var(--blue); }
+.sibtag { color: var(--blue); font-size: 10.5px; margin-left: 4px; }
+tbody tr.sibrow { background: #0f141b; }
+tbody tr.sibrow td:first-child { box-shadow: inset 3px 0 0 #275a88; }
+.pcard.sibrow { border-left: 3px solid #275a88; background: #0f141b; }
+.allpools { margin: 6px 16px 10px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.aph { font-weight: 600; margin: 4px 0 6px; }
+.ap { display: grid; grid-template-columns: 1fr 1.2fr 0.9fr auto auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid #1a2029; cursor: pointer; font-size: 12px; }
+.ap.cur { color: var(--accent); }
+.ap .zap button { padding: 1px 7px; }
+.apo a { display: block; font-size: 12px; padding: 3px 0; }
+@media (max-width: 760px) { .ap { grid-template-columns: 1fr 1fr 0.8fr auto; } .ap .badge { display: none; } }
+
+/* tokens left in the wallet + last sales */
+.left-tokens { padding: 4px 14px 8px; border-bottom: 1px solid var(--line); }
+.left-tokens:empty { display: none; }
+.tkh { font-weight: 600; margin: 8px 0 4px; }
+.tk { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid #1a2029; }
+.tk .tks { display: flex; flex-direction: column; }
+.tk .tkres { grid-column: 1 / -1; font-size: 12px; }
+.tk .tkres:empty { display: none; }
+.sale { font-size: 12px; padding: 2px 0; white-space: normal; }

@@ -148,6 +148,38 @@ class Watcher:
             out += self._tx(tx, t)
         return out
 
+    def snapshot(self, days=7):
+        """Posisi yang SEKARANG masih kebuka di wallet yang dipantau, buat ngisi rekap (nggak di-blast).
+
+        Baca NFT yang dimint ke / diburn dari wallet `days` hari terakhir (satu filter, sama kayak poll), sisain yang
+        belum diburn, ambil pool + tick dari receipt mint-nya, terus pastiin ke chain NFT-nya masih di wallet itu.
+        -> [{"action": "open", "pos", "token_ids", "wallet", "tx"}]. Posisi yang dibuka lebih lama dari `days` nggak kebaca."""
+        if not self.wallets:
+            return []
+        head = int(self.calls.call("eth_blockNumber", []), 16) - CONFIRMATIONS
+        start = max(0, head - int(days * 24 * 60 * BLOCKS_PER_MINUTE))
+        ends = [_pad(RH.ZERO)] + [_pad(w) for w in self.wallets]
+        logs, self.chunk = self.rpc.get_logs(
+            {"address": [RH.POSITION_MANAGER], "topics": [C.TRANSFER, ends, ends]}, start, head, self.chunk)
+        owned = {}  # token_id -> (wallet, mint tx, block)
+        for lg in sorted(logs, key=lambda lg: (int(lg["blockNumber"], 16), int(lg["logIndex"], 16))):
+            if len(lg["topics"]) != 4:
+                continue
+            d = C.decode_nft_transfer(lg)
+            if d["from"] == RH.ZERO and d["to"] in self.wallets:
+                owned[d["token_id"]] = (d["to"], d["tx"], d["block"])
+            elif d["from"] in self.wallets:
+                owned.pop(d["token_id"], None)  # diburn / dikirim
+        txs = {}
+        for tid, (wallet, tx, block) in owned.items():
+            txs.setdefault(tx, {"block": block, "wallet": wallet, "mint": set(), "burn": set()})["mint"].add(tid)
+        out = []
+        for tx, t in sorted(txs.items(), key=lambda kv: kv[1]["block"]):
+            for ev in self._tx(tx, t):
+                if ev["action"] == "open" and self.position_alive(ev["token_ids"][0], ev["wallet"]) is not False:
+                    out.append(ev)
+        return out
+
     def _tx(self, tx, t):
         """Satu transaksi: CLOSE per pool (NFT diburn) dulu, baru OPEN per pool (NFT dimint)."""
         receipt = self.calls.call("eth_getTransactionReceipt", [tx])
@@ -200,8 +232,9 @@ class Watcher:
                 {"to": RH.POSITION_MANAGER, "data": "0x" + SEL_OWNER_OF + C.word(int(token_id))}, "latest"])
         except R.TransportError:
             return None
-        except R.RPCError:  # revert: NFT udah nggak ada (diburn)
-            return False
+        except R.RPCError as e:  # cuma revert NOT_MINTED = NFT beneran udah diburn; error lain = nggak tau
+            msg = str(e).lower()
+            return False if ("revert" in msg and "not_minted" in msg) or "nonexistent token" in msg else None
         if not ret or len(ret) < 66:
             return False
         return ("0x" + ret[-40:]).lower() == wallet.lower()

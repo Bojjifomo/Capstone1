@@ -7,6 +7,7 @@ power-meter/config.json
 power-meter/*.db
 power-meter/logs/
 lp_call_bot/state.json
+lp_call_bot/state.lock
 lp_call_bot/bot.log
 lp_call_bot/heartbeat
 portfolio/ips.md
@@ -26,3 +27,12 @@ dlmm_terminal/executor/node_modules/
 rh_terminal/data/
 rh_terminal/.env
 rh_terminal/executor/node_modules/
+
+# elysium_terminal
+elysium_terminal/data/
+elysium_terminal/.env
+elysium_terminal/executor/node_modules/
+
+# rpc_monitor
+rpc_monitor/config.json
+rpc_monitor/logs/

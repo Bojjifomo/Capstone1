@@ -71,7 +71,7 @@ class FakeChain:
         c0, c1 = (COIN, usdg) if usdg_token1 else (usdg, COIN)
         self.keys = {POOL[2:52]: (c0, c1, FEE), POOL2[2:52]: (RH.WETH, COIN, 3000)}  # POOL2: tanpa USDG
         self.missing_receipts = set()
-        self.burned, self.owners, self.down = set(), {}, False
+        self.burned, self.owners, self.down, self.odd_errors = set(), {}, False, set()
         self.calls = []
 
     def call(self, method, params):
@@ -96,7 +96,9 @@ class FakeChain:
         if tx["to"] == RH.POSITION_MANAGER and sel == W.SEL_OWNER_OF:
             tid = int(arg, 16)
             if tid in self.burned:
-                raise W.R.RPCError("eth_call: execution reverted")
+                raise W.R.RPCError("eth_call: execution reverted: NOT_MINTED")
+            if tid in self.odd_errors:
+                raise W.R.RPCError("eth_call: header not found")
             if self.down:
                 raise W.R.TransportError("rpc down")
             return "0x" + C.addr_word(self.owners.get(tid, WALLET))
@@ -324,6 +326,21 @@ class WatcherTest(unittest.TestCase):
         self.assertEqual([e["action"] for e in evs], ["open"])
         self.assertEqual(self.chain.calls.count("eth_blockNumber"), 1)
 
+    def test_snapshot_finds_positions_still_open(self):
+        self.make()
+        self.w.set_wallets([WALLET, OTHER])
+        self.chain.head = 5000
+        t1, t2, t3, t4 = tx_hash(1), tx_hash(2), tx_hash(3), tx_hash(4)
+        self.chain.logs += mint([1, 2], t1, 4000) + ladder([1, 2], t1, 4000)             # masih kebuka
+        self.chain.logs += mint([3], t2, 4100) + ladder([3], t2, 4100)                   # ditutup lagi
+        self.chain.logs += burn([3], t3, 4200) + ladder([3], t3, 4200, delta=-5_000_000)
+        self.chain.logs += mint([4], t4, 4300, wallet=OTHER) + ladder([4], t4, 4300)     # wallet pantauan, kebuka
+        self.chain.logs += mint([5], tx_hash(5), 4400) + ladder([5], tx_hash(5), 4400)   # dikirim ke luar
+        self.chain.owners.update({4: OTHER, 5: "0x" + "a9" * 20})
+        evs = self.w.snapshot(days=1)
+        self.assertEqual([(e["token_ids"], e["wallet"]) for e in evs], [([1, 2], WALLET), ([4], OTHER)])
+        self.assertEqual(evs[0]["pos"]["range"], ["-35"])  # 2 rung x 2100 tick
+
     def test_no_wallets_reads_only_the_block_number(self):
         self.make()
         self.w.set_wallets([])
@@ -457,6 +474,52 @@ class AutoCallTest(unittest.TestCase):
         self.assertEqual(self.store.get("wofl")["status"], "closed")
         self.assertEqual(self.store.get("hydx")["status"], "open")
 
+    def test_sync_fills_the_recap_from_chain_without_blasting(self):
+        chain = FakeChain()
+        self.bot.owner_wallets = [WALLET]
+        self.store.add_wallet(OTHER, "degen")
+        self.bot.watcher = W.Watcher(chain, chain, [WALLET, OTHER], self.store)
+        self.store.open_position({"coin": "wofl", "ca": self.pos["ca"], "fee": "4.7915", "range": ["-60"]})  # basi
+        chain.head = 5000
+        chain.logs += mint([1], tx_hash(1), 4000) + ladder([1], tx_hash(1), 4000)
+        chain.logs += mint([4], tx_hash(4), 4300, wallet=OTHER) + ladder([4], tx_hash(4), 4300)
+        chain.owners[4] = OTHER
+        sent = len(self.tg.sent)
+        self.assertEqual(self.bot.sync_positions(), 2)
+        self.assertEqual(len(self.tg.sent), sent)  # nggak nge-blast
+        self.assertEqual(self.store.get("wofl")["status"], "closed")
+        self.assertEqual(self.store.get("hydx")["token_ids"], [1])
+        self.assertEqual(self.store.get("hydx@degen")["by"], "degen")
+        self.assertTrue(self.bot.send_recap())
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("(2)", text)
+        self.assertIn("HYDX · 👀 degen", text)
+
+    def test_other_rpc_errors_never_close_a_position(self):
+        """Rekap 'cuma V4': posisi yang masih kebuka nggak boleh hilang gara-gara RPC error yang bukan NOT_MINTED."""
+        chain = FakeChain()
+        self.bot.watcher = W.Watcher(chain, chain, [WALLET], self.store)
+        self.bot.auto_call({"action": "open", "wallet": WALLET, "token_ids": [11], "pos": dict(self.pos)})
+        chain.odd_errors.add(11)
+        self.bot.prune_closed()
+        self.assertEqual(self.store.get("hydx")["status"], "open")
+        chain.odd_errors.clear()
+        chain.burned.add(11)
+        self.bot.prune_closed()
+        self.assertEqual(self.store.get("hydx")["status"], "closed")
+
+    def test_second_instance_is_refused(self):
+        path = Path(self.tmp.name) / "state.lock"
+        first, _ = B.single_instance(path)
+        self.assertIsNotNone(first)
+        second, other = B.single_instance(path)
+        self.assertIsNone(second)
+        self.assertEqual(other, str(B.os.getpid()))
+        first.close()  # bot pertama mati -> kunci lepas
+        third, _ = B.single_instance(path)
+        self.assertIsNotNone(third)
+        third.close()
+
     def test_hourly_recap(self):
         self.bot.recap_seconds = 3600
         self.assertFalse(self.bot.maybe_recap(now=1000))  # baru nyala: cuma mulai ngitung
@@ -493,14 +556,20 @@ class AutoCallTest(unittest.TestCase):
         self.bot.owner_wallets = [WALLET]
         self.store.add_wallet(OTHER, "Aan")
         self.bot.auto_call({"action": "open", "wallet": WALLET, "pos": dict(self.pos)})
-        self.assertIn("OPEN LP — HYDX</b>", self.tg.to(FAN)[-1])  # punya lu: tanpa nama
+        self.assertTrue(self.tg.to(FAN)[-1].startswith("🟢 <b>OPEN LP — HYDX</b>"))  # punya lu: kayak biasa
         self.bot.auto_call({"action": "open", "wallet": OTHER, "pos": dict(self.pos, range=["-70"])})
-        self.assertIn("OPEN LP — HYDX · Aan</b>", self.tg.to(FAN)[-1])
+        text = self.tg.to(FAN)[-1]
+        self.assertTrue(text.startswith("👀 <b>PANTAUAN WALLET: AAN</b>"))
+        self.assertIn("🔵 <b>OPEN LP — HYDX</b>", text)
+        self.assertNotIn("🟢", text)
         self.assertEqual(self.store.get("hydx")["range"], ["-65"])  # nggak ketimpa
         self.assertEqual(self.store.get("hydx@aan")["range"], ["-70"])
 
         self.bot.auto_call({"action": "close", "wallet": OTHER, "pos": {"coin": "hydx", "ca": self.pos["ca"]}})
-        self.assertIn("CLOSE LP — HYDX · Aan", self.tg.to(FAN)[-1])
+        text = self.tg.to(FAN)[-1]
+        self.assertIn("PANTAUAN WALLET: AAN", text)
+        self.assertIn("🟠 <b>CLOSE LP — HYDX</b>", text)
+        self.assertNotIn("🔴", text)
         self.assertEqual(self.store.get("hydx")["status"], "open")
         self.assertEqual(self.store.get("hydx@aan")["status"], "closed")
 
@@ -515,7 +584,7 @@ class AutoCallTest(unittest.TestCase):
         self.assertTrue(self.bot.send_recap())
         text = self.tg.to(FAN)[-1]
         self.assertIn("(2)", text)
-        self.assertIn("HYDX · Aan", text)
+        self.assertIn("HYDX · 👀 Aan", text)
 
     def test_second_bot_instance_warns_once(self):
         self.tg.call = mock.Mock(return_value={"ok": False, "error_code": 409, "description": "Conflict"})

@@ -11,6 +11,7 @@ orchestrator-nya: **[TOOLS.md](TOOLS.md)**.
 | [`power-meter/`](power-meter/README.md) | Watt Mac mini real time (total, CPU, GPU), kWh & biaya per hari, dibuka dari HP lewat Tailscale |
 | [`lp_call_bot/`](lp_call_bot/README.md) | Bot Telegram: blast call open / close / reentry LP ke follower |
 | [`dlmm_terminal/`](dlmm_terminal/README.md) | Solana LP: filter entry pool Meteora DLMM + monitor PnL & auto exit (spec v1) |
+| [`rpc_monitor/`](rpc_monitor/README.md) | **RPC Monitor**: semua RPC yang dipakai semua bot, mana yang udah mau limit (kuota, 429, probe), dibuka dari HP (Tailscale) |
 | [`fund/`](fund/README.md) | **Fund**: net worth, pengeluaran, saran fund manager + realisasinya, LP auto-track (0 RPC). Terpisah dari tools LP, dibuka dari HP (Tailscale) |
 | [`FUND_MANAGER.md`](FUND_MANAGER.md) | Fund manager: sleeves, IPS, workflow harian → tahunan, subagent `fund-manager` |
 | [`orchestrator/`](TOOLS.md#orchestrator-satu-agent-buat-semuanya) | Agent Claude yang ngejalanin tools di atas |

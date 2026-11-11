@@ -1,0 +1,21 @@
+{
+  "port": 7795,
+  "probe_every_s": 300,
+  "thresholds": {"warn_pct": 70, "near_pct": 90, "limited_near": 10},
+
+  "plans": [
+    {"name": "Helius Free", "match": "helius", "monthly": 1000000, "unit": "credit", "per_call": 1, "rps": 10},
+    {"name": "Alchemy Free", "match": "alchemy.com", "monthly": 30000000, "unit": "CU", "per_call": 20, "rps": 25},
+    {"name": "SolidRPC", "match": "solidrpc", "monthly": 0, "daily": 0, "rps": 0}
+  ],
+
+  "endpoints": {
+    "rpc.solidrpc.io#0123456789": {"name": "SolidRPC (key utama)", "daily": 200000}
+  },
+
+  "extra_bots": [
+    {"id": "sol_copy_bot", "name": "Sol Copy Bot", "chain": "solana", "labels": ["copy"],
+     "keychain": [{"service": "Sol Copy Bot", "accounts": ["rpcs"]}],
+     "urls": [], "logs": []}
+  ]
+}

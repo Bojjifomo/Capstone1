@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Elysium Terminal">
+<meta name="theme-color" content="#0e1116">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>Elysium Terminal</title>
+<link rel="stylesheet" href="style.css?v=4">
+</head>
+<body>
+<header class="top">
+  <div class="brand">◆ ELY <b>TERMINAL</b></div>
+  <nav>
+    <button class="tab on" data-view="pools">🧭 Pilih pool</button>
+    <button class="tab" data-view="tight">🎯 Tight</button>
+    <button class="tab" data-view="portfolio">💼 Portfolio <span id="posCount" class="pill hidden">0</span></button>
+  </nav>
+  <div class="stat" id="stNet">posisi <b>--</b></div>
+  <div class="stat" id="stEth">HYPE <b>--</b></div>
+  <div class="stat" id="stFees">fees unclaimed <b>--</b></div>
+  <div class="stat" id="stWallet" title="USDC + HYPE di wallet (belum di posisi)">wallet <b>--</b></div>
+  <div class="spacer"></div>
+  <div class="seg unit" id="unit" title="Baca semua angka dalam dolar atau HYPE (shortcut u)"><button data-u="usd">$ USD</button><button data-u="eth">H HYPE</button></div>
+  <button class="chip idx" id="idxChip" title="Index swap dari chain">⛓ --</button>
+  <button class="chip" id="bellBtn" title="Notifikasi browser: pool baru masuk PING, exit alert">🔕</button>
+  <button class="chip" id="setBtn" title="Settings: ladder, risk, gate, flag, PING, exit">⚙</button>
+  <span class="chip practice hidden" id="practiceChip" title="ELYSIUM_PRACTICE_MODE=true: semua tombol cuma simulasi (eth_call), nggak ada yang dikirim">PRACTICE</span>
+  <button class="chip key" id="keyBtn" title="Trading wallet">🔒 read-only</button>
+  <div class="chip" id="stCap" title="max posisi = bankroll × loss budget ÷ 0.9">max --</div>
+  <div class="chip live" id="stAge">● --</div>
+</header>
+<div id="practiceBar" class="practicebar">PRACTICE — tombol cuma simulasi (eth_call). Nggak ada yang dikirim.</div>
+
+<main>
+  <section class="left" id="viewPools">
+    <div class="bar">
+      <span class="title">POOLS</span>
+      <div class="seg mode" id="mode">
+        <button data-m="all">ALL</button><button data-m="pass">✅ PASS</button>
+        <button data-m="ping">📡 PING <span class="n" id="nPing"></span></button>
+        <button data-m="watch">★ WATCH <span class="n" id="nWatch"></span></button>
+      </div>
+      <span class="spacer"></span>
+      <div class="seg" id="win">
+        <button data-w="5m">5m</button><button data-w="1h" class="on">1h</button><button data-w="6h">6h</button><button data-w="24h">24h</button>
+      </div>
+    </div>
+    <div class="bar filters">
+      <input id="q" placeholder="cari token / CA / pool… (Enter = cari semua pool)" autocomplete="off">
+      <label>TVL ≥ <select id="tvl">
+        <option value="0">semua</option><option value="1000">$1k</option><option value="2000" selected>$2k</option>
+        <option value="5000">$5k</option><option value="10000">$10k</option><option value="25000">$25k</option>
+      </select></label>
+      <label>quote <select id="quote"><option value="">semua</option><option value="USDC">USDC</option><option value="HYPE">HYPE</option></select></label>
+      <label>dex <select id="dex" title="Tersimpan di browser ini, bukan di Mac lain"><option value="">semua</option><option value="v4">v4</option><option value="v3">v3</option></select></label>
+      <label><input type="checkbox" id="hideSkip" checked> hide SKIP</label>
+      <details class="cols" id="cols" title="Kolom ini cuma di browser ini">
+        <summary>kolom</summary>
+        <label><input type="checkbox" data-col="tvl" checked> TVL</label>
+        <label><input type="checkbox" data-col="fees" checked> Fees</label>
+        <label><input type="checkbox" data-col="fee1h" checked> Fee 1 jam</label>
+        <label><input type="checkbox" data-col="mcap" checked> Mcap</label>
+        <label><input type="checkbox" data-col="score" checked> Entry</label>
+      </details>
+      <span class="muted" id="count">--</span>
+    </div>
+    <div class="bar searchbar hidden" id="searchInfo"></div>
+    <div class="bar pinginfo hidden" id="pingInfo"></div>
+    <div class="tablewrap">
+      <table id="pools">
+        <thead><tr>
+          <th data-sort="symbol">POOL<small>fee · age · 24h</small></th>
+          <th class="r col-tvl" data-sort="tvlUsd">TVL<small>vol <span class="wl">1H</span></small></th>
+          <th class="r col-fees" data-sort="fees">FEES <span class="wl">1H</span><small>% / hari</small></th>
+          <th class="r col-fee1h" data-sort="fee1h">FEE 1 JAM<small>% TVL · $ · swaps</small></th>
+          <th class="r col-mcap" data-sort="mcapUsd">MCAP<small>24h</small></th>
+          <th class="col-score" data-sort="score">ENTRY CHECK<small>gate · flag · alasan</small></th>
+          <th>ZAP<small>ladder, lu konfirmasi</small></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="cards" id="poolCards"></div>
+      <div class="empty" id="poolsEmpty">Loading… (pertama kali index swap baca 1 jam terakhir dari Elysium, bisa sampai semenit)</div>
+    </div>
+    <div class="idxline" id="idxLine"></div>
+    <div class="idxline" id="rpcLine"></div>
+  </section>
+
+  <section class="left hidden" id="viewPortfolio">
+    <div class="bar">
+      <span class="title">PORTFOLIO</span>
+      <span class="muted">satu baris per posisi · dibaca dari chain · ⚙ auto per posisi (TP, SL, re-entry / close saat keluar range)</span>
+      <span class="spacer"></span>
+      <input id="wallet" placeholder="wallet 0x…" autocomplete="off" spellcheck="false">
+      <button class="btn" id="loadWallet">Load</button>
+    </div>
+    <div class="bar summary" id="pfSummary"></div>
+    <div class="tablewrap">
+      <table id="positions">
+        <thead><tr>
+          <th>POSISI<small>NFT · in range · umur</small></th>
+          <th class="r">PNL<small>$ · % · nilai · fee</small></th>
+          <th>RANGE<small>mcap bawah ▮ atas · posisi harga</small></th>
+          <th>STATUS<small>alert · range</small></th>
+          <th><button class="btn" id="cleanupBtn" title="Jual sisa token di wallet ke USDC/HYPE">Cleanup</button></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="cards" id="pfCards"></div>
+      <div class="phoneonly cleanrow"><button class="btn" id="cleanupBtn2">🧹 Cleanup wallet</button></div>
+      <div class="empty" id="pfEmpty">Isi wallet lalu Load. Tanpa private key: cuma baca.</div>
+    </div>
+    <div class="note" id="pfRules"></div>
+  </section>
+
+  <section class="left hidden" id="viewTight">
+    <div class="bar">
+      <span class="title">TIGHT RANGE</span>
+      <span class="muted">range sempit dua sisi (beli token saat buka). Bukan janji profit: target %/jam cuma filter.</span>
+    </div>
+    <div id="tightRoot"><div class="empty">Loading tight range…</div></div>
+  </section>
+
+  <aside class="right" id="detail">
+    <div class="empty">Klik pool buat detail, chart, dan plan zap.</div>
+  </aside>
+</main>
+
+<nav class="bottomnav" id="bottomnav">
+  <button data-view="pools" data-m="all">🧭<span>Pool</span></button>
+  <button data-view="pools" data-m="pass">✅<span>Pass</span></button>
+  <button data-view="pools" data-m="ping">📡<span>PING</span></button>
+  <button data-view="pools" data-m="watch">★<span>Watch</span></button>
+  <button data-view="tight">🎯<span>Tight</span></button>
+  <button data-view="portfolio">💼<span>Portfolio</span></button>
+</nav>
+<div class="modal hidden" id="modal"><div class="card" id="modalCard"></div></div>
+<script>
+  // Separate from app.js on purpose: if app.js can't even be parsed, this still says so.
+  (function () {
+    var said = false;
+    function say(msg) {
+      said = true;
+      var el = document.getElementById("poolsEmpty");
+      if (!el) return;
+      el.className = "empty";
+      el.innerHTML = '<span style="color:#ff5a5f">' + String(msg).replace(/[<>&]/g, "") + "</span><br>"
+        + "Browser: " + navigator.userAgent.replace(/[<>&]/g, "") + "<br>Screenshot ini + Console (Cmd+Option+J) ke Claude.";
+    }
+    window.addEventListener("error", function (e) {
+      say("Error: " + e.message + (e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : ""));
+    });
+    setTimeout(function () {
+      if (!window.__elyStarted && !said) say("app.js nggak jalan di browser ini (versi browser terlalu lama, atau file gagal ke-load).");
+    }, 8000);
+  })();
+</script>
+<script src="app.js?v=5"></script>
+</body>
+</html>

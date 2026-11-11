@@ -29,7 +29,10 @@ Command owner: `/posisi` (LP yang kebuka), `/rekap` (blast rekap sekarang), `/be
 tanpa nilai), biar follower yang ketinggalan call tetep tau. Isinya dari call yang dikirim bot (auto atau ketik):
 posisi yang dibuka sebelum bot nyala nggak ada di situ. Sebelum dikirim, posisi dari auto call dicek ke chain (NFT-nya
 masih di wallet?), jadi posisi yang CLOSE-nya kelewat (RPC error / bot mati) nggak ikut. Call ketik manual ikut rekap
-24 jam sejak terakhir di-update. `/bersih` = buang semua catatan lama yang nggak bisa dicek ke chain. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
+24 jam sejak terakhir di-update. `/bersih` = buang semua catatan lama yang nggak bisa dicek ke chain.
+Pas bot nyala (dan lewat `/sinkron`), daftar rekap disusun ulang dari chain: NFT yang dimint ke wallet lu / wallet
+pantauan `RECAP_SYNC_DAYS` (7) hari terakhir dan masih dipegang. Nggak ada yang di-blast; posisi yang dibuka lebih
+lama dari itu nggak kebaca. Nggak ada posisi kebuka = nggak ada blast. `RECAP_MINUTES=0`
 = mati.
 
 Command follower: `/start` (langganan), `/stop`, `/posisi`.
@@ -63,7 +66,8 @@ ada baca-mundur) dan ngirim call sendiri, ke channel + semua follower:
   dipantau, berapa pun jumlah wallet-nya), plus 1 per transaksi buka/tutup. Default 20 detik = ±8.700 panggilan/hari,
   muat kuota SolidRPC 10k/hari; `AUTO_POLL_SECONDS=30` = ±5.800. `/auto` nunjukin pemakaian aslinya.
 * **Wallet lain:** `/wallet add 0x… nama` di DM bot = wallet itu ikut dipantau mulai saat itu, tanpa restart. Call-nya
-  bertanda nama itu (`🟢 OPEN LP — FOREVER · Aan`), di rekap juga, dan posisinya dicatat terpisah dari punya lu
+  beda tampilan dari call lu: diawali `👀 PANTAUAN WALLET: AAN` + catatan "bukan call dari admin", pakai 🔵 OPEN /
+  🟠 CLOSE (call lu tetep 🟢 / 🔴), dan di rekap bertanda `· 👀 Aan`, dan posisinya dicatat terpisah dari punya lu
   (koin sama nggak saling nimpa). `/wallet` = daftar, `/wallet hapus nama` = berhenti mantau. Wallet lu sendiri tetep
   dari `WALLET_ADDRESSES` di `.env` (call-nya tanpa nama). Daftar wallet tambahan disimpen di `state.json`.
 * Call manual (ketik) tetep jalan barengan. Cek status: `/auto` (block terakhir dibaca, kapan terakhir sehat, error

@@ -84,6 +84,32 @@ def get_json(url: str, timeout: float = 15, retries: int = 2):
     raise last
 
 
+_meter = None
+
+
+def _meter_hit(url, outcome="ok", n=1):
+    """Count one request for the RPC Monitor (../rpc_monitor/meter.py). No meter there = no-op."""
+    global _meter
+    if _meter is None:
+        _meter = False
+        try:
+            import importlib.util
+            import sys
+            from pathlib import Path
+            mod = sys.modules.get("rpc_meter")
+            if mod is None:
+                path = Path(__file__).resolve().parents[1] / "rpc_monitor" / "meter.py"
+                spec = importlib.util.spec_from_file_location("rpc_meter", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                sys.modules["rpc_meter"] = mod
+            _meter = mod.hit
+        except Exception:
+            pass
+    if _meter:
+        _meter(os.environ.get("RPC_METER_BOT") or 'rh_terminal', url, outcome, n)
+
+
 # ---------------------------------------------------------------- RPC ----
 class RpcError(Exception):
     pass
@@ -192,6 +218,7 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
             with urlopen(req, timeout=timeout) as r:
                 j = json.load(r)
         except urllib.error.HTTPError as e:
+            _meter_hit(url, "limited" if e.code == 429 else "error")
             try:
                 detail = e.read(300).decode("utf-8", "replace")
             except Exception:
@@ -207,6 +234,7 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
             _cool[url] = time.time() + (20 if e.code == 429 else 300 if e.code in (401, 403) else 30)
             continue
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            _meter_hit(url, "error")
             fails.append(f"{_host(url)}: {str(e)[:70]}")
             _why[url] = str(e)[:160]
             low = str(e).lower()
@@ -217,6 +245,7 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
         if "error" in j:
             msg = str((j["error"] or {}).get("message") or j["error"])
             if "rate" in msg.lower() or "too many" in msg.lower():
+                _meter_hit(url, "quota" if "quota" in msg.lower() or "capacity" in msg.lower() else "limited")
                 _cool[url] = time.time() + 20
                 fails.append(f"{_host(url)}: {msg[:60]}")
                 continue
@@ -225,8 +254,10 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
                 _span[url] = lim if lim < span else max(10, span // 2)
                 fails.append(f"{_host(url)}: logs max {_span[url]} blocks")
                 continue
+            _meter_hit(url)
             raise RpcError(msg)
         _why.pop(url, None)
+        _meter_hit(url)
         return j.get("result")
     if _round < 2 and fails and any("429" in f or "rate" in f.lower() or "too many" in f.lower() for f in fails):
         time.sleep(3 + 3 * _round)

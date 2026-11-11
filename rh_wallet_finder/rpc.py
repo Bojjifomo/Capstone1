@@ -3,6 +3,7 @@ block-range limit on its own, and a pool that runs several RPCs as one."""
 import http.client
 import itertools
 import json
+import os
 import random
 import re
 import threading
@@ -11,6 +12,32 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+
+
+_meter = None
+
+
+def _meter_hit(url, outcome="ok", n=1):
+    """Count one request for the RPC Monitor (../rpc_monitor/meter.py). No meter there = no-op."""
+    global _meter
+    if _meter is None:
+        _meter = False
+        try:
+            import importlib.util
+            import sys
+            from pathlib import Path
+            mod = sys.modules.get("rpc_meter")
+            if mod is None:
+                path = Path(__file__).resolve().parents[1] / "rpc_monitor" / "meter.py"
+                spec = importlib.util.spec_from_file_location("rpc_meter", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                sys.modules["rpc_meter"] = mod
+            _meter = mod.hit
+        except Exception:
+            pass
+    if _meter:
+        _meter(os.environ.get("RPC_METER_BOT") or 'rh_wallet_finder', url, outcome, n)
 
 
 class RPCError(Exception):
@@ -104,8 +131,13 @@ class RPC:
                 with self._gate:
                     with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                         out = json.load(resp)
+                n = len(payload) if isinstance(payload, list) else 1
                 with self._lock:
-                    self.calls += len(payload) if isinstance(payload, list) else 1
+                    self.calls += n
+                if isinstance(out, dict) and _throttled(out.get("error")):
+                    _meter_hit(self.url, "quota" if _quota(str(out["error"])) else "limited")
+                else:
+                    _meter_hit(self.url, "ok", n)
                 if isinstance(out, dict) and _throttled(out.get("error")):
                     raise _Throttle(str(out["error"].get("message", out["error"])
                                         if isinstance(out["error"], dict) else out["error"]))
@@ -118,10 +150,12 @@ class RPC:
                 except (OSError, http.client.HTTPException):
                     pass
                 if e.code == 429:
+                    _meter_hit(self.url, "quota" if _quota(reply) else "limited")
                     self._throttle(reply or "HTTP 429 Too Many Requests")
                     last, throttled = f"HTTP 429 Too Many Requests {reply[:160]}".strip(), True
                     self._backoff(attempt, True)
                     continue
+                _meter_hit(self.url, "quota" if _quota(reply) else "error")
                 if e.code in (500, 502, 503, 504):
                     last = f"HTTP {e.code} {reply[:160]}".strip()
                     if attempt >= 6:
@@ -144,6 +178,7 @@ class RPC:
                 self._backoff(attempt, False)
             except (OSError, http.client.HTTPException, json.JSONDecodeError) as e:
                 # dropped / reset connections, TLS hiccups, timeouts, half-sent replies
+                _meter_hit(self.url, "error")
                 last = e
                 if attempt >= 6:
                     break
