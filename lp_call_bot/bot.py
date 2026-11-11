@@ -2,6 +2,7 @@
 
 Jalanin: python3 lp_call_bot/bot.py   (config di lp_call_bot/.env, lihat .env.example)
 """
+import fcntl
 import html
 import json
 import os
@@ -537,8 +538,36 @@ class Bot:
             self.poll_once()
 
 
+def single_instance(path):
+    """Kunci file: bot kedua (launchd + Terminal, dua Terminal, …) langsung berhenti.
+
+    Dua bot = call & rekap dobel, dan dua-duanya nimpa state.json satu sama lain (rekap jadi ngaco). Kuncinya lepas
+    sendiri pas proses mati, jadi nggak ada yang perlu dihapus manual. Return file yang harus tetep kebuka."""
+    f = open(path, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.seek(0)
+        other = f.read().strip() or "?"
+        f.close()
+        return None, other
+    f.seek(0)
+    f.truncate()
+    f.write(str(os.getpid()))
+    f.flush()
+    return f, None
+
+
 def main():
     load_env(HERE / ".env")
+    lock_path = Path(os.environ.get("STATE_FILE", HERE / "state.json")).with_suffix(".lock")
+    lock, other = single_instance(lock_path)
+    if lock is None:
+        print(f"⛔ LP Call Bot udah jalan (PID {other}). Bot kedua nggak dijalanin biar call & rekap nggak dobel.\n"
+              "   Mau restart? Matiin yang lama dulu: launchctl bootout gui/$(id -u)/com.bojjifomo.lp-call-bot "
+              "atau pkill -f lp_call_bot/bot.py", flush=True)
+        time.sleep(30)  # launchd (KeepAlive) nyoba lagi tiap 15 detik: jangan spam log
+        sys.exit(1)
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         sys.exit("TELEGRAM_BOT_TOKEN belum diisi (copy .env.example ke .env).")
