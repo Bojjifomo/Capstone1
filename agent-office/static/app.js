@@ -1,15 +1,16 @@
-// Agent Office front end: the guild hall scene, the sheet, polling.
+// Agent Office front end: the sheet, polling, the New session and Settings sheets.
 "use strict";
 
-// Theme wording lives here so the whole page speaks "guild hall".
+// Wording lives here so the whole page speaks "office".
 const W = {
-  status: { working: "On a quest", needs: "Awaits your word", idle: "Resting", finished: "Returned", archived: "Archived" },
-  short: { working: "questing", needs: "awaits you", idle: "resting", finished: "returned", archived: "archived" },
+  status: { working: "Working", needs: "Needs you", idle: "On break", finished: "Finished", archived: "Archived" },
+  short: { working: "working", needs: "needs you", idle: "on break", finished: "finished", archived: "archived" },
   modes: {
     acceptEdits: "Accept edits", auto: "Auto (guarded)", plan: "Plan only", manual: "Ask first (no prompts here)",
-    dontAsk: "Don't ask (deny unknown)", bypassPermissions: "Bypass all (needs seal)",
+    dontAsk: "Don't ask (deny unknown)", bypassPermissions: "Bypass all (needs a phone code)",
   },
-  models: { "": "Default model", opus: "Opus: hard problems", sonnet: "Sonnet: everyday", haiku: "Haiku: quick lookups", grok: "Grok (xAI): own tool loop" },
+  models: { "": "Default model", opus: "Opus 5.5: hard problems", sonnet: "Sonnet 5.5: everyday", haiku: "Haiku 5.5: quick lookups", grok: "Grok (xAI): own tool loop" },
+  efforts: { "": "Default effort", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" },
   quick: ["Yes, go ahead.", "Continue.", "Commit and push.", "Where are you at? Short summary please."],
 };
 
@@ -79,8 +80,8 @@ function options(list, labels, selected) {
 async function withSeal(purpose, needed, fn) {
   if (!needed) return fn({});
   const { code_id } = await api("/api/code", { purpose });
-  const code = prompt("A 6-digit guild seal was sent to your phone. Enter it (valid 2 minutes):");
-  if (!code) throw new Error("No seal, nothing sent.");
+  const code = prompt("A 6-digit code was sent to your phone. Enter it (valid 2 minutes):");
+  if (!code) throw new Error("No code, nothing sent.");
   return fn({ code_id, code: code.trim() });
 }
 const isRisky = (mode) => UI.options && UI.options.risky.includes(mode);
@@ -147,23 +148,8 @@ window.addEventListener("unhandledrejection", (ev) => reportError(ev.reason, "pr
 
 function renderHall() {
   const all = UI.state.sessions;
-
-  const needs = all.filter((s) => s.status === "needs");
-  $("#notice-board").hidden = !needs.length;
-  $("#notices").innerHTML = needs.map((s) =>
-    `<button type="button" class="notice" data-sid="${esc(s.id)}"><b>${esc(s.name)}</b><span>${esc(s.note || W.short.needs)}</span></button>`).join("");
-
   renderShelf("#returned", all.filter((s) => s.status === "finished" && !s.staff));
   renderShelf("#archives", all.filter((s) => s.status === "archived"));
-
-  const count = (st) => all.filter((s) => s.status === st && !s.helper).length;
-  $("#tally").innerHTML =
-    `<span class="t-working">⚔ ${count("working")} questing</span>` +
-    `<span class="t-needs">! ${count("needs")} await you</span>` +
-    `<span class="t-idle">☾ ${count("idle")} resting</span>` +
-    (UI.state.gold ? `<span class="t-gold${UI.state.gold.paused ? " broke" : ""}">⛁ ${goldLabel(UI.state.gold.gold)} gold</span>` : "") +
-    (UI.state.cost_today !== undefined ? `<span class="t-cost">${money(UI.state.cost_today)} today</span>` : "");
-  $("#greeting").textContent = `Welcome back, ${UI.state.name || "guildmaster"}.`;
   // each hook on its own, so one failing part can't take the others down
   Hooks.header.forEach((fn) => { try { fn(UI.state); } catch (e) { reportError(e, "header"); } });
 }
@@ -182,7 +168,7 @@ function openSheet(sid, push) {
   UI.detail = null;
   UI.footKey = null;
   if (!UI.run || UI.run.sid !== sid) UI.run = null;
-  $("#sheet-body").innerHTML = '<p class="loading">Unrolling the scroll…</p>';
+  $("#sheet-body").innerHTML = '<p class="loading">Opening…</p>';
   $("#sheet-foot").innerHTML = "";
   $("#sheet-actions").innerHTML = "";
   showSheet();
@@ -236,10 +222,10 @@ async function loadDetail(first) {
     renderSheet(d, first);
   } catch (e) {
     if (e.status === 404 && UI.run && UI.run.sid === sid) {
-      UI.detail = { id: sid, name: "A new quest", status: "working", messages: [], queue_items: [], pending: [] };
+      UI.detail = { id: sid, name: "A new session", status: "working", messages: [], queue_items: [], pending: [] };
       renderSheet(UI.detail, first);
     } else if (first) {
-      $("#sheet-body").innerHTML = `<p class="loading">Could not read this scroll (${esc(e.message)}).</p>`;
+      $("#sheet-body").innerHTML = `<p class="loading">Could not open this session (${esc(e.message)}).</p>`;
     }
   }
 }
@@ -269,7 +255,7 @@ function runHTML(run) {
 function queueHTML(d) {
   const items = d.queue_items || [];
   if (!items.length) return "";
-  return `<section class="queue"><h4>Scrolls waiting to be read (${items.length})</h4>` + items.map((q) =>
+  return `<section class="queue"><h4>Queued messages (${items.length})</h4>` + items.map((q) =>
     `<div class="q-item"><p>${esc(q.text)}</p><div class="q-row"><small>${esc(W.modes[q.mode] || q.mode)} · ${esc(ago(q.ts))}</small>` +
     `<button type="button" class="btn" data-act="qnow" data-qid="${esc(q.id)}">Send now</button>` +
     `<button type="button" class="btn" data-act="qremove" data-qid="${esc(q.id)}">Remove</button></div></div>`).join("") + `</section>`;
@@ -280,11 +266,11 @@ function footerHTML(d) {
     return `<div class="desktop-note"><p><b>${esc(d.name)}</b> is open in the Claude app on your Mac, so I won't type into it from here.</p>` +
       `<a class="btn primary" href="claude://">Open in Claude</a></div>`;
   }
-  if (d.status === "archived") return `<p class="foot-note">Archived. Restore it to send word.</p>`;
+  if (d.status === "archived") return `<p class="foot-note">Archived. Restore it to send a message.</p>`;
   const o = UI.options || { modes: ["acceptEdits"], default_mode: "acceptEdits" };
   return `<form id="say" class="say" autocomplete="off">` +
     `<div class="chips">${(Hooks.chips ? Hooks.chips(d) : "") + W.quick.map((q) => `<button type="button" class="chip-btn" data-act="quick" data-text="${esc(q)}">${esc(q)}</button>`).join("")}</div>` +
-    `<textarea name="text" rows="2" maxlength="20000" placeholder="Send word to ${esc(d.name)}…" aria-label="Message"></textarea>` +
+    `<textarea name="text" rows="2" maxlength="20000" placeholder="Message ${esc(d.name)}…" aria-label="Message"></textarea>` +
     `<div class="say-row"><select name="mode" aria-label="Permission mode">${options(o.modes, W.modes, o.default_mode)}</select>` +
     `<button type="submit" class="btn primary">Send</button></div></form>`;
 }
@@ -332,7 +318,7 @@ function renderSheet(d, first) {
     `<button type="button" data-act="archive">${d.status === "archived" ? "Restore" : "Archive"}</button>` +
     (d.note && d.status !== "idle" ? `<span class="note n-${esc(d.status)}">${esc(d.note)}</span>` : "");
   const run = UI.run && UI.run.sid === d.id ? UI.run : d.run;
-  const msgs = d.messages.length ? d.messages.map(messageHTML).join("") : (run ? "" : '<p class="loading">No words exchanged yet.</p>');
+  const msgs = d.messages.length ? d.messages.map(messageHTML).join("") : (run ? "" : '<p class="loading">No messages yet.</p>');
   const pending = d.pending && d.pending.length && !(run && !run.done) ? `<p class="pending">Working on: ${d.pending.map(esc).join(", ")}</p>` : "";
   const top = Hooks.sheetTop ? Hooks.sheetTop(d) : "";
   body.innerHTML = top + msgs + pending + runHTML(run) + queueHTML(d);
@@ -377,7 +363,7 @@ async function followRun(rid) {
 
 const ACTIONS = {
   async rename(d) {
-    const name = prompt("A new name for this adventurer:", d.name);
+    const name = prompt("A new name for this session:", d.name);
     if (name === null) return;
     await api(`/api/session/${d.id}/rename`, { name });
     toast(name.trim() ? "Renamed." : "Name reset.");
@@ -385,7 +371,7 @@ const ACTIONS = {
   async archive(d) {
     const archived = d.status !== "archived";
     await api(`/api/session/${d.id}/archive`, { archived });
-    toast(archived ? "Sent to the archives." : "Back in the hall.");
+    toast(archived ? "Archived." : "Back in the office.");
   },
   async stop(d, btn) {
     await api(`/api/run/${btn.dataset.rid}/stop`, {});
@@ -423,56 +409,87 @@ async function sendWord(form) {
 // ---- panels: new job + settings --------------------------------------------
 
 Hooks.panels.job = {
-  title: "Post a quest",
-  subtitle: "Start a new session in one of your project folders.",
-  icon: '<span class="panel-icon">📜</span>',
+  title: "New session",
+  subtitle: "Starts Claude Code on your Mac, in one of your project folders.",
+  icon: '<span class="panel-icon">🖥</span>',
   async render(body) {
     const [{ projects }, o] = await Promise.all([api("/api/projects"), getOptions()]);
+    const eco = UI.state && UI.state.eco;
+    const staff = ((UI.state && UI.state.team && UI.state.team.staff) || []).filter((m) => !m.builtin);
     body.innerHTML = `<form id="job-form" class="form">` +
-      `<label>Project folder<select name="project" required>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("")}</select></label>` +
-      `<label>The quest (first message)<textarea name="text" rows="6" maxlength="20000" required placeholder="What should they do?"></textarea></label>` +
+      `<label>Project<select name="project" required>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("")}</select></label>` +
+      (staff.length ? `<label>Team <small>(Haiku picks from your task; tap to change)</small>` +
+        `<div class="chips-inline" id="job-team">${staff.map((m) => `<label class="chip-btn teammate"><input type="checkbox" name="team" value="${esc(m.name)}"> ${esc(m.name)} <small>· ${esc(m.title)}</small></label>`).join("")}</div>` +
+        `<small id="job-team-why">Optional: teammates the lead hands pieces to.</small></label>` : "") +
       `<label>Permissions<select name="mode">${options(o.modes, W.modes, o.default_mode)}</select></label>` +
-      `<label>Model<select name="model">${options(o.models, W.models, "")}</select></label>` +
+      `<div class="two"><label>Model<select name="model">${options(o.models, W.models, "")}</select></label>` +
+      `<label>Effort<select name="effort">${options(o.efforts || [""], W.efforts, "")}</select></label></div>` +
+      `<label>What should they work on?<textarea name="text" rows="6" maxlength="20000" required placeholder="The first message. Say where things are and what done looks like."></textarea></label>` +
       (Hooks.jobExtras ? Hooks.jobExtras() : "") +
+      (eco && eco.all ? `<p class="hint">🌱 Eco is on for the whole office: the lead runs on ${esc(eco.lead)} and plans; ${esc(eco.helpers.join(" and "))} do the work.</p>` : "") +
       (o.claude ? "" : `<p class="run-error">claude was not found on the Mac. Set claude_bin in config.json.</p>`) +
-      `<button type="submit" class="btn primary wide">Post the quest</button></form>`;
+      `<button type="submit" class="btn primary wide">Start</button></form>`;
   },
 };
+
+let suggestTimer = null;
+document.addEventListener("input", (ev) => {
+  const form = ev.target.form;
+  if (!form || form.id !== "job-form" || ev.target.name !== "text") return;
+  clearTimeout(suggestTimer);
+  const text = ev.target.value.trim();
+  if (text.length < 12 || !$("#job-team")) return;
+  suggestTimer = setTimeout(async () => {
+    try {
+      const r = await api("/api/team/suggest", { text });
+      if (!form.isConnected || form.dataset.teamTouched) return;
+      form.querySelectorAll("input[name=team]").forEach((cb) => { cb.checked = r.names.includes(cb.value); });
+      const why = $("#job-team-why");
+      if (why) why.textContent = r.names.length ? `Suggested: ${r.names.join(", ")}${r.why ? " · " + r.why : ""}` : "Nobody fits this task; the lead works alone.";
+    } catch (e) { /* suggestions are optional */ }
+  }, 900);
+});
+document.addEventListener("change", (ev) => {
+  if (ev.target.name === "team" && ev.target.form) ev.target.form.dataset.teamTouched = "1";
+});
 
 async function postQuest(form) {
   const body = {
     project: form.project.value, text: form.text.value.trim(), mode: form.mode.value, model: form.model.value,
+    effort: form.effort ? form.effort.value : "",
+    team: [...form.querySelectorAll("input[name=team]:checked")].map((cb) => cb.value),
     pm: form.pm ? form.pm.checked : false,
     eco: !!(form.eco && form.eco.checked),
     override: !!(form.override && form.override.checked),
   };
   if (!body.text) return;
   const r = await withSeal("bypass:new", isRisky(body.mode), (seal) => api("/api/job", Object.assign(body, seal)));
-  if (r.queued_for_gold) { toast(r.reason || "Queued until the treasury refills."); closeSheet(); return; }
+  if (r.queued_for_gold) { toast(r.reason || "Queued until the daily budget resets."); closeSheet(); return; }
   UI.run = { id: r.run, sid: r.sid, events: [], text: body.text, done: false, v: -1 };
   history.replaceState({ sheet: r.sid }, "");
   openSheet(r.sid, false);
   followRun(r.run);
-  toast(body.eco ? "Quest posted in eco mode: Opus plans and reviews, helpers do the work." : "Quest posted.");
+  toast(body.eco ? "Started in eco mode: the lead plans and reviews, helpers do the work." : "Session started.");
 }
 
 Hooks.panels.settings = {
-  title: "Ravens & seals",
+  title: "Settings",
   subtitle: "Notifications to your phone, and the codes for risky actions.",
-  icon: '<span class="panel-icon">🪶</span>',
+  icon: '<span class="panel-icon">⚙︎</span>',
   async render(body) {
     const key = await api("/api/push/key");
     const secure = window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window;
-    body.innerHTML = `<section class="panel-sec"><h3>Ravens (push notifications)</h3>` +
-      `<p>${key.subscribed ? "A phone is listening for ravens." : "No phone is listening yet."} ` +
-      `You'll hear when someone awaits your word or returns from a long quest. Phone seals arrive the same way.</p>` +
+    body.innerHTML = `<section class="panel-sec"><h3>Push notifications</h3>` +
+      `<p>${key.subscribed ? "This office sends notifications to a phone." : "No phone is subscribed yet."} ` +
+      `You'll hear when someone needs you or finishes a long task. One-time codes arrive the same way.</p>` +
       (secure
-        ? `<div class="btn-row"><button type="button" class="btn primary" data-panel-act="subscribe">${key.subscribed ? "Use this phone instead" : "Send ravens to this phone"}</button>` +
-          (key.subscribed ? `<button type="button" class="btn" data-panel-act="test">Send a test raven</button><button type="button" class="btn" data-panel-act="unsubscribe">Stop ravens</button>` : "") + `</div>`
-        : `<p class="warn">Ravens need https. On the Mac run <code>tailscale serve --bg --https=443 http://127.0.0.1:7777</code>, then open the <code>https://…ts.net</code> address on the phone and add it to the Home Screen.</p>`) +
+        ? `<div class="btn-row"><button type="button" class="btn primary" data-panel-act="subscribe">${key.subscribed ? "Use this phone instead" : "Notify this phone"}</button>` +
+          (key.subscribed ? `<button type="button" class="btn" data-panel-act="test">Send a test</button><button type="button" class="btn" data-panel-act="unsubscribe">Stop notifications</button>` : "") + `</div>`
+        : `<p class="warn">Notifications need https. On the Mac run <code>tailscale serve --bg --https=443 http://127.0.0.1:7777</code>, then open the <code>https://…ts.net</code> address on the phone and add it to the Home Screen.</p>`) +
       `</section><section class="panel-sec"><h3>Exact "needs you" for permission prompts</h3>` +
       `<p>On the Mac run <code>~/Projects/agent-office/tools/office install-hook</code>. It adds a Notification hook so a session waiting on a permission prompt shows up here at once.</p></section>` +
-      `<section class="panel-sec"><h3>The hall</h3><p>Version <code>${esc(UI.version || "")}</code>. Restart on the Mac: <code>launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office</code></p></section>`;
+      `<section class="panel-sec"><h3>Money</h3><p>Income sources and fixed costs live in <code>money.json</code> next to server.py on the Mac. See the README for the format.</p></section>` +
+      `<section class="panel-sec"><h3>The office</h3><p>Version <code>${esc(UI.version || "")}</code>. Restart on the Mac: <code>launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office</code></p></section>`;
   },
 };
 
@@ -491,18 +508,18 @@ const PANEL_ACTIONS = {
     if (old) await old.unsubscribe();
     const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
     await api("/api/push/subscribe", { subscription: sub.toJSON() });
-    toast("Ravens will find this phone.");
+    toast("This phone will be notified.");
   },
   async test() {
     const r = await api("/api/push/test", {});
-    toast(r.sent ? "Raven sent." : "The raven got lost: " + r.error);
+    toast(r.sent ? "Test sent." : "Could not send: " + r.error);
   },
   async unsubscribe() {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
     if (sub) await sub.unsubscribe();
     await api("/api/push/unsubscribe", {});
-    toast("No more ravens.");
+    toast("Notifications stopped.");
   },
 };
 
@@ -523,7 +540,8 @@ async function poll() {
     if (UI.mode === "session") loadDetail(false);
     else if (UI.mode && Hooks.panels[UI.mode] && Hooks.panels[UI.mode].refresh) Hooks.panels[UI.mode].refresh($("#sheet-body"));
   } catch (e) {
-    $("#greeting").textContent = "The hall is unreachable. Retrying…";
+    $("#greeting").textContent = "The office is unreachable. Retrying…";
+    const dot = $("#live-dot"); if (dot) dot.classList.remove("ok");
   }
 }
 
@@ -596,6 +614,8 @@ function openFromHash() {
   if (p) { history.replaceState(null, "", "/"); openPanel("petitions", true, p[1]); }
   if (location.hash === "#usage") { history.replaceState(null, "", "/"); openPanel("report", true); }
   if (location.hash === "#chain") { history.replaceState(null, "", "/"); openPanel("chain", true); }
+  if (location.hash === "#bots") { history.replaceState(null, "", "/"); openPanel("bots", true); }
+  if (location.hash === "#petitions") { history.replaceState(null, "", "/"); openPanel("petitions", true); }
 }
 window.addEventListener("hashchange", openFromHash);
 

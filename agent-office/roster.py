@@ -523,3 +523,38 @@ KNOWN_INTERNS = [
      "launchd": "com.bojjifomo.power-meter", "warden": "Thorne",
      "hint": "Install it: sh power-meter/tools/install.sh."},
 ]
+
+
+# ---- the office: divisions have office names now; old guild names on disk are mapped when staff.json loads ----
+DIVISIONS = {
+    "The Keep": "Executive", "The War Room": "Management", "The Watchtower": "Operations", "The Forge": "Engineering",
+    "The Counting House": "Finance", "The Observatory": "Research", "The Scriptorium": "Writing", "The Atelier": "Design",
+    "The Common Room": "General", "Guild Hall": "Office", "The Tavern": "Lounge",
+}
+DIVISION_ORDER = ("Executive", "Management", "Operations", "Engineering", "Finance", "Research", "Writing", "Design",
+                  "Business", "Science", "Legal", "Creative", "General")
+
+
+def division_name(name):
+    """Office name for a division, whether it was saved under the old guild name or typed fresh."""
+    name = " ".join(str(name or "").split())
+    return DIVISIONS.get(name, name)
+
+
+for _preset in list(PRESETS.values()) + list(WARDENS.values()) + TEMPLATES:
+    _preset["division"] = division_name(_preset["division"])
+
+KNOWN_INTERNS += [
+    {"name": "Fund", "folder": "fund", "url": "http://127.0.0.1:7799/api/summary", "launchd": "com.bojjifomo.fund",
+     "warden": "Thorne", "hint": "Install it: sh fund/tools/install.sh."},
+    {"name": "RPC Monitor", "folder": "rpc_monitor", "url": "http://127.0.0.1:7795/", "warden": "Lyra",
+     "hint": "Start it: python3 rpc_monitor/server.py (port 7795 in its config)."},
+    {"name": "RH Terminal", "folder": "rh_terminal", "url": "http://127.0.0.1:8892/", "warden": "Lyra",
+     "hint": "Open it: 'Buka RH Terminal.command' (web on 8892)."},
+    {"name": "DLMM Terminal", "folder": "dlmm_terminal", "url": "http://127.0.0.1:8891/", "warden": "Lyra",
+     "hint": "Open it: 'Buka DLMM Web.command' (web on 8891)."},
+    {"name": "Elysium Terminal", "folder": "elysium_terminal", "url": "http://127.0.0.1:8893/", "warden": "Lyra",
+     "hint": "Open it: 'Buka Elysium Terminal.command' (web on 8893)."},
+    {"name": "Elysium Wallet Finder", "folder": "elysium_wallet_finder", "fresh": "elysium_wallet_finder/data/wallets.db",
+     "fresh_hours": 6, "warden": "Lyra", "hint": "Run a first sync so data/wallets.db exists."},
+]

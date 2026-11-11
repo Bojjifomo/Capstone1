@@ -22,6 +22,8 @@
   office scorecard [days]          runs, done %, cost and time per person; incidents and reviews
   office usage [days]              where the gold goes: by person, kind, model, project, plus savings ideas
   office model <name> <haiku|sonnet|opus|grok>  move a teammate to another model (Opus seats are limited)
+  office effort <name> <low|medium|high|xhigh|max|default>  set a teammate's effort
+  office eco [on|off]              the office-wide Eco switch (Opus plans and reviews, Sonnet/Haiku do the work)
   office doctor                    check the install
   office install-hook              add the Claude Code Notification hook (exact "needs you")
   office hook                      (used by the hook itself; reads the event on stdin)
@@ -379,6 +381,20 @@ def cmd_usage(args):
     print(call("/api/usage/report?days=" + urllib.parse.quote(days))["text"])
 
 
+def cmd_eco(args):
+    if args and args[0] not in ("on", "off"):
+        sys.exit("usage: office eco [on|off]")
+    r = call("/api/eco", {"on": args[0] == "on"}) if args else call("/api/eco")
+    print("eco %s: lead %s, helpers %s" % ("on" if r["all"] else "off", r["lead"], "/".join(r["helpers"])))
+
+
+def cmd_effort(args):
+    if len(args) != 2:
+        sys.exit("usage: office effort <name> <low|medium|high|xhigh|max|default>")
+    r = call("/api/team/effort", {"name": args[0], "effort": "" if args[1] == "default" else args[1]})
+    print("%s: %s -> %s" % (r["name"], r["was"], r["effort"]))
+
+
 def cmd_model(args):
     if len(args) != 2:
         sys.exit("usage: office model <name> <haiku|sonnet|opus|grok>")
@@ -390,7 +406,7 @@ def cmd_model(args):
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
             "propose": cmd_propose, "petitions": cmd_petitions, "brief": cmd_brief,
             "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "setup": cmd_setup,
-            "start": cmd_start, "review": cmd_review, "scorecard": cmd_scorecard, "model": cmd_model,
+            "start": cmd_start, "review": cmd_review, "scorecard": cmd_scorecard, "model": cmd_model, "eco": cmd_eco, "effort": cmd_effort,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":

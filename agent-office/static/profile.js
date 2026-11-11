@@ -23,7 +23,7 @@ function divisionPicker(d) {
   const known = new Set(DIVISIONS.concat(((UI.state && UI.state.team) || {}).divisions || []));
   if (d.division) known.add(d.division);
   return `<select class="pf-division" data-session="${esc(d.id)}" aria-label="Division">` +
-    `<option value="">Guild Hall</option>` +
+    `<option value="">Office Hall</option>` +
     [...known].map((x) => `<option${x === d.division ? " selected" : ""}>${esc(x)}</option>`).join("") + `</select>`;
 }
 
@@ -39,6 +39,15 @@ function modelPicker(d) {
     `</select>` + (d.model && (d.staff || d.model_pref) ? `<small class="pf-now">now: ${esc(d.model)}</small>` : "");
 }
 
+const EFFORT_NAMES = { "": "Default", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+function effortPicker(d) {
+  const m = d.staff && memberById(d.staff.id);
+  const current = d.staff ? ((m && m.effort) || "") : (d.effort_pref || "");
+  const efforts = (UI.options && UI.options.efforts) || ["", "low", "medium", "high", "xhigh", "max"];
+  return `<select class="pf-effort" data-session="${esc(d.id)}"${d.staff ? ` data-member="${esc(d.staff.name)}"` : ""} aria-label="Effort">` +
+    efforts.map((e) => `<option value="${e}"${e === current ? " selected" : ""}>${EFFORT_NAMES[e] || e}</option>`).join("") + `</select>`;
+}
+
 function ecoButton(d) {
   if (d.staff) return "";
   return `<button type="button" class="btn eco-btn${d.eco ? " on" : ""}" data-act="eco" aria-pressed="${d.eco ? "true" : "false"}">` +
@@ -50,8 +59,8 @@ Hooks.sheetTop = (d) => {
   const pay = d.pay || {};
   const summary = PROFILE.summaries[d.id];
   const rows = [
-    ["Quest", d.name], ["Started as", d.started_as], ["Division", divisionPicker(d), true], ["Project", d.project],
-    ["Branch", d.branch], ["Model", modelPicker(d), true], ["Eco mode", ecoButton(d), true], ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)],
+    ["Session", d.name], ["Started as", d.started_as], ["Division", divisionPicker(d), true], ["Project", d.project],
+    ["Branch", d.branch], ["Model", modelPicker(d), true], ["Effort", effortPicker(d), true], ["Eco mode", ecoButton(d), true], ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)],
     ["Pay 30 days", money(pay.month)], ["Last activity", ago(d.active)], ["Last tool", d.last_tool], ["Folder", d.folder],
   ];
   const last = d.messages && [...d.messages].reverse().find((m) => m.role === "assistant" && m.text);
@@ -132,16 +141,31 @@ document.addEventListener("change", async (ev) => {
 });
 
 document.addEventListener("change", async (ev) => {
+  const pick = ev.target.closest(".pf-effort");
+  if (!pick) return;
+  try {
+    if (pick.dataset.member) {
+      const r = await api("/api/team/effort", { name: pick.dataset.member, effort: pick.value });
+      toast(`${r.name}: effort ${r.was} → ${r.effort}.`);
+      await poll();
+    } else {
+      await api(`/api/session/${pick.dataset.session}/effort`, { effort: pick.value });
+      toast(pick.value ? `Your next message from here runs at ${EFFORT_NAMES[pick.value].toLowerCase()} effort.` : "Back to the default effort.");
+    }
+  } catch (e) { toast(e.message); }
+});
+
+document.addEventListener("change", async (ev) => {
   const sel = ev.target.closest(".pf-division");
   if (!sel) return;
   try {
     await api(`/api/session/${sel.dataset.session}/division`, { division: sel.value });
-    toast(sel.value ? `Moved to ${sel.value}.` : "Back in the Guild Hall.");
+    toast(sel.value ? `Moved to ${sel.value}.` : "Back in the office room.");
     poll();
   } catch (e) { toast(e.message); }
 });
 
-// The staff panel gets the same card, with their pay summed over every errand.
+// The staff panel gets the same card, with their pay summed over every task.
 (() => {
   if (!Hooks.panels.staff) return;
   const base = Hooks.panels.staff.render;
@@ -153,7 +177,7 @@ document.addEventListener("change", async (ev) => {
     const card = document.createElement("section");
     card.className = "panel-sec profile-card";
     card.innerHTML = personaCard(m.persona, m.seed, m.kind, facts([
-      ["Role", m.role], ["Division", m.division], ["Model", m.model || "default"],
+      ["Role", m.role], ["Division", m.division], ["Model", m.model || "default"], ["Effort", m.effort || "default"],
       ["Pay today", money(pay.today)], ["Pay 7 days", money(pay.week)], ["Pay 30 days", money(pay.month)],
       ["Last activity", m.active ? ago(m.active) : "not yet"],
     ]));

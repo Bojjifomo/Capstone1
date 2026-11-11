@@ -1,4 +1,4 @@
-// Petitions: updates the guild proposes, waiting for your yes or no.
+// Petitions: updates the office proposes, waiting for your yes or no.
 "use strict";
 
 const PETITION_STATUS = {
@@ -37,17 +37,17 @@ function petitionCard(p, open, projects, o) {
     (p.note ? `<p class="petition-note"><b>Your note:</b> ${esc(p.note)}</p>` : "") +
     (p.pr_url ? `<p class="pr-link"><a href="${esc(p.pr_url)}" target="_blank" rel="noopener noreferrer">Pull request</a>` +
       (p.status === "building" ? " · open, waiting on review" : "") + `</p>` : "") +
-    (p.status === "building" && p.quest_ok && !p.pr_url ? `<p class="sub">The build quest finished. No pull request link yet.</p>` : "") +
-    (p.status === "failed" ? `<p class="sub">The build quest failed before it opened a pull request.</p>` : "") +
+    (p.status === "building" && p.quest_ok && !p.pr_url ? `<p class="sub">The build session finished. No pull request link yet.</p>` : "") +
+    (p.status === "failed" ? `<p class="sub">The build session failed before it opened a pull request.</p>` : "") +
     (p.status === "pending" || p.status === "approved" ? petitionForm(p, projects, o) : "") +
-    (p.sid ? `<button type="button" class="btn" data-sid="${esc(p.sid)}">Open the build quest</button>` : "") +
+    (p.sid ? `<button type="button" class="btn" data-sid="${esc(p.sid)}">Open the build session</button>` : "") +
     `</article>`;
 }
 
 Hooks.panels.petitions = {
-  title: "Petitions",
-  subtitle: "Updates the guild wants to make. Nothing is built until you say yes.",
-  icon: '<span class="panel-icon">📜</span>',
+  title: "Proposals",
+  subtitle: "Updates the team proposes. Nothing is built until you say yes.",
+  icon: '<span class="panel-icon">📋</span>',
   async render(body) {
     const [{ petitions }, { projects }, o] = await Promise.all([api("/api/petitions"), api("/api/projects"), getOptions()]);
     MD.reset();
@@ -73,10 +73,10 @@ Hooks.forms.petition = async (form, submitter) => {
     toast("Approved. Build it whenever you like.");
   } else {
     const path = act === "build" ? `/api/petitions/${pid}/decide` : `/api/petitions/${pid}/build`;
-    r = await withSeal("bypass:new", isRisky(build.mode), (seal) =>
-      api(path, Object.assign({ decision: "approve", build: true, note }, build, seal)));
+    r = await withCode("bypass:new", isRisky(build.mode), (code) =>
+      api(path, Object.assign({ decision: "approve", build: true, note }, build, code)));
     if (r.queued_for_gold) {
-      toast(r.reason || "Queued until the treasury refills.");
+      toast(r.reason || "Queued until the daily budget resets.");
       Hooks.panels.petitions.render($("#sheet-body"));
       return;
     }

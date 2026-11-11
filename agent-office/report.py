@@ -55,8 +55,10 @@ def build(office, days=7):
         if staff:
             role = chain.role_of(staff["id"]) if chain else ""
             key, name, kind = "staff:" + staff["id"], staff["name"], ("chain" if role else "guild")
+            division = staff.get("division") or "General"
         else:
             key, name, kind = "session:" + t.id, office.name_of(t), "you"
+            division = getattr(office, "assigned", {}).get(t.id, "") or "Office"
         actor = None
         project = Path(t.cwd).name if t.cwd else "other"
         for day, models in t.usage.items():
@@ -68,6 +70,8 @@ def build(office, days=7):
                 if actor is None:
                     actor = actors.setdefault(key, _blank(name, kind))
                     actor["staff"] = staff["id"] if staff else ""
+                    actor["division"] = division
+                    actor["role_title"] = staff.get("role", "") if staff else getattr(t, "title", "")
                     actor["role"] = (chain.role_of(staff["id"]) if (chain and staff) else "")
                     actor["configured"] = (staff.get("model") or "default") if staff else ""
                 fam = family(model)
@@ -103,6 +107,7 @@ def build(office, days=7):
     for a in sorted(actors.values(), key=lambda x: -x["cost"])[:15]:
         main = max(a["fam"].items(), key=lambda kv: kv[1])[0] if a["fam"] else "other"
         rows.append({"name": a["name"], "kind": a["kind"], "staff": a["staff"], "role": a["role"], "model": a["configured"] or main,
+                     "division": a.get("division", ""), "title": (a.get("role_title") or "")[:80],
                      "main": main, "cost": round(a["cost"], 4), "today": round(a["today"], 4), "share": share(a["cost"]),
                      "tokens": a["tokens"], "sessions": a["sessions"], "sid": a["sid"],
                      "fam": {f: round(c, 4) for f, c in a["fam"].items()}})
@@ -119,6 +124,12 @@ def build(office, days=7):
         "note": "Estimated from transcript token counts at API list prices; a subscription bills differently. "
                 "Quill's briefs run through the orchestrator and are not in the transcripts.",
     }
+    by_div = {}
+    for a in actors.values():
+        d = by_div.setdefault(a.get("division") or "General", {"name": a.get("division") or "General", "cost": 0.0, "people": 0})
+        d["cost"] += a["cost"]
+        d["people"] += 1
+    result["divisions"] = [dict(d, cost=round(d["cost"], 4), share=share(d["cost"])) for d in sorted(by_div.values(), key=lambda d: -d["cost"])]
     result["ideas"] = ideas(actors, kinds, total, chain)
     result["potential"] = round(sum(i["saving"] for i in result["ideas"]), 2)
     seats = getattr(chain, "settings", {}).get("opus_seats", 2) if chain else 2

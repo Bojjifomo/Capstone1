@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1b1430">
+<meta name="theme-color" content="#2f63d6">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Guild Hall">
+<meta name="apple-mobile-web-app-title" content="Agent Office">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="/favicon.ico">
@@ -15,77 +15,94 @@
 <title>Agent Office</title>
 </head>
 <body>
-<header id="top">
-  <div class="crest" aria-hidden="true"></div>
-  <div class="titles">
-    <h1>The Guild Hall</h1>
-    <p id="greeting">Lighting the torches…</p>
+<header id="top" class="hdr">
+  <div class="hdr-row">
+    <span id="clock" class="clock">--:--</span>
+    <span id="greeting" class="daypart">Opening the office…</span>
+    <i id="live-dot" class="live" aria-hidden="true"></i>
+    <button type="button" id="earned" class="earned" data-view="people" hidden></button>
+    <button type="button" class="icon-btn top-btn" data-open="settings" aria-label="Settings">⚙︎</button>
   </div>
-  <button type="button" id="vault-chip" class="chip" hidden></button>
-  <button type="button" class="icon-btn top-btn" data-open="settings" aria-label="Ravens and seals">🪶</button>
+  <div id="tiles" class="tiles" aria-live="polite"></div>
+  <div id="health" class="health"></div>
+  <div id="limits" class="limits"></div>
+  <button type="button" id="eco-btn" class="eco-big" aria-pressed="false">🌱 Eco: off</button>
+  <div class="finder">
+    <input type="search" id="find-input" placeholder="Find someone…" aria-label="Find someone" autocomplete="off" enterkeyhint="search">
+    <div id="hdr-icons" class="hdr-icons"></div>
+  </div>
+  <div class="actions">
+    <button type="button" class="btn-new" data-open="job">+ New</button>
+    <button type="button" class="btn-hire" data-open="hire">★ Hire</button>
+    <nav class="view-tabs" aria-label="Below the map">
+      <button type="button" data-view="people" class="on">People</button>
+      <button type="button" data-view="chat">Chat</button>
+      <button type="button" data-view="alerts">Alerts <span id="alerts-badge" class="badge" hidden></span></button>
+    </nav>
+  </div>
+  <div id="project-chips" class="chips project-chips"></div>
 </header>
-<div id="tally" class="tally" aria-live="polite"></div>
 <div id="gold-banner" class="gold-banner" hidden></div>
 <section id="raid" class="raid" hidden></section>
-<nav class="toolbar" aria-label="Panels">
-  <button type="button" data-open="chain" id="chain-btn">⚜️ Chain <span class="badge" hidden></span></button>
-  <button type="button" data-open="petitions" id="petitions-btn">📜 Petitions <span class="badge" hidden></span></button>
+<nav class="toolbar" aria-label="More">
+  <button type="button" data-open="chain" id="chain-btn">🏢 Org chart <span class="badge" hidden></span></button>
+  <button type="button" data-open="petitions" id="petitions-btn">📋 Proposals <span class="badge" hidden></span></button>
   <button type="button" data-open="report">📊 Usage</button>
-  <button type="button" data-open="usage">⛁ Treasury</button>
-  <button type="button" data-open="bots">🐾 Familiars</button>
-  <button type="button" data-open="disk">🏛 Vault</button>
-  <button type="button" data-open="search">🔮 Scry</button>
-  <button type="button" data-open="ledger">📖 Ledger</button>
+  <button type="button" data-open="usage">💵 Budget</button>
+  <button type="button" data-open="bots">🖥 Programs</button>
+  <button type="button" data-open="disk">💾 Disk</button>
+  <button type="button" data-open="search">🔍 Search</button>
+  <button type="button" data-open="ledger">🗒 Log</button>
   <button type="button" id="fund-btn">💰 Fund</button>
 </nav>
 
 <main id="views">
-  <section id="view-hall" class="view" aria-label="Guild hall">
-    <section id="town" class="town" aria-label="Guild town">
-      <div class="town-bar">
-        <button type="button" id="town-back" class="town-btn" hidden>← Town</button>
-        <h2 id="town-title">Guild Town</h2>
-        <span id="town-sub" class="town-sub"></span>
+  <section id="office" class="office" aria-label="Office map">
+    <div class="stage-wrap">
+      <div id="office-stage" class="stage">
+        <canvas id="office-canvas"></canvas>
+        <canvas id="office-glow" class="glow"></canvas>
+        <div id="office-hits" class="hits"></div>
       </div>
-      <div class="stage-wrap">
-        <div id="town-stage" class="stage">
-          <canvas id="town-canvas"></canvas>
-          <canvas id="town-blur" class="tilt"></canvas>
-          <canvas id="town-glow" class="glow"></canvas>
-          <div class="grade" aria-hidden="true"></div>
-          <div id="town-hits" class="hits"></div>
-        </div>
-      </div>
-      <div id="town-roster" class="roster" hidden></div>
-      <section id="chatlog" class="chatlog" aria-label="Guild chat">
-        <div class="chat-tabs" role="tablist">
-          <button type="button" class="on" data-ch="all">All</button><button type="button" data-ch="guild">Guild</button><button type="button" data-ch="system">System</button><button type="button" data-ch="say">Chatter</button><button type="button" data-ch="external">External</button><button type="button" data-ch="orders">Orders</button>
-        </div>
-        <div id="chat-lines" class="chat-lines" role="log" aria-live="off"></div>
-        <div id="chat-names" class="chat-names" hidden></div>
-        <form id="chat-form" class="chat-form" autocomplete="off">
-          <input type="text" name="text" maxlength="4000" enterkeyhint="send" aria-label="Order for the guild"
-                 placeholder="Perintah ke guild… (@nama buat satu orang, /help)">
-          <button type="submit" class="btn primary">Send</button>
-        </form>
-      </section>
-    </section>
-    <div id="notice-board" class="notice-board" hidden>
-      <h2>Notice board</h2>
-      <div id="notices"></div>
     </div>
+  </section>
+  <div id="division-chips" class="div-chips"></div>
+
+  <section id="view-people" class="below">
+    <section id="money" class="card" aria-label="Money"></section>
+    <section id="payroll" class="card" aria-label="Payroll ranking"></section>
+    <div id="everyone" class="roster"></div>
     <details id="returned" class="shelf" hidden>
-      <summary>Returned from their quests <span class="count"></span></summary>
+      <summary>Finished recently <span class="count"></span></summary>
       <div class="shelf-list"></div>
     </details>
     <details id="archives" class="shelf" hidden>
-      <summary>The archives <span class="count"></span></summary>
+      <summary>Archived <span class="count"></span></summary>
       <div class="shelf-list"></div>
     </details>
   </section>
+
+  <section id="view-chat" class="below" hidden>
+    <section id="chatlog" class="chatlog" aria-label="Office chat">
+      <div class="chat-tabs" role="tablist">
+        <button type="button" class="on" data-ch="all">All</button><button type="button" data-ch="guild">Office</button><button type="button" data-ch="system">System</button><button type="button" data-ch="say">Chatter</button><button type="button" data-ch="external">External</button><button type="button" data-ch="orders">Orders</button>
+      </div>
+      <div id="chat-lines" class="chat-lines" role="log" aria-live="off"></div>
+      <div id="chat-names" class="chat-names" hidden></div>
+      <form id="chat-form" class="chat-form" autocomplete="off">
+        <input type="text" name="text" maxlength="4000" enterkeyhint="send" aria-label="Order for the office"
+               placeholder="Perintah ke kantor… (@nama buat satu orang, /help)">
+        <button type="submit" class="btn primary">Send</button>
+      </form>
+    </section>
+  </section>
+
+  <section id="view-alerts" class="below" hidden>
+    <div id="alerts" class="card"></div>
+  </section>
 </main>
 
-<button type="button" id="post-quest" class="fab" data-open="job">＋ Post a quest</button>
+<button type="button" id="post-quest" class="fab" data-open="job">＋ New session</button>
 
 <div id="backdrop" class="backdrop" hidden></div>
 <section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-name" hidden>
@@ -105,17 +122,20 @@
 <div id="toast" class="toast" role="status" hidden></div>
 
 <script src="/static/md.js" defer></script>
-<script src="/static/sprites.js" defer></script>
+<script src="/static/people.js" defer></script>
 <script src="/static/app.js" defer></script>
+<script src="/static/header.js" defer></script>
 <script src="/static/team.js" defer></script>
 <script src="/static/panels.js" defer></script>
 <script src="/static/petitions.js" defer></script>
 <script src="/static/chain.js" defer></script>
 <script src="/static/report.js" defer></script>
+<script src="/static/finance.js" defer></script>
 <script src="/static/profile.js" defer></script>
 <script src="/static/rpg.js" defer></script>
 <script src="/static/economy.js" defer></script>
 <script src="/static/chatlog.js" defer></script>
-<script src="/static/town.js" defer></script>
+<script src="/static/directory.js" defer></script>
+<script src="/static/office.js" defer></script>
 </body>
 </html>

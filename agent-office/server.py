@@ -27,6 +27,7 @@ import gateway  # noqa: E402
 import grok  # noqa: E402
 import fundgate  # noqa: E402
 import haiku  # noqa: E402
+import limits  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
 import orders  # noqa: E402
@@ -222,12 +223,19 @@ APP = None
 
 @route("GET", "/api/state")
 def api_state(req, m):
+    sessions_now = APP.office.all_sessions()
     return {
         "version": APP.version,
         "name": APP.cfg.get("name", ""),
         "now": time.time(),
-        "sessions": APP.office.all_sessions(),
+        "sessions": sessions_now,
         "team": APP.office.team.roster(),
+        "system": APP.office.health(),
+        "limits": limits.snapshot(APP.cfg),
+        "eco": APP.office.eco_public(),
+        "programs": {k: v for k, v in APP.office.chain.programs().items() if k != "rows"},
+        "alerts": APP.office.alerts(sessions_now),
+        "grok_today": round(APP.office.grok.spent_today(), 4) if APP.office.grok else None,
         "cost_today": panels.cost_today(APP.office),
         "disk": APP.office.vault.free(),
         "petitions": APP.office.petitions.pending_count(),
@@ -287,7 +295,7 @@ def text_field(body, key, limit=200):
 
 @route("GET", "/api/options")
 def api_options(req, m):
-    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES),
+    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES), "efforts": list(runner.EFFORTS),
             "models": [m for m in runner.MODELS if not m or m in APP.office.offered_models()],
             "grok": {"on": bool(APP.office.grok), "model": grok.model_name(APP.cfg)},
             "default_mode": APP.cfg.get("default_mode", "acceptEdits"), "claude": bool(runner.find_claude(APP.cfg))}
@@ -299,18 +307,37 @@ def api_send(req, m):
     sid = m.group("sid")
     result = APP.office.send(sid, text_field(b, "text", runner.MAX_TEXT + 1), text_field(b, "mode"),
                              model=text_field(b, "model"), code_id=text_field(b, "code_id"),
-                             code=text_field(b, "code"), now_please=bool(b.get("now")))
+                             code=text_field(b, "code"), now_please=bool(b.get("now")), effort=text_field(b, "effort", 8))
     APP.office.ledger.add("queue" if "queued" in result else "send", text_field(b, "text"), sid=sid, mode=text_field(b, "mode"))
     return result
 
 
 @route("POST", "/api/session/" + SID + "/eco")
 def api_session_eco(req, m):
-    """Eco mode for this quest: an Opus lead that plans and reviews, Sonnet and Haiku helpers that do the work."""
+    """Eco mode for this session: an Opus lead that plans and reviews, Sonnet and Haiku helpers that do the work."""
     sid = m.group("sid")
     result = APP.office.set_eco(sid, bool(req.body.get("on")))
     APP.office.ledger.add("guild", "Eco mode %s" % ("on: Opus plans and reviews, helpers work" if result["eco"] else "off"), sid=sid)
     return result
+
+
+@route("GET", "/api/eco")
+def api_eco(req, m):
+    return APP.office.eco_public()
+
+
+@route("POST", "/api/eco")
+def api_eco_set(req, m):
+    """The Eco button in the header: on for every new session and every message sent from here."""
+    result = APP.office.set_eco_all(bool(req.body.get("on")))
+    APP.office.ledger.add("guild", "Eco %s for the whole office" % ("on" if result["all"] else "off"))
+    return result
+
+
+@route("POST", "/api/session/" + SID + "/effort")
+def api_session_effort(req, m):
+    APP.office.set_effort_pref(m.group("sid"), text_field(req.body, "effort", 8))
+    return {"ok": True}
 
 
 @route("POST", "/api/session/" + SID + "/model")
@@ -380,10 +407,12 @@ def api_job(req, m):
     b = req.body
     eco_mode = bool(b.get("eco"))
     system = PM_PROMPT if b.get("pm") and not eco_mode else ""
+    team_names = [str(x)[:40] for x in (b.get("team") or []) if isinstance(x, str)][:6] if isinstance(b.get("team"), list) else []
     result = APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
                                 text_field(b, "mode"), model=text_field(b, "model"),
                                 code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system,
-                                external=req.external, override=bool(b.get("override")), eco_mode=eco_mode)
+                                external=req.external, override=bool(b.get("override")), eco_mode=eco_mode,
+                                effort=text_field(b, "effort", 8), team=team_names)
     if result.get("queued_for_gold"):
         APP.office.ledger.add("guild", "Queued until gold returns: " + text_field(b, "text")[:160])
         return result
@@ -484,17 +513,76 @@ def api_team_templates(req, m):
 
 @route("POST", "/api/staff")
 def api_hire(req, m):
+    """Hire a specialist. With model "auto" (or empty instructions) Sonnet fills in the form first."""
     b = req.body
+    fields = {k: text_field(b, k, 8001 if k == "instructions" else 80) for k in ("name", "role", "division", "instructions", "model", "effort")}
+    drafted = None
+    if fields["model"] == "auto" or (fields["role"].strip() and not fields["instructions"].strip()):
+        try:
+            drafted = APP.office.team.draft(APP.cfg, fields, APP.office.chain.allowed(), APP.office.team.divisions)
+        except Exception as e:  # noqa: BLE001 - say why, do not hire half a person
+            raise HttpError(409, "could not draft the form: %s" % str(e)[:200])
+        for k in ("name", "role", "division", "instructions", "model", "effort"):
+            if not fields[k] or k in ("model", "effort") and fields[k] in ("auto", ""):
+                fields[k] = drafted[k]
     try:
-        member, renamed = APP.office.team.hire(text_field(b, "name"), text_field(b, "role"),
-                                               text_field(b, "instructions", 8001), text_field(b, "division"),
-                                               text_field(b, "model") or "sonnet")
+        member, renamed = APP.office.team.hire(fields["name"], fields["role"], fields["instructions"], fields["division"],
+                                               fields["model"] or "sonnet", effort=fields["effort"])
     except ValueError as e:
         raise HttpError(400, str(e))
     except RuntimeError as e:
         raise HttpError(409, str(e))
     APP.office.ledger.add("hire", "%s the %s" % (member["name"], member["title"]))
-    return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio")}, "renamed_from": renamed}
+    return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio", "model", "effort")}, "renamed_from": renamed,
+            "drafted": bool(drafted), "reason": (drafted or {}).get("reason", "")}
+
+
+@route("POST", "/api/team/draft")
+def api_team_draft(req, m):
+    """Fill in and polish the hire form with Sonnet. Nothing is hired."""
+    b = req.body
+    fields = {k: text_field(b, k, 8001 if k == "instructions" else 80) for k in ("name", "role", "division", "instructions", "model", "effort")}
+    try:
+        return APP.office.team.draft(APP.cfg, fields, APP.office.chain.allowed(), APP.office.team.divisions)
+    except Exception as e:  # noqa: BLE001
+        raise HttpError(409, "Sonnet could not fill in the form: %s" % str(e)[:200])
+
+
+@route("POST", "/api/team/suggest")
+def api_team_suggest(req, m):
+    """Teammates for a task, for the New session sheet."""
+    return APP.office.team.suggest(APP.cfg, text_field(req.body, "text", 2001))
+
+
+@route("POST", "/api/team/effort")
+def api_team_effort(req, m):
+    try:
+        return APP.office.team.set_effort(text_field(req.body, "name", 80), text_field(req.body, "effort", 8))
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+@route("GET", "/api/money")
+def api_money(req, m):
+    return APP.office.money.snapshot()
+
+
+@route("POST", "/api/money/refresh")
+def api_money_refresh(req, m):
+    started = APP.office.money.refresh()
+    return {"started": started}
+
+
+@route("GET", "/api/programs")
+def api_programs(req, m):
+    return APP.office.chain.programs()
+
+
+@route("GET", "/api/alerts")
+def api_alerts(req, m):
+    return {"alerts": APP.office.alerts()}
 
 
 @route("GET", "/api/staff/" + STAFF)

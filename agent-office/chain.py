@@ -1131,3 +1131,55 @@ class Chain:
             return {"open": sum(1 for x in self.incidents if x["status"] != "resolved"),
                     "needs_you": sum(1 for x in self.incidents if x["status"] == "needs-you"),
                     "ops_down": self.ops_down() if self.holder("ops") else False}
+
+    def open_incidents(self):
+        with self.lock:
+            return [dict(x) for x in self.incidents if x["status"] != "resolved"]
+
+    # ---- the server room: every program bojjifomo runs, checked in the background --------------------
+    PROGRAMS_EVERY = 90
+
+    def programs(self):
+        """Known programs with their health: registered interns use their last check, the rest a cached probe."""
+        now = time.time()
+        with self.lock:
+            cached = getattr(self, "_programs", None)
+            stale = not cached or now - cached["at"] > self.PROGRAMS_EVERY
+            busy = getattr(self, "_programs_busy", False)
+            if stale and not busy:
+                self._programs_busy = True
+                threading.Thread(target=self._probe_programs, daemon=True, name="programs").start()
+            rows = list((cached or {"rows": []})["rows"])
+        for r in rows:
+            i = self.intern(r["name"])
+            if i:
+                h = self.health.get(i["id"])
+                r["intern"] = True
+                if h:
+                    r["ok"], r["reasons"] = h["ok"], h["reasons"]
+        up = sum(1 for r in rows if r.get("ok"))
+        return {"rows": rows, "up": up, "trouble": sum(1 for r in rows if r.get("ok") is False), "total": len(rows),
+                "checked": (cached or {}).get("at", 0)}
+
+    def _probe_programs(self):
+        rows = []
+        try:
+            try:
+                jobs = self.office.familiars.jobs()
+            except Exception:
+                jobs = []
+            for k in self.known_interns():
+                probe = {"id": "probe-" + secrets.token_hex(3), "name": k["name"], "project": k["project_path"],
+                         "launchd": k["launchd"], "url": k["url"], "fresh": k["fresh"], "fresh_hours": k["fresh_hours"]}
+                try:
+                    result = self.check(probe, jobs)
+                except Exception as e:  # noqa: BLE001
+                    result = {"ok": False, "reasons": [str(e)[:120]]}
+                with self.lock:
+                    self.health.pop(probe["id"], None)
+                rows.append({"name": k["name"], "ok": result["ok"], "reasons": result["reasons"], "project": k["project_label"],
+                             "url": k["url"], "launchd": k["launchd"], "intern": k["added"], "warden": k["warden_name"]})
+        finally:
+            with self.lock:
+                self._programs = {"rows": rows, "at": time.time()}
+                self._programs_busy = False
