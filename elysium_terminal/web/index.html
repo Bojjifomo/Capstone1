@@ -95,7 +95,7 @@
   <section class="left hidden" id="viewPortfolio">
     <div class="bar">
       <span class="title">PORTFOLIO</span>
-      <span class="muted">satu baris per posisi · dibaca dari chain · ⚙ auto per posisi (TP, SL, rebalance / close saat keluar range)</span>
+      <span class="muted">satu baris per posisi · dibaca dari chain · ⚙ auto per posisi (TP, SL, re-entry / close saat keluar range)</span>
       <span class="spacer"></span>
       <input id="wallet" placeholder="wallet 0x…" autocomplete="off" spellcheck="false">
       <button class="btn" id="loadWallet">Load</button>
@@ -122,7 +122,7 @@
   <section class="left hidden" id="viewTight">
     <div class="bar">
       <span class="title">TIGHT RANGE</span>
-      <span class="muted">range sempit + auto rebalance. Bukan janji profit: target %/jam cuma filter.</span>
+      <span class="muted">range sempit dua sisi (beli token saat buka). Bukan janji profit: target %/jam cuma filter.</span>
     </div>
     <div id="tightRoot"><div class="empty">Loading tight range…</div></div>
   </section>
@@ -161,6 +161,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

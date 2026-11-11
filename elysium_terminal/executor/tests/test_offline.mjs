@@ -1,5 +1,5 @@
 // Encoding + ladder math. No RPC, nothing is sent.
-import { planLadder, openCalldataV3, closeCalldataV3, swapCalldataV3Router, openCalldataV4, alignRange, mintAmounts, balancePlan,
+import { planLadder, planSame, openCalldataV3, closeCalldataV3, swapCalldataV3Router, openCalldataV4, alignRange, mintAmounts, balancePlan,
   perLiquidity, tightMintCalldataV4, P, ZERO, WHYPE, USDC, deadline } from "../lib.mjs";
 
 let fails = 0;
@@ -70,6 +70,18 @@ const tm = tightMintCalldataV4(key, band.tickLower, band.tickUpper, both.liquidi
 check("tight v4 mint is modifyLiquidities", tm.data.startsWith("0xdd46508f") && tm.value === 0n);
 const tmNative = tightMintCalldataV4({ ...key, currency0: ZERO }, band.tickLower, band.tickUpper, both.liquidity, 123n, both.amount1, "0x" + "ab".repeat(20), deadline());
 check("native tight mint sends the max as value and adds a third action (sweep)", tmNative.value === 123n && tmNative.data.length > tm.data.length);
+
+// re-entry keeps the old shape: same widths, same split, quote-only, next to the new price
+const olds = [{ tickLower: 53400, tickUpper: 53520, liquidity: 3n * 10n ** 20n }, { tickLower: 53520, tickUpper: 53760, liquidity: 10n ** 20n }];
+const k60 = { currency0: ZERO, currency1: "0x" + "cd".repeat(20), fee: 3000, tickSpacing: 60, hooks: ZERO };
+const same = planSame(k60, 54011, 10n ** 18n, true, olds);
+check("re-entry keeps each width", same.slices.map(x => x.tickUpper - x.tickLower).join() === "120,240", JSON.stringify(same.slices.map(x => [x.tickLower, x.tickUpper])));
+check("re-entry starts just past the price and stays one-sided", same.slices[0].tickLower === 54060 && same.slices[1].tickLower === same.slices[0].tickUpper);
+const w0 = 3 * (1 / 1.0001 ** (53400 / 2) - 1 / 1.0001 ** (53520 / 2)), w1 = 1 / 1.0001 ** (53520 / 2) - 1 / 1.0001 ** (53760 / 2);
+check("re-entry keeps the split between ranges", Math.abs(Number(same.slices[0].amount) / 1e18 - w0 / (w0 + w1)) < 1e-6);
+check("re-entry spends no more than came back", same.slices.reduce((a, x) => a + x.amount, 0n) <= 10n ** 18n);
+const sameQ1 = planSame({ ...k60, currency0: "0x" + "cd".repeat(20), currency1: WHYPE }, 54011, 10n ** 18n, false, [olds[0]]);
+check("quote is token1: the range sits below the tick", sameQ1.slices[0].tickUpper === 54000 && sameQ1.slices[0].tickLower === 53880);
 
 console.log(fails ? `\n${fails} FAILED` : "\nOFFLINE ENCODING OK");
 process.exit(fails ? 1 : 0);

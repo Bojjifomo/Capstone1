@@ -418,7 +418,7 @@ def _group_row(grp: dict, cfg: dict, meta: dict, book, now: float) -> dict:
         "manager": first["manager"], "key": k, "token": taddr, "quote": qaddr,
         "quoteSymbol": chain.QUOTE_SYMBOL.get(qaddr, "?"),
         "symbol": (meta.get(taddr) or {}).get("symbol") or taddr[2:8], "quoteSide": q, "flip": flip,
-        "tick": tick, "lpFeePct": (first.get("lpFee") or k.get("fee") or 0) / 1e4,
+        "tick": tick, "tickSpacing": int(k.get("tickSpacing") or 0), "lpFeePct": (first.get("lpFee") or k.get("fee") or 0) / 1e4,
         "positions": [{"tokenId": x["tokenId"], "tickLower": x["tickLower"], "tickUpper": x["tickUpper"],
                        "liquidity": str(x["liquidity"]), "inRange": x["inRange"], "valueUsd": x["valueUsd"],
                        "feesUsd": x["feesUsd"], "dex": x["dex"], "manager": x["manager"]} for x in ps],

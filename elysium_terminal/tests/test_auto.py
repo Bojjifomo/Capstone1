@@ -79,7 +79,7 @@ class Decide(unittest.TestCase):
 
     def rule(self, **kw):
         base = {**auto.clean_rule(kw), "status": "armed"}
-        base.update({k: v for k, v in kw.items() if k not in ("tp", "sl", "above", "below", "widthPct")})
+        base.update({k: v for k, v in kw.items() if k not in ("tp", "sl", "above", "below")})
         return base
 
     def test_take_profit_and_stop_loss_exit(self):
@@ -89,28 +89,32 @@ class Decide(unittest.TestCase):
         self.assertEqual(auto.decide(r, row(pnlPct=-10.5), self.G, 1000)["action"], "exit")
         self.assertEqual(auto.decide(r, row(pnlPct=1.0), self.G, 1000)["action"], "none")
 
-    def test_out_of_range_waits_then_rebalances(self):
-        r = self.rule(above="rebalance")
+    def test_out_of_range_waits_then_reenters(self):
+        r = self.rule(above="reentry")
         first = auto.decide(r, row(state="above"), self.G, 1000)
         self.assertEqual(first["action"], "none")
         r.update(first["patch"])
         self.assertEqual(auto.decide(r, row(state="above"), self.G, 1060)["action"], "none")
-        fire = auto.decide(r, row(state="above"), self.G, 1121)
-        self.assertEqual((fire["action"], fire["widthPct"]), ("rebalance", 2.0))
+        self.assertEqual(auto.decide(r, row(state="above"), self.G, 1121)["action"], "reentry")
+
+    def test_old_rebalance_rules_now_mean_reentry(self):
+        self.assertEqual(auto.clean_rule({"above": "rebalance", "below": "close"})["above"], "reentry")
+        saved = {"above": "rebalance", "below": "hold", "status": "armed", "outSince": 0, "outSide": "above"}
+        self.assertEqual(auto.decide(saved, row(state="above"), self.G, 1000)["action"], "reentry")
 
     def test_coming_back_in_range_resets_the_wait(self):
-        r = self.rule(above="rebalance", outSince=1000, outSide="above")
+        r = self.rule(above="reentry", outSince=1000, outSide="above")
         back = auto.decide(r, row(state="in"), self.G, 1100)
         self.assertIsNone(back["patch"]["outSince"])
 
     def test_each_side_has_its_own_action(self):
-        r = self.rule(above="rebalance", below="close", outSince=0, outSide="below")
+        r = self.rule(above="reentry", below="close", outSince=0, outSide="below")
         self.assertEqual(auto.decide(r, row(state="below"), self.G, 1000)["action"], "exit")
-        hold = self.rule(above="rebalance")
+        hold = self.rule(above="reentry")
         self.assertEqual(auto.decide(hold, row(state="below"), self.G, 1000)["action"], "none")
 
     def test_cooldown_daily_cap_notional_and_pause(self):
-        base = dict(above="rebalance", outSince=0, outSide="above")
+        base = dict(above="reentry", outSince=0, outSide="above")
         self.assertIn("cooldown", auto.decide(self.rule(**base, lastFire=900), row(state="above"), self.G, 1000)["reason"])
         capped = self.rule(**base, day=auto._day(1000), dayCount=2)
         self.assertIn("hari ini", auto.decide(capped, row(state="above"), self.G, 1000)["reason"])
@@ -118,10 +122,19 @@ class Decide(unittest.TestCase):
         paused = {**self.G, "paused": True}
         self.assertEqual(auto.decide(self.rule(tp=1), row(pnlPct=50), paused, 1000)["action"], "none")
 
-    def test_ladder_and_hooked_pool_are_not_rebalanced(self):
-        r = self.rule(above="rebalance", outSince=0, outSide="above")
-        self.assertEqual(auto.decide(r, row(state="above", posCount=5), self.G, 1000)["action"], "none")
-        self.assertEqual(auto.decide(r, row(state="above", hooked=True), self.G, 1000)["action"], "none")
+    def test_reentry_is_skipped_when_the_range_already_hugs_the_price(self):
+        # quote is token0, spacing 60, tick 54562: a re-entry would mint 54600-54720 again
+        r = self.rule(above="reentry", outSince=0, outSide="above")
+        hug = row(state="above", flip=True, tick=54562, tickSpacing=60, tickLower=54600, tickUpper=54720)
+        self.assertEqual(auto.decide(r, hug, self.G, 1000)["action"], "none")
+        away = {**hug, "tick": 54400}                      # price ran further: now it is worth moving
+        self.assertEqual(auto.decide(r, away, self.G, 1000)["action"], "reentry")
+        q1 = row(state="above", flip=False, tick=1210, tickSpacing=60, tickLower=1080, tickUpper=1200)
+        self.assertEqual(auto.decide(r, q1, self.G, 1000)["action"], "none")
+
+    def test_a_ladder_can_reenter_too(self):
+        r = self.rule(above="reentry", outSince=0, outSide="above")
+        self.assertEqual(auto.decide(r, row(state="above", posCount=5), self.G, 1000)["action"], "reentry")
 
 
 class Runner(unittest.TestCase):
@@ -148,9 +161,9 @@ class Runner(unittest.TestCase):
         self.assertEqual(self.store.view()["rules"]["v4-7"]["status"], "done")
         self.assertNotIn("v4-9", self.store.view()["rules"])
 
-    def test_rebalance_moves_the_rule_to_the_new_position(self):
+    def test_reentry_moves_the_rule_to_the_new_position(self):
         r = row(state="above")
-        self.store.set_rule("v4-7", {"above": "rebalance", "tp": 20}, r, 1)
+        self.store.set_rule("v4-7", {"above": "reentry", "tp": 20}, r, 1)
         self.run_once([r], {"ok": True, "newId": "v4-8"})
         rules = self.store.view()["rules"]
         self.assertEqual(list(rules), ["v4-8"])
@@ -161,7 +174,7 @@ class Runner(unittest.TestCase):
 
     def test_practice_run_does_not_loop(self):
         r = row(state="below")
-        self.store.set_rule("v4-7", {"below": "rebalance"}, r, 1)
+        self.store.set_rule("v4-7", {"below": "reentry"}, r, 1)
         self.run_once([r], {"ok": True, "dryRun": True})
         self.run_once([r], {"ok": True, "dryRun": True}, now=1030.0)
         self.assertEqual(len(self.calls), 1)
@@ -169,7 +182,7 @@ class Runner(unittest.TestCase):
 
     def test_half_finished_cycle_is_never_retried(self):
         r = row(state="above")
-        self.store.set_rule("v4-7", {"above": "rebalance"}, r, 1)
+        self.store.set_rule("v4-7", {"above": "reentry"}, r, 1)
         self.run_once([r], {"ok": False, "sent": True, "stage": "swap", "error": "would revert"})
         self.assertEqual(self.store.view()["rules"]["v4-7"]["status"], "attention")
         self.run_once([r], {"ok": True}, now=9000.0)

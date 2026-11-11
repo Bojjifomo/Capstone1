@@ -6,7 +6,8 @@ The web process calls `run_once` with the portfolio it just read and an `execute
 
 What a rule can do:
   exit       close the position and sell the token back to the quote (TP, SL, or range exit)
-  rebalance  close, swap to the right mix, open a new tight range around the current price
+  reentry    close, sell the token back to the quote, re-open the same shape (same widths,
+             quote-only) next to the current price
 
 Guard rails, all in data/auto.json and editable from the page:
   holdSec        how long the price must stay outside before a range action fires
@@ -29,7 +30,8 @@ from pathlib import Path
 
 FILE = "auto.json"
 LOG = "auto_log.jsonl"
-ACTIONS = ("hold", "rebalance", "close")
+ACTIONS = ("hold", "reentry", "close")
+_ALIAS = {"rebalance": "reentry"}      # rules saved before re-entry replaced the two-sided rebalance
 MAX_FAILS = 3
 
 DEFAULT_GLOBAL = {
@@ -39,7 +41,6 @@ DEFAULT_GLOBAL = {
     "maxPerDay": 6,
     "maxNotionalUsd": 2000.0,
     "slippageBps": 100,
-    "widthPct": 2.0,
 }
 _LIMITS = {
     "holdSec": (0, 86400, int),
@@ -47,7 +48,6 @@ _LIMITS = {
     "maxPerDay": (0, 96, int),
     "maxNotionalUsd": (1.0, 1_000_000.0, float),
     "slippageBps": (1, 1000, int),
-    "widthPct": (0.05, 50.0, float),
 }
 
 
@@ -85,14 +85,11 @@ def _pct(v, lo, hi):
 def clean_rule(body: dict) -> dict:
     """The user-set part of a rule. Anything out of bounds turns that part off."""
     sl = _pct(body.get("sl"), -99.0, 99.0)
-    above = body.get("above") if body.get("above") in ACTIONS else "hold"
-    below = body.get("below") if body.get("below") in ACTIONS else "hold"
-    width = body.get("widthPct")
+    side = lambda v: _ALIAS.get(v, v) if _ALIAS.get(v, v) in ACTIONS else "hold"
     return {
         "tp": _pct(body.get("tp"), 0.1, 1000.0),
         "sl": -abs(sl) if sl else None,
-        "above": above, "below": below,
-        "widthPct": _num(width, 0.05, 50.0, float, None) if width not in (None, "") else None,
+        "above": side(body.get("above")), "below": side(body.get("below")),
     }
 
 
@@ -102,6 +99,20 @@ def is_empty(rule: dict) -> bool:
 
 def _day(now: float) -> str:
     return datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+def next_to_price(row: dict) -> bool:
+    """True when a single range already starts at the first grid line past the price.
+
+    A re-entry would close it and mint the same ticks again. Needs the pool's tick spacing,
+    which the portfolio only has for v4; without it this says False and the executor checks.
+    """
+    sp, tick = int(row.get("tickSpacing") or 0), row.get("tick")
+    if sp <= 0 or tick is None or row.get("posCount", 1) != 1:
+        return False
+    if row.get("flip"):                                   # quote is token0: the range sits above the tick
+        return row.get("tickLower") == -(-(tick + 1) // sp) * sp
+    return row.get("tickUpper") == (tick // sp) * sp
 
 
 def decide(rule: dict, row: dict, g: dict, now: float) -> dict:
@@ -124,10 +135,13 @@ def decide(rule: dict, row: dict, g: dict, now: float) -> dict:
     if side not in ("above", "below"):
         patch["outSince"] = None
         return out("none", "di dalam range")
-    want = rule.get(side, "hold")
+    want = _ALIAS.get(rule.get(side, "hold"), rule.get(side, "hold"))
     if want == "hold":
         patch["outSince"] = None
         return out("none", f"di luar range ({'atas' if side == 'above' else 'bawah'}), rule-nya diam")
+    if want == "reentry" and side == "above" and next_to_price(row):
+        patch["outSince"] = None
+        return out("none", "range sudah tepat di bawah harga, re-entry tidak mengubah apa-apa")
     since = rule.get("outSince") if rule.get("outSide") == side else None
     if since is None:
         since = now
@@ -149,13 +163,7 @@ def decide(rule: dict, row: dict, g: dict, now: float) -> dict:
     where = "naik lewat atas range" if side == "above" else "turun lewat bawah range"
     if want == "close":
         return out("exit", f"harga {where}: close + swap", trigger="range")
-    if row.get("posCount", 1) != 1:
-        return out("none", "rebalance cuma buat posisi satu range, bukan ladder")
-    if row.get("hooked") or row.get("dynamicFee"):
-        return out("none", "pool ber-hook / fee dinamis: rebalance tidak didukung")
-    width = rule.get("widthPct") or row.get("widthPct") or g["widthPct"]
-    return out("rebalance", f"harga {where}: rebalance ke range {width:.2f}%", trigger="range",
-               widthPct=float(width))
+    return out("reentry", f"harga {where}: re-entry, range sama di harga sekarang", trigger="range")
 
 
 class Store:
@@ -235,7 +243,7 @@ class Store:
             return d["rules"][gid]
 
     def move(self, old: str, new: str, patch: dict) -> None:
-        """A rebalance burns the NFT and mints another. The rule follows the new position."""
+        """A re-entry burns the NFTs and mints new ones. The rule follows the new position."""
         with self._lock:
             d = self._read()
             rule = d["rules"].pop(old, None)
@@ -305,7 +313,7 @@ def run_once(store: Store, rows: list[dict], partial: bool, now: float, execute,
       ok        the action went through (or simulated fine)
       dryRun    nothing was sent
       sent      at least one transaction was sent before a failure
-      newId     the group id of the position a rebalance opened
+      newId     the group id of the position a re-entry opened
     """
     say = say or (lambda text: None)
     view = store.view()
@@ -333,6 +341,9 @@ def run_once(store: Store, rows: list[dict], partial: bool, now: float, execute,
             res = execute(d["action"], rule, row, d) or {}
         except Exception as exc:                      # the executor bridge itself broke
             res = {"ok": False, "error": str(exc)[:240]}
+        if res.get("ok") and res.get("noop"):             # nothing to do, nothing sent, nothing counted
+            store.patch(gid, {"status": "armed", "msg": "range sudah tepat di samping harga, tidak ada yang diubah", "outSince": None})
+            continue
         ok, dry = bool(res.get("ok")), bool(res.get("dryRun"))
         ranged = d.get("trigger") == "range"
         count = (rule.get("dayCount", 0) if rule.get("day") == _day(now) else 0) + (1 if ranged else 0)
@@ -356,11 +367,11 @@ def run_once(store: Store, rows: list[dict], partial: bool, now: float, execute,
             msg = "simulasi close lolos (practice, tidak ada yang dikirim)" if dry else "closed + swapped"
             store.patch(gid, {**fired, "status": "done", "msg": msg, "fails": 0})
         elif dry:
-            msg = "simulasi rebalance lolos (practice, tidak ada yang dikirim)"
+            msg = "simulasi re-entry lolos (practice, tidak ada yang dikirim)"
             store.patch(gid, {**fired, "status": "armed", "msg": msg, "fails": 0, "outSince": None})
         else:
             n = int(rule.get("count") or 0) + 1
-            msg = f"rebalance #{n} selesai"
+            msg = f"re-entry #{n} selesai"
             patch = {**fired, "status": "armed", "msg": msg, "fails": 0, "count": n}
             if res.get("newId") and res["newId"] != gid:
                 store.move(gid, res["newId"], patch)
@@ -368,7 +379,7 @@ def run_once(store: Store, rows: list[dict], partial: bool, now: float, execute,
                 store.patch(gid, {**patch, "outSince": None})
             else:
                 store.patch(gid, {**patch, "status": "attention",
-                                  "msg": "rebalance terkirim tapi posisi baru tidak kebaca. Cek portfolio."})
+                                  "msg": "re-entry terkirim tapi posisi baru tidak kebaca. Cek portfolio."})
         store.log({"ts": now, "id": gid, "symbol": sym, "kind": "simulated" if dry else "done", "action": d["action"],
                    "newId": res.get("newId"), "hash": res.get("hash")})
         say(f"✅ AUTO {sym}: {msg}")

@@ -1,6 +1,6 @@
 """Elysium Terminal, web version: Uniswap v4 and v3 pools on Elysium with the entry check, PING,
 watchlist, ladder zap, tight ranges, and your wallet's positions (one row per open) with close,
-claim, re-entry, cleanup and per-position auto rules (TP, SL, rebalance or close out of range).
+claim, re-entry, cleanup and per-position auto rules (TP, SL, re-entry or close out of range).
 
   python3 -m elysium_terminal web                  # http://localhost:8893 (ELYSIUM_WEB_PORT in .env)
   python3 -m elysium_terminal web --host 0.0.0.0   # reachable over Tailscale (phone, MacBook)
@@ -283,20 +283,19 @@ def do_exit(row: dict, wallet: str, cfg: dict) -> dict:
     return run_trade("reenter.mjs", args, wallet, 900, pool=row["pool"])
 
 
-def do_rebalance(row: dict, wallet: str, width_pct: float, slippage_bps: int) -> dict:
-    """Close, swap to the right mix, open a new range around the current price. Keeps the PnL basis."""
-    if row.get("posCount", 1) != 1:
-        return {"ok": False, "error": "rebalance cuma buat posisi satu range. Ladder: pakai Re-entry."}
-    args = ["--mode", "rebalance", "--pool", row["pool"], "--ids", _ids(row),
-            "--width", f"{float(width_pct):g}", "--slippage-bps", str(int(slippage_bps))]
-    res = run_trade("tight.mjs", args, wallet, 900, pool=row["pool"])
+def do_reentry(row: dict, wallet: str, cfg: dict) -> dict:
+    """Close, sell the token, re-open the same shape (same widths, quote-only) at the current price.
+
+    The deposit basis is carried to the new position, so its PnL spans every re-entry.
+    """
+    args = ["--pool", row["pool"], "--ids", _ids(row), "--maxloss", str(cfg["trade"]["maxLossPct"]), "--reopen", "--same"]
+    res = run_trade("reenter.mjs", args, wallet, 900, pool=row["pool"])
     if res.get("ok") and not res.get("dryRun"):
-        basis = None
-        if row.get("depositUsd") and row.get("quoteUsd"):
-            basis = row["depositUsd"] / row["quoteUsd"]          # carried, so PnL spans the rebalances
-        res["newId"] = _register(res, "tight", depositQuote=basis if basis is not None else res.get("depositQuote"),
-                                 widthPct=float(width_pct), rebalances=int(row.get("rebalances") or 0) + 1,
-                                 originAt=row.get("openedAt"))
+        basis = row["depositUsd"] / row["quoteUsd"] if row.get("depositUsd") and row.get("quoteUsd") else res.get("reopenedQuote")
+        res["newId"] = _register(res, "ladder" if row.get("posCount", 1) > 1 else "range", depositQuote=basis,
+                                 rebalances=int(row.get("rebalances") or 0) + 1, originAt=row.get("openedAt"))
+    elif not res.get("ok"):
+        res["sent"] = any(x.get("hash") for x in res.get("steps") or [])
     return res
 
 
@@ -306,13 +305,12 @@ def auto_once(cfg: dict, wallet: str) -> list[dict]:
     if view["global"]["paused"] or not any(r.get("status") == "armed" for r in view["rules"].values()):
         return []
     pf = portfolio_of(wallet, force=True)
-    slip = view["global"]["slippageBps"]
 
     def execute(action, rule, row, decision):
         if action == "exit":
             res = do_exit(row, wallet, cfg)
         else:
-            res = do_rebalance(row, wallet, decision["widthPct"], slip)
+            res = do_reentry(row, wallet, cfg)
         append("closes.jsonl", {"ts": _now_iso(), "source": "auto", "id": row["id"], "pool": row["pool"],
                                 "symbol": row["symbol"], "ids": _ids(row), "rule": f"{action}: {decision['reason']}",
                                 "pnlPct": row.get("pnlPct"), "ok": res.get("ok"), "error": res.get("error"),
@@ -606,12 +604,6 @@ class Handler(BaseHTTPRequestHandler):
                 row = _find_row(wallet, gid)
                 if row is None:
                     return self._json({"ok": False, "error": "posisi ini tidak ada di wallet trading (refresh portfolio)"}, 400)
-                rule = auto.clean_rule(body)
-                if "rebalance" in (rule["above"], rule["below"]):
-                    if row["posCount"] != 1:
-                        return self._json({"ok": False, "error": "rebalance cuma buat posisi satu range. Buat ladder pilih close atau diam."}, 400)
-                    if row.get("hooked") or row.get("dynamicFee"):
-                        return self._json({"ok": False, "error": "pool ber-hook / fee dinamis: rebalance tidak didukung"}, 400)
                 store.set_rule(gid, body, row, time.time())
                 return self._json({"ok": True, "auto": store.view()})
             if self.path == "/api/auto/resume":
@@ -646,25 +638,32 @@ class Handler(BaseHTTPRequestHandler):
                 res["id"] = gid
                 rule = auto.clean_rule(body.get("rule") or {})
                 if gid and not auto.is_empty(rule):
-                    store.set_rule(gid, {**rule, "widthPct": rule.get("widthPct") or width},
+                    store.set_rule(gid, rule,
                                    {"pool": pool, "symbol": body.get("symbol") or row.get("symbol")}, time.time())
                     res["ruleArmed"] = True
                 append("decisions.jsonl", {"ts": _now_iso(), "source": "tight", "pool": pool, "symbol": body.get("symbol"),
                                            "decision": "enter", "sizeUsd": usd, "widthPct": width, "id": gid,
                                            **{k: res.get(k) for k in ("ok", "error", "hash", "practice", "stage", "sent")}})
                 return self._json(res)
-            if self.path == "/api/trade/rebalance":
+            if self.path == "/api/trade/reenter":
                 row = _find_row(wallet, str(body["id"]), force=True)
                 if row is None:
                     return self._json({"ok": False, "error": "posisi tidak ketemu (refresh portfolio)"}, 400)
-                g = store.view()["global"]
-                width = auto.clean_global({"widthPct": body.get("widthPct") or row.get("widthPct") or g["widthPct"]}, g)["widthPct"]
-                res = do_rebalance(row, wallet, width, g["slippageBps"])
+                res = do_reentry(row, wallet, cfg)
                 if res.get("newId"):
                     store.move(row["id"], res["newId"], {"lastFire": time.time()})
                 append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": row["id"], "pool": row["pool"], "symbol": row["symbol"],
-                                        "ids": _ids(row), "rule": "rebalance", "newId": res.get("newId"),
-                                        **{k: res.get(k) for k in ("ok", "error", "hash", "practice", "stage", "sent")}})
+                                        "ids": _ids(row), "rule": "reenter", "newId": res.get("newId"),
+                                        **{k: res.get(k) for k in ("ok", "error", "step", "practice", "sent")}})
+                return self._json(res)
+            if self.path == "/api/trade/closeswap":
+                row = _find_row(wallet, str(body["id"]), force=True)
+                if row is None:
+                    return self._json({"ok": False, "error": "posisi tidak ketemu (refresh portfolio)"}, 400)
+                res = do_exit(row, wallet, cfg)
+                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": row["id"], "pool": row["pool"], "symbol": row["symbol"],
+                                        "ids": _ids(row), "rule": "close-swap",
+                                        **{k: res.get(k) for k in ("ok", "error", "step", "practice")}})
                 return self._json(res)
             if self.path == "/api/trade/open":
                 pos = cfg["position"]
@@ -689,22 +688,6 @@ class Handler(BaseHTTPRequestHandler):
                 append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": body.get("id"), "pool": body.get("pool"), "symbol": body.get("symbol"),
                                         "ids": ids, "rule": "claim" if claim else (body.get("rule") or "close"),
                                         **{k: res.get(k) for k in ("ok", "error", "hash", "practice")}})
-                return self._json(res)
-            if self.path == "/api/trade/reenter":
-                ids = [str(int(x)) for x in body["ids"]]
-                pos = cfg["position"]
-                pool = str(body.get("pool") or "")
-                args = ["--pool", pool, "--ids", ",".join(ids), "--maxloss", str(float(body.get("maxloss") or cfg["trade"]["maxLossPct"]))]
-                if body.get("reopen"):
-                    args += ["--reopen", "--slices", str(int(body.get("slices") or len(ids))),
-                             "--top", str(float(body.get("top") if body.get("top") is not None else pos["rangeTopPct"])),
-                             "--bottom", str(abs(float(body.get("bottom") or pos["rangeBottomPct"])))]
-                res = run_trade("reenter.mjs", args, wallet, 900, pool=pool)
-                if body.get("reopen"):
-                    res["id"] = _register(res, "ladder", ids=res.get("positions"), depositQuote=res.get("reopenedQuote"))
-                append("closes.jsonl", {"ts": _now_iso(), "source": "web", "id": body.get("id"), "pool": body.get("pool"), "symbol": body.get("symbol"),
-                                        "ids": ids, "rule": "reenter" if body.get("reopen") else "close-swap",
-                                        **{k: res.get(k) for k in ("ok", "error", "step", "practice")}})
                 return self._json(res)
             if self.path == "/api/trade/cleanup":
                 lst = cleanup_list(wallet)

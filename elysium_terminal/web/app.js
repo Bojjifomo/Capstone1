@@ -361,7 +361,7 @@ function renderDetail(r, keepChart) {
       <button data-zap="${size / 2}">⚡ ${mU(size / 2)} · ${ladderLabel()}</button>
       <button data-zap="${size}">⚡ ${mU(size)} · ${ladderLabel()}</button>
       <button class="edit" data-zap="ask">✏️ custom</button>
-      ${r.hooks && r.hooks !== "0x0000000000000000000000000000000000000000" || r.dynamicFee ? "" : `<button class="edit" data-tightopen="${r.pool}" title="Range sempit di sekitar harga sekarang, bisa auto rebalance">🎯 tight</button>`}
+      ${r.hooks && r.hooks !== "0x0000000000000000000000000000000000000000" || r.dynamicFee ? "" : `<button class="edit" data-tightopen="${r.pool}" title="Range sempit dua sisi di sekitar harga sekarang: sebagian quote ditukar ke token saat buka">🎯 tight</button>`}
     </div>
     <div class="note">Zap = ladder ${esc(r.quoteSymbol)}-only (slice sama lebar, isi 1:2:…:n, paling dalam paling gede). v4 lewat PositionManager, v3 lewat NFT multicall. Key cuma di executor.
       Disimulasikan dulu sebelum dikirim. Ubah bentuk default di ⚙. Gate & flag ini nilai awal, bukan hasil backtest: atur sesuai pengalaman lu.</div>
@@ -571,10 +571,10 @@ async function act(p, url, body, confirmMsg, okText) {
     if (s.ok) {
       target = s.newId || s.id || p.id;
       const steps = (s.steps || []).filter(x => x.hash).map(x => `${esc(x.step || "tx")} ${txLink(x.hash)}`).join(" · ");
-      state.note[target] = { ok: true, html: s.dryRun
+      state.note[target] = { ok: true, html: s.noop ? esc(okText(s)) : s.dryRun
         ? `<span class="warn">🧪 simulasi lolos, tidak ada yang dikirim.</span> ${esc(okText(s))}`
         : `✓ ${esc(okText(s))}${steps ? "<br>" + steps : s.hash ? " " + txLink(s.hash) : ""}` };
-      toast(`✓ ${posName(p)}: ${s.dryRun ? "simulasi lolos" : okText(s)}`);
+      toast(`✓ ${posName(p)}: ${s.noop ? "tidak ada yang diubah" : s.dryRun ? "simulasi lolos" : okText(s)}`);
     } else {
       state.note[p.id] = { ok: false, html: `✗ ${esc(s.stage || s.step || "")} ${esc(s.error || "gagal")}${s.sent ? "<br>Sebagian transaksi sudah terkirim: cek wallet, sisa token bisa dijual lewat Cleanup." : ""}` };
       toast(`✗ ${posName(p)}: ${s.error || "gagal"}`);
@@ -591,21 +591,13 @@ const closePos = p => act(p, "/api/trade/close", { ids: idsOf(p) },
   `Close ${posName(p)} (${p.posCount} NFT)?\nTarik 100% likuiditas + klaim fee, satu transaksi.\nToken yang keluar TIDAK dijual (pakai Close+swap kalau mau).`, s => s.dryRun ? "Close." : "closed");
 const claimPos = p => act(p, "/api/trade/claim", { ids: idsOf(p) },
   `Claim fee ${posName(p)} (${mU(p.feesUsd)})?\nLikuiditas tetap di tempat, cuma fee yang diambil.`, () => "fee diklaim");
-const swapPos = (p, reopen) => act(p, "/api/trade/reenter", { ids: idsOf(p), reopen, slices: p.posCount },
-  reopen ? `RE-ENTRY ${posName(p)}\n1) Close ${p.posCount} slice (klaim fee)\n2) Jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool)\n3) Buka ladder baru di harga sekarang, ${p.posCount} slice, bentuk dari ⚙\n\nLanjut?`
-    : `CLOSE + SWAP ${posName(p)}\nClose, lalu jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool).\n\nLanjut?`,
-  s => s.dryRun ? "Close lolos; jual token" + (reopen ? " + buka lagi" : "") + " baru jalan kalau live." : reopen ? "re-entry selesai" : "closed + swapped");
-function rebalancePos(p) {
-  const g = autoGlobal();
-  const def = (autoOf(p.id) || {}).widthPct || p.widthPct || g.widthPct || 2;
-  const w = prompt(`Rebalance ${posName(p)}: lebar range baru (% harga, total kiri+kanan)?`, (+def).toFixed(2));
-  if (w === null) return;
-  const width = parseFloat(w);
-  if (!(width > 0)) return alert("Lebar harus angka > 0.");
-  return act(p, "/api/trade/rebalance", { widthPct: width },
-    `REBALANCE ${posName(p)}\n1) Close (fee ikut)\n2) Swap ke komposisi range baru (slippage maks ${(g.slippageBps || 100) / 100}%)\n3) Mint range ${width}% di sekitar harga sekarang\n\nTiga transaksi berurutan, bukan atomik. Lanjut?`,
-    s => s.dryRun ? `Close lolos; rencana: swap ${s.plan ? (s.plan.swapFrac * 100).toFixed(0) + "%" : "?"}, range baru ${s.plan ? s.plan.actualWidthPct.toFixed(2) + "%" : "?"}.` : "rebalance selesai");
-}
+const shapeWord = p => p.posCount > 1 ? `${p.posCount} slice, lebar tiap slice sama seperti sekarang` : `1 range, lebar ${p.widthPct != null ? p.widthPct.toFixed(2) + "%" : "sama"}`;
+const swapPos = p => act(p, "/api/trade/closeswap", {},
+  `CLOSE + SWAP ${posName(p)}\nClose, lalu jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool).\n\nLanjut?`,
+  s => s.dryRun ? "Close lolos; jual token baru jalan kalau live." : "closed + swapped");
+const reenterPos = p => act(p, "/api/trade/reenter", {},
+  `RE-ENTRY ${posName(p)}\n1) Close (fee ikut)\n2) Jual token yang keluar ke ${p.quoteSymbol} (batal kalau > max loss di bawah harga pool)\n3) Buka lagi dengan bentuk yang sama: ${shapeWord(p)}, ${p.quoteSymbol} saja, tepat di bawah harga sekarang\n\nTidak ada token yang dibeli. Lanjut?`,
+  s => s.noop ? "Range sudah tepat di bawah harga dengan bentuk yang sama: tidak ada yang diubah." : s.dryRun ? `Close lolos; range baru ${shapeWord(p)}, ${p.quoteSymbol} saja, baru jalan kalau live.` : "re-entry selesai, range sama di harga sekarang");
 async function cleanupWallet(btn) {
   if (!guard()) return;
   if (!practice() && !confirm("CLEANUP wallet\nJual sisa token dari posisi lu (yang nilainya ≥ $1) ke USDC/HYPE lewat pool terdalamnya, batal per token kalau > max loss di bawah harga pool.\nUSDC/HYPE/WHYPE nggak dijual. Lanjut?")) return;
@@ -621,7 +613,7 @@ async function cleanupWallet(btn) {
 }
 
 // ---------- auto rules (per position) ----------
-const ACT_WORD = { hold: "diam", rebalance: "rebalance", close: "close + swap" };
+const ACT_WORD = { hold: "diam", reentry: "re-entry", rebalance: "re-entry", close: "close + swap" };
 function autoCell(p) {
   const a = autoOf(p.id), g = autoGlobal();
   const chips = [];
@@ -645,9 +637,9 @@ function autoCell(p) {
 function openAuto(p) {
   if (!guard()) return;
   const a = autoOf(p.id) || {}, g = autoGlobal();
-  const single = p.posCount === 1 && !p.hooked && !p.dynamicFee;
-  const sel = (id, cur) => `<select id="${id}">${["hold", "rebalance", "close"].map(v =>
-    `<option value="${v}" ${v === (cur || "hold") ? "selected" : ""} ${v === "rebalance" && !single ? "disabled" : ""}>${v === "hold" ? "diam (nggak ngapa-ngapain)" : v === "rebalance" ? "rebalance: tutup + buka range baru di harga itu" : "close + swap ke " + esc(p.quoteSymbol)}</option>`).join("")}</select>`;
+  const norm = v => v === "rebalance" ? "reentry" : (v || "hold");
+  const sel = (id, cur) => `<select id="${id}">${["hold", "reentry", "close"].map(v =>
+    `<option value="${v}" ${v === norm(cur) ? "selected" : ""}>${v === "hold" ? "diam (nggak ngapa-ngapain)" : v === "reentry" ? "re-entry: tutup + buka lagi range yang sama di harga itu" : "close + swap ke " + esc(p.quoteSymbol)}</option>`).join("")}</select>`;
   $("#modalCard").classList.remove("wide");
   $("#modalCard").innerHTML = `
     <h3>⚙ Auto · ${esc(posName(p))} ${qchip(p)} <span class="muted">#${p.positions[0].tokenId}${p.posCount > 1 ? " +" + (p.posCount - 1) : ""}</span></h3>
@@ -657,11 +649,10 @@ function openAuto(p) {
       <label>Stop loss, PnL ≤ −<span><input id="aSl" value="${a.sl ? Math.abs(a.sl) : ""}" placeholder="off" inputmode="decimal"> %</span></label>
       <label>Harga NAIK lewat atas range <small>posisi jadi 100% ${esc(p.quoteSymbol)}, fee berhenti</small>${sel("aAbove", a.above)}</label>
       <label>Harga TURUN lewat bawah range <small>posisi jadi 100% ${esc(p.symbol)}</small>${sel("aBelow", a.below)}</label>
-      <label>Lebar range baru saat rebalance <span><input id="aWidth" value="${a.widthPct || (p.widthPct ? +p.widthPct.toFixed(2) : g.widthPct || 2)}" inputmode="decimal" ${single ? "" : "disabled"}> %</span></label>
     </div>
-    ${single ? "" : `<p class="muted">Rebalance cuma buat posisi satu range di pool tanpa hook. ${p.posCount > 1 ? "Ini ladder: pilih close atau diam, atau pakai tombol Re-entry." : ""}</p>`}
-    <p class="muted">TP/SL = close + swap. Aksi range nunggu harga di luar <b>${g.holdSec}s</b>, jeda antar aksi <b>${g.cooldownSec}s</b>, maks <b>${g.maxPerDay}×</b>/hari, cuma kalau nilai posisi ≤ <b>${fmtUsd(g.maxNotionalUsd)}</b>, slippage swap maks <b>${g.slippageBps / 100}%</b>. Ubah batas ini di tab 🎯 Tight.</p>
-    <p class="warn">${practice() ? "PRACTICE MODE: auto cuma mensimulasikan, tidak ada yang dikirim." : "LIVE: kalau syaratnya kena, server mengirim transaksi pakai key di .env tanpa nanya lagi."} Rebalance = close, swap, mint berurutan. Kalau berhenti di tengah, rule dijeda dan nunggu lu.</p>
+    <p class="muted">Re-entry = close, jual token ke ${esc(p.quoteSymbol)}, lalu buka lagi bentuk yang sama (${esc(shapeWord(p))}) pakai ${esc(p.quoteSymbol)} saja, tepat di bawah harga saat itu. Tidak ada token yang dibeli.</p>
+    <p class="muted">TP/SL = close + swap. Aksi range nunggu harga di luar <b>${g.holdSec}s</b>, jeda antar aksi <b>${g.cooldownSec}s</b>, maks <b>${g.maxPerDay}×</b>/hari, cuma kalau nilai posisi ≤ <b>${fmtUsd(g.maxNotionalUsd)}</b>. Ubah batas ini di tab 🎯 Tight.</p>
+    <p class="warn">${practice() ? "PRACTICE MODE: auto cuma mensimulasikan, tidak ada yang dikirim." : "LIVE: kalau syaratnya kena, server mengirim transaksi pakai key di .env tanpa nanya lagi."} Re-entry = close, jual, buka lagi, berurutan. Kalau berhenti di tengah, rule dijeda dan nunggu lu.</p>
     <div class="acts"><button class="btn go" id="aSave">Simpan</button><button class="btn" id="aOff">Matikan semua</button><span class="spacer"></span><button class="btn" id="aClose">Tutup</button></div>
     <div class="res" id="aMsg"></div>`;
   $("#modal").classList.remove("hidden");
@@ -678,7 +669,7 @@ function openAuto(p) {
   };
   $("#aOff").onclick = () => send({});
   $("#aSave").onclick = () => {
-    const body = { tp: $("#aTp").value.trim(), sl: $("#aSl").value.trim(), above: $("#aAbove").value, below: $("#aBelow").value, widthPct: $("#aWidth").value.trim() };
+    const body = { tp: $("#aTp").value.trim(), sl: $("#aSl").value.trim(), above: $("#aAbove").value, below: $("#aBelow").value };
     const does = [body.tp && `TP +${body.tp}%`, body.sl && `SL −${Math.abs(body.sl)}%`, body.above !== "hold" && `naik lewat atas → ${ACT_WORD[body.above]}`, body.below !== "hold" && `turun lewat bawah → ${ACT_WORD[body.below]}`].filter(Boolean);
     if (does.length && !practice() && !confirm(`Nyalain AUTO buat ${posName(p)}?\n\n${does.join("\n")}\n\nServer bakal mengirim transaksi sendiri saat syaratnya kena.`)) return;
     send(body);
@@ -848,9 +839,7 @@ function renderPortfolio() {
       <button class="btn" data-act="claim" data-id="${p.id}" ${p.feesUsd > 0 && !busy ? "" : "disabled"}>Claim</button>
       <button class="btn" data-act="swap" data-id="${p.id}" ${dis} title="Close + jual token ke ${esc(p.quoteSymbol)}">Close+swap</button>
       <button class="btn ${state.depthOpen[p.id] ? "on" : ""}" data-act="depth" data-id="${p.id}" title="Liquidity depth pool di sekitar posisi ini">📊 Depth</button>
-      ${p.posCount > 1
-        ? `<button class="btn go" data-act="reenter" data-id="${p.id}" ${dis} title="Close + jual token + buka ladder lagi di harga sekarang">Re-entry</button>`
-        : `<button class="btn go" data-act="rebal" data-id="${p.id}" ${dis || (p.hooked || p.dynamicFee ? "disabled" : "")} title="Close + swap ke komposisi baru + buka range baru di harga sekarang">Rebalance</button>`}`;
+      <button class="btn go" data-act="reenter" data-id="${p.id}" ${dis} title="Close + jual token ke ${esc(p.quoteSymbol)} + buka lagi range yang sama (${esc(p.quoteSymbol)} saja) di harga sekarang">Re-entry</button>`;
     const res = busy ? `<div class="res rowres muted">⏳ ${esc(busy)}</div>` : note ? `<div class="res rowres ${note.ok ? "" : "neg"}">${note.html}</div>` : "";
     cards.push(`<div class="lcard"><div class="lc1"><div><b class="psym">${head}</b><div class="sub">${sub}</div></div>
       <div class="r"><div class="pnlbig ${cls(p.pnlUsd)}">${p.pnlUsd > 0 ? "+" : ""}${mU(p.pnlUsd)}</div><div class="sub"><span class="${cls(p.pnlPct)}">${fmtPct(p.pnlPct, 2, true)}</span></div></div></div>
@@ -992,7 +981,7 @@ function renderTight() {
   $("#tightRoot").querySelectorAll("[data-plan]").forEach(b => b.onclick = () => openTightPlan(b.dataset.plan));
   $("#gSave").onclick = () => setAutoGlobal({
     holdSec: $("#gHold").value, cooldownSec: $("#gCool").value, maxPerDay: $("#gMax").value,
-    maxNotionalUsd: $("#gNot").value, slippageBps: $("#gSlip").value, widthPct: $("#gWidth").value,
+    maxNotionalUsd: $("#gNot").value, slippageBps: $("#gSlip").value,
   });
   $("#gPause").onclick = () => setAutoGlobal({ paused: !((d.auto || {}).global || {}).paused });
 }
@@ -1028,14 +1017,13 @@ function autoBox(d) {
   const log = (d.log || []).slice().reverse().map(x => `<div class="muted">${when(x.ts)} · ${esc(x.symbol || x.id || "")} · ${esc(x.kind || "")} ${esc(x.action || "")} ${esc(x.reason || x.error || "")}</div>`).join("") || `<div class="muted">log kosong</div>`;
   return `<div class="tbox">
     <h3>Auto ${g.paused ? "· ⏸ DIJEDA" : ""} <span class="muted">${d.practice ? "PRACTICE: cuma simulasi" : "LIVE"} · dicek tiap ${d.autoCheckSec || 60} dtk di proses server</span></h3>
-    <p class="muted">Batas ini berlaku buat semua rule range (rebalance / close saat keluar range). TP dan SL tidak nunggu.</p>
+    <p class="muted">Batas ini berlaku buat semua rule range (re-entry / close saat keluar range). TP dan SL tidak nunggu.</p>
     <div class="aform cols">
       <label>tahan di luar range <span><input id="gHold" value="${g.holdSec}" inputmode="numeric"> dtk</span></label>
       <label>jeda antar aksi <span><input id="gCool" value="${g.cooldownSec}" inputmode="numeric"> dtk</span></label>
       <label>maks aksi / posisi / hari <span><input id="gMax" value="${g.maxPerDay}" inputmode="numeric"> ×</span></label>
       <label>maks nilai posisi <span>$ <input id="gNot" value="${g.maxNotionalUsd}" inputmode="decimal"></span></label>
-      <label>slippage swap maks <span><input id="gSlip" value="${g.slippageBps}" inputmode="numeric"> bps</span></label>
-      <label>lebar default rebalance <span><input id="gWidth" value="${g.widthPct}" inputmode="decimal"> %</span></label>
+      <label>slippage swap buka tight <span><input id="gSlip" value="${g.slippageBps}" inputmode="numeric"> bps</span></label>
     </div>
     <div class="tacts"><button class="btn go" id="gSave">Simpan batas</button><button class="btn ${g.paused ? "" : "kill"}" id="gPause">${g.paused ? "▶ Lanjutkan semua auto" : "⏸ Jeda semua auto"}</button></div>
     <h3 style="margin-top:12px">Rule yang terpasang</h3>${list}
@@ -1055,8 +1043,8 @@ function openTightPlan(pool) {
     </div>
     <div id="pBody" class="muted" style="margin:10px 0">Hitung…</div>
     <div class="aform">
-      <label>Kalau harga NAIK lewat atas range <select id="pAbove"><option value="hold">diam</option><option value="rebalance">rebalance</option><option value="close">close + swap</option></select></label>
-      <label>Kalau harga TURUN lewat bawah range <select id="pBelow"><option value="hold">diam</option><option value="rebalance">rebalance</option><option value="close">close + swap</option></select></label>
+      <label>Kalau harga NAIK lewat atas range <select id="pAbove"><option value="hold">diam</option><option value="reentry">re-entry (range sama, quote saja)</option><option value="close">close + swap</option></select></label>
+      <label>Kalau harga TURUN lewat bawah range <select id="pBelow"><option value="hold">diam</option><option value="reentry">re-entry (range sama, quote saja)</option><option value="close">close + swap</option></select></label>
       <label>Take profit, PnL ≥ <span><input id="pTp" placeholder="off" inputmode="decimal"> %</span></label>
       <label>Stop loss, PnL ≤ −<span><input id="pSl" placeholder="off" inputmode="decimal"> %</span></label>
     </div>
@@ -1245,9 +1233,8 @@ const onPfClick = e => {
   const a = b.dataset.act;
   if (a === "close") return closePos(p);
   if (a === "claim") return claimPos(p);
-  if (a === "swap") return swapPos(p, false);
-  if (a === "reenter") return swapPos(p, true);
-  if (a === "rebal") return rebalancePos(p);
+  if (a === "swap") return swapPos(p);
+  if (a === "reenter") return reenterPos(p);
   if (a === "auto") return openAuto(p);
   if (a === "depth") return toggleDepth(p.id);
   if (a === "resume") return resumeAuto(p.id);
