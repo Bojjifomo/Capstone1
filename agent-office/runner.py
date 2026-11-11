@@ -20,6 +20,7 @@ import store
 MODES = ("acceptEdits", "auto", "plan", "manual", "dontAsk", "bypassPermissions")
 RISKY_MODES = {"bypassPermissions"}
 MODELS = {"": None, "opus": "opus", "sonnet": "sonnet", "haiku": "haiku", "grok": None}  # grok runs on grok.Engine
+EFFORTS = ("", "low", "medium", "high", "xhigh", "max")   # "" = whatever the session already uses
 MAX_TEXT = 20000
 KEEP_RUNS = 60
 
@@ -110,8 +111,8 @@ class Runner:
         self.queues = {k: v for k, v in self.queues.items() if v}
         store.save("queue.json", self.queues)
 
-    def enqueue(self, sid, text, mode, model=""):
-        item = {"id": secrets.token_hex(4), "text": text, "mode": mode, "model": model, "ts": time.time()}
+    def enqueue(self, sid, text, mode, model="", effort=""):
+        item = {"id": secrets.token_hex(4), "text": text, "mode": mode, "model": model, "effort": effort, "ts": time.time()}
         with self.lock:
             self.queues.setdefault(sid, []).append(item)
             self._save_queue()
@@ -157,7 +158,9 @@ class Runner:
             self.helpers.add(sid)
             store.save("helpers.json", sorted(self.helpers)[-500:])
 
-    def start(self, sid, cwd, text, mode, new=False, model="", system="", origin="phone", helper=False, add_dirs=()):
+    def start(self, sid, cwd, text, mode, new=False, model="", system="", origin="phone", helper=False, add_dirs=(), effort=""):
+        if effort not in EFFORTS:
+            raise ValueError("unknown effort")
         if model == "grok":
             return self._start_grok(sid, cwd, text, mode, system, origin, helper, add_dirs)
         claude = find_claude(self.cfg)
@@ -174,6 +177,8 @@ class Runner:
         argv += ["--session-id", sid] if new else ["--resume", sid]
         if MODELS[model]:
             argv += ["--model", MODELS[model]]
+        if effort:
+            argv += ["--effort", effort]
         if system:
             argv += ["--append-system-prompt", system]
         extras = list(add_dirs or ())

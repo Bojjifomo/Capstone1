@@ -232,7 +232,7 @@ class QuillBrief(DataCase):
         guild = team.Team(office)
         member = guild.find("Quill")
         self.assertTrue(member["builtin"])
-        self.assertEqual(member["division"], "The Counting House")
+        self.assertEqual(member["division"], "Finance")
         self.assertEqual(guild.find("b71ef001")["id"], briefing.ORCH_ID)
         self.assertFalse(guild.dismiss("b71ef001"))
         self.assertEqual(guild.rank("research the best LP fee pools"), [])

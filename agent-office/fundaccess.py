@@ -10,7 +10,8 @@ Move the agent out of the division and the rules are taken out again (your own r
 import json
 from pathlib import Path
 
-FUND_DIVISION = "The Counting House"
+FUND_DIVISION = "Finance"
+OLD_FUND_DIVISION = "The Counting House"
 READ_AND_ARGUE = ("report", "lp", "rec list", "rec add", "rec note")
 
 
@@ -51,7 +52,7 @@ def brief_section(cfg, name):
 
 
 def in_fund(member):
-    return (member.get("division") or "") == FUND_DIVISION and member.get("model") != "grok"
+    return (member.get("division") or "") in (FUND_DIVISION, OLD_FUND_DIVISION) and member.get("model") != "grok"
 
 
 def sync_settings(member, cfg):

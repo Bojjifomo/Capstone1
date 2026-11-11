@@ -1,4 +1,4 @@
-// The guild chat under the map: ledger entries, status changes and town chatter, MMORPG style.
+// The office chat under the map: ledger entries, status changes and town chatter, MMORPG style.
 "use strict";
 
 const ChatLog = (() => {
@@ -26,7 +26,7 @@ const ChatLog = (() => {
     const near = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     // Raw token-call audits stay on the External tab. All still shows what they said and did.
     const shown = lines.filter((l) => channel === "all" ? l.ch !== "external" : (l.ch === channel || l.also === channel));
-    box.innerHTML = shown.length ? shown.map(lineHTML).join("") : '<div class="chat-line c-system"><span class="msg">The hall is quiet.</span></div>';
+    box.innerHTML = shown.length ? shown.map(lineHTML).join("") : '<div class="chat-line c-system"><span class="msg">Quiet so far.</span></div>';
     if (near || !primed) box.scrollTop = box.scrollHeight;
   }
 
@@ -38,11 +38,11 @@ const ChatLog = (() => {
     seen.add(key);
     let i = lines.length;
     while (i > 0 && lines[i - 1].ts > ts) i--;
-    lines.splice(i, 0, { ch, also: also || "", who: String(who || "Guild"), text: String(text).slice(0, 300), sid: sid || null, ts });
+    lines.splice(i, 0, { ch, also: also || "", who: String(who || "Office"), text: String(text).slice(0, 300), sid: sid || null, ts });
     while (lines.length > MAX) lines.shift();
     render();
     if (!(opts && opts.local) && typeof Town !== "undefined" && Town.speak) {
-      try { Town.speak({ ch, who: String(who || "Guild"), text: String(text).slice(0, 140), sid: sid || null }); } catch (e) { /* the map can live without a bubble */ }
+      try { Town.speak({ ch, who: String(who || "Office"), text: String(text).slice(0, 140), sid: sid || null }); } catch (e) { /* the map can live without a bubble */ }
     }
   }
 
@@ -50,8 +50,8 @@ const ChatLog = (() => {
   let namesAt = 0;
   let waitingUntil = 0;   // after an order, read the ledger on every poll so the answer shows up quickly
 
-  const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Seal", hire: "Guild", dismiss: "Guild", errand: "Errand", bot: "Familiar", clean: "Vault", guild: "Guild Hall", chatter: "Guild Hall", external: "External" };
-  const LEDGER_VERB = { queue: "queued: ", job: "posted a quest: ", hire: "welcomed ", dismiss: "dismissed ", errand: "sent ", bot: "", clean: "" };
+  const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Code", hire: "Office", dismiss: "Office", errand: "Task", bot: "Program", clean: "Disk", guild: "Office", chatter: "Office", external: "External" };
+  const LEDGER_VERB = { queue: "queued: ", job: "started a session: ", hire: "welcomed ", dismiss: "dismissed ", errand: "sent ", bot: "", clean: "" };
 
   function ingestLedger(e) {
     if (e.kind === "external") {
@@ -83,16 +83,16 @@ const ChatLog = (() => {
       last.set(s.id, s.status);
       if (!primed || was === s.status) return;
       const who = nameOf(s);
-      if (s.status === "needs") add("system", who, "awaits your word" + (s.note ? ": " + s.note : "."), s.id);
-      else if (s.status === "working" && was) add("system", who, "set to work" + (s.note && s.note !== "thinking" ? ": " + s.note : "."), s.id);
-      else if (s.status === "finished") add("system", who, "returned from their quest.", s.id);
-      else if (s.status === "working") add("system", who, "joined the guild and set out.", s.id);
+      if (s.status === "needs") add("system", who, "needs you" + (s.note ? ": " + s.note : "."), s.id);
+      else if (s.status === "working" && was) add("system", who, "started working" + (s.note && s.note !== "thinking" ? ": " + s.note : "."), s.id);
+      else if (s.status === "finished") add("system", who, "finished.", s.id);
+      else if (s.status === "working") add("system", who, "joined the office and set out.", s.id);
     });
     if (!primed) {
       const waiting = (state.sessions || []).filter((s) => s.status === "needs");
       const busy = (state.sessions || []).filter((s) => s.status === "working");
-      add("system", "Guild", `Welcome back, bojjifomo. ${busy.length} on a quest, ${waiting.length} awaiting your word.`);
-      waiting.forEach((s) => add("system", nameOf(s), "awaits your word" + (s.note ? ": " + s.note : "."), s.id));
+      add("system", "Office", `Welcome back, ${state.name || "bojjifomo"}. ${busy.length} working, ${waiting.length} need you.`);
+      waiting.forEach((s) => add("system", nameOf(s), "needs you" + (s.note ? ": " + s.note : "."), s.id));
       primed = true;
       loadLedger();
     } else if (++polls % 4 === 0 || Date.now() < waitingUntil) {
@@ -138,7 +138,7 @@ const ChatLog = (() => {
   });
   document.addEventListener("focusin", (ev) => {
     if (ev.target.closest && ev.target.closest("#chat-form")) {
-      document.body.classList.add("chatting");   // the Post-a-quest button would cover the input
+      document.body.classList.add("chatting");   // the Post-a-session button would cover the input
       loadNames(true);
       suggest(ev.target);
     }
@@ -171,16 +171,16 @@ const ChatLog = (() => {
       $("#chat-names").hidden = true;
       if (r.reply) {
         add("orders", "bojjifomo", text, null, null, "", { local: true });
-        add("orders", r.by || "Guild", r.reply, null, null, "", { local: true });
+        add("orders", r.by || "Office", r.reply, null, null, "", { local: true });
       } else {
-        await loadLedger();   // your order, as the guild wrote it down
+        await loadLedger();   // your order, as the office wrote it down
         waitingUntil = Date.now() + 10 * 60 * 1000;
-        add("orders", "Guild", r.held ? `${r.to} will start when the treasury refills.`
+        add("orders", "Office", r.held ? `${r.to} will start when the budget refills.`
           : `${r.to} ${r.queued ? "is busy; your message is queued" : "is on it"}. The answer lands here.`, r.sid, null, "", { local: true });
       }
     } catch (e) {
       add("orders", "bojjifomo", text, null, null, "", { local: true });
-      add("orders", "Guild", e.message, null, null, "", { local: true });
+      add("orders", "Office", e.message, null, null, "", { local: true });
     } finally {
       btn.disabled = false;
     }

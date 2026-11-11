@@ -18,7 +18,7 @@ import chain as chain_mod
 HELP = ("@Name pesan → ke satu orang (anggota guild dapat errand, quest dapat pesan berikutnya). "
         "Tanpa @ → ke Operations Manager, dia yang kerjain atau bagi-bagi. "
         "/fix <program> <masalah> → warden program itu · /review <link PR> → Reviewer kasih vonis · "
-        "/check <program> · /round ops|innovator|ceo|budget · /status · /help")
+        "/check <program> · /round ops|innovator|ceo|budget · /eco on|off · /status · /help")
 
 FIX_BRIEF = """bojjifomo asked for a fix on "{name}" (a program in the guild).
 
@@ -108,6 +108,14 @@ def handle(office, text, default_mode="acceptEdits"):
             return {"reply": HELP, "by": "Guild"}
         if cmd == "status":
             return {"reply": office.chain.situation(), "by": "Chain"}
+        if cmd == "eco":
+            if rest not in ("on", "off", ""):
+                raise OrderError("/eco on or /eco off")
+            if rest:
+                e = office.set_eco_all(rest == "on")
+            else:
+                e = office.eco_public()
+            return {"reply": "Eco %s: lead %s, helpers %s." % ("on" if e["all"] else "off", e["lead"], "/".join(e["helpers"])), "by": "Office"}
         if cmd == "check":
             if not rest:
                 raise OrderError("Which program? /check <name>")

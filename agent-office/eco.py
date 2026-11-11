@@ -53,11 +53,19 @@ class Eco:
 
     def __init__(self):
         saved = store.load("eco.json", [])
-        self.sids = set(x for x in saved if isinstance(x, str)) if isinstance(saved, list) else set()
+        if isinstance(saved, dict):
+            sids, self.all = saved.get("sids") or [], bool(saved.get("all"))
+        else:
+            sids, self.all = saved, False
+        self.sids = set(x for x in sids if isinstance(x, str)) if isinstance(sids, list) else set()
         self.lock = threading.Lock()
 
     def has(self, sid):
-        return sid in self.sids
+        """Eco for this quest: switched on for it, or the office-wide Eco button is on."""
+        return self.all or sid in self.sids
+
+    def _save(self):
+        store.save("eco.json", {"sids": sorted(self.sids), "all": self.all})
 
     def set(self, sid, on):
         with self.lock:
@@ -65,4 +73,10 @@ class Eco:
                 self.sids.add(sid)
             else:
                 self.sids.discard(sid)
-            store.save("eco.json", sorted(self.sids))
+            self._save()
+
+    def set_all(self, on):
+        """The Eco button in the header: every new session and every message from here runs eco."""
+        with self.lock:
+            self.all = bool(on)
+            self._save()
