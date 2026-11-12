@@ -114,6 +114,19 @@ Aturan yang dipakai (sama dengan Mac): gate = pair SOL, bin step 20–250, umur 
 
 ---
 
+## Fitur baru (sama kayak DLMM Web di Mac)
+
+- **Jual lebih tahan banting.** Kalau rute pertama gagal (misal rute Pump.fun / Manifest error `0x1788`), `MET Portfolio` otomatis coba lagi tanpa venue itu, lalu cuma rute langsung, lalu jual dipecah 2 dan 4 bagian (mode Practice cuma simulasi, nggak dipecah). Batas rugi vs harga pool tetap berlaku di semua percobaan. Kalau gagal, **semua** error ditampilin (nggak dipotong cuma yang terakhir).
+- **Last sales.** Baris di bawah Wallet: 8 penjualan terakhir, apa yang dicoba, dan errornya. Tap buat lihat. Log-nya disimpan di HP (`met_sales.jsonl`).
+- **💩 sisa token.** Baris Wallet nulis berapa token sisa (dan berapa yang nggak punya harga). Habis **Cleanup**, ringkasannya nulis `💩 LEFT: N` atau `LEFT: 0, the wallet is clean`, jadi lu tau Cleanup udah abis atau belum.
+- **🎯 TP per ladder.** Tombol di tiap token di `MET Portfolio`: pilih 3 / 5 / 10% atau matiin. Default **mati**. Kalau PnL seluruh ladder nyampe angkanya, lu dapet notifikasi buat close + swap (mode auto: kebuka otomatis pas lu buka `MET Portfolio`). **Dicek cuma pas script refresh**, bukan pas HP tidur. Buat auto exit 24 jam, pakai DLMM Web di Mac.
+- **Semua pool token ini.** Di `MET Pool`, tap detail pool lalu **Semua pool token ini** buat lihat semua pool SOL token itu.
+- Buka posisi yang cuma kebuka sebagian: tombol **Retry** buka slice yang belum landed (udah ada sebelumnya).
+
+> Belum ada tes kirim transaksi beneran dari HP. Yang dites: logika jual (rute alternatif, pecah, error lengkap), TP, dan UI harness. Coba di Practice dulu.
+
+---
+
 ## Kalau ada masalah
 
 | Masalah | Coba |

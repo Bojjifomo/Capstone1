@@ -164,6 +164,34 @@ function exitLog(entry) {
   } catch (e) {}
 }
 
+// One line per sale attempt (what was tried, every error, what it paid), kept
+// on the phone like data/swaps.jsonl on the Mac. "Last sales" reads it back.
+function salesLog(entry) {
+  try {
+    const f = FileManager.local();
+    const path = f.joinPath(f.libraryDirectory(), "met_sales.jsonl");
+    let old = f.fileExists(path) ? f.readString(path) : "";
+    if (old.length > 1_000_000) old = old.slice(old.length - 500_000);
+    f.writeString(path, old + JSON.stringify(entry) + "\n");
+  } catch (e) {}
+}
+function lastSales(n) {
+  try {
+    const f = FileManager.local();
+    const path = f.joinPath(f.libraryDirectory(), "met_sales.jsonl");
+    if (!f.fileExists(path)) return [];
+    return f.readString(path).split("\n").filter(Boolean).slice(-n).map(l => JSON.parse(l)).reverse();
+  } catch (e) { return []; }
+}
+
+// Per-ladder take profit, armed by hand (3/5/10%), like the web terminal. Off
+// unless you arm it; it only raises the same exit as the other rules (a
+// notification, and in auto mode a close and swap).
+const TP_CHOICES = [3, 5, 10];
+function tpPath() { const f = FileManager.local(); return f.joinPath(f.libraryDirectory(), "met_tp.json"); }
+function loadTp() { try { const f = FileManager.local(); return f.fileExists(tpPath()) ? JSON.parse(f.readString(tpPath())) : {}; } catch (e) { return {}; } }
+function saveTp(m) { try { FileManager.local().writeString(tpPath(), JSON.stringify(m)); } catch (e) {} }
+
 // One position against the rules. Bins, not prices: SOL-only sits below the
 // price when SOL is Y (the token falling moves the active bin down) and above
 // it when SOL is X (the active bin moves up). `st` is that position's saved
@@ -206,6 +234,7 @@ function exitCheck(p, st, nowMs) {
 // notifications (once each). Fills r.exits / r.exitAlerts for the table.
 async function runExitRules(rows, nowMs) {
   const st = loadExitState();
+  const tps = loadTp();
   const seen = new Set();
   const notes = [];
   for (const r of rows) {
@@ -228,6 +257,22 @@ async function runExitRules(rows, nowMs) {
         if (!ps.exitNotified) { ps.exitNotified = true; notes.push({ r, kind: "exit", text: `${c.exit.text} (${shortAddr(p.address)})` }); }
       } else ps.exitNotified = false;
     }
+    // Armed take profit for the whole ladder (all its positions together).
+    const tp = tps[r.tokenMint];
+    const dep = r.positions.reduce((s, p) => s + (p.depositSol || 0), 0);
+    const pnl = r.positions.reduce((s, p) => s + (p.pnlSol || 0), 0);
+    const lpct = dep > 0 ? pnl / dep * 100 : null;
+    r.tpPct = tp || null;
+    r.ladderPnlPct = lpct;
+    const tk = "tp:" + r.tokenMint;
+    if (tp && lpct != null && lpct >= tp && r.positions.length && !r.exits.some(e => e.rule === "ladderTP")) {
+      const text = `Ladder PnL ${lpct.toFixed(1)}% \u2265 your ${tp}% take profit`;
+      for (const p of r.positions) r.exits.push({ address: p.address, rule: "ladderTP", text });
+      seen.add(tk);
+      const ps = st[tk] || (st[tk] = {});
+      if (!ps.exitNotified) { ps.exitNotified = true; notes.push({ r, kind: "exit", text }); }
+    } else if (st[tk]) st[tk].exitNotified = false;
+    if (tp) seen.add(tk);
     r.exitAlerts = [...new Set(r.exitAlerts)];
   }
   for (const k of Object.keys(st)) if (!seen.has(k)) delete st[k];
@@ -1885,11 +1930,11 @@ const MET = (() => {
       }
     }
   }
-  async function jupiterQuote({ inputMint, amount, slippageBps, apiKey }) {
+  async function jupiterQuote({ inputMint, amount, slippageBps, apiKey, quoteExtra }) {
     const base = apiKey ? JUP_KEYED : JUP_LITE;
     const headers = apiKey ? { "x-api-key": apiKey } : {};
     return jupiterJson(`${base}/quote?inputMint=${inputMint}&outputMint=${WSOL}&amount=${amount}`
-      + `&slippageBps=${slippageBps}&restrictIntermediateTokens=true`, { headers, timeout: 15 });
+      + `&slippageBps=${slippageBps}&restrictIntermediateTokens=true${quoteExtra || ""}`, { headers, timeout: 15 });
   }
   async function jupiterSwapTx({ quote, wallet, apiKey, maxPriorityLamports }) {
     const base = apiKey ? JUP_KEYED : JUP_LITE;
@@ -2038,7 +2083,7 @@ const MET = (() => {
   // expired unsent is quoted and sent again. The max-loss check against the
   // reference price applies to every try, so the extra room never takes a
   // sale past it.
-  async function sellToSol(rpc, args) {
+  async function sellWithRetries(rpc, args) {
     const say = s => { try { args.onStatus && args.onStatus(s); } catch (e) {} };
     const base = args.slippageBps || 100;
     for (let attempt = 0; ; attempt++) {
@@ -2052,6 +2097,65 @@ const MET = (() => {
       }
     }
   }
+  // The sale as the web terminal does it: the plain route first, then the
+  // same sale without the venues the first quote went through (a Pump.fun or
+  // Manifest route can fail where another one works), then direct routes only,
+  // then the amount in 2 and 4 pieces. The max-loss check applies to every
+  // try. Every error is kept (e.tried) instead of only the last one, and
+  // args.onLog gets one record per sale for the sales log.
+  async function sellToSol(rpc, args) {
+    const say = s => { try { args.onStatus && args.onStatus(s); } catch (e) {} };
+    const log = o => { try { args.onLog && args.onLog({ ts: new Date().toISOString(), mint: args.mint, practice: !!args.practice, ...o }); } catch (e) {} };
+    const tried = [];
+    const noRoute = m => /no route|not tradable|could_not_find|find any route|no routes found/i.test(m);
+    const track = { labels: [] };
+    const attempt = async (label, a) => {
+      try { return await sellWithRetries(rpc, a); }
+      catch (e) {
+        if (e.refused) throw e;
+        tried.push(`${label}: ${String((e && e.message) || e).slice(0, 220)}`);
+        e.noRoute = noRoute(String((e && e.message) || e));
+        return e;
+      }
+    };
+    const done = (res, label, extra) => { log({ ok: !!res.ok, how: label, got: res.gotLamports || 0, sig: res.signature || null, tried, ...(extra || {}) }); return res; };
+    let r = await attempt("default", { ...args, track });
+    if (!(r instanceof Error)) { if (r.ok) return done(r, "default"); tried.push("default: not confirmed"); }
+    const stop = r instanceof Error && r.noRoute;
+    if (!stop) {
+      if (track.labels.length) {
+        say("trying a route without " + track.labels.join(", "));
+        r = await attempt("without " + track.labels.join("+"), { ...args, quoteExtra: "&excludeDexes=" + encodeURIComponent(track.labels.join(",")), track: {} });
+        if (!(r instanceof Error) && r.ok) return done(r, "excludeDexes");
+      }
+      say("trying direct routes only");
+      r = await attempt("direct only", { ...args, quoteExtra: "&onlyDirectRoutes=true", track: {} });
+      if (!(r instanceof Error) && r.ok) return done(r, "direct");
+      if (!args.practice) {
+        for (const n of [2, 4]) {
+          const amount = BigInt(args.amountRaw);
+          if (amount < BigInt(n) * 1000n) continue;
+          say(`selling in ${n} pieces`);
+          let got = 0, okAll = true, last = null, sold = 0n;
+          for (let i = 0; i < n; i++) {
+            const part = i === n - 1 ? amount - sold : amount / BigInt(n);
+            const p = await attempt(`piece ${i + 1}/${n}`, { ...args, amountRaw: part, refSolPerRaw: args.refSolPerRaw, track: {} });
+            if (p instanceof Error || !p.ok) { okAll = false; break; }
+            sold += part; got += p.gotLamports || 0; last = p;
+          }
+          if (okAll) return done({ ok: true, gotLamports: got, signature: last && last.signature, pieces: n }, `${n} pieces`);
+          if (sold > 0n) {
+            const e = new Error(`sold ${sold} of ${amount} in ${n} pieces, then stopped. ${tried.slice(-1)[0] || ""}`);
+            e.tried = tried; log({ ok: false, how: "pieces-partial", tried }); throw e;
+          }
+        }
+      }
+    }
+    const e = new Error(tried.length ? tried.join(" | ") : "not sold");
+    e.tried = tried;
+    log({ ok: false, how: "failed", tried });
+    throw e;
+  }
   // Jupiter's own instruction failed with 6001, SlippageToleranceExceeded.
   function jupiterSlipped(err, swapBase64) {
     const ie = err && err.InstructionError;
@@ -2062,7 +2166,7 @@ const MET = (() => {
       return !!instructions[ie[0]] && instructions[ie[0]].program === JUPITER_V6;
     } catch (e) { return false; }
   }
-  async function sellOnce(rpc, { mint, amountRaw, refSolPerRaw, maxLossPct, slippageBps, kp, apiKey, practice, onStatus }) {
+  async function sellOnce(rpc, { mint, amountRaw, refSolPerRaw, maxLossPct, slippageBps, kp, apiKey, practice, onStatus, quoteExtra, track }) {
     const say = s => { try { onStatus && onStatus(s); } catch (e) {} };
     const amount = BigInt(amountRaw);
     if (amount <= 0n) throw new Error("nothing to sell");
@@ -2072,7 +2176,8 @@ const MET = (() => {
       throw e;
     }
     say("quoting");
-    const quote = await jupiterQuote({ inputMint: mint, amount: amount.toString(), slippageBps: slippageBps || 100, apiKey });
+    const quote = await jupiterQuote({ inputMint: mint, amount: amount.toString(), slippageBps: slippageBps || 100, apiKey, quoteExtra });
+    if (track) track.labels = [...new Set((quote.routePlan || []).map(h => h.swapInfo && h.swapInfo.label).filter(Boolean))];
     if (quote.inputMint !== mint || quote.outputMint !== WSOL || String(quote.inAmount) !== amount.toString()) {
       throw new Error("the quote is not for the trade that was asked for");
     }
@@ -3504,10 +3609,10 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
       const acts = new UITableRow();
       acts.height = 38;
       const pad = acts.addText("");
-      pad.widthWeight = 10;
+      pad.widthWeight = 4;
       const mk = (title, tap) => {
         const b = acts.addButton(busy ? "…" : title);
-        b.widthWeight = 30;
+        b.widthWeight = 24;
         b.centerAligned();
         b.titleFont = Font.semiboldSystemFont(14);
         if (!busy) b.onTap = tap;
@@ -3515,6 +3620,7 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
       mk("Re-enter", () => h.onReentry(r));
       mk("Claim", () => h.onClaim([r], r.symbol));
       mk("Close", () => h.onClose([r], r.symbol));
+      mk(r.tpPct ? `\u{1F3AF} ${r.tpPct}%` : "\u{1F3AF} TP", () => h.onTp(r));
       t.addRow(acts);
     }
     // Spec v1 exit rules: what fired, and the button to act on it.
@@ -3548,6 +3654,9 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
     const priced = (d.leftovers || []).filter(x => x.valueSol != null && x.valueSol >= DUST_SOL);
     if (priced.length) parts.push(`${priced.length} token${priced.length > 1 ? "s" : ""} ${fmtVal(d.leftoverSol, 3, false, true)}`);
     if (d.rentSol > 0) parts.push(`rent ${fmtVal(d.rentSol, 3, false, true)}`);
+    const shit = (d.leftovers || []).filter(x => !x.keep);
+    const shitNoPrice = shit.filter(x => x.valueSol == null).length;
+    if (shit.length) parts.push(`\u{1F4A9} ${shit.length} left${shitNoPrice ? ` (${shitNoPrice} no price)` : ""}`);
     const wc = wr.addText("Wallet", parts.length ? parts.join("   ") : "empty");
     wc.widthWeight = 60;
     wc.titleFont = Font.semiboldSystemFont(15);
@@ -3563,6 +3672,30 @@ function fillTable(t, d, stale, dataTime, refreshing, error, h) {
     wr.onSelect = () => Safari.open(`https://solscan.io/account/${WALLET}`);
     wr.dismissOnSelect = false;
     t.addRow(wr);
+    divider(0);
+  }
+
+  // Last sales: what was tried and every error, so a failed sale is not a guess.
+  {
+    const ls = lastSales(8);
+    const sr = new UITableRow();
+    sr.height = 44;
+    const bad = ls.filter(x => !x.ok).length;
+    const sc = sr.addText("Last sales", ls.length ? `${ls.length} recent${bad ? ` · ${bad} failed` : " · all ok"}` : "none yet");
+    sc.titleFont = Font.semiboldSystemFont(13);
+    sc.titleColor = COL.muted;
+    sc.subtitleFont = Font.systemFont(11);
+    sc.subtitleColor = bad ? COL.yellow : COL.faint;
+    sr.onSelect = () => {
+      const a = new Alert();
+      a.title = "Last sales";
+      a.message = ls.length ? ls.map(x => `${x.ok ? "\u2705" : "\u274C"} ${shortAddr(x.mint || "")} ${x.how || ""}${x.practice ? " (practice)" : ""}`
+        + (x.ok ? ` +${fmtSol((x.got || 0) / 1e9, 4)}` : "") + (x.tried && x.tried.length ? "\n   " + x.tried.join("\n   ") : "")).join("\n\n") : "No sales yet.";
+      a.addCancelAction("Close");
+      a.present();
+    };
+    sr.dismissOnSelect = false;
+    t.addRow(sr);
     divider(0);
   }
 
@@ -3844,12 +3977,12 @@ async function sellReturned(before, after, poolByMint, rep, limits) {
     try {
       const res = await MET.sellToSol(SEND_RPC, { mint, amountRaw: delta, refSolPerRaw: ref,
         maxLossPct: limits.maxLoss, slippageBps: Math.round(limits.slippage * 100), kp: ACTOR,
-        apiKey: JUP_KEY, practice: DRY_RUN, onStatus: s => rep.detail(si, s) });
+        apiKey: JUP_KEY, practice: DRY_RUN, onStatus: s => rep.detail(si, s), onLog: salesLog });
       if (res.ok) { sold++; got += res.gotLamports || 0; rep.ok(si, `about ${fmtSol((res.gotLamports || 0) / 1e9, 4)}${res.dryRun ? " (simulated)" : ""}`); }
       else { failed++; rep.fail(si, res.expired ? "did not land; still in the wallet" : "not confirmed; check Solscan"); }
     } catch (e) {
       failed++;
-      rep.fail(si, String(e.message || e).slice(0, 110));
+      rep.fail(si, String(e.message || e).slice(0, 300));
     }
   }
   return { sold, failed, got };
@@ -3999,6 +4132,26 @@ if (config.runsInWidget) {
         : { ok: res.ok, text: res.ok ? `Claimed fees on ${label}.${swapText}` : `Claimed ${res.done} of ${res.total} transactions.${swapText}`,
             link: res.signature ? `https://solscan.io/tx/${res.signature}` : null };
     });
+  };
+
+  // Arm / change / disarm the ladder's take profit.
+  h.onTp = async r => {
+    if (busy) return;
+    const cur = loadTp();
+    const a = new Alert();
+    a.title = `\u{1F3AF} Take profit ${r.symbol}`;
+    a.message = `Now: ${cur[r.tokenMint] ? cur[r.tokenMint] + "%" : "off"}${r.ladderPnlPct != null ? ` \u00B7 ladder PnL ${r.ladderPnlPct.toFixed(1)}%` : ""}.\n\n`
+      + `When the whole ladder reaches it you get a notification${EXIT.mode === "auto" ? ", and opening MET Portfolio closes and swaps to SOL" : " to close and swap by hand"}. `
+      + "It is checked when the script refreshes, not while the phone sleeps.";
+    for (const p of TP_CHOICES) a.addAction(`${p}%`);
+    if (cur[r.tokenMint]) a.addDestructiveAction("Turn off");
+    a.addCancelAction("Cancel");
+    const c = await a.presentAlert();
+    if (c < 0) return;
+    if (c < TP_CHOICES.length) cur[r.tokenMint] = TP_CHOICES[c]; else if (c === TP_CHOICES.length && cur[r.tokenMint]) delete cur[r.tokenMint]; else return;
+    saveTp(cur);
+    r.tpPct = cur[r.tokenMint] || null;
+    redraw();
   };
 
   // Closing empties every position of the rows, claims their fees and closes
@@ -4238,7 +4391,7 @@ if (config.runsInWidget) {
       return redraw();
     }
     await run("Cleanup", async rep => {
-      let sold = 0, failed = 0, got = 0, skipped = 0;
+      let sold = 0, failed = 0, got = 0, skipped = 0, leftFailed = 0;
       if (choice === 0 && sellable.length) {
         const refs = await marketRefPrices(sellable.map(x => x.mint), d && d.solUsd);
         const fresh = await MET.walletTokenAccounts(SEND_RPC, ACTOR.address);
@@ -4250,10 +4403,10 @@ if (config.runsInWidget) {
           if (!(ref > 0)) { skipped++; rep.skip(si, "no market price to judge a route by; left in the wallet"); continue; }
           try {
             const res = await MET.sellToSol(SEND_RPC, { mint: x.mint, amountRaw: tk.amount, refSolPerRaw: ref, maxLossPct: maxLoss,
-              slippageBps: Math.round(slippage * 100), kp: ACTOR, apiKey: JUP_KEY, practice: DRY_RUN, onStatus: s => rep.detail(si, s) });
+              slippageBps: Math.round(slippage * 100), kp: ACTOR, apiKey: JUP_KEY, practice: DRY_RUN, onStatus: s => rep.detail(si, s), onLog: salesLog });
             if (res.ok) { sold++; got += res.gotLamports || 0; rep.ok(si, `about ${fmtSol((res.gotLamports || 0) / 1e9, 4)}${res.dryRun ? " (simulated)" : ""}`); }
             else { failed++; rep.fail(si, res.expired ? "did not land; still in the wallet" : "not confirmed; check Solscan"); }
-          } catch (e) { failed++; rep.fail(si, String(e.message || e).slice(0, 110)); }
+          } catch (e) { failed++; leftFailed++; rep.fail(si, String(e.message || e).slice(0, 300)); }
         }
       }
       // Empty accounts, a dozen to a transaction, each with its own program.
@@ -4300,6 +4453,10 @@ if (config.runsInWidget) {
       const parts = [];
       if (sold || failed) parts.push(`${sold} sold${got ? ` for about ${fmtSol(got / 1e9, 4)}` : ""}${failed ? `, ${failed} not sold` : ""}`);
       if (skipped) parts.push(`${skipped} left (no market price)`);
+      try {
+        const rest = (await MET.walletTokenAccounts(SEND_RPC, ACTOR.address)).filter(tk => tk.amount > 0n && tk.mint !== WSOL && !KEEP_MINTS.has(tk.mint));
+        parts.push(rest.length ? `\u{1F4A9} LEFT: ${rest.length} token${rest.length === 1 ? "" : "s"} still in the wallet (${leftFailed} failed to sell, ${skipped} without a price)` : "\u{1F4A9} LEFT: 0, the wallet is clean");
+      } catch (e) {}
       if (closed || closeFailed) parts.push(`${closed} empty account${closed === 1 ? "" : "s"} closed${closeFailed ? `, ${closeFailed} could not be` : ""}`);
       return { ok: failed === 0 && closeFailed === 0, text: `${DRY_RUN ? "Practice (simulated): " : ""}${parts.join("; ")}.` };
     });
