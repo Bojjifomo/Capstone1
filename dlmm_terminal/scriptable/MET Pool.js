@@ -1817,11 +1817,11 @@ const MET = (() => {
       }
     }
   }
-  async function jupiterQuote({ inputMint, amount, slippageBps, apiKey }) {
+  async function jupiterQuote({ inputMint, amount, slippageBps, apiKey, quoteExtra }) {
     const base = apiKey ? JUP_KEYED : JUP_LITE;
     const headers = apiKey ? { "x-api-key": apiKey } : {};
     return jupiterJson(`${base}/quote?inputMint=${inputMint}&outputMint=${WSOL}&amount=${amount}`
-      + `&slippageBps=${slippageBps}&restrictIntermediateTokens=true`, { headers, timeout: 15 });
+      + `&slippageBps=${slippageBps}&restrictIntermediateTokens=true${quoteExtra || ""}`, { headers, timeout: 15 });
   }
   async function jupiterSwapTx({ quote, wallet, apiKey, maxPriorityLamports }) {
     const base = apiKey ? JUP_KEYED : JUP_LITE;
@@ -1970,7 +1970,7 @@ const MET = (() => {
   // expired unsent is quoted and sent again. The max-loss check against the
   // reference price applies to every try, so the extra room never takes a
   // sale past it.
-  async function sellToSol(rpc, args) {
+  async function sellWithRetries(rpc, args) {
     const say = s => { try { args.onStatus && args.onStatus(s); } catch (e) {} };
     const base = args.slippageBps || 100;
     for (let attempt = 0; ; attempt++) {
@@ -1984,6 +1984,65 @@ const MET = (() => {
       }
     }
   }
+  // The sale as the web terminal does it: the plain route first, then the
+  // same sale without the venues the first quote went through (a Pump.fun or
+  // Manifest route can fail where another one works), then direct routes only,
+  // then the amount in 2 and 4 pieces. The max-loss check applies to every
+  // try. Every error is kept (e.tried) instead of only the last one, and
+  // args.onLog gets one record per sale for the sales log.
+  async function sellToSol(rpc, args) {
+    const say = s => { try { args.onStatus && args.onStatus(s); } catch (e) {} };
+    const log = o => { try { args.onLog && args.onLog({ ts: new Date().toISOString(), mint: args.mint, practice: !!args.practice, ...o }); } catch (e) {} };
+    const tried = [];
+    const noRoute = m => /no route|not tradable|could_not_find|find any route|no routes found/i.test(m);
+    const track = { labels: [] };
+    const attempt = async (label, a) => {
+      try { return await sellWithRetries(rpc, a); }
+      catch (e) {
+        if (e.refused) throw e;
+        tried.push(`${label}: ${String((e && e.message) || e).slice(0, 220)}`);
+        e.noRoute = noRoute(String((e && e.message) || e));
+        return e;
+      }
+    };
+    const done = (res, label, extra) => { log({ ok: !!res.ok, how: label, got: res.gotLamports || 0, sig: res.signature || null, tried, ...(extra || {}) }); return res; };
+    let r = await attempt("default", { ...args, track });
+    if (!(r instanceof Error)) { if (r.ok) return done(r, "default"); tried.push("default: not confirmed"); }
+    const stop = r instanceof Error && r.noRoute;
+    if (!stop) {
+      if (track.labels.length) {
+        say("trying a route without " + track.labels.join(", "));
+        r = await attempt("without " + track.labels.join("+"), { ...args, quoteExtra: "&excludeDexes=" + encodeURIComponent(track.labels.join(",")), track: {} });
+        if (!(r instanceof Error) && r.ok) return done(r, "excludeDexes");
+      }
+      say("trying direct routes only");
+      r = await attempt("direct only", { ...args, quoteExtra: "&onlyDirectRoutes=true", track: {} });
+      if (!(r instanceof Error) && r.ok) return done(r, "direct");
+      if (!args.practice) {
+        for (const n of [2, 4]) {
+          const amount = BigInt(args.amountRaw);
+          if (amount < BigInt(n) * 1000n) continue;
+          say(`selling in ${n} pieces`);
+          let got = 0, okAll = true, last = null, sold = 0n;
+          for (let i = 0; i < n; i++) {
+            const part = i === n - 1 ? amount - sold : amount / BigInt(n);
+            const p = await attempt(`piece ${i + 1}/${n}`, { ...args, amountRaw: part, refSolPerRaw: args.refSolPerRaw, track: {} });
+            if (p instanceof Error || !p.ok) { okAll = false; break; }
+            sold += part; got += p.gotLamports || 0; last = p;
+          }
+          if (okAll) return done({ ok: true, gotLamports: got, signature: last && last.signature, pieces: n }, `${n} pieces`);
+          if (sold > 0n) {
+            const e = new Error(`sold ${sold} of ${amount} in ${n} pieces, then stopped. ${tried.slice(-1)[0] || ""}`);
+            e.tried = tried; log({ ok: false, how: "pieces-partial", tried }); throw e;
+          }
+        }
+      }
+    }
+    const e = new Error(tried.length ? tried.join(" | ") : "not sold");
+    e.tried = tried;
+    log({ ok: false, how: "failed", tried });
+    throw e;
+  }
   // Jupiter's own instruction failed with 6001, SlippageToleranceExceeded.
   function jupiterSlipped(err, swapBase64) {
     const ie = err && err.InstructionError;
@@ -1994,7 +2053,7 @@ const MET = (() => {
       return !!instructions[ie[0]] && instructions[ie[0]].program === JUPITER_V6;
     } catch (e) { return false; }
   }
-  async function sellOnce(rpc, { mint, amountRaw, refSolPerRaw, maxLossPct, slippageBps, kp, apiKey, practice, onStatus }) {
+  async function sellOnce(rpc, { mint, amountRaw, refSolPerRaw, maxLossPct, slippageBps, kp, apiKey, practice, onStatus, quoteExtra, track }) {
     const say = s => { try { onStatus && onStatus(s); } catch (e) {} };
     const amount = BigInt(amountRaw);
     if (amount <= 0n) throw new Error("nothing to sell");
@@ -2004,7 +2063,8 @@ const MET = (() => {
       throw e;
     }
     say("quoting");
-    const quote = await jupiterQuote({ inputMint: mint, amount: amount.toString(), slippageBps: slippageBps || 100, apiKey });
+    const quote = await jupiterQuote({ inputMint: mint, amount: amount.toString(), slippageBps: slippageBps || 100, apiKey, quoteExtra });
+    if (track) track.labels = [...new Set((quote.routePlan || []).map(h => h.swapInfo && h.swapInfo.label).filter(Boolean))];
     if (quote.inputMint !== mint || quote.outputMint !== WSOL || String(quote.inAmount) !== amount.toString()) {
       throw new Error("the quote is not for the trade that was asked for");
     }
@@ -3793,8 +3853,20 @@ if (config.runsInWidget) {
     a.addAction("DexScreener");
     a.addAction("Meteora");
     a.addAction(isWatched(r.id) ? "★ Hapus dari watchlist" : "☆ Tambah ke watchlist");
+    if (r.tokenMint && !tokenView) a.addAction("Semua pool token ini");
     a.addCancelAction("Close");
     const i = await a.presentAlert();
+    if (i === 3 && r.tokenMint && !tokenView) {
+      if (busy) return;
+      busy = true;
+      progress = { title: "Search", steps: [{ label: `All pools of ${r.symbol}`, state: "run", detail: "" }], running: true, outcome: null };
+      show(current, false);
+      try { const rows = await poolsForToken(r.tokenMint); tokenView = { symbol: rows[0].symbol, rows }; progress = null; }
+      catch (e) { progress = { title: "Search", steps: [], running: false, outcome: { ok: false, text: String(e.message || e).slice(0, 200) } }; }
+      busy = false;
+      show(current, false);
+      return;
+    }
     if (i === 0) Safari.open(`${DEX_URL}/${r.id}`);
     if (i === 1) Safari.open(`${METEORA_URL}/${r.id}`);
     if (i === 2) { toggleWatch(r); if (current && current.data) show(current, false); }
