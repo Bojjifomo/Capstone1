@@ -153,7 +153,7 @@ Object.assign(Hooks.panelActions, {
   async clean(btn) {
     const id = btn.dataset.cleaner;
     if (!confirm("Run this cleaner? A code will be sent to your phone.")) return false;
-    const r = await withCode("clean:" + id, true, (code) => api(`/api/disk/clean/${id}`, code));
+    const r = await withSeal("clean:" + id, true, (seal) => api(`/api/disk/clean/${id}`, seal));
     toast(`${r.title}: freed ${gb(r.freed)}.`);
   },
 });
