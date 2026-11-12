@@ -860,7 +860,9 @@ def api_chain_scorecard(req, m):
 @route("POST", "/api/chain/review")
 def api_chain_review(req, m):
     """Ask the Reviewer to read one pull request now."""
-    r = chain_call(APP.office.chain.request_review, text_field(req.body, "url", 300), by="bojjifomo")
+    url = text_field(req.body, "url", 300)
+    sha = APP.office.chain.head_sha(url.strip()) if chain.handoff.PR_URL.fullmatch(url.strip()) else ""
+    r = chain_call(APP.office.chain.request_review, url, by="bojjifomo", sha=sha)
     if not r:
         raise HttpError(409, "the review could not start")
     return r

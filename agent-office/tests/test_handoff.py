@@ -1,9 +1,11 @@
 """The handoff contract (RESULT lines), the Reviewer, the start checklist and the scorecard."""
+import json
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -124,6 +126,121 @@ class ChainHandoff(unittest.TestCase):
                          ("Lyra", 2, 50, 0.2, 3.0))
         self.assertEqual(lyra["outcomes"], {"done": 1, "needs-you": 1})
         self.assertIn("Lyra (sonnet): 2 runs, 50% done", self.c.scorecard_text(7))
+
+
+class PrSweep(unittest.TestCase):
+    """The sweep reads open pull requests from gh (mocked: no network) and starts Thorne on each new head commit."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="sweep-test-"))
+        self._data = store.DATA_DIR
+        store.DATA_DIR = self.tmp
+        self.office = Stub()
+        self.c = chain.Chain(self.office, cli="office")
+        self.c.appoint("reviewer", "aaaa0004")
+        self.prs = []
+        self.fail = False
+        test = self
+
+        def fake_run(argv, **kw):
+            class P:
+                returncode = 1 if test.fail else 0
+                stdout = json.dumps(test.prs)
+                stderr = "gh: not logged in"
+            return P()
+
+        self.patches = [mock.patch.object(chain.shutil, "which", return_value="/usr/bin/gh"),
+                        mock.patch.object(chain.subprocess, "run", side_effect=fake_run)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        store.DATA_DIR = self._data
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def pr(self, n, sha, draft=False):
+        return {"number": n, "url": "https://github.com/Bojjifomo/Capstone1/pull/%d" % n, "headRefOid": sha,
+                "isDraft": draft, "title": "t%d" % n}
+
+    def finish(self, started, outcome="done - safe to merge"):
+        self.c.on_run(Run(started["sid"], True, "ok\nRESULT: " + outcome))
+
+    def test_new_pr_gets_a_review_with_its_sha(self):
+        self.prs = [self.pr(50, "a" * 40)]
+        started = self.c.sweep_prs()
+        self.assertEqual([r["who"] for r in started], ["Orin"])
+        self.assertIn("aaaaaaa", self.office.team.asked[-1]["brief"])
+        self.assertEqual((self.c.reviews[-1]["pr"], self.c.reviews[-1]["sha"]), ("50", "a" * 40))
+        self.finish(started[0])
+        self.assertTrue(any("PR #50 aaaaaaa" in t and "safe to merge" in t for t in self.office.lines), self.office.lines)
+
+    def test_drafts_are_skipped(self):
+        self.prs = [self.pr(51, "b" * 40, draft=True)]
+        self.assertEqual(self.c.sweep_prs(), [])
+        self.assertEqual(self.office.team.asked, [])
+
+    def test_reviewed_sha_is_skipped_even_after_restart(self):
+        self.prs = [self.pr(52, "c" * 40)]
+        started = self.c.sweep_prs()
+        self.finish(started[0])
+        self.assertEqual(self.c.sweep_prs(), [])
+        again = chain.Chain(self.office, cli="office")
+        again.appoint("reviewer", "aaaa0004")
+        self.assertEqual(again.sweep_prs(), [], "a restart does not re-review")
+        self.assertEqual(len(self.office.team.asked), 1)
+
+    def test_in_flight_review_is_not_doubled(self):
+        self.prs = [self.pr(53, "d" * 40)]
+        self.c.sweep_prs()
+        self.prs = [self.pr(53, "e" * 40)]
+        self.assertEqual(self.c.sweep_prs(), [], "wait for the running review, then look at the new commit")
+        self.assertEqual(len(self.office.team.asked), 1)
+
+    def test_new_sha_is_reviewed_again(self):
+        self.prs = [self.pr(54, "1" * 40)]
+        self.finish(self.c.sweep_prs()[0])
+        self.prs = [self.pr(54, "2" * 40)]
+        again = self.c.sweep_prs()
+        self.assertEqual(len(again), 1)
+        self.assertEqual(self.c.reviews[-1]["sha"], "2" * 40)
+
+    def test_cap_per_sweep(self):
+        self.prs = [self.pr(60 + i, "%040d" % i) for i in range(5)]
+        self.assertEqual(len(self.c.sweep_prs()), chain.PR_SWEEP_MAX)
+        self.assertEqual(len(self.office.team.asked), 3)
+
+    def test_gh_failure_is_quiet(self):
+        self.fail = True
+        self.assertEqual(self.c.sweep_prs(), [])
+        self.prs = "not a list"
+        self.fail = False
+        self.assertEqual(self.c.sweep_prs(), [])
+        with mock.patch.object(chain.subprocess, "run", side_effect=OSError("boom")):
+            self.assertEqual(self.c.sweep_prs(), [])
+        with mock.patch.object(chain.shutil, "which", return_value=None):
+            self.assertEqual(self.c.sweep_prs(), [])
+        self.assertEqual(self.office.team.asked, [])
+
+    def test_off_switch_and_empty_treasury(self):
+        self.prs = [self.pr(70, "f" * 40)]
+        self.c.configure({"auto_review_prs": False})
+        self.assertEqual(self.c.sweep_prs(), [])
+        self.c.configure({"auto_review_prs": True})
+        self.office.paused = True
+        self.assertEqual(self.c.sweep_prs(), [])
+        self.office.paused = False
+        self.assertEqual(len(self.c.sweep_prs()), 1)
+
+
+class PetitionBuildBrief(unittest.TestCase):
+    def test_build_brief_points_to_thorne_and_aurelian(self):
+        import petitions
+        text = petitions.BUILD_BRIEF
+        self.assertIn("Do not merge it yourself: Thorne reviews it, then Aurelian merges it if it is marked safe", text)
+        self.assertIn("bojjifomo merges PRs that touch secrets, wallets, fund, guard.py, server.py network checks or the merge rules", text)
+        self.assertNotIn("bojjifomo reviews and merges", text)
 
 
 if __name__ == "__main__":

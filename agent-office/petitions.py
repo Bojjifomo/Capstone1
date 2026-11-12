@@ -33,7 +33,7 @@ How to finish:
 - Work on a new git branch, never on main. Keep the change to what the plan says.
 - Run the app's tests before you push. Add tests for anything new.
 - Push the branch and open a pull request that links back to this petition ("Petition {id}").
-- Do not merge it: bojjifomo reviews and merges.
+- Do not merge it yourself: Thorne reviews it, then Aurelian merges it if it is marked safe (bojjifomo merges PRs that touch secrets, wallets, fund, guard.py, server.py network checks or the merge rules).
 - End with a short report: what changed, how you tested it, and the PR link.{note}"""
 
 
