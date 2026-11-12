@@ -73,7 +73,7 @@ Hooks.forms.petition = async (form, submitter) => {
     toast("Approved. Build it whenever you like.");
   } else {
     const path = act === "build" ? `/api/petitions/${pid}/decide` : `/api/petitions/${pid}/build`;
-    r = await withCode("bypass:new", isRisky(build.mode), (code) =>
+    r = await withSeal("bypass:new", isRisky(build.mode), (code) =>
       api(path, Object.assign({ decision: "approve", build: true, note }, build, code)));
     if (r.queued_for_gold) {
       toast(r.reason || "Queued until the daily budget resets.");
