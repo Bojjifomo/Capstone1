@@ -1066,6 +1066,13 @@ class Chain:
         limit = self.settings["stuck_minutes"] * 60
         stuck = []
         with self.lock:
+            for rv in self.reviews:   # a review that never reports back is failed, so its commit can be tried again
+                if not rv.get("ended") and now - rv.get("started", now) > limit:
+                    rv.update(ended=now, outcome="failed", note="stuck for over %d minutes" % self.settings["stuck_minutes"])
+                    self.runs.pop(rv.get("sid"), None)
+                    if rv.get("pr") and rv.get("sha"):
+                        self.pr_seen.pop("%s:%s" % (rv["pr"], rv["sha"]), None)
+                    self.save()
             for inc in self.incidents:
                 if inc["status"] == "resolved":
                     continue
@@ -1102,6 +1109,8 @@ class Chain:
                 rv = next((x for x in self.reviews if x.get("sid") == run.sid), None)
                 if rv:
                     rv.update(ended=time.time(), outcome=result["outcome"], note=result["note"] or summary[:300])
+                    if result["outcome"] == "failed" and rv.get("pr") and rv.get("sha"):
+                        self.pr_seen.pop("%s:%s" % (rv["pr"], rv["sha"]), None)   # a failed review is tried again
                 self.save()
             elif entry["kind"] == "round":
                 kind = entry["round"]

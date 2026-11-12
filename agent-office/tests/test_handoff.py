@@ -206,6 +206,22 @@ class PrSweep(unittest.TestCase):
         self.assertEqual(len(again), 1)
         self.assertEqual(self.c.reviews[-1]["sha"], "2" * 40)
 
+    def test_failed_review_is_retried_but_done_and_blocked_are_not(self):
+        self.prs = [self.pr(80, "8" * 40), self.pr(81, "9" * 40), self.pr(82, "7" * 40)]
+        a, b, c = self.c.sweep_prs()
+        self.c.on_run(Run(a["sid"], False, ""))
+        self.finish(b, "done - safe to merge")
+        self.finish(c, "blocked - prints a key")
+        again = self.c.sweep_prs()
+        self.assertEqual([r["url"].rsplit("/", 1)[-1] for r in again], ["80"], "only the failed review is tried again")
+
+    def test_stuck_review_is_failed_and_retried(self):
+        self.prs = [self.pr(83, "6" * 40)]
+        self.c.sweep_prs()
+        self.c._unstick(time.time() + self.c.settings["stuck_minutes"] * 60 + 5)
+        self.assertEqual(self.c.reviews[-1]["outcome"], "failed")
+        self.assertEqual(len(self.c.sweep_prs()), 1)
+
     def test_cap_per_sweep(self):
         self.prs = [self.pr(60 + i, "%040d" % i) for i in range(5)]
         self.assertEqual(len(self.c.sweep_prs()), chain.PR_SWEEP_MAX)
