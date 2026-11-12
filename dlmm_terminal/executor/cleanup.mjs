@@ -36,28 +36,43 @@ for (const programId of PROGRAMS) {
 }
 
 const tokens = [], empties = [];
+// cls: sold | would | dust | nomarket | failed | frozen — what is left of each token afterwards
+const NOMARKET = /not tradable|No routes found|no route/i;
 for (const a of accounts) {
   if (a.raw === 0n) { if (!a.frozen) empties.push(a); continue; }
   if (KEEP.has(a.mint) || flag("no-sell")) continue;
-  const t = { mint: a.mint, amount: a.ui, status: "" };
+  const t = { mint: a.mint, amount: a.ui, status: "", cls: "" };
   tokens.push(t);
-  if (a.frozen) { t.status = "frozen: left"; continue; }
+  if (a.frozen) { t.status = "frozen: left"; t.cls = "frozen"; continue; }
   // dust first, from one Jupiter quote (most leftovers are dust: no pool lookups for them)
   try {
     const q = await jupQuote(a.mint, a.raw.toString());
-    if (Number(q.outAmount) / 1e9 < minSol) { t.sol = Number(q.outAmount) / 1e9; t.status = `dust (< ${minSol} SOL): left`; continue; }
+    if (Number(q.outAmount) / 1e9 < minSol) { t.sol = Number(q.outAmount) / 1e9; t.status = `dust (< ${minSol} SOL): left`; t.cls = "dust"; continue; }
   } catch {}
   // what it is worth and where it would sell (no send)
   const est = await sellToSol(a.mint, a.raw.toString(), { connection, owner, maxLossPct: maxLoss, dry: true });
-  if (!est.ok) { t.status = "not sold: " + est.error; continue; }
+  if (!est.ok) {
+    t.status = "not sold: " + est.error;
+    t.cls = NOMARKET.test(est.error) && !/pool DLMM/.test(est.error) ? "nomarket" : "failed";
+    if (t.cls === "nomarket") t.status = "no market (Jupiter: not tradable, no DLMM pool): can't be sold";
+    continue;
+  }
   t.sol = est.sol;
   t.via = est.via;
   t.underPct = est.underPct;
-  if (est.sol < minSol) { t.status = `dust (< ${minSol} SOL): left`; continue; }
-  if (dry) { t.status = `would sell via ${est.via}`; continue; }
+  if (est.sol < minSol) { t.status = `dust (< ${minSol} SOL): left`; t.cls = "dust"; continue; }
+  if (dry) { t.status = `would sell via ${est.via}`; t.cls = "would"; continue; }
   const res = await sellToSol(a.mint, a.raw.toString(), { connection, signer, owner, maxLossPct: maxLoss, pool: est.pool });
-  if (res.ok) { t.status = `sold via ${res.via}`; t.signature = res.signature; t.sol = res.sol; empties.push(a); }
-  else t.status = "not sold: " + res.error;
+  if (res.ok) { t.status = `sold via ${res.via}${res.pieces ? ` in ${res.pieces} pieces` : ""}`; t.cls = "sold"; t.signature = res.signature; t.sol = res.sol; empties.push(a); }
+  else { t.status = "not sold: " + res.error; t.cls = "failed"; if (res.soldRaw) t.soldRaw = res.soldRaw; }
+}
+// what is still in the wallet after this run, so you can tell when the cleanup is done
+const left = { count: 0, sellableNow: 0, nomarket: 0, dust: 0, failed: 0, frozen: 0, valueSol: 0 };
+for (const t of tokens) {
+  if (t.cls === "sold") continue;
+  left.count++;
+  if (t.cls === "would") left.sellableNow++; else if (left[t.cls] != null) left[t.cls]++;
+  if (t.sol) left.valueSol += t.sol;
 }
 
 // closeAccount (instruction 9): account, destination, owner
@@ -74,4 +89,4 @@ if (!flag("no-close") && !dry) {
     catch (e) { out({ ok: false, error: "close accounts: " + String(e.message || e).slice(0, 200), tokens, closed }); process.exit(1); }
   }
 }
-out({ ok: true, mode: dry ? "dry-run" : "send", tokens, emptyAccounts: empties.length, rentSol: rentBack, closed });
+out({ ok: true, mode: dry ? "dry-run" : "send", tokens, left, emptyAccounts: empties.length, rentSol: rentBack, closed });

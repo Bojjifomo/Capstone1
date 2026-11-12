@@ -2,7 +2,7 @@
 // Used by the auto exit to retry a sale that failed right after the close.
 //
 //   node sell.mjs --mint M [--pool P] [--maxloss 5] [--amount RAW]     (default amount: everything held)
-//   node sell.mjs --mint M --dry-run --owner PK
+//   node sell.mjs --mint M --dry-run [--verify] --owner PK     (--verify: also simulate the transaction)
 // One JSON line: {ok, mint, raw, via, sol, signature} or {ok:false, error}.
 import { createRequire } from "node:module";
 import { loadSigner } from "./keys.mjs";
@@ -29,5 +29,5 @@ for (const programId of ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQ
 const want = arg("amount") ? BigInt(arg("amount")) : held;
 const raw = want < held ? want : held;
 if (raw <= 0n) out({ ok: true, mint, raw: "0", note: "nothing held: already sold or moved" });
-const res = await sellToSol(mint, raw.toString(), { connection, signer, owner, maxLossPct: Number(arg("maxloss", "5")), pool: arg("pool") || null, dry });
+const res = await sellToSol(mint, raw.toString(), { connection, signer, owner, maxLossPct: Number(arg("maxloss", "5")), pool: arg("pool") || null, dry, verify: process.argv.includes("--verify") });
 out({ mint, raw: raw.toString(), ...res });

@@ -534,9 +534,7 @@ function openZap(r, size) {
     try {
       $("#zMsg").textContent = "Simulasi + kirim slice satu-satu (bisa 1–2 menit)…";
       const s = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, sol: cur.sz, slices: cur.slices, bottom: cur.bottom, strategy: cur.strategy, override: over.length > 0 });
-      const rows = (s.results || []).map(x => `slice ${x.slice}: ${x.ok ? "✓ " : "✗ "}${x.signature ? solscan(x.signature) : ""} ${x.error ? esc(x.error) : ""}`);
-      $("#zMsg").innerHTML = rows.join("<br>") + (s.error ? `<br><span class="neg">✗ ${esc(s.error)}</span>` : "")
-        + `<br>${s.ok ? "✓ Ladder kebuka." : `Kebuka ${(s.results || []).filter(x => x.ok).length} slice; sisanya tetap SOL di wallet.`}`;
+      showOpenResult(s, r);
       setTimeout(loadPortfolio, 4000);
     } catch (e) {
       $("#zMsg").innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`;
@@ -562,6 +560,28 @@ async function closePosition(p, btn, rule) {
     if (r) r.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`;
   } finally { btn.disabled = false; }
 }
+
+// What an open did, slice by slice, with the exact error of every slice that did not open and a button that
+// opens just those again (at their old bin ranges, only if the price is still above them).
+function showOpenResult(s, r) {
+  const rows = (s.results || []).map(x => `<div class="${x.ok ? "pos" : "neg"}">slice ${x.slice}: ${x.ok ? "✓" : "✗"} ${x.signature ? solscan(x.signature) : ""}${x.attempts > 1 ? ` <span class="muted">(percobaan ${x.attempts})</span>` : ""} ${x.error ? `<span class="errtxt">${esc(x.error)}</span>` : ""}</div>`);
+  const failed = s.failedSlices || [];
+  const nOk = (s.results || []).filter(x => x.ok).length;
+  $("#zMsg").innerHTML = rows.join("") + (s.error ? `<div class="neg">✗ ${esc(s.error)}</div>` : "")
+    + `<div>${s.ok ? "✓ Ladder kebuka semua." : `Kebuka ${nOk} slice${failed.length ? `, ${failed.length} belum` : ""}; yang belum tetap SOL di wallet.`}</div>`
+    + (failed.length ? `<button class="btn go" id="zRetry">🔁 Coba lagi ${failed.length} slice yang gagal</button>` : "");
+  const rb = $("#zRetry");
+  if (rb) rb.onclick = async () => {
+    rb.disabled = true;
+    rb.textContent = "jalan…";
+    try {
+      const s2 = await trade.call("/api/trade/open", { pool: r.pool, symbol: r.symbol, retrySlices: failed, strategy: cur_strategy() });
+      showOpenResult(s2, r);
+      setTimeout(loadPortfolio, 4000);
+    } catch (e) { rb.disabled = false; rb.textContent = "🔁 coba lagi"; $("#zMsg").insertAdjacentHTML("beforeend", `<div class="neg">✗ ${esc(e.message || e)}</div>`); }
+  };
+}
+const cur_strategy = () => ($("#zStrat") ? $("#zStrat").value.toLowerCase() : "spot");
 
 // Close every slice of a ladder (one after another), no swap.
 async function closeGroup(p, btn, group, rule) {
@@ -597,7 +617,11 @@ async function cleanupWallet(btn) {
   try {
     const s = await trade.call("/api/trade/cleanup", {});
     const sold = (s.tokens || []).filter(t => /^sold/.test(t.status)).length;
-    alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n` + (s.tokens || []).map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`).join("\n") : "Gagal: " + (s.error || "?"));
+    const L = s.left || {};
+    const lines = (s.tokens || []).filter(t => t.cls !== "dust").map(t => `${t.mint.slice(0, 6)}… ${t.status}${t.sol ? ` (◎${t.sol.toFixed(4)})` : ""}`);
+    alert(s.ok ? `Cleanup selesai: ${sold} token dijual, ${s.closed || 0} account kosong ditutup (rent ±◎${(s.rentSol || 0).toFixed(3)}).\n\n`
+      + `SISA: ${L.count || 0} token · ${L.failed || 0} gagal dijual · ${L.nomarket || 0} nggak ada pasar · ${L.dust || 0} receh · ${L.frozen || 0} frozen`
+      + `${(L.failed || 0) === 0 ? "\n✓ Nggak ada yang layak dijual yang tersisa." : "\n⚠ Masih ada yang gagal dijual: lihat alasannya di Portfolio → Penjualan terakhir."}\n\n` + lines.join("\n") : "Gagal: " + (s.error || "?"));
     loadPortfolio();
     loadLeftovers();
   } catch (e) { alert("Gagal: " + (e.message || e)); }
@@ -676,12 +700,17 @@ function renderLeftovers() {
   const worth = d.rows.filter(t => t.valueUsd == null || t.valueUsd >= 0.1);
   const dust = d.rows.length - worth.length;
   const rows = worth.slice(0, 15).map(t => `<div class="tk"><span class="tks"><b>${esc(t.symbol || short(t.mint))}</b><span class="sub">${t.ui.toLocaleString(undefined, { maximumFractionDigits: 2 })} · ${short(t.mint)}</span></span>
-      <span class="r">${t.valueUsd != null ? (solUsd() && state.unit !== "usd" ? fmtSol(t.valueUsd / solUsd(), 4) : fmtUsd(t.valueUsd)) : "--"}</span>
+      <span class="r">${t.valueUsd != null ? (solUsd() && state.unit !== "usd" ? fmtSol(t.valueUsd / solUsd(), 4) : fmtUsd(t.valueUsd)) : '<span class="muted" title="DexScreener nggak punya harga: biasanya nggak ada pasar sama sekali">tanpa harga</span>'}</span>
       ${mine ? `<button class="btn go" data-sell="${t.mint}" data-sym="${esc(t.symbol || short(t.mint))}">Jual ke SOL</button>` : ""}<span class="tkres" data-res="${t.mint}"></span></div>`).join("");
   const sales = (d.sales || []).slice(0, 5).map(x => `<div class="sale ${x.ok ? "pos" : "neg"}">${new Date(x.ts).toLocaleTimeString()} · ${esc(short(x.mint))} · ${x.ok
     ? `✓ ◎${(x.sol || 0).toFixed(4)} via ${esc(x.via)} <a href="https://solscan.io/tx/${esc(x.signature)}" target="_blank" rel="noopener">tx ↗</a>`
-    : `✗ ${esc((x.error || "").slice(0, 160))}`}</div>`).join("");
-  el.innerHTML = (rows ? `<div class="tkh">Token sisa di wallet <span class="muted">(belum SOL${dust ? ` · ${dust} token receh < $0.10 disembunyiin` : ""})</span></div>${rows}` : "")
+    : `✗ <span class="errtxt">${esc(x.error || "")}</span>`}</div>`).join("");
+  const T = d.total || { count: d.rows.length, valueUsd: 0, dust: dust, unpriced: 0, worth: worth.length };
+  const val = T.valueUsd ? (solUsd() && state.unit !== "usd" ? fmtSol(T.valueUsd / solUsd(), 3) : fmtUsd(T.valueUsd)) : "$0";
+  const summary = `<div class="tkh">💩 Total token sisa: <b>${T.count}</b> <span class="muted">(belum jadi SOL)</span> · nilai ≈ <b>${val}</b>
+      <div class="sub">${T.worth} layak dijual (≥ $0.10) · ${T.dust} receh (&lt; $0.10, Cleanup nggak jual) · ${T.unpriced} tanpa harga / nggak ada pasar (nggak bisa dijual)</div>
+      ${T.count === 0 ? '<div class="pos">✓ Bersih: nggak ada token sisa.</div>' : T.worth === 0 ? '<div class="pos">✓ Nggak ada lagi yang layak dijual. Sisanya receh / nggak ada pasar.</div>' : ""}</div>`;
+  el.innerHTML = summary + (rows ? `<div class="tkh">Token sisa yang layak dijual</div>${rows}` : "")
     + (sales ? `<div class="tkh">Penjualan terakhir</div>${sales}` : "");
 }
 async function sellToken(btn) {
