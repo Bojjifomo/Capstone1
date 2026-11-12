@@ -50,8 +50,8 @@ const ChatLog = (() => {
   let namesAt = 0;
   let waitingUntil = 0;   // after an order, read the ledger on every poll so the answer shows up quickly
 
-  const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Code", hire: "Office", dismiss: "Office", errand: "Task", bot: "Program", clean: "Disk", guild: "Office", chatter: "Office", external: "External" };
-  const LEDGER_VERB = { queue: "queued: ", job: "started a session: ", hire: "welcomed ", dismiss: "dismissed ", errand: "sent ", bot: "", clean: "" };
+  const LEDGER_WHO = { send: "You", queue: "You", job: "You", seal: "Code", hire: "Office", dismiss: "Office", errand: "Task", bot: "Program", clean: "Disk", guild: "Office", merge: "Aurelian", chatter: "Office", external: "External" };
+  const LEDGER_VERB = { queue: "queued: ", job: "started a session: ", hire: "welcomed ", dismiss: "dismissed ", errand: "sent ", merge: "merged PR: ", bot: "", clean: "" };
 
   function ingestLedger(e) {
     if (e.kind === "external") {

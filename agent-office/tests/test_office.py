@@ -757,6 +757,17 @@ class ExternalAccess(ServerCase):
         plain = self.request("GET", "/api/state", host=self.PHONE, headers={"Tailscale-Funnel-Request": "true"})
         self.assertEqual(plain[0], 200)  # only the exact Tailscale marker counts
 
+    def test_ledger_records_a_merge(self):
+        body = {"kind": "merge", "text": "Fix the thing", "pr": "107", "sha": "ABCDEF1234567", "by": "Aurelian"}
+        self.assertEqual(self.call("POST", "/api/ledger", body)[0], 200)
+        self.assertEqual(self.call("POST", "/api/ledger", dict(body, sha="nothex"))[0], 400)
+        self.assertEqual(self.call("POST", "/api/ledger", dict(body, pr="x"))[0], 400)
+        entries = self.call("GET", "/api/ledger")[1]["entries"]
+        merged = [e for e in entries if e.get("kind") == "merge"]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual((merged[0]["text"], merged[0]["pr"], merged[0]["sha"], merged[0]["by"]),
+                         ("Fix the thing", 107, "abcdef1234567", "Aurelian"))
+
     def test_ledger_post_and_audit_origin(self):
         status, body = self.call("POST", "/api/ledger", {"kind": "chatter", "text": "The watch reports all quiet.", "by": "Guild Hall"})
         self.assertEqual(status, 200, body)

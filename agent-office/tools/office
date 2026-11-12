@@ -19,7 +19,8 @@
   office setup                     recruit the standing team: CEO, operations manager, innovator and two wardens
   office start                     the setup checklist (START HERE FIRST), checked against the live hall
   office review <PR link>          the Reviewer reads a pull request and gives a verdict
-  office scorecard [days]          runs, done %, cost and time per person; incidents and reviews
+  office merge <PR> --title "<t>" --sha <sha>  log a merge in the ledger (Aurelian only, after `gh pr merge`)
+  office scorecard [days]         runs, done %, cost and time per person; incidents and reviews
   office usage [days]              where the gold goes: by person, kind, model, project, plus savings ideas
   office model <name> <haiku|sonnet|opus|grok>  move a teammate to another model (Opus seats are limited)
   office effort <name> <low|medium|high|xhigh|max|default>  set a teammate's effort
@@ -372,6 +373,15 @@ def cmd_review(args):
     print("%s is reviewing %s. Session %s" % (r["who"], r["url"], r["sid"]))
 
 
+def cmd_merge(args):
+    opts, rest = flags(args, {"title", "sha", "by"})
+    if len(rest) != 1 or not rest[0].isdigit() or not opts.get("title") or not opts.get("sha"):
+        sys.exit('usage: office merge <PR number> --title "<PR title>" --sha <head SHA> [--by <name>]   (log a merge in the ledger)')
+    by = opts.get("by") or os.environ.get("AGENT_OFFICE_NAME") or "Aurelian"
+    call("/api/ledger", {"kind": "merge", "text": opts["title"], "pr": rest[0], "sha": opts["sha"], "by": by})
+    print("merge of PR %s logged in the ledger" % rest[0])
+
+
 def cmd_scorecard(args):
     print(call("/api/chain/scorecard?days=" + urllib.parse.quote(args[0] if args else "7"))["text"])
 
@@ -406,7 +416,7 @@ def cmd_model(args):
 COMMANDS = {"team": cmd_team, "who": cmd_who, "ask": cmd_ask, "result": cmd_result, "status": cmd_status,
             "propose": cmd_propose, "petitions": cmd_petitions, "brief": cmd_brief,
             "chain": cmd_chain, "check": cmd_check, "incident": cmd_incident, "round": cmd_round, "usage": cmd_usage, "setup": cmd_setup,
-            "start": cmd_start, "review": cmd_review, "scorecard": cmd_scorecard, "model": cmd_model, "eco": cmd_eco, "effort": cmd_effort,
+            "start": cmd_start, "review": cmd_review, "merge": cmd_merge, "scorecard": cmd_scorecard, "model": cmd_model, "eco": cmd_eco, "effort": cmd_effort,
             "hook": cmd_hook, "install-hook": cmd_install_hook, "doctor": cmd_doctor}
 
 if __name__ == "__main__":

@@ -1002,13 +1002,20 @@ def api_orchestrator_brief(req, m):
 def api_ledger_post(req, m):
     """A line in the town log, for example from the external assistant."""
     kind = " ".join(text_field(req.body, "kind", 20).split()).lower()
-    if kind not in ("guild", "chatter"):
-        raise HttpError(400, "kind must be guild or chatter")
+    if kind not in ("guild", "chatter", "merge"):
+        raise HttpError(400, "kind must be guild, chatter or merge")
     text = " ".join(text_field(req.body, "text", 400).split())
     if not text:
         raise HttpError(400, "text is required")
     by = " ".join(text_field(req.body, "by", 40).split())[:40] or "Guild Hall"
-    APP.office.ledger.add(kind, text[:300], by=by)
+    extra = {}
+    if kind == "merge":  # what went into main: PR title (text), number and head SHA
+        pr = " ".join(text_field(req.body, "pr", 10).split())
+        sha = " ".join(text_field(req.body, "sha", 40).split()).lower()
+        if not pr.isdigit() or not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+            raise HttpError(400, "a merge needs pr (a number) and sha (the head commit)")
+        extra = {"pr": int(pr), "sha": sha}
+    APP.office.ledger.add(kind, text[:300], by=by, **extra)
     return {"ok": True}
 
 
