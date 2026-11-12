@@ -77,10 +77,35 @@ async function dlmmQuote(connection, pool, mint, rawAmount) {
 // Guard numbers in SOL: how much the sale pays under the pool price.
 const under = (gotLamports, fairLamports) => (fairLamports > 0 ? (1 - gotLamports / fairLamports) * 100 : 0);
 
+// Pools to try for the DLMM sale: the hint (the pool of the position that was just closed), then the token's deepest ones.
+export async function dlmmPools(mint, hint, n = 3) {
+  const out = hint ? [hint] : [];
+  for (const f of [`token_x=${mint} && token_y=${WSOL}`, `token_x=${WSOL} && token_y=${mint}`]) {
+    try {
+      const d = await getJson(`${DATAPI}/pools?filter_by=${encodeURIComponent(f)}&sort_by=tvl:desc&page_size=${n}`, {}, 2);
+      for (const p of d.data || []) if ((p.tvl || 0) > 50 && !out.includes(p.address)) out.push(p.address);
+    } catch {}
+  }
+  return out.slice(0, n + (hint ? 1 : 0));
+}
+
+// "Simulation failed ... custom program error: 0x1788 ... last log lines": one readable line, nothing cut that matters.
+const clip = (t, n = 420) => String(t || "").replace(/\s+/g, " ").slice(0, n);
+function simErr(sim) {
+  const logs = (sim.value.logs || []).filter(l => !/ invoke \[|success$|consumed /.test(l)).slice(-3).map(l => l.replace(/^Program log: /, ""));
+  return `${JSON.stringify(sim.value.err)}${logs.length ? " · " + logs.join(" | ") : ""}`;
+}
+
 /**
- * Sell `rawAmount` of `mint` for SOL.
- * opts: {connection, signer (Keypair, null = dry run), owner (PublicKey), maxLossPct, pool (hint), dry}
- * Returns {ok, via: "jupiter"|"dlmm", sol, underPct, signature?, dryRun?, tried: [reasons]} or {ok:false, error, tried}.
+ * Sell `rawAmount` of `mint` for SOL, trying every way there is before giving up:
+ *   1. Jupiter, best route            2. Jupiter without the exchange the first route used (a pool that refuses)
+ *   3. Jupiter, direct routes only    4. the token's own Meteora DLMM pools, deepest first
+ *   5. the same again in 2 and then 4 smaller pieces (a size that overflows one pool's math)
+ * Every transaction is simulated first and only sent when the simulation is clean, so a failing route costs nothing;
+ * each route refuses a price more than maxLossPct % under the pool price. The error of every route is kept, in full.
+ * opts: {connection, signer (Keypair, null = dry run), owner (PublicKey), maxLossPct, pool (hint), dry, verify}
+ *   dry + verify: also simulate the transaction (a dry run otherwise only quotes).
+ * Returns {ok, via, sol, underPct, signature?, dryRun?, pieces?, tried: [...]} or {ok:false, error, tried, soldRaw?, soldSol?}.
  */
 // Every real sale (not dry runs) goes to data/swaps.jsonl: what was tried, what landed, the exact error.
 function logSale(row) {
@@ -93,57 +118,103 @@ function logSale(row) {
 
 export async function sellToSol(mint, rawAmount, opts) {
   const res = await sellToSolInner(mint, rawAmount, opts);
-  if (!opts.dry) logSale({ mint, raw: String(rawAmount), ok: res.ok, via: res.via, sol: res.sol, signature: res.signature, error: res.error, tried: res.tried });
+  if (!opts.dry) logSale({ mint, raw: String(rawAmount), ok: res.ok, via: res.via, sol: res.sol, signature: res.signature, error: res.error, pieces: res.pieces, soldRaw: res.soldRaw, tried: res.tried });
   return res;
 }
 
 async function sellToSolInner(mint, rawAmount, opts) {
   const { connection, signer, owner, maxLossPct = 5, dry } = opts;
+  const verify = !dry || opts.verify;
   const tried = [];
-  let pool = opts.pool || null;
-  let fair = null;                                           // lamports at the pool price, when a pool is known
-  // 1) Jupiter
-  try {
-    const q = await jupQuote(mint, rawAmount);
-    const impact = Number(q.priceImpactPct || 0) * 100;
-    if (!pool) pool = await bestDlmmPool(mint);
-    if (pool) { try { fair = (await dlmmQuote(connection, pool, mint, rawAmount)).fairLamports; } catch {} }
-    const u = fair ? under(Number(q.outAmount), fair) : impact;
-    if (u > maxLossPct) throw new Error(`Jupiter pays ${u.toFixed(1)}% under the ${fair ? "pool price" : "market (price impact)"} (max ${maxLossPct}%)`);
-    if (dry) return { ok: true, via: "jupiter", pool, sol: Number(q.outAmount) / 1e9, underPct: u, dryRun: true, tried };
+  const pools = await dlmmPools(mint, opts.pool || null);
+  const raw = BigInt(rawAmount);
+
+  // the pool price the sale is judged against: the first pool that quotes
+  const fairOf = async amount => {
+    for (const p of pools) { try { return (await dlmmQuote(connection, p, mint, amount)).fairLamports; } catch {} }
+    return null;
+  };
+
+  // --- one Jupiter attempt: quote -> guard -> build -> simulate -> send
+  async function jup(amount, extra, label) {
+    const qs = `inputMint=${mint}&outputMint=${WSOL}&amount=${amount}&slippageBps=300${extra.excludeDexes ? "&excludeDexes=" + encodeURIComponent(extra.excludeDexes) : ""}${extra.onlyDirectRoutes ? "&onlyDirectRoutes=true" : ""}`;
+    const q = await getJson(`${jupBase()}/quote?${qs}`, { headers: jupHeaders() });
+    if (!q.outAmount) throw new Error("no route" + (q.error ? ` (${q.error})` : ""));
+    const labels = [...new Set((q.routePlan || []).map(r => (r.swapInfo || {}).label).filter(Boolean))];
+    const fair = await fairOf(amount);
+    const u = fair ? under(Number(q.outAmount), fair) : Number(q.priceImpactPct || 0) * 100;
+    if (u > maxLossPct) { const e = new Error(`pays ${u.toFixed(1)}% under the ${fair ? "pool price" : "market (price impact)"} (max ${maxLossPct}%) via ${labels.join("+")}`); e.guard = true; e.labels = labels; throw e; }
+    const out = { ok: true, via: "jupiter" + (label ? " " + label : ""), pool: pools[0] || null, sol: Number(q.outAmount) / 1e9, underPct: u, labels };
+    if (dry && !verify) return { ...out, dryRun: true };
     const sw = await getJson(`${jupBase()}/swap`, { method: "POST", headers: jupHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ quoteResponse: q, userPublicKey: owner.toBase58(), wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
         prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: 2_000_000, priorityLevel: "high" } } }) }, 2);
-    if (!sw.swapTransaction) throw new Error("Jupiter swap build failed");
+    if (!sw.swapTransaction) { const e = new Error("swap build failed: " + clip(JSON.stringify(sw), 200)); e.labels = labels; throw e; }
     const tx = VersionedTransaction.deserialize(Buffer.from(sw.swapTransaction, "base64"));
+    const sim = await connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
+    if (sim.value.err) { const e = new Error(`simulation failed via ${labels.join("+")}: ${simErr(sim)}`); e.labels = labels; throw e; }
+    if (dry) return { ...out, dryRun: true, simulated: true };
     tx.sign([signer]);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
-    const c = await connection.confirmTransaction(sig, "confirmed");
-    if (c.value.err) throw new Error("Jupiter swap failed on chain: " + JSON.stringify(c.value.err));
-    return { ok: true, via: "jupiter", pool, sol: Number(q.outAmount) / 1e9, underPct: u, signature: sig, tried };
-  } catch (e) {
-    tried.push(String(e.message || e).slice(0, 160));
-    if (/^Jupiter pays/.test(tried[tried.length - 1])) {
-      // Jupiter's best route is already too far under: the pool alone will not do better.
-      return { ok: false, error: tried.join(" · "), tried };
-    }
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+    const c = await connection.confirmTransaction({ signature: sig, blockhash: tx.message.recentBlockhash, lastValidBlockHeight: sw.lastValidBlockHeight || (await connection.getBlockHeight()) + 150 }, "confirmed");
+    if (c.value.err) { const e = new Error(`failed on chain via ${labels.join("+")}: ${JSON.stringify(c.value.err)} (${sig})`); e.labels = labels; throw e; }
+    return { ...out, signature: sig };
   }
-  // 2) the Meteora pool directly
-  try {
-    if (!pool) pool = await bestDlmmPool(mint);
-    if (!pool) throw new Error("no Meteora DLMM SOL pool for this token");
-    const { dlmm, q, fairLamports } = await dlmmQuote(connection, pool, mint, rawAmount);
+
+  // --- one DLMM attempt on one pool
+  async function dlmmSale(amount, pool) {
+    const { dlmm, q, fairLamports } = await dlmmQuote(connection, pool, mint, amount);
     const got = Number(q.outAmount.toString()), u = under(got, fairLamports);
-    if (q.consumedInAmount.lt(new BN(String(rawAmount)))) throw new Error("the pool cannot take the whole amount");
-    if (u > maxLossPct) throw new Error(`the pool pays ${u.toFixed(1)}% under its price (max ${maxLossPct}%)`);
-    if (dry) return { ok: true, via: "dlmm", pool, sol: got / 1e9, underPct: u, dryRun: true, tried };
-    const tx = await dlmm.swap({ inToken: new PublicKey(mint), outToken: new PublicKey(WSOL), inAmount: new BN(String(rawAmount)),
+    if (q.consumedInAmount.lt(new BN(String(amount)))) throw new Error("the pool cannot take the whole amount");
+    if (u > maxLossPct) throw new Error(`pays ${u.toFixed(1)}% under its own price (max ${maxLossPct}%)`);
+    const out = { ok: true, via: "dlmm", pool, sol: got / 1e9, underPct: u };
+    if (dry && !verify) return { ...out, dryRun: true };
+    const tx = await dlmm.swap({ inToken: new PublicKey(mint), outToken: new PublicKey(WSOL), inAmount: new BN(String(amount)),
       minOutAmount: q.minOutAmount, lbPair: dlmm.pubkey, user: owner, binArraysPubkey: q.binArraysPubkey });
     tx.instructions.unshift(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }));
+    tx.feePayer = owner;
+    tx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+    const sim = await connection.simulateTransaction(tx);
+    if (sim.value.err) throw new Error(`simulation failed: ${simErr(sim)}`);
+    if (dry) return { ...out, dryRun: true, simulated: true };
     const sig = await sendAndConfirmTransaction(connection, tx, [signer], { commitment: "confirmed" });
-    return { ok: true, via: "dlmm", pool, sol: got / 1e9, underPct: u, signature: sig, tried };
-  } catch (e) {
-    tried.push("DLMM: " + String(e.message || e).slice(0, 160));
-    return { ok: false, error: tried.join(" · "), tried };
+    return { ...out, signature: sig };
   }
+
+  // --- all the ways to sell `amount`, in order; the first that works wins
+  async function sellAll(amount, tag) {
+    const errs = [];
+    const note = (name, e) => errs.push(`${tag}${name}: ${clip(e.message || e)}`);
+    let labels = [];
+    let noMarket = false;
+    try { return await jup(amount, {}, ""); }
+    catch (e) { labels = e.labels || []; note("Jupiter", e); noMarket = /not tradable|No routes found|no route/i.test(String(e.message)); }
+    if (noMarket) { /* Jupiter has no market for it: the other Jupiter variants would say the same */ }
+    else if (labels.length) { try { return await jup(amount, { excludeDexes: labels.join(",") }, `(tanpa ${labels.join("+")})`); } catch (e) { note(`Jupiter tanpa ${labels.join("+")}`, e); } }
+    if (!noMarket) { try { return await jup(amount, { onlyDirectRoutes: true }, "(rute langsung)"); } catch (e) { note("Jupiter rute langsung", e); } }
+    for (const p of pools) { try { return await dlmmSale(amount, p); } catch (e) { note(`pool DLMM ${p.slice(0, 6)}…`, e); } }
+    tried.push(...errs);
+    return null;
+  }
+
+  // 1) the whole amount
+  const whole = await sellAll(raw, "");
+  if (whole) return { ...whole, tried };
+
+  // 2) in smaller pieces (2, then 4): some pools' math refuses a big amount
+  if (!dry && raw >= 8n) {
+    for (const n of [2, 4]) {
+      const part = raw / BigInt(n);
+      let soldRaw = 0n, soldSol = 0, last = null, vias = [];
+      for (let i = 0; i < n; i++) {
+        const amt = i === n - 1 ? raw - part * BigInt(n - 1) : part;
+        const r = await sellAll(amt, `${n} bagian #${i + 1}: `);
+        if (!r) break;
+        soldRaw += amt; soldSol += r.sol; last = r; vias.push(r.via);
+      }
+      if (soldRaw === raw) return { ok: true, via: [...new Set(vias)].join("+"), pieces: n, sol: soldSol, underPct: last.underPct, signature: last.signature, tried };
+      if (soldRaw > 0n) return { ok: false, error: `sold ${soldRaw}/${raw} in ${n} pieces (◎${soldSol.toFixed(4)}), the rest failed: ${tried.slice(-3).join(" · ")}`, soldRaw: String(soldRaw), soldSol, tried };
+    }
+  }
+  return { ok: false, error: tried.join(" · ") || "no way to sell this token", tried };
 }

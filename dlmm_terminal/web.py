@@ -344,7 +344,11 @@ def leftovers(wallet: str) -> dict:
         t["valueUsd"] = t["ui"] * t["priceUsd"] if t.get("priceUsd") else None
         rows.append(t)
     rows.sort(key=lambda t: -(t["valueUsd"] or 0))
-    return {"wallet": wallet, "rows": rows, "sales": recent_sales()}
+    priced = [t for t in rows if t["valueUsd"] is not None]
+    total = {"count": len(rows), "valueUsd": sum(t["valueUsd"] for t in priced),
+             "dust": sum(1 for t in priced if t["valueUsd"] < 0.10), "unpriced": len(rows) - len(priced),
+             "worth": sum(1 for t in priced if t["valueUsd"] >= 0.10)}
+    return {"wallet": wallet, "rows": rows, "total": total, "sales": recent_sales()}
 
 
 def recent_sales(n: int = 8) -> list[dict]:
@@ -678,11 +682,19 @@ class Handler(BaseHTTPRequestHandler):
                 ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 if self.path.endswith("open"):
                     pos = self.cfg["position"]
-                    sol = float(body["sol"])
+                    retry = body.get("retrySlices")
+                    sol = float(body.get("sol") or 0.01) if retry else float(body["sol"])
                     args = node.ladder_args(str(body["pool"]), sol, int(body.get("slices") or pos.get("ladderSlices", 5)),
                                             abs(float(body.get("bottom") or pos["rangeBottomPct"])), float(body.get("top") or 0),
                                             str(body.get("strategy") or "spot"))
-                    res = node.run("open_ladder.mjs", args, timeout=600)
+                    if retry:
+                        # open exactly the slices an earlier run did not manage, at their old bin ranges
+                        args += ["--retry-slices", json.dumps([{"lo": int(x["lo"]), "hi": int(x["hi"]), "lamports": str(int(x["lamports"]))} for x in retry])]
+                    res = node.run("open_ladder.mjs", args, timeout=900)
+                    from .cli import DATA
+                    append("opens.jsonl", {"ts": ts, "pool": body.get("pool"), "symbol": body.get("symbol"), "retry": bool(retry),
+                                           "ok": res.get("ok"), "error": res.get("error"), "results": res.get("results"),
+                                           "failedSlices": res.get("failedSlices")})
                     append("decisions.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
                                                "decision": "enter", "sizeSol": sol, "override": bool(body.get("override")),
                                                "positions": [r.get("position") for r in res.get("results", [])], "ok": res.get("ok"),
@@ -698,7 +710,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(res)
                 if self.path.endswith("cleanup"):
                     res = node.run("cleanup.mjs", ["--maxloss", str(float(body.get("maxloss") or self.cfg["trade"]["maxLossPct"]))], timeout=600)
-                    append("closes.jsonl", {"ts": ts, "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "emptyAccounts", "closed")}})
+                    append("closes.jsonl", {"ts": ts, "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "emptyAccounts", "closed", "left")}})
                     return self._json(res)
                 if self.path.endswith("reenter"):
                     pos = self.cfg["position"]
