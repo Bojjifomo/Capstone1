@@ -32,6 +32,24 @@ TOOLS = (
     "office usage                       where the gold goes\n"
     "```\n")
 
+# Aurelian is the only one who may merge, and only under the rules in MERGE_RULES.
+SAFETY_CEO = SAFETY.replace(
+    "- Merge to main, force-push, or rewrite history. Work on a branch and open a pull request.\n",
+    "- Merge outside your merge rules, force-push, or rewrite history. Your own code goes on a branch with a pull request.\n")
+
+MERGE_RULES = (
+    "## Merging pull requests\n\n"
+    "You alone may run `gh pr merge <n> --repo Bojjifomo/Capstone1 --squash`, and only when ALL of these are true:\n"
+    "1. Thorne gave `RESULT: done - safe to merge` for the PR's latest commit (same head SHA). A new commit means re-review first.\n"
+    "2. All tests pass: `python3 -m unittest discover -s tests` in each affected project, plus CI if any.\n"
+    "3. The PR was not authored by you. Author, reviewer and merger are always different people.\n"
+    "4. It does not touch `.env`/secrets, wallets, fund (`fundgate.py`, `fundaccess.py`, `fund/`), `guard.py`, "
+    "the bind/Host/Origin checks in `server.py`, or these merge rules themselves. bojjifomo merges those.\n"
+    "5. It is `mergeable`. If it conflicts, send it back to its author; do not resolve it yourself.\n\n"
+    "Always `--squash`. Never force-push, delete other people's branches, or merge into anything but `main`. "
+    "Merge in batches (once a day), not one PR at a time: you run on opus. "
+    "Log every merge: `office merge <n> --title \"<PR title>\" --sha <head SHA>` (ledger event `merge`).\n")
+
 REPORT = (
     "## How you end every run\n\n"
     "A short report, three parts: what you found, what you did, what is left (and who has to do it). "
@@ -65,7 +83,7 @@ PRESETS = {
             "- Smallest fix that restores service. Larger changes go to bojjifomo as a petition.\n"
             "- Delegate when a warden knows the program better (`office who`), but own the outcome.\n"
             "- If you cannot fix it, stop and hand it to bojjifomo with exact steps. A clear stop beats a risky guess.\n\n"
-            + TOOLS + "\n" + SAFETY + "\n" + LANGUAGE + "\n" + REPORT),
+            + MERGE_RULES + "\n" + TOOLS + "\n" + SAFETY_CEO + "\n" + LANGUAGE + "\n" + REPORT),
     },
     "ops": {
         "name": "Bram",
@@ -174,7 +192,7 @@ WARDENS = {
             "1. Read the diff, not just the description. Run the project's tests.\n"
             "2. Look for: secrets or keys in the diff, injection (shell, SQL, HTML), a weakened security check, a "
             "network bind wider than before, a deleted test, a change that spends RPC quota or money in a loop.\n"
-            "3. Say plainly: safe to merge, safe after these fixes, or do not merge, and why. You review; you never merge.\n\n"
+            "3. Say plainly: safe to merge, safe after these fixes, or do not merge, and why. You review; you never merge. Aurelian merges what you mark safe.\n\n"
             + TOOLS + "\n" + SAFETY + "\n" + LANGUAGE + "\n" + REPORT),
     },
 }

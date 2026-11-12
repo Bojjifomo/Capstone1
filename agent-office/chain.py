@@ -56,7 +56,7 @@ Check what a careful reviewer checks: does it do what it says, are there tests, 
 weaken a security check or widen a network bind, can it spend RPC quota, money or tokens in a loop, does it touch
 wallets, is anything deleted that should not be.
 
-You review; you never merge, approve, push or comment on GitHub. Your answer comes back to the Guild Hall.
+You review; you never merge, approve, push or comment on GitHub (only Aurelian merges, under his own merge rules, and only what you mark safe). Your answer comes back to the Guild Hall.
 Your verdict is the RESULT line:
 RESULT: done - safe to merge (one sentence why)
 RESULT: blocked - do not merge yet: <the blocking problems, most important first>
@@ -70,6 +70,16 @@ RULES = """Rules for every guild run:
 - Never delete data, never read or print secrets (.env, keys, tokens), never move funds or touch wallets.
 - `{cli} chain` shows every intern and incident. `{cli} check <intern>` checks one again right now.
 - End with a short report: what was wrong, what you did, whether it is healthy now, what is left."""
+
+# Only the CEO (Aurelian) gets this exception; every other run keeps RULES as written.
+CEO_MERGE_LINE = "Never merge to main (only Aurelian, under the merge rules in his instructions), never force-push."
+
+
+def rules_for(role, cli):
+    text = RULES.format(cli=cli)
+    if role == "ceo":
+        text = text.replace("Never merge to main, never force-push.", CEO_MERGE_LINE)
+    return text
 
 WARDEN_BRIEF = """You are the warden of the intern "{name}" (a program in bojjifomo's guild).
 It is failing its health checks. Incident {iid}, opened {opened}.
@@ -711,7 +721,7 @@ class Chain:
         fields = dict(name=i["name"], iid=inc["id"], iid_intern=i["id"], opened=now_text(inc["opened"]),
                       project=i["project"], checks=self.checks_text(i) if "launchd" in i else "unknown",
                       reasons="; ".join(inc["reasons"]), history=history, cli=self.cli,
-                      rules=RULES.format(cli=self.cli))
+                      rules=rules_for(level, self.cli))
         if level == "warden":
             brief = WARDEN_BRIEF.format(**fields)
         else:
@@ -827,18 +837,18 @@ class Chain:
             data = report.build(self.office, 7)
             brief = BUDGET_BRIEF.format(when=when, report=report.text(data) + "\n\n" + self.scorecard_text(7),
                                         guide=report.MODEL_GUIDE, cli=self.cli,
-                                        rules=RULES.format(cli=self.cli))
+                                        rules=rules_for("ceo", self.cli))
         elif kind == "innovator":
             month = time.time() - 30 * 86400
             recent = [x for x in self.incidents if x["opened"] >= month]
             incidents = "\n".join("- %s %s: %s (%s)" % (now_text(x["opened"]), x["name"], "; ".join(x["reasons"])[:160],
                                                         x["status"]) for x in recent) or "- none"
             brief = INNOVATOR_BRIEF.format(when=when, situation=self.situation(), incidents=incidents,
-                                           cli=self.cli, rules=RULES.format(cli=self.cli))
+                                           cli=self.cli, rules=rules_for("innovator", self.cli))
         else:
             label = {"ops": "operations", "ceo": "CEO"}[kind]
             brief = ROUND_BRIEF.format(role=ROLE_NAMES[role], kind=label, when=when, takeover=takeover,
-                                       situation=self.situation(), rules=RULES.format(cli=self.cli))
+                                       situation=self.situation(), rules=rules_for(role, self.cli))
         result = self.office.team.ask(who["id"], brief, origin="chain", mode=MODE, add_dirs=dirs)
         if not result.get("sid"):
             raise RuntimeError("the treasury held the round back")
