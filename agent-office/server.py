@@ -30,6 +30,7 @@ import haiku  # noqa: E402
 import limits  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
+import projpick  # noqa: E402
 import orders  # noqa: E402
 import report  # noqa: E402
 import roster  # noqa: E402
@@ -400,6 +401,15 @@ def api_run_stop(req, m):
 @route("GET", "/api/projects")
 def api_projects(req, m):
     return {"projects": [{"id": p["id"], "label": p["label"]} for p in APP.office.projects()]}
+
+
+@route("POST", "/api/project/suggest")
+def api_project_suggest(req, m):
+    """The project folder a task most likely belongs in, for the New session sheet."""
+    office = APP.office
+    r = projpick.suggest_project(APP.cfg, text_field(req.body, "text", 2001), office.projects(),
+                                 interns=office.chain.interns, staff=office.team.staff)
+    return {"id": r["id"], "label": r["label"], "source": r["source"]}
 
 
 @route("POST", "/api/job")
