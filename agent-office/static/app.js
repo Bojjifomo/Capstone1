@@ -417,7 +417,7 @@ Hooks.panels.job = {
     const eco = UI.state && UI.state.eco;
     const staff = ((UI.state && UI.state.team && UI.state.team.staff) || []).filter((m) => !m.builtin);
     body.innerHTML = `<form id="job-form" class="form">` +
-      `<label>Project<select name="project" required>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("")}</select></label>` +
+      `<label>Project <small id="job-project-auto" hidden>auto</small><select name="project" required>${projects.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("")}</select></label>` +
       (staff.length ? `<label>Team <small>(Haiku picks from your task; tap to change)</small>` +
         `<div class="chips-inline" id="job-team">${staff.map((m) => `<label class="chip-btn teammate"><input type="checkbox" name="team" value="${esc(m.name)}"> ${esc(m.name)} <small>· ${esc(m.title)}</small></label>`).join("")}</div>` +
         `<small id="job-team-why">Optional: teammates the lead hands pieces to.</small></label>` : "") +
@@ -438,19 +438,35 @@ document.addEventListener("input", (ev) => {
   if (!form || form.id !== "job-form" || ev.target.name !== "text") return;
   clearTimeout(suggestTimer);
   const text = ev.target.value.trim();
-  if (text.length < 12 || !$("#job-team")) return;
+  if (text.length < 12) return;
   suggestTimer = setTimeout(async () => {
+    if ($("#job-team")) {
+      try {
+        const r = await api("/api/team/suggest", { text });
+        if (!form.isConnected || form.dataset.teamTouched) return;
+        form.querySelectorAll("input[name=team]").forEach((cb) => { cb.checked = r.names.includes(cb.value); });
+        const why = $("#job-team-why");
+        if (why) why.textContent = r.names.length ? `Suggested: ${r.names.join(", ")}${r.why ? " · " + r.why : ""}` : "Nobody fits this task; the lead works alone.";
+      } catch (e) { /* suggestions are optional */ }
+    }
     try {
-      const r = await api("/api/team/suggest", { text });
-      if (!form.isConnected || form.dataset.teamTouched) return;
-      form.querySelectorAll("input[name=team]").forEach((cb) => { cb.checked = r.names.includes(cb.value); });
-      const why = $("#job-team-why");
-      if (why) why.textContent = r.names.length ? `Suggested: ${r.names.join(", ")}${r.why ? " · " + r.why : ""}` : "Nobody fits this task; the lead works alone.";
+      const r = await api("/api/project/suggest", { text });
+      if (!form.isConnected || form.dataset.projectTouched || !r.id) return;
+      const sel = form.querySelector("select[name=project]");
+      if (!sel || ![...sel.options].some((o) => o.value === r.id)) return;
+      sel.value = r.id;
+      const hint = $("#job-project-auto");
+      if (hint) { hint.hidden = false; hint.title = r.source === "ai" ? "picked by Haiku from your task" : "picked by keyword match"; }
     } catch (e) { /* suggestions are optional */ }
   }, 900);
 });
 document.addEventListener("change", (ev) => {
   if (ev.target.name === "team" && ev.target.form) ev.target.form.dataset.teamTouched = "1";
+  if (ev.target.name === "project" && ev.target.form && ev.target.form.id === "job-form") {
+    ev.target.form.dataset.projectTouched = "1";   // a hand pick (programmatic sets fire no change event)
+    const hint = $("#job-project-auto");
+    if (hint) hint.hidden = true;
+  }
 });
 
 async function postQuest(form) {
