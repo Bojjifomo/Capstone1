@@ -45,6 +45,26 @@ DEFAULTS = {
     "allowed_models": ["haiku", "sonnet", "opus"],   # the models offered everywhere; at least one
 }
 MODEL_CHOICES = ("haiku", "sonnet", "opus")
+AGE_FAILS = 2                     # late file-age checks in a row before a NEW incident opens
+RPC_LOG_PROGRAMS = {"RH Wallet Finder": "~/Library/Logs/rh/wallet-finder.log"}   # program -> its log (launchd plist)
+RPC_LOG_TAIL = 512 * 1024         # only the end of the log is read
+
+
+def last_log_line(path, needle="RPC error"):
+    """The last line of a log that holds `needle`, or "" if the log is missing, unreadable or has none."""
+    try:
+        with open(os.path.expanduser(str(path)), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - RPC_LOG_TAIL))
+            text = f.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+    for line in reversed(text.splitlines()):
+        if needle in line:
+            return " ".join(line.split())[:300]
+    return ""
+
+
 LIMITS = {"check_minutes": (1, 240), "fail_after": (1, 10), "ops_every_hours": (1, 72),
           "innovator_every_days": (1, 60), "stuck_minutes": (15, 600), "max_auto_per_day": (0, 100),
           "pr_sweep_minutes": (10, 720), "review_hours": (0, 168), "guard_pct": (10, 100), "opus_seats": (0, 20)}
@@ -186,6 +206,8 @@ class Chain:
         self._sweeping = False
         self.health = {}                           # intern id -> latest check, memory only
         self.fails = {}                             # intern id -> failed checks in a row
+        self.age_fails = {}                         # intern id -> late file-age checks in a row
+        self.rpc_logs = dict(RPC_LOG_PROGRAMS)      # program name -> log file read for the incident text
         self._next_check = 0
         self._checking = False
 
@@ -637,6 +659,7 @@ class Chain:
     # ---- health ------------------------------------------------------------------------------
     def check(self, i, jobs=None):
         reasons = []
+        age_late = False
         if not os.path.isdir(i["project"]):
             reasons.append("the folder %s is gone" % i["project"])
         if i.get("launchd"):
@@ -668,10 +691,16 @@ class Chain:
             try:
                 age = (time.time() - target.stat().st_mtime) / 3600
                 if age > i["fresh_hours"]:
+                    age_late = True
                     reasons.append("%s is %.1f h old (limit %g h)" % (i["fresh"], age, i["fresh_hours"]))
             except OSError:
                 reasons.append("%s is missing" % i["fresh"])
-        result = {"ok": not reasons, "reasons": reasons, "checked": time.time()}
+        age_only = age_late and len(reasons) == 1
+        if age_late and i.get("name") in self.rpc_logs:
+            line = last_log_line(self.rpc_logs[i["name"]])
+            if line:
+                reasons.append("last RPC error in the log: %s" % line)
+        result = {"ok": not reasons, "reasons": reasons, "checked": time.time(), "age_late": age_late, "age_only": age_only}
         with self.lock:
             self.health[i["id"]] = result
         return result
@@ -706,12 +735,16 @@ class Chain:
             inc = self.open_incident(i["id"])
             if result["ok"]:
                 self.fails[i["id"]] = 0
+                self.age_fails[i["id"]] = 0
                 if inc and not self._active(inc):
                     self.resolve(inc["id"], "healthy again", by="check")
                 return
             self.fails[i["id"]] = self.fails.get(i["id"], 0) + 1
+            self.age_fails[i["id"]] = self.age_fails.get(i["id"], 0) + 1 if result.get("age_late") else 0
             if inc or self.fails[i["id"]] < self.settings["fail_after"]:
                 return
+            if result.get("age_only") and self.age_fails[i["id"]] < AGE_FAILS:
+                return      # a single late file is not an incident yet
             inc = {"id": secrets.token_hex(3), "intern": i["id"], "name": i["name"], "opened": time.time(),
                    "reasons": result["reasons"], "level": "", "status": "open", "attempts": []}
             self.incidents.append(inc)

@@ -535,7 +535,7 @@ KNOWN_INTERNS = [
      "launchd": "com.bojjifomo.lp-call-bot", "warden": "Lyra",
      "hint": "Install it in launchd first: sh lp_call_bot/install.sh (it copies the bot to ~/Projects/lp_call_bot and writes the heartbeat)."},
     {"name": "RH Wallet Finder", "folder": "rh_wallet_finder", "fresh": "rh_wallet_finder/data/wallets.db",
-     "fresh_hours": 6, "warden": "Lyra", "hint": "Run a first sync so data/wallets.db exists."},
+     "fresh_hours": 8, "warden": "Lyra", "hint": "Run a first sync so data/wallets.db exists."},
     {"name": "RH Smart LP Finder", "folder": "rh_wallet_finder", "url": "http://127.0.0.1:8787/", "warden": "Lyra",
      "hint": "Start RH Smart LP Finder so localhost:8787 answers."},
     {"name": "Power Meter", "folder": "power-meter", "url": "http://127.0.0.1:7788/",
