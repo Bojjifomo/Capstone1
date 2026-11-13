@@ -30,6 +30,7 @@ import haiku  # noqa: E402
 import limits  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
+import prpage  # noqa: E402
 import projpick  # noqa: E402
 import orders  # noqa: E402
 import report  # noqa: E402
@@ -286,7 +287,8 @@ def api_hook_notify(req, m):
 
 RID = r"(?P<rid>[0-9a-f]{12})"
 QID = r"(?P<qid>[0-9a-f]{8})"
-PURPOSE_RE = re.compile(r"^(bypass:(new|[0-9a-f-]{36})|clean:[a-z0-9_]{1,32})$")
+PURPOSE_RE = re.compile(r"^(bypass:(new|[0-9a-f-]{36})|clean:[a-z0-9_]{1,32}"
+                        r"|merge:[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}#[0-9]{1,7})$")
 
 
 def text_field(body, key, limit=200):
@@ -451,7 +453,12 @@ def api_code(req, m):
     purpose = text_field(req.body, "purpose")
     if not PURPOSE_RE.match(purpose):
         raise HttpError(400, "unknown purpose")
-    label = "run with permissions bypassed" if purpose.startswith("bypass") else "run the " + purpose[6:] + " cleaner"
+    if purpose.startswith("bypass"):
+        label = "run with permissions bypassed"
+    elif purpose.startswith("merge:"):
+        label = "merge " + purpose[6:]
+    else:
+        label = "run the " + purpose[6:] + " cleaner"
     try:
         cid = APP.office.codes.request(purpose, label)
         APP.office.ledger.add("seal", "sent a seal to " + label)
@@ -1141,6 +1148,85 @@ def api_petition_build(req, m):
     if result.get("queued_for_gold"):
         return result
     return dict(result, petition=item["id"])
+
+
+# ---- PR page: review and merge from the Guild Hall --------------------------------
+# These routes are not in TOKEN_ROUTES (a Funnel/token caller gets 403 "route", like the cleaners and seals),
+# and each handler also refuses req.external itself.
+
+def pr_target(b):
+    try:
+        return prpage.parse_target(b.get("repo"), b.get("number"))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+def local_only(req):
+    if req.external:
+        raise HttpError(403, "the PR page is for bojjifomo in the Guild Hall, not for token callers")
+
+
+@route("GET", "/api/prs")
+def api_prs(req, m):
+    local_only(req)
+    try:
+        return {"prs": prpage.list_open(APP.office.chain)}
+    except (RuntimeError, OSError, ValueError) as e:
+        raise HttpError(502, str(e))
+
+
+@route("GET", "/api/prs/diff")
+def api_prs_diff(req, m):
+    local_only(req)
+    repo, number = pr_target({"repo": (req.query.get("repo") or [""])[0], "number": (req.query.get("number") or [""])[0]})
+    try:
+        return {"diff": prpage.diff_of(repo, number)}
+    except (RuntimeError, OSError) as e:
+        raise HttpError(502, str(e))
+
+
+@route("POST", "/api/prs/merge")
+def api_prs_merge(req, m):
+    local_only(req)
+    repo, number = pr_target(req.body)
+    purpose = "merge:%s#%d" % (repo, number)
+    if not APP.office.codes.verify(text_field(req.body, "code_id"), text_field(req.body, "code"), purpose):
+        APP.office.ledger.add("seal", "wrong or expired seal for " + purpose)
+        raise core.Refused("this needs a fresh guild seal from your phone", needs_code=purpose)
+    try:
+        prpage.merge_checked(APP.office.chain, repo, number)
+    except PermissionError as e:
+        raise HttpError(409, str(e))
+    except (RuntimeError, OSError, ValueError) as e:
+        raise HttpError(502, str(e))
+    APP.office.ledger.add("approve", "bojjifomo merged %s#%d (squash)" % (repo, number))
+    return {"merged": True, "repo": repo, "number": number}
+
+
+@route("POST", "/api/prs/changes")
+def api_prs_changes(req, m):
+    """Minta perbaikan: comment on the PR, then send the text to the guild member who opened it."""
+    local_only(req)
+    repo, number = pr_target(req.body)
+    text = text_field(req.body, "text", 2000).strip()[:2000]
+    if not text:
+        raise HttpError(400, "write what should change")
+    try:
+        prpage.gh_comment(repo, number, "Requested changes from bojjifomo:\n\n" + text)
+    except (RuntimeError, OSError) as e:
+        raise HttpError(502, str(e))
+    url = prpage.pr_url(repo, number)
+    routed = ""
+    author = prpage.author_of(APP.office.chain, repo, number)
+    if author:
+        brief = ("bojjifomo reviewed your pull request %s and asks for changes:\n\n%s\n\n"
+                 "Push the fixes to the same branch and say what you changed. Do not merge it." % (url, text))
+        try:
+            routed = APP.office.team.ask(author, brief).get("name") or author
+        except (LookupError, ValueError, RuntimeError):
+            routed = ""
+    APP.office.ledger.add("send", "asked for changes on %s#%d%s" % (repo, number, (" via " + routed) if routed else ""))
+    return {"commented": True, "sent_to": routed}
 
 
 # ---- Fund (../fund) behind the same door --------------------------------

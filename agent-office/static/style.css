@@ -542,3 +542,7 @@ body.sheet-open .fab { display: none; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
 @media (min-width: 700px) { .hdr { grid-template-columns: 1fr 1fr; } .hdr-row, .tiles, .eco-big, .finder, .actions, .project-chips { grid-column: 1 / -1; } }
+.pr-diff-body { max-height: 50vh; overflow: auto; white-space: pre; font: 11.5px/1.4 var(--mono); background: #15122e; color: #e8e6f5; border-radius: 8px; padding: 8px 10px; }
+.tag.pr-ci-green, .tag.pr-v-approve { background: rgba(70,224,138,.2); color: #b9f0cf; }
+.tag.pr-ci-red, .tag.pr-v-changes, .tag.pr-v-failed { background: rgba(255,107,107,.25); color: #ffb3b3; }
+.btn[disabled] { opacity: .45; pointer-events: none; }
