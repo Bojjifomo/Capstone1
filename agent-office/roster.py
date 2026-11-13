@@ -537,6 +537,7 @@ KNOWN_INTERNS = [
     {"name": "RH Wallet Finder", "folder": "rh_wallet_finder", "fresh": "rh_wallet_finder/data/wallets.db",
      "fresh_hours": 6, "warden": "Lyra", "hint": "Run a first sync so data/wallets.db exists."},
     {"name": "RH Smart LP Finder", "folder": "rh_wallet_finder", "url": "http://127.0.0.1:8787/", "warden": "Lyra",
+     "diagnose": ["/opt/homebrew/opt/node@22/bin/node", "--version"], "diagnose_hint": "brew reinstall node@22",
      "hint": "Start RH Smart LP Finder so localhost:8787 answers."},
     {"name": "Power Meter", "folder": "power-meter", "url": "http://127.0.0.1:7788/",
      "launchd": "com.bojjifomo.power-meter", "warden": "Thorne",
