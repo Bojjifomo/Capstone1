@@ -155,6 +155,71 @@ class ChainCase(unittest.TestCase):
         self.assertTrue(self.c.check(i)["ok"])
 
     # ---- escalation ------------------------------------------------------------------
+    def fake_cmd(self, name, body):
+        path = self.tmp / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+        return str(path)
+
+    def test_diagnose_adds_the_cause_when_the_url_is_down(self):
+        node = self.fake_cmd("node", 'echo "dyld[1]: Library not loaded: libsimdjson.30.dylib" >&2\necho "Abort trap" >&2\nexit 1')
+        i = self.c.add_intern("Finder", str(self.project), url="http://127.0.0.1:9/",
+                              diagnose=[node, "--version"], diagnose_hint="brew reinstall node@22")
+        reasons = self.c.check(i)["reasons"]
+        self.assertEqual(len(reasons), 2)
+        self.assertIn("did not answer", reasons[0])
+        self.assertIn("node --version gagal: dyld[1]: Library not loaded", reasons[1])
+        self.assertIn("jalankan: brew reinstall node@22", reasons[1])
+        self.c.check_all()
+        self.c.check_all()
+        inc = self.c.open_incident(i["id"])
+        self.assertIsNotNone(inc)
+        self.assertIn(reasons[1], inc["reasons"])
+        self.assertIn("Library not loaded", self.office.team.asked[-1]["brief"])
+
+    def test_diagnose_that_passes_or_a_url_that_is_up_adds_nothing(self):
+        ok = self.fake_cmd("node-ok", "echo v22.0.0")
+        i = self.c.add_intern("Finder", str(self.project), url="http://127.0.0.1:9/", diagnose=[ok, "--version"],
+                              diagnose_hint="brew reinstall node@22")
+        reasons = self.c.check(i)["reasons"]
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("did not answer", reasons[0])
+        # url up: the probe is never run
+        marker = self.tmp / "ran"
+        spy = self.fake_cmd("spy", 'touch "%s"\nexit 1' % marker)
+        import http.server
+        import threading
+        srv = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            up = self.c.add_intern("Up", str(self.project), url="http://127.0.0.1:%d/" % srv.server_port, diagnose=[spy])
+            self.assertTrue(self.c.check(up)["ok"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertFalse(marker.exists())
+
+    def test_stored_intern_without_diagnose_falls_back_to_the_roster(self):
+        from unittest import mock
+        import roster
+        node = self.fake_cmd("node", 'echo "dyld: Library not loaded: libsimdjson" >&2\nexit 1')
+        i = self.c.add_intern("RH Smart LP Finder", str(self.project), url="http://127.0.0.1:9/")
+        self.assertNotIn("diagnose", i)
+        known = [dict(k, diagnose=[node, "--version"]) if k["name"] == "RH Smart LP Finder" else k
+                 for k in roster.KNOWN_INTERNS]
+        with mock.patch.object(roster, "KNOWN_INTERNS", known):
+            reasons = self.c.check(i)["reasons"]
+        self.assertEqual(len(reasons), 2)
+        self.assertIn("dyld: Library not loaded", reasons[1])
+        self.assertIn("jalankan: brew reinstall node@22", reasons[1])
+
+    def test_diagnose_missing_binary_is_reported(self):
+        i = self.c.add_intern("Finder", str(self.project), url="http://127.0.0.1:9/",
+                              diagnose=[str(self.tmp / "nope"), "--version"])
+        reasons = self.c.check(i)["reasons"]
+        self.assertEqual(len(reasons), 2)
+        self.assertIn("nope --version gagal:", reasons[1])
+
     def test_incident_climbs_warden_ops_ceo_you(self):
         inc = self.open_incident()
         asked = self.office.team.asked

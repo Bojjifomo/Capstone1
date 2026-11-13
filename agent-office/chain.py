@@ -329,6 +329,7 @@ class Chain:
                 "launchd": k.get("launchd", "") if k.get("launchd") in labels else "",
                 "familiar": labels.get(k.get("launchd", ""), ""),
                 "warden": warden["id"] if warden and not warden.get("builtin") else "", "warden_name": k["warden"],
+                "diagnose": k.get("diagnose") or [], "diagnose_hint": k.get("diagnose_hint", ""),
                 "hint": k.get("hint", ""), "added": bool(self.intern(k["name"])),
             })
         return out
@@ -341,7 +342,8 @@ class Chain:
                 done.append({"name": k["name"], "status": "already an intern"})
                 continue
             probe = {"id": "probe-" + secrets.token_hex(3), "name": k["name"], "project": k["project_path"],
-                     "launchd": k["launchd"], "url": k["url"], "fresh": k["fresh"], "fresh_hours": k["fresh_hours"]}
+                     "launchd": k["launchd"], "url": k["url"], "fresh": k["fresh"], "fresh_hours": k["fresh_hours"],
+                     "diagnose": k["diagnose"], "diagnose_hint": k["diagnose_hint"]}
             result = self.check(probe)
             with self.lock:
                 self.health.pop(probe["id"], None)
@@ -349,7 +351,8 @@ class Chain:
                 done.append({"name": k["name"], "status": "skipped: " + "; ".join(result["reasons"]) + ". " + k["hint"]})
                 continue
             item = self.add_intern(k["name"], k["project_path"], launchd=k["launchd"], url=k["url"], fresh=k["fresh"],
-                                   fresh_hours=k["fresh_hours"], warden=k["warden"])
+                                   fresh_hours=k["fresh_hours"], warden=k["warden"],
+                                   diagnose=k["diagnose"], diagnose_hint=k["diagnose_hint"])
             self.check_now(item["id"])
             done.append({"name": k["name"], "status": "added, warden %s" % (k["warden_name"] if k["warden"] else "none yet")})
         return done
@@ -572,7 +575,7 @@ class Chain:
                 return i
         return None
 
-    def add_intern(self, name, project, launchd="", url="", fresh="", fresh_hours=24, warden=""):
+    def add_intern(self, name, project, launchd="", url="", fresh="", fresh_hours=24, warden="", diagnose=None, diagnose_hint=""):
         name = " ".join(str(name).split())[:60]
         if not name:
             raise ValueError("name the intern")
@@ -595,6 +598,9 @@ class Chain:
             item = {"id": secrets.token_hex(4), "name": name, "project": project, "launchd": launchd,
                     "url": url[:300], "fresh": fresh[:200], "fresh_hours": max(0.1, min(720.0, float(fresh_hours or 24))),
                     "warden": warden, "added": time.time()}
+            if diagnose:
+                item["diagnose"] = [str(a) for a in diagnose]
+                item["diagnose_hint"] = str(diagnose_hint)[:200]
             self.interns.append(item)
             self.save()
         return item
@@ -663,6 +669,11 @@ class Chain:
                 reasons.append("%s answered %d" % (i["url"], e.code))
             except Exception as e:
                 reasons.append("%s did not answer (%s)" % (i["url"], str(getattr(e, "reason", e))[:80]))
+            cmd, hint = self._probe_of(i)
+            if reasons and cmd:
+                why = self._diagnose(cmd, hint)
+                if why:
+                    reasons.append(why)
         if i.get("fresh"):
             target = Path(i["project"]) / i["fresh"]
             try:
@@ -675,6 +686,31 @@ class Chain:
         with self.lock:
             self.health[i["id"]] = result
         return result
+
+    def _probe_of(self, i):
+        """(command, hint) for an intern: its own, else the one in roster.KNOWN_INTERNS with the same name
+        (interns stored before the key existed)."""
+        if i.get("diagnose"):
+            return i["diagnose"], i.get("diagnose_hint", "")
+        k = next((k for k in roster.KNOWN_INTERNS if k["name"] == i.get("name")), None)
+        return (k.get("diagnose"), k.get("diagnose_hint", "")) if k else (None, "")
+
+    def _diagnose(self, cmd, hint=""):
+        """The url check failed: run the probe command (no shell) so the warden sees the cause."""
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                return ""
+            out = (res.stdout or "") + (res.stderr or "")
+        except subprocess.TimeoutExpired:
+            out = "timed out after 10 s"
+        except OSError as e:
+            out = str(e)
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        line = next((ln for ln in lines if "dyld" in ln or "Library not loaded" in ln),
+                    lines[0] if lines else "exit code is not 0")
+        text = "%s gagal: %s" % (" ".join([os.path.basename(cmd[0])] + cmd[1:]), line[:200])
+        return text + (" — jalankan: " + hint if hint else "")
 
     def check_now(self, key):
         i = self.intern(key)

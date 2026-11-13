@@ -1,0 +1,25 @@
+#!/bin/sh
+# Wait until the SSD is mounted, then run: after-ssd <workdir> <command...>
+#
+# Env:
+#   AFTER_SSD_VOL     volume path to wait for (default "/Volumes/SSD 1TB"; tests override it)
+#   PREFLIGHT=1       opt-in: before exec, run "<program> --version". If that fails (e.g. a
+#                     broken node with a dyld error), log ONE line to stderr, sleep
+#                     PREFLIGHT_BACKOFF seconds and exit 1, so launchd does not respawn
+#                     every ThrottleInterval and flood the log. Unset = exact old behaviour.
+#   PREFLIGHT_BACKOFF seconds to sleep after a failed preflight before exiting (default 600)
+VOL="${AFTER_SSD_VOL:-/Volumes/SSD 1TB}"
+until [ -d "$VOL/work/Capstone1" ]; do sleep 5; done
+cd "$1" || exit 1
+shift
+if [ "$PREFLIGHT" = 1 ]; then
+  if ! out=$("$1" --version 2>&1); then
+    # prefer the dyld line (it names the missing library), else the first line
+    err=$(printf '%s\n' "$out" | grep -m1 -i dyld)
+    [ -n "$err" ] || err=$(printf '%s\n' "$out" | head -n 1)
+    echo "after-ssd: $1 rusak, --version gagal: $err — jalankan: brew reinstall node@22" >&2
+    sleep "${PREFLIGHT_BACKOFF:-600}"
+    exit 1
+  fi
+fi
+exec "$@"

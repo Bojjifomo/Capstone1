@@ -285,6 +285,8 @@ folders and adds the ones whose checks pass right now. A program that is down is
 
 The *Take on an intern* form offers the same list to fill itself in.
 
+A `KNOWN_INTERNS` entry in `roster.py` may carry `diagnose` (a command list, run without a shell, 10 s limit) and `diagnose_hint`. It runs only when the health URL check failed; if the command fails, its first error line (preferring `dyld` / `Library not loaded`) and the hint are added to the incident's reasons so the warden sees the cause, not just "connection refused".
+
 **Interns.** Add one in ⚜️ Chain → *Take on an intern*: a name, the program's folder (picked from your project
 folders), and at least one check. The checks are fixed code, never shell text:
 
