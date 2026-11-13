@@ -420,5 +420,101 @@ class ChainCase(unittest.TestCase):
         self.assertEqual(again.holder("ceo")["name"], "Aurelian")
 
 
+class AgeAlarmTests(unittest.TestCase):
+    """RH Wallet Finder syncs about every 6 h: 8 h limit, two late checks in a row, last RPC error in the text."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="chain-age-"))
+        self._data = store.DATA_DIR
+        store.DATA_DIR = self.tmp
+        self.project = self.tmp / "rh_wallet_finder"
+        (self.project / "data").mkdir(parents=True)
+        self.db = self.project / "data" / "wallets.db"
+        self.db.write_text("x")
+        self.log = self.tmp / "wallet-finder.log"
+        self.office = Stub()
+        self.c = chain.Chain(self.office, cli="office")
+        self.c.rpc_logs = {"RH Wallet Finder": str(self.log)}
+        self.intern = self.c.add_intern("RH Wallet Finder", str(self.project), fresh="data/wallets.db", fresh_hours=8)
+
+    def tearDown(self):
+        store.DATA_DIR = self._data
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def age(self, hours):
+        old = time.time() - hours * 3600
+        os.utime(self.db, (old, old))
+
+    def incident(self):
+        return self.c.open_incident(self.intern["id"])
+
+    def test_known_limit_is_eight_hours(self):
+        import roster
+        known = {k["name"]: k for k in roster.KNOWN_INTERNS}
+        self.assertEqual(known["RH Wallet Finder"]["fresh_hours"], 8)
+
+    def test_a_healthy_late_sync_opens_nothing(self):
+        self.age(6.2)
+        for _ in range(4):
+            self.c.check_all()
+        self.assertIsNone(self.incident())
+        self.assertTrue(self.c.health[self.intern["id"]]["ok"])
+
+    def test_two_late_checks_open_one_incident_a_single_one_does_not(self):
+        self.age(8.5)
+        self.c.check_all()
+        self.assertIsNone(self.incident())
+        self.c.check_all()
+        self.assertIsNotNone(self.incident())
+        self.c.check_all()
+        self.assertEqual(len(self.c.incidents), 1)
+
+    def test_a_passing_check_resets_the_counter(self):
+        self.age(8.5)
+        self.c.check_all()
+        self.assertEqual(self.c.age_fails[self.intern["id"]], 1)
+        self.age(1)
+        self.c.check_all()
+        self.assertEqual(self.c.age_fails[self.intern["id"]], 0)
+        self.age(8.5)
+        self.c.check_all()
+        self.assertIsNone(self.incident(), "the count started again from one")
+
+    def test_two_strikes_even_when_the_general_rule_is_one(self):
+        self.c.settings["fail_after"] = 1
+        self.age(8.5)
+        self.c.check_all()
+        self.assertIsNone(self.incident())
+        self.c.check_all()
+        self.assertIsNotNone(self.incident())
+
+    def test_other_checks_still_follow_the_general_rule(self):
+        self.c.settings["fail_after"] = 1
+        shutil.rmtree(self.project)
+        self.c.check_all()
+        self.assertIsNotNone(self.incident())
+
+    def test_incident_carries_the_last_rpc_error(self):
+        self.log.write_text("sync ok\nRPC error: eth_blockNumber: stale one\n"
+                            "RPC error: eth_blockNumber: Daily response quota exceeded\nScored 3 wallets\n")
+        self.age(8.5)
+        self.c.check_all()
+        self.c.check_all()
+        text = " ".join(self.incident()["reasons"])
+        self.assertIn("is 8.5 h old (limit 8 h)", text)
+        self.assertIn("Daily response quota exceeded", text)
+        self.assertNotIn("stale one", text)
+
+    def test_no_rpc_error_or_no_log_adds_nothing(self):
+        self.age(8.5)
+        self.c.check_all()          # log missing
+        self.c.check_all()
+        self.assertEqual(len(self.incident()["reasons"]), 1)
+        self.assertEqual(chain.last_log_line(self.log), "")
+        self.log.write_text("sync ok\nScored 3 wallets\n")
+        self.assertEqual(chain.last_log_line(self.log), "")
+        self.assertEqual(chain.last_log_line(self.tmp), "")   # a folder is not a log, no crash
+
+
 if __name__ == "__main__":
     unittest.main()

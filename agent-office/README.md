@@ -279,7 +279,7 @@ folders and adds the ones whose checks pass right now. A program that is down is
 | Program | Checks | Warden |
 | --- | --- | --- |
 | LP Call Bot | `lp_call_bot/heartbeat` younger than 15 min (the bot touches it on every successful Telegram poll), launchd `com.bojjifomo.lp-call-bot` when installed | Lyra |
-| RH Wallet Finder | `rh_wallet_finder/data/wallets.db` younger than 6 h | Lyra |
+| RH Wallet Finder | `rh_wallet_finder/data/wallets.db` younger than 8 h | Lyra |
 | RH Smart LP Finder | `http://127.0.0.1:8787/` answers | Lyra |
 | Power Meter | `http://127.0.0.1:7788/` answers, launchd `com.bojjifomo.power-meter` when installed | Thorne |
 
