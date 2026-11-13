@@ -36,3 +36,8 @@ elysium_terminal/executor/node_modules/
 # rpc_monitor
 rpc_monitor/config.json
 rpc_monitor/logs/
+
+# env files with secrets (examples stay tracked)
+.env.*
+!.env.example
+!*.env.example
