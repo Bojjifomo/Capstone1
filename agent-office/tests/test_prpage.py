@@ -66,9 +66,10 @@ def req(body, external=False, query=None):
 class PrPage(unittest.TestCase):
     def setUp(self):
         self.checks = GREEN
+        self.info = {"draft": False, "head": "abc", "newest_commit": time.time() - 3600}
         self.merge = mock.Mock(return_value="merged")
         self.comment = mock.Mock()
-        for name, fn in (("gh_checks", lambda repo, n: self.checks), ("gh_merge", self.merge), ("gh_comment", self.comment)):
+        for name, fn in (("gh_checks", lambda repo, n: self.checks), ("gh_merge", self.merge), ("gh_pr_info", lambda repo, n: self.info), ("gh_comment", self.comment)):
             p = mock.patch.object(prpage, name, fn)
             p.start()
             self.addCleanup(p.stop)
@@ -137,6 +138,30 @@ class PrPage(unittest.TestCase):
         with self.assertRaises(server.HttpError):
             server.api_prs_merge(req(self.sealed_body(app)), None)
         self.merge.assert_not_called()
+
+    def test_approve_on_an_old_head_is_rejected(self):
+        app = self.app()
+        self.info["newest_commit"] = time.time() + 60  # pushed after the review began
+        with self.assertRaises(server.HttpError) as cm:
+            server.api_prs_merge(req(self.sealed_body(app)), None)
+        self.assertEqual(cm.exception.status, 409)
+        self.merge.assert_not_called()
+
+    def test_draft_is_rejected(self):
+        app = self.app()
+        self.info["draft"] = True
+        with self.assertRaises(server.HttpError) as cm:
+            server.api_prs_merge(req(self.sealed_body(app)), None)
+        self.assertEqual(cm.exception.status, 409)
+        self.merge.assert_not_called()
+
+    def test_list_shows_stale_and_disables_merge(self):
+        listing = [{"number": 7, "title": "t", "url": URL, "repository": {"nameWithOwner": REPO}, "author": {"login": "a"},
+                    "createdAt": "2026-01-01T00:00:00Z", "isDraft": False}]
+        self.info["newest_commit"] = time.time() + 60
+        with mock.patch.object(prpage, "gh_list_open", return_value=listing):
+            row = prpage.list_open(FakeChain())[0]
+        self.assertEqual((row["verdict"], row["can_merge"]), ("stale", False))
 
     def test_external_caller_is_rejected(self):
         app = self.app()

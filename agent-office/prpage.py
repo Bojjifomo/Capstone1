@@ -6,6 +6,7 @@ review: a verdict is only read from what the Chain already stored.
 import json
 import re
 import subprocess
+from datetime import datetime
 
 OWNER = "Bojjifomo"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
@@ -70,6 +71,21 @@ def gh_checks(repo, number):
         raise RuntimeError("gh could not read the checks: " + (err or "").strip()[:160])
 
 
+def gh_pr_info(repo, number):
+    """isDraft, head commit and the newest commit time (epoch seconds, 0 when unknown) from one `gh pr view`."""
+    code, out, err = _gh(["pr", "view", str(number), "-R", repo, "--json", "isDraft,headRefOid,commits"])
+    if code != 0:
+        raise RuntimeError("gh could not read the pull request: " + (err or "").strip()[:160])
+    data = json.loads(out or "{}")
+    newest = 0
+    for c in data.get("commits") or []:
+        try:
+            newest = max(newest, datetime.fromisoformat(str(c.get("committedDate")).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            pass
+    return {"draft": bool(data.get("isDraft")), "head": data.get("headRefOid") or "", "newest_commit": newest}
+
+
 def gh_merge(repo, number):
     code, out, err = _gh(["pr", "merge", str(number), "-R", repo, "--squash", "--delete-branch"], timeout=60)
     if code != 0:
@@ -114,6 +130,13 @@ def verdict_for(chain, url):
     return {"done": "approve", "blocked": "changes", "needs-you": "needs-you"}.get(r.get("outcome"), "failed"), r
 
 
+def is_stale(review, info):
+    """True when a commit landed after the review began, so the approval no longer covers the head."""
+    if not review or not info:
+        return False
+    return (info.get("newest_commit") or 0) > (review.get("started") or 0)
+
+
 def can_merge(ci, verdict):
     return ci == "green" and verdict == "approve"
 
@@ -131,6 +154,12 @@ def list_open(chain):
             ci = "unknown"
         url = pr.get("url") or pr_url(repo, number)
         verdict, review = verdict_for(chain, url)
+        if verdict == "approve":
+            try:
+                if is_stale(review, gh_pr_info(repo, number)):
+                    verdict = "stale"
+            except Exception:
+                verdict = "stale"  # cannot prove the approval covers the head, so do not offer merge
         rows.append({"repo": repo, "number": number, "title": pr.get("title") or "", "url": url,
                      "author": (pr.get("author") or {}).get("login") or "", "created": pr.get("createdAt") or "",
                      "draft": bool(pr.get("isDraft")), "ci": ci, "verdict": verdict,
@@ -149,9 +178,14 @@ def merge_checked(chain, repo, number):
     ci = ci_state(gh_checks(repo, number))
     if ci != "green":
         raise PermissionError("CI is %s; merge needs every check green" % ci)
-    verdict, _ = verdict_for(chain, pr_url(repo, number))
+    verdict, review = verdict_for(chain, pr_url(repo, number))
     if verdict != "approve":
         raise PermissionError("Thorne's verdict is %s; merge needs approve" % verdict)
+    info = gh_pr_info(repo, number)
+    if info["draft"]:
+        raise PermissionError("this pull request is a draft")
+    if is_stale(review, info):
+        raise PermissionError("new commits landed after Thorne's review; ask for a fresh review")
     return gh_merge(repo, number)
 
 

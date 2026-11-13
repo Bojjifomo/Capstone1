@@ -4,7 +4,7 @@
 const CI_LABEL = { green: "CI green", red: "CI failing", pending: "CI running", none: "no CI checks", unknown: "CI unknown" };
 const VERDICT_LABEL = {
   approve: "Thorne: approve", changes: "Thorne: changes needed", "needs-you": "Thorne: needs your decision",
-  failed: "Thorne: review failed", pending: "Thorne: reviewing…", none: "Thorne: not reviewed",
+  failed: "Thorne: review failed", stale: "Thorne: approved an older commit, review again", pending: "Thorne: reviewing…", none: "Thorne: not reviewed",
 };
 
 function prCard(p) {
