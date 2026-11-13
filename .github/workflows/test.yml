@@ -1,0 +1,63 @@
+name: test
+
+# Monorepo CI: one job per program, each running its tests the way they pass
+# from the repo root today. After the split (petition a52e3781) each program
+# carries its own <program>/.github/workflows/test.yml instead (see ci/README.md).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.program }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - program: agent-office
+            workdir: agent-office
+            command: python -m unittest discover -s tests
+          - program: power-meter
+            workdir: power-meter
+            command: python -m unittest discover -s tests
+          - program: lp_call_bot
+            workdir: .
+            command: python -m unittest discover -s lp_call_bot/tests
+          - program: rpc_monitor
+            workdir: .
+            command: python -m unittest discover -s rpc_monitor/tests
+          - program: fund
+            workdir: fund
+            command: python -m unittest discover -s tests
+          - program: rh_wallet_finder
+            workdir: .
+            command: python -m unittest discover -s rh_wallet_finder/tests
+          - program: rh_terminal
+            workdir: .
+            command: python -m unittest rh_terminal.tests.test_rh_terminal
+          - program: dlmm_terminal
+            workdir: .
+            command: python -m unittest dlmm_terminal.tests.test_dlmm_terminal
+          - program: elysium_terminal
+            workdir: .
+            command: python -m unittest elysium_terminal.tests.test_elysium_terminal elysium_terminal.tests.test_tight elysium_terminal.tests.test_auto
+          - program: orchestrator
+            workdir: .
+            command: python -m unittest discover -s orchestrator/tests -t .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "${{ matrix.program }}/requirements.txt" ]; then pip install -r "${{ matrix.program }}/requirements.txt"; fi
+      - name: Run tests
+        working-directory: ${{ matrix.workdir }}
+        run: ${{ matrix.command }}
