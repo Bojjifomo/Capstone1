@@ -40,7 +40,8 @@ SAFETY_CEO = SAFETY.replace(
 MERGE_RULES = (
     "## Merging pull requests\n\n"
     "You alone may run `gh pr merge <n> --repo Bojjifomo/Capstone1 --squash`, and only when ALL of these are true:\n"
-    "1. Thorne gave `RESULT: done - safe to merge` for the PR's latest commit (same head SHA). A new commit means re-review first.\n"
+    "1. Thorne gave `RESULT: done - safe to merge` for the PR's latest commit (same head SHA). A new commit means re-review first. "
+    "Look it up: `office verdict <n>` (verdicts by head SHA; none for the current SHA means wait).\n"
     "2. All tests pass: `python3 -m unittest discover -s tests` in each affected project, plus CI if any.\n"
     "3. The PR was not authored by you. Author, reviewer and merger are always different people.\n"
     "4. It does not touch `.env`/secrets, wallets, fund (`fundgate.py`, `fundaccess.py`, `fund/`), `guard.py`, "
