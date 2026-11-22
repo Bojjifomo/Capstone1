@@ -110,6 +110,10 @@ function nice(t) {
   if ((m = /^feeApr24h: (\d+)% < (\d+)%/.exec(t))) return `Fees thin: APR ${(+m[1]).toLocaleString()}% (min ${(+m[2]).toLocaleString()}%)`;
   if ((m = /^binStep: (.*) outside (.*)/.exec(t))) return `Bin step ${m[1]} (only ${m[2]})`;
   if (/^solQuoted/.test(t)) return "Not a SOL pair";
+  if ((m = /^pump1h: \+(-?\d+)% > \+(.*?)%/.exec(t))) return `Naik +${m[1]}% dalam 1 jam (maks +${m[2]}%): tunggu turun`;
+  if ((m = /^young pool (.*)h/.exec(t))) return `Pool muda ${m[1]} jam: fee gede tapi harga paling rawan, size kecil`;
+  if ((m = /^vol\/mcap (.*)x/.exec(t))) return `Vol 24h ÷ mcap ${m[1]}x (bagus 0.3-3x)`;
+  if ((m = /^bin step (\d+)/.exec(t))) return `Bin step ${m[1]} (di atas 100 jarang untung)`;
   if ((m = /^pump1h (.*)/.exec(t))) return `Pump 1h ${m[1]}`;
   if ((m = /^drop6h (.*)/.exec(t))) return `Drop 6h ${m[1]}`;
   if ((m = /^tvl (.*)/.exec(t))) return `Thin pool: TVL ${m[1]}`;
@@ -636,7 +640,7 @@ async function reenterPool(p, btn, reopen) {
   const group = state.pf.rows.filter(x => x.pool === p.pool);
   const slices = group.length, bottom = Math.abs(Math.min(...group.map(x => x.rangeMin)) / Math.max(...group.map(x => x.rangeMax)) * 100 - 100) || 70;
   const msg = reopen
-    ? `RE-ENTRY ${p.symbol}\n1) Close ${slices} posisi di pool ini (klaim fee)\n2) Jual sisa token ke SOL via Jupiter (batal kalau >5% di bawah harga pool)\n3) Buka ladder lagi di harga sekarang: ${slices} slice, sampai −${bottom.toFixed(0)}%, pakai semua SOL yang balik\n\nLanjut?`
+    ? `RE-ENTRY ${p.symbol}\n1) Close ${slices} posisi di pool ini (klaim fee)\n2) Jual sisa token ke SOL (batal kalau >5% di bawah harga pool; kalau gagal, tokennya ditinggal buat Cleanup)\n3) Buka ladder lagi di harga sekarang: ${slices} slice, sampai −${bottom.toFixed(0)}%, pakai semua SOL yang balik\n\nLanjut?`
     : `CLOSE + SWAP ${p.symbol}\nClose ${slices} posisi, lalu jual sisa token ke SOL via Jupiter (batal kalau >5% di bawah harga pool).\n\nLanjut?`;
   if (!confirm(msg)) return;
   btn.disabled = true;
@@ -645,7 +649,9 @@ async function reenterPool(p, btn, reopen) {
   try {
     const s = await trade.call("/api/trade/reenter", { pool: p.pool, symbol: p.symbol, positions: group.map(x => x.position), reopen, slices, bottom });
     const r = cell.querySelector("[data-r]");
-    r.innerHTML = s.ok ? `✓ ${reopen ? `re-entry ◎${s.reopenSol}` : `closed, balik ◎${(s.solBack || 0).toFixed(3)}`}` : `✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}`;
+    r.innerHTML = s.ok ? `✓ ${reopen ? `re-entry ◎${s.reopenSol}` : `closed, balik ◎${(s.solBack || 0).toFixed(3)}`}`
+        + (s.warning ? `<br><span class="neg">⚠ ${esc(s.warning)}</span>` : "")
+      : `✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}` + (s.swapError && s.step !== "swap" ? `<br>⚠ ${esc(s.swapError)}` : "");
     setTimeout(loadPortfolio, 4000);
   } catch (e) {
     const r = cell.querySelector("[data-r]");

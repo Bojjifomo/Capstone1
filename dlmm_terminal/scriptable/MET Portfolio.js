@@ -4264,7 +4264,7 @@ if (config.runsInWidget) {
         ? `The price is inside the ladder, so part of it is the token: what the close returns of it is sold to SOL first (refusing any route more than ${MAX_LOSS_PERCENT}% under the pool price). `
         : "It first checks on chain whether the ladder is still all SOL; if the price has moved into it, the token that comes back is sold to SOL first. ")
       + "Fees and the old positions' rent stay in the wallet; the new positions lock rent again. "
-      + "It is two steps: if the re-open fails, the SOL simply stays in the wallet.\n\n"
+      + "If the token will not sell, the ladder still re-opens with the SOL that came back and the token waits for CLEANUP. If the re-open fails, the SOL simply stays in the wallet.\n\n"
       + `Pick the shape${r.strategy ? ` (it was opened as ${STRATEGY_NAME[r.strategy]})` : ""}:`
       + (DRY_RUN ? "\n\nPRACTICE MODE: simulated, nothing is sent." : "");
     const order = [def, ...STRATEGIES.filter(s => s !== def)];
@@ -4297,13 +4297,15 @@ if (config.runsInWidget) {
         return { ok: false, text: `Closed ${closeRes.done} of ${closeRes.total}; not re-opened. What closed is SOL in the wallet.` };
       }
       // Inside the ladder: sell the token the close returned (never what was already in the wallet).
-      let sold = null;
+      let sold = null, saleNote = "";
       if (holdsNow && !DRY_RUN) {
         let tokAfter = null;
         try { tokAfter = await tokenBalances([...byMint.keys()]); } catch (e) {}
         if (!tokAfter) return { ok: false, text: "Closed, but could not read the wallet to sell the token; not re-opened. CLEANUP sells it." };
         sold = await sellReturned(tokBefore, tokAfter, byMint, rep, { maxLoss: MAX_LOSS_PERCENT, slippage: ROUTER_SLIPPAGE_PERCENT, solUsd: current && current.data && current.data.solUsd });
-        if (sold.failed) return { ok: false, text: `Closed, but ${sold.failed} token sale${sold.failed > 1 ? "s" : ""} did not go through; not re-opened. Use CLEANUP to sell it, then open again.` };
+        // A token that will not sell no longer stops the re-open: the ladder opens again with the SOL
+        // that did come back, and the token waits in the wallet for CLEANUP.
+        if (sold.failed) saleNote = ` ${sold.failed} token sale${sold.failed > 1 ? "s" : ""} did not go through; that token is in the wallet for CLEANUP.`;
       }
       // Live: what came back, less the rent refund, and never more than the
       // table said the ladder held (the rest is fees, which stay).
@@ -4314,11 +4316,18 @@ if (config.runsInWidget) {
       let lamports, note = "";
       const rent = await MET.rentRates(SEND_RPC);
       if (!DRY_RUN) {
-        const balAfter = (await SEND_RPC.call("getBalance", [ACTOR.address, { commitment: "confirmed" }])).value;
+        // The RPC can still answer with the balance from before the close for a few seconds: wait
+        // (up to ~30 s) until it shows at least 90% of what the ladder held in SOL plus what the sale paid.
+        const want = Math.floor(((r.solInside || 0) * 1e9 + (sold ? sold.got : 0)) * 0.9);
+        let balAfter = (await SEND_RPC.call("getBalance", [ACTOR.address, { commitment: "confirmed" }])).value;
+        for (let w = 0; w < 15 && balAfter - balBefore - rentBack < want; w++) {
+          await MET.sleep(2000);
+          balAfter = (await SEND_RPC.call("getBalance", [ACTOR.address, { commitment: "confirmed" }])).value;
+        }
         const returned = BigInt(Math.max(0, balAfter - balBefore - rentBack));
         lamports = returned < tableLamports ? returned : tableLamports;
         lamports = lamports * 999n / 1000n;
-        if (lamports < 10_000_000n) return { ok: false, text: `Closed, but only ${fmtSol(lamportsToSol(returned), 4)} came back; not re-opened. It is in the wallet.` };
+        if (lamports < 10_000_000n) return { ok: false, text: `Closed, but only ${fmtSol(lamportsToSol(returned), 4)} came back; not re-opened. It is in the wallet.${saleNote}` };
       } else {
         const spare = BigInt(Math.max(0, balBefore - slices * rent.position - 3 * rent.binArray - rent.tokenAccount * 2 - 30_000_000));
         lamports = spare < tableLamports ? spare : tableLamports;
@@ -4341,9 +4350,9 @@ if (config.runsInWidget) {
           amount: lamportsToSol(lamports), binStep: open.binStep, solIsX: open.solIsX, positions: open.landed.map(l => l.position), openedAt: open.openedAt });
       }
       const u = (open.unknown || []).length;
-      return { ok: open.ok, text: open.ok ? `Re-entered ${r.symbol}: ${open.n} slices under the price (${STRATEGY_NAME[strategy]}).`
+      return { ok: open.ok, text: (open.ok ? `Re-entered ${r.symbol}: ${open.n} slices under the price (${STRATEGY_NAME[strategy]}).`
         : u ? `Closed; re-opened ${open.landed.length} of ${open.n} slices, ${u} unconfirmed. Check before trying again.`
-        : `Closed, and re-opened ${open.landed.length} of ${open.n} slices. The rest is SOL in the wallet.`,
+        : `Closed, and re-opened ${open.landed.length} of ${open.n} slices. The rest is SOL in the wallet.`) + saleNote,
         link: open.landed.length ? `https://solscan.io/tx/${open.landed[0].signature}` : null };
     });
   };

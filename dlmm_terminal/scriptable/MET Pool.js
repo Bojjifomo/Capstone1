@@ -3762,7 +3762,8 @@ if (config.runsInWidget) {
   let win = ["1h", "4h", "24h"].includes(savedView.win) ? savedView.win : "24h";
   const saveView = () => writeLib("met_view.json", { mode, win });
   // The Signal list is ordered like the Mac's top-10 card (signal.blastSortBy), until you sort a column yourself.
-  const SIGNAL_SORT = { volTvl1h: x => x.volTvl1h, feeTvl24h: x => (x.tvl > 0 ? x.fees24 / x.tvl * 100 : 0), fees1hUsd: x => x.fees1h, prorated5m: x => x.volTvl1h };
+  const SIGNAL_SORT = { volTvl1h: x => x.volTvl1h, feeTvl24h: x => (x.tvl > 0 ? x.fees24 / x.tvl * 100 : 0), fees1hUsd: x => x.fees1h, prorated5m: x => x.volTvl1h,
+    volMcapFit: x => { const v = x.c && x.c.volMcap24h; const b = CFG.flags.volMcapBand || [0.3, 3]; return v != null && v >= b[0] && v <= b[1] ? v : 0; } };
   const sortRows = rows => {
     if (mode === "signal" && !sortTouched) {
       const f = SIGNAL_SORT[CFG.signal.blastSortBy] || SIGNAL_SORT.volTvl1h;

@@ -89,7 +89,12 @@ def run(script: str, args: list[str], timeout: int = 240) -> dict:
     if missing:
         return {"ok": False, "error": missing}
     env = {**os.environ, "SOLANA_RPC_URL": rpc_url()}
-    r = subprocess.run(["node", str(EXECUTOR / script), *args], capture_output=True, text=True, timeout=timeout, env=env)
+    try:
+        r = subprocess.run(["node", str(EXECUTOR / script), *args], capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return {"ok": False, "error": f"{script} masih jalan setelah {timeout} detik dan dihentikan; cek Portfolio / Solscan "
+                "sebelum coba lagi (sebagian langkah mungkin udah terkirim).", "stdout": out[-2000:]}
     res = last_json(r.stdout)
     if res is not None:
         log_rpc(script, args, res)

@@ -69,6 +69,33 @@ class FilterTests(unittest.TestCase):
         self.assertTrue(any(f.startswith("tvl") for f in c["flags"]))
         self.assertTrue(any(f.startswith("night") for f in c["flags"]))
 
+    def test_pump_1h_gate_from_review(self):
+        cfg = {**CFG, "gates": {**CFG["gates"], "maxPriceChg1hPct": 5}}
+        up = [1.0] * 25 + [1.08]                                    # +8% in the last hour
+        c = filters.evaluate(snap(), candles(up), cfg, NOW)
+        self.assertEqual(c["decision"], "skip")
+        self.assertTrue(any(g.startswith("pump1h: +8% > +5%") for g in c["gatesFailed"]))
+        flat = [1.0] * 25 + [1.04]                                  # +4%: passes
+        self.assertEqual(filters.evaluate(snap(), candles(flat), cfg, NOW)["decision"], "propose")
+        self.assertEqual(filters.evaluate(snap(), [], cfg, NOW, changes={"1h": None})["decision"], "propose")  # unknown passes
+        big = [1.0] * 25 + [1.4]                                    # +40%: the gate, not also the 25% flag
+        c = filters.evaluate(snap(), candles(big), cfg, NOW)
+        self.assertFalse(any(f.startswith("pump1h") for f in c["flags"]))
+        c = filters.evaluate(snap(), candles(up), CFG, NOW)        # gate absent = old behaviour
+        self.assertEqual(c["decision"], "propose")
+
+    def test_review_flags(self):
+        cfg = {**CFG, "flags": {**CFG["flags"], "youngPoolHours": 6, "volMcapBand": [0.3, 3], "maxBinStep": 100}}
+        c = filters.evaluate(snap(), candles([1e-5] * 26), cfg, NOW)       # 48h old, vol/mcap 0.5, bin 100
+        self.assertEqual(c["volMcap24h"], 0.5)
+        self.assertEqual(c["flags"], [])
+        s = snap(created_at=(NOW.timestamp() - 3 * 3600) * 1000, volume={"24h": 5_000_000})
+        s["pool_config"]["bin_step"] = 200
+        c = filters.evaluate(s, candles([1e-5] * 26), cfg, NOW)
+        self.assertIn("young pool 3.0h", c["flags"])
+        self.assertIn("vol/mcap 5.00x", c["flags"])
+        self.assertIn("bin step 200", c["flags"])
+
     def test_sol_as_token_x_inverts_price(self):
         s = snap(token_x={"address": SOL_MINT, "symbol": "SOL", "price": 100},
                  token_y={"address": "MEME", "symbol": "MEME"}, current_price=1e5)
