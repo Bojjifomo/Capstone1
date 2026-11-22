@@ -33,7 +33,8 @@ const DEFAULTS = {
   "gates": {
     "minPoolAgeMinutes": 60,
     "minFeeApr24hPct": 1000,
-    "maxPositionPctOfTvl": null
+    "maxPositionPctOfTvl": null,
+    "maxPriceChg1hPct": 5
   },
   "position": {
     "strategy": "Spot",
@@ -48,6 +49,12 @@ const DEFAULTS = {
     "pump1hPct": 25,
     "drop6hPct": -17,
     "minTvlUsd": 25000,
+    "youngPoolHours": 6,
+    "volMcapBand": [
+      0.3,
+      3
+    ],
+    "maxBinStep": 100,
     "nightEntryLocalHours": [
       0,
       9
@@ -270,6 +277,7 @@ function makeConfig(secrets) {
   set(cfg.gates, "minPoolAgeMinutes", n("SPEC_MIN_POOL_AGE_MIN"));
   set(cfg.gates, "minFeeApr24hPct", n("SPEC_MIN_FEE_APR_PCT"));
   set(cfg.gates, "maxPositionPctOfTvl", n("SPEC_MAX_PCT_OF_TVL"));   // a number turns the size-vs-TVL gate on
+  if (s.SPEC_MAX_PUMP_1H_PCT === null) cfg.gates.maxPriceChg1hPct = null; else set(cfg.gates, "maxPriceChg1hPct", n("SPEC_MAX_PUMP_1H_PCT"));
   set(cfg.flags, "pump1hPct", n("SPEC_FLAG_PUMP_1H_PCT"));
   set(cfg.flags, "drop6hPct", n("SPEC_FLAG_DROP_6H_PCT"));
   set(cfg.flags, "minTvlUsd", n("SPEC_FLAG_MIN_TVL_USD"));
@@ -323,9 +331,14 @@ const SETTINGS_SCHEMA = [
   ["gates.minPoolAgeMinutes", "Gate v1", "Umur pool min (menit)", "num", { min: 0 }],
   ["gates.minFeeApr24hPct", "Gate v1", "Fee APR 24h min (%)", "num", { min: 0 }],
   ["gates.maxPositionPctOfTvl", "Gate v1", "Size maks % TVL (kosong = off)", "numnull", { min: 0 }],
+  ["gates.maxPriceChg1hPct", "Gate v1", "Jangan masuk kalau harga 1h naik > (%) (kosong = off)", "numnull", {}],
   ["flags.pump1hPct", "Flag", "Pump 1h ≥ (%)", "num", {}],
   ["flags.drop6hPct", "Flag", "Drop 6h ≤ (%)", "num", {}],
   ["flags.minTvlUsd", "Flag", "TVL tipis < ($)", "num", { min: 0 }],
+  ["flags.youngPoolHours", "Flag", "Pool muda < (jam) (kosong = off)", "numnull", { min: 0 }],
+  ["flags.volMcapBand.0", "Flag", "Vol 24h ÷ mcap min (x)", "num", { min: 0 }],
+  ["flags.volMcapBand.1", "Flag", "Vol 24h ÷ mcap maks (x)", "num", { min: 0 }],
+  ["flags.maxBinStep", "Flag", "Bin step di atas ini = flag (kosong = off)", "numnull", { min: 1 }],
   ["flags.nightEntryLocalHours.0", "Flag", "Jam malam dari (WIB)", "int", { min: 0, max: 23 }],
   ["flags.nightEntryLocalHours.1", "Flag", "Jam malam sampai (WIB)", "int", { min: 0, max: 24 }],
   ["signal.bandOverrides.tokenAgeHours.lo", "PING", "Umur token min (jam)", "numnull", { min: 0 }],
@@ -335,7 +348,7 @@ const SETTINGS_SCHEMA = [
   ["signal.bandOverrides.volume24hUsd.lo", "PING", "Volume 24h min ($)", "numnull", { min: 0 }],
   ["signal.bandOverrides.totalFeesSol.lo", "PING", "Total fees pool min (SOL)", "numnull", { min: 0 }],
   ["signal.blastTop", "PING", "Top N", "int", { min: 1, max: 50 }],
-  ["signal.blastSortBy", "PING", "Urut berdasarkan", "select", { options: ["volTvl1h", "feeTvl24h", "fees1hUsd", "prorated5m"] }],
+  ["signal.blastSortBy", "PING", "Urut berdasarkan", "select", { options: ["volTvl1h", "feeTvl24h", "fees1hUsd", "prorated5m", "volMcapFit"] }],
   ["signal.revival.mode", "PING", "Pool mati→hidup", "select", { options: ["gate", "flag", "off"] }],
   ["exits.alertAtPnlPct", "Exit", "Alert kalau PnL ≤ (%)", "numnull", {}],
   ["exits.alertBottomThirdOfRange", "Exit", "Alert di 1/3 bawah range", "bool", {}],
@@ -533,6 +546,7 @@ function features(p, sizeSol, nowMs, changes) {
     feeApr24h: pyRound(windowFeeApr(p, 24, ageH), 1),
     volTvl24h: tvl ? pyRound((((p.volume || {})["24h"]) || 0) / tvl, 2) : null,
     mcapUsd: tok.market_cap == null ? null : tok.market_cap,
+    volMcap24h: tok.market_cap ? pyRound((((p.volume || {})["24h"]) || 0) / tok.market_cap, 2) : null,
     priceChg1h: pick("1h"),
     priceChg6h: pick("6h"),
     priceChg24h: pick("24h"),
@@ -556,6 +570,8 @@ function gates(f, cfg) {
     ["poolAge", f.poolAgeHours * 60 >= g.minPoolAgeMinutes],
     ["feeApr24h", f.feeApr24h >= g.minFeeApr24hPct],
   ];
+  // No entry after a pump (owner's Nov 2026 review): unknown change passes, null = off.
+  if (g.maxPriceChg1hPct != null) checks.push(["pump1h", f.priceChg1h == null || f.priceChg1h <= g.maxPriceChg1hPct]);
   // Size vs TVL is a gate only when configured (the owner turned it off; it stays visible as info).
   if (g.maxPositionPctOfTvl != null) checks.push(["sizeVsTvl", f.sizeVsTvlPct != null && f.sizeVsTvlPct <= g.maxPositionPctOfTvl]);
   const why = {
@@ -564,15 +580,22 @@ function gates(f, cfg) {
     poolAge: () => `poolAge: ${pyFixed(f.poolAgeHours * 60, 0)}m < ${g.minPoolAgeMinutes}m`,
     feeApr24h: () => `feeApr24h: ${pyFixed(f.feeApr24h, 0)}% < ${g.minFeeApr24hPct}%`,
     sizeVsTvl: () => `sizeVsTvl: ${pyStr(f.sizeVsTvlPct)}% > ${g.maxPositionPctOfTvl}%`,
+    pump1h: () => `pump1h: +${pyFixed(f.priceChg1h || 0, 0)}% > +${g.maxPriceChg1hPct}% (wait for a dip)`,
   };
   return { passed: checks.filter(c => c[1]).map(c => c[0]), failed: checks.filter(c => !c[1]).map(c => why[c[0]]()) };
 }
 
 function flags(f, cfg) {
   const fl = cfg.flags, out = [];
-  if (f.priceChg1h != null && f.priceChg1h >= fl.pump1hPct) out.push(`pump1h +${pyFixed(f.priceChg1h, 0)}%`);
+  const gate1h = cfg.gates.maxPriceChg1hPct;
+  const gated = gate1h != null && f.priceChg1h != null && f.priceChg1h > gate1h;
+  if (f.priceChg1h != null && f.priceChg1h >= fl.pump1hPct && !gated) out.push(`pump1h +${pyFixed(f.priceChg1h, 0)}%`);
   if (f.priceChg6h != null && f.priceChg6h <= fl.drop6hPct) out.push(`drop6h ${pyFixed(f.priceChg6h, 0)}%`);
   if (f.tvlUsd < fl.minTvlUsd) out.push(`tvl $${commas(pyFixed(f.tvlUsd, 0))}`);
+  if (fl.youngPoolHours != null && f.poolAgeHours < fl.youngPoolHours) out.push(`young pool ${pyFixed(f.poolAgeHours, 1)}h`);
+  const band = fl.volMcapBand;
+  if (band && f.volMcap24h != null && !(band[0] <= f.volMcap24h && f.volMcap24h <= band[1])) out.push(`vol/mcap ${pyFixed(f.volMcap24h, 2)}x`);
+  if (fl.maxBinStep != null && f.binStep != null && f.binStep > fl.maxBinStep) out.push(`bin step ${f.binStep}`);
   const [start, end] = fl.nightEntryLocalHours;
   if (f.entryHourLocal != null && start <= f.entryHourLocal && f.entryHourLocal < end) out.push(`night entry ${String(f.entryHourLocal).padStart(2, "0")}h`);
   return out;
@@ -648,6 +671,10 @@ function nice(t) {
   if ((m = /^feeApr24h: (\d+)% < (\d+)%/.exec(t))) return `Fees thin: APR ${commas(m[1])}% (min ${commas(m[2])}%)`;
   if ((m = /^binStep: (.*) outside (.*)/.exec(t))) return `Bin step ${m[1]} (only ${m[2]})`;
   if (/^solQuoted/.test(t)) return "Not a SOL pair";
+  if ((m = /^pump1h: \+(-?\d+)% > \+(.*?)%/.exec(t))) return `Naik +${m[1]}% dalam 1 jam (maks +${m[2]}%): tunggu turun`;
+  if ((m = /^young pool (.*)h/.exec(t))) return `Pool muda ${m[1]} jam: fee gede tapi harga paling rawan, size kecil`;
+  if ((m = /^vol\/mcap (.*)x/.exec(t))) return `Vol 24h ÷ mcap ${m[1]}x (bagus 0.3-3x)`;
+  if ((m = /^bin step (\d+)/.exec(t))) return `Bin step ${m[1]} (di atas 100 jarang untung)`;
   if ((m = /^pump1h (.*)/.exec(t))) return `Pump 1h ${m[1]}`;
   if ((m = /^drop6h (.*)/.exec(t))) return `Drop 6h ${m[1]}`;
   if ((m = /^tvl (.*)/.exec(t))) return `Thin pool: TVL ${m[1]}`;

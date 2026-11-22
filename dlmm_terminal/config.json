@@ -1,13 +1,13 @@
 {
   "_note": "Starting values from DLMM-Auto-Entry-Spec v1 (133 closed positions, Oct 25 - Nov 4 2026). Change only after re-testing on unseen tokens (spec section 7).",
   "universe": {"protocol": "meteora-dlmm", "quote": "SOL", "binStepMin": 20, "binStepMax": 250},
-  "gates": {"minPoolAgeMinutes": 60, "minFeeApr24hPct": 1000, "maxPositionPctOfTvl": null, "_maxPositionPctOfTvl": "off (owner, 2026-11-04); set a number like 3 to gate size vs TVL again"},
+  "gates": {"minPoolAgeMinutes": 60, "minFeeApr24hPct": 1000, "maxPositionPctOfTvl": null, "_maxPositionPctOfTvl": "off (owner, 2026-11-04); set a number like 3 to gate size vs TVL again", "maxPriceChg1hPct": 5, "_maxPriceChg1hPct": "owner Nov 2026 wallet review (67 entries): price 1h <= +5% at entry made +2.54% vs +0.37% above, with any one token left out too. null = off."},
   "position": {
     "strategy": "Spot", "side": "SOL-only", "rangeBottomPct": -70,
     "bankrollSol": 160, "lossBudgetPct": 5, "defaultSizeSol": 8,
     "ladderSlices": 5, "_ladder": "RH ladder: equal-width slices from the price down to rangeBottomPct, SOL split 1:2:...:n (deepest slice biggest), Spot inside each"
   },
-  "flags": {"pump1hPct": 25, "drop6hPct": -17, "minTvlUsd": 25000, "nightEntryLocalHours": [0, 9], "utcOffsetHours": 7},
+  "flags": {"pump1hPct": 25, "drop6hPct": -17, "minTvlUsd": 25000, "youngPoolHours": 6, "volMcapBand": [0.3, 3], "maxBinStep": 100, "_review2026_11": "owner Nov 2026 review: pools < 6h earned the most fee but lost the most to price (net +0.29%); 24h vol/mcap 0.3-3x made +2.5% vs +0.9% outside; bin step 200 broke even (4 entries). Flags, not gates.", "nightEntryLocalHours": [0, 9], "utcOffsetHours": 7},
   "scan": {"pages": 2, "pageSize": 100, "prefilterMinTvlUsd": 1000},
   "signal": {
     "_note": "Entry ping: pool passes the v1 gates AND sits inside the benchmark wallet's habitat (bin steps it made SOL in + p10-p90 of pool age, mcap, fees 1h/24h at its entries). A similarity check on top of the gates, not a predictor (spec section 2).",

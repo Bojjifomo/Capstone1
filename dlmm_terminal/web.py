@@ -111,7 +111,7 @@ def _build_rows(snaps: list[dict], cfg: dict):
         fees, vol = snap.get("fees") or {}, snap.get("volume") or {}
         out.append({
             **{k: c[k] for k in ("pool", "name", "symbol", "tokenMint", "solSide", "poolAgeHours", "tvlUsd", "feeApr1h",
-                                 "feeApr24h", "volTvl24h", "mcapUsd", "priceChg1h", "priceChg6h", "priceChg24h", "binStep",
+                                 "feeApr24h", "volTvl24h", "volMcap24h", "mcapUsd", "priceChg1h", "priceChg6h", "priceChg24h", "binStep",
                                  "baseFeePct", "sizeVsTvlPct", "holders", "priceSol", "gatesFailed", "flags", "plan", "solUsd")},
             "vol24": vol.get("24h") or 0, "vol1h": vol.get("1h") or 0,
             # fees per window, and the same as % of TVL per day at that window's pace
@@ -720,7 +720,7 @@ class Handler(BaseHTTPRequestHandler):
                         args += ["--reopen", "--slices", str(int(body.get("slices") or len(positions) or pos.get("ladderSlices", 5))),
                                  "--bottom", str(abs(float(body.get("bottom") or pos["rangeBottomPct"]))), "--top", str(float(body.get("top") or 0)),
                                  "--strategy", str(body.get("strategy") or "spot")]
-                    res = node.run("reenter.mjs", args, timeout=900)
+                    res = node.run("reenter.mjs", args, timeout=1500)
                     append("closes.jsonl", {"ts": ts, "source": "web", "pool": body.get("pool"), "symbol": body.get("symbol"),
                                             "positions": positions, "rule": "reenter" if body.get("reopen") else "close-swap", **{k: res.get(k) for k in ("ok", "error", "step", "solBack", "reopenSol")}})
                     return self._json(res)

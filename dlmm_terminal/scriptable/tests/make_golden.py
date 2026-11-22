@@ -52,11 +52,20 @@ def main():
     thin = edit(0); thin["fees"] = {"1h": 0, "24h": 3}; thin["address"] = "THIN"
     nofee = edit(0); nofee["fees"] = {}; nofee["address"] = "NOFEES"
     huge = edit(0); huge["address"] = "SIZE"
+    # Owner's Nov 2026 review filter: a clean OPEN (old pool, price flat, vol/mcap 1x, bin 100) and
+    # the same pool right after a +12% hour (pump gate -> WAIT).
+    clean = edit(0); clean["address"] = "CLEAN"; clean["created_at"] = now_ms - 48 * 3600 * 1000
+    clean["tvl"] = 200_000; clean["pool_config"]["bin_step"] = 100
+    clean["fees"] = {**(clean.get("fees") or {}), "1h": 2000, "24h": 40_000}
+    clean["volume"] = {**(clean.get("volume") or {}), "24h": clean["token_x"].get("market_cap") or 1e6}
+    pumped = json.loads(json.dumps(clean)); pumped["address"] = "PUMPED"
     cases += [{"snap": young, "changes": {}, "market": None, "size": None},
               {"snap": narrow, "changes": {"1h": 25.5}, "market": None, "size": None},     # 25.5 -> "+26%" (half to even)
               {"snap": thin, "changes": {"1h": 26.5, "6h": -17.0}, "market": None, "size": None},   # 26.5 -> "+26%"
               {"snap": nofee, "changes": {"1h": None, "6h": None, "24h": None}, "market": {"vol1h": 5, "vol24": 1000, "buys24": 10, "sells24": 70}, "size": None},
-              {"snap": huge, "changes": {"1h": 1.0}, "market": None, "size": 30.0}]
+              {"snap": huge, "changes": {"1h": 1.0}, "market": None, "size": 30.0},
+              {"snap": clean, "changes": {"1h": -3.0, "6h": 4.0, "24h": 10.0}, "market": None, "size": None},
+              {"snap": pumped, "changes": {"1h": 12.4, "6h": 4.0, "24h": 10.0}, "market": None, "size": None}]
     sized_cfg = json.loads(json.dumps(cfg))
     sized_cfg["gates"]["maxPositionPctOfTvl"] = 3        # a second config with the size gate on
     out_cases = []

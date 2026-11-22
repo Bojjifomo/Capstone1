@@ -106,25 +106,43 @@ if (gained <= 0n && expected > 0n && tokAfter.raw > 0n) {
   gained = tokAfter.raw < expected ? tokAfter.raw : expected;
   gainedNote = "balance did not move after the close; selling what the positions held";
 }
-let swap = null;
+let swap = null, swapError = null;
 if (gained > 0n) {
   // Jupiter, else straight into this pool; never more than --maxloss % under the pool price.
   const res = await sellToSol(tokenMint, gained.toString(), { connection, signer, owner, maxLossPct: maxLoss, pool });
   if (!res.ok) {
-    out({ ok: false, step: "swap", error: `positions closed, token NOT sold: ${res.error}. It stays in the wallet (Cleanup sells it later).`, closed, swap: res,
-      leftover: { mint: tokenMint, pool, raw: gained.toString() } });
-    process.exit(1);
+    swapError = `token NOT sold: ${res.error}. It stays in the wallet (Cleanup sells it later).`;
+    // Close + swap only: that is the whole job, so it failed. Re-entry goes on with the SOL that
+    // did come back: a token that will not sell must not stop the ladder from opening again.
+    if (!reopen) {
+      out({ ok: false, step: "swap", error: `positions closed, ${swapError}`, closed, swap: res, leftover: { mint: tokenMint, pool, raw: gained.toString() } });
+      process.exit(1);
+    }
+    swap = { ok: false, error: res.error, tried: res.tried, leftover: { mint: tokenMint, pool, raw: gained.toString() } };
+  } else {
+    swap = { ok: true, signature: res.signature, via: res.via, tokenRaw: gained.toString(), sol: res.sol, underPct: res.underPct, note: gainedNote, waitedS: waited * 2 };
   }
-  swap = { signature: res.signature, via: res.via, tokenRaw: gained.toString(), sol: res.sol, underPct: res.underPct, note: gainedNote, waitedS: waited * 2 };
 }
-const solAfter = await connection.getBalance(owner);
+// What came back. The RPC can still show the balance from before the close / sale for a few
+// seconds: wait (up to ~30 s) until it shows at least 90% of what the positions held in SOL plus
+// what the sale paid, so the re-open is not refused (or made smaller) on a stale read.
+const expectSol = view.reduce((a, v) => a + (Number(v.solLamports) || 0), 0) / 1e9 + (swap && swap.ok ? Number(swap.sol) || 0 : 0);
+let solAfter = await connection.getBalance(owner), balWait = 0;
+while ((solAfter - solBefore) / 1e9 < expectSol * 0.9 && balWait < 15) {
+  await new Promise(r => setTimeout(r, 2000));
+  balWait++;
+  solAfter = await connection.getBalance(owner);
+}
 const back = (solAfter - solBefore) / 1e9;                       // SOL + returned rent − fees
 if (!reopen) { out({ ok: true, mode: "close-swap", closed, swap, solBack: back, tokenMint, expectedTokenRaw: expected.toString() }); process.exit(0); }
 
 const rentBack = positions.length * 0.0419;
 const ask = arg("sol") ? Number(arg("sol")) : Math.floor((back - rentBack) * 0.999 * 1000) / 1000;
-if (!(ask >= 0.01)) { out({ ok: false, step: "reopen", error: `only ${back.toFixed(4)} SOL came back: too small to re-open`, closed, swap, solBack: back }); process.exit(1); }
+if (!(ask >= 0.01)) { out({ ok: false, step: "reopen", error: `only ${back.toFixed(4)} SOL came back (expected ~${expectSol.toFixed(3)}, waited ${balWait * 2}s): too small to re-open. The SOL is in the wallet.${swapError ? " Also: " + swapError : ""}`, closed, swap, solBack: back }); process.exit(1); }
 const opened = child("open_ladder.mjs", ["--pool", pool, "--sol", String(ask), "--slices", arg("slices", "5"), "--bottom", arg("bottom", "70"),
   "--top", arg("top", "0"), "--strategy", arg("strategy", "spot")]);
-out({ ok: !!opened?.ok, mode: "reenter", closed, swap, solBack: back, reopenSol: ask, opened, ...(opened?.ok ? {} : { step: "reopen", error: opened?.error || "re-open failed; the SOL is in the wallet" }) });
+const landed = (opened?.results || []).filter(x => x && x.ok).length;
+out({ ok: !!opened?.ok, mode: "reenter", closed, swap, swapError, solBack: back, reopenSol: ask, opened, landedSlices: landed,
+  ...(opened?.ok ? {} : { step: "reopen", error: (landed ? `re-opened ${landed} slice(s) only: ` : "re-open failed, the SOL is in the wallet: ") + (opened?.error || "?") }),
+  ...(opened?.ok && swapError ? { warning: swapError } : {}) });
 process.exit(opened?.ok ? 0 : 1);

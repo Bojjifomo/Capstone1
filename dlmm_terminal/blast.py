@@ -37,7 +37,14 @@ SORT_KEYS = {
     "feeTvl24h": "1d Fees/TVL",
     "fees1hUsd": "1h fees",
     "prorated5m": "prorated 5m Vol / 1h Vol",
+    "volMcapFit": "24h Vol/mcap inside the 0.3-3x band",
 }
+
+
+def vol_mcap_fit(x, band=(0.3, 3)) -> float:
+    """Sort key from the owner's Nov 2026 review: 24h vol/mcap inside the band ranks by its value
+    (1-3x made the most), outside it ranks last (above 3x was churn / dump)."""
+    return x if x is not None and band[0] <= x <= band[1] else 0
 
 
 def dex_5m(ids: list[str]) -> dict:
@@ -110,6 +117,7 @@ def row(c: dict, snap: dict, m: dict, dx: dict | None, now: float) -> dict:
         "binStep": c["binStep"],
         "volTvl1h": vol1h_met / tvl * 100 if tvl else 0,
         "prorated5m": vol5m * 12 / vol1h * 100 if vol5m is not None and vol1h else None,
+        "volMcap24h": c.get("volMcap24h"), "volMcapFit": vol_mcap_fit(c.get("volMcap24h")),
         "score": m["score"], "dims": m["dims"], "hits": len(m["hits"]),
         "boost": dx.get("boost", 0),
         "buys5m": buys, "sells5m": sells,

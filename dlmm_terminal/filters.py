@@ -76,6 +76,8 @@ def features(snapshot: dict, candles_1h: list[dict], size_sol: float, now: datet
         "feeApr24h": round(_window_fee_apr(snapshot, 24, age_h), 1),
         "volTvl24h": round(((snapshot.get("volume") or {}).get("24h", 0) or 0) / tvl, 2) if tvl else None,
         "mcapUsd": tok.get("market_cap"),
+        # 24h pool volume / market cap: 1-3x was the owner's best band (Nov 2026 review), >3x churn/dump.
+        "volMcap24h": round(((snapshot.get("volume") or {}).get("24h", 0) or 0) / tok["market_cap"], 2) if tok.get("market_cap") else None,
         "priceChg1h": pick(1, "1h"),
         "priceChg6h": pick(6, "6h"),
         "priceChg24h": pick(24, "24h"),
@@ -114,6 +116,10 @@ def gates(f: dict, cfg: dict) -> tuple[list[str], list[str]]:
         "poolAge": f["poolAgeHours"] * 60 >= g["minPoolAgeMinutes"],
         "feeApr24h": f["feeApr24h"] >= g["minFeeApr24hPct"],
     }
+    # No entry after a pump: the owner's Nov 2026 review (67 entries) made +2.5% entering with the
+    # price <= +5% over the last hour and +0.4% above it. Unknown change passes. null = off.
+    if g.get("maxPriceChg1hPct") is not None:
+        checks["pump1h"] = f["priceChg1h"] is None or f["priceChg1h"] <= g["maxPriceChg1hPct"]
     # Size vs TVL is a gate only when configured (owner turned it off; shown as info).
     if g.get("maxPositionPctOfTvl") is not None:
         checks["sizeVsTvl"] = f["sizeVsTvlPct"] is not None and f["sizeVsTvlPct"] <= g["maxPositionPctOfTvl"]
@@ -130,17 +136,27 @@ def _why(k: str, f: dict, cfg: dict) -> str:
         "poolAge": f"poolAge: {f['poolAgeHours'] * 60:.0f}m < {g['minPoolAgeMinutes']}m",
         "feeApr24h": f"feeApr24h: {f['feeApr24h']:.0f}% < {g['minFeeApr24hPct']}%",
         "sizeVsTvl": f"sizeVsTvl: {f['sizeVsTvlPct']}% > {g.get('maxPositionPctOfTvl')}%",
+        "pump1h": f"pump1h: +{f['priceChg1h'] or 0:.0f}% > +{g.get('maxPriceChg1hPct')}% (wait for a dip)",
     }[k]
 
 
 def flags(f: dict, cfg: dict) -> list[str]:
     fl, out = cfg["flags"], []
-    if f["priceChg1h"] is not None and f["priceChg1h"] >= fl["pump1hPct"]:
+    gate1h = cfg["gates"].get("maxPriceChg1hPct")
+    gated = gate1h is not None and f["priceChg1h"] is not None and f["priceChg1h"] > gate1h
+    if f["priceChg1h"] is not None and f["priceChg1h"] >= fl["pump1hPct"] and not gated:
         out.append(f"pump1h +{f['priceChg1h']:.0f}%")
     if f["priceChg6h"] is not None and f["priceChg6h"] <= fl["drop6hPct"]:
         out.append(f"drop6h {f['priceChg6h']:.0f}%")
     if f["tvlUsd"] < fl["minTvlUsd"]:
         out.append(f"tvl ${f['tvlUsd']:,.0f}")
+    if fl.get("youngPoolHours") is not None and f["poolAgeHours"] < fl["youngPoolHours"]:
+        out.append(f"young pool {f['poolAgeHours']:.1f}h")
+    band = fl.get("volMcapBand")
+    if band and f.get("volMcap24h") is not None and not band[0] <= f["volMcap24h"] <= band[1]:
+        out.append(f"vol/mcap {f['volMcap24h']:.2f}x")
+    if fl.get("maxBinStep") is not None and f["binStep"] is not None and f["binStep"] > fl["maxBinStep"]:
+        out.append(f"bin step {f['binStep']}")
     start, end = fl["nightEntryLocalHours"]
     if f["entryHourLocal"] is not None and start <= f["entryHourLocal"] < end:
         out.append(f"night entry {f['entryHourLocal']:02d}h")
