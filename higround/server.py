@@ -55,7 +55,8 @@ def load_config(path=CONFIG_PATH):
             cfg.update(json.loads(Path(path).read_text()))
         except ValueError as e:
             print("config.json ignored: %s" % e, file=sys.stderr)
-    cfg["intervals_client_secret"] = os.environ.get("HG_INTERVALS_SECRET", cfg.get("intervals_client_secret") or "")
+    cfg["intervals_client_secret"] = str(os.environ.get("HG_INTERVALS_SECRET", cfg.get("intervals_client_secret") or "")).strip()
+    cfg["intervals_client_id"] = str(cfg.get("intervals_client_id") or "").strip()   # copy-paste spaces, or a number
     cfg["public_url"] = (cfg.get("public_url") or "").rstrip("/")
     return cfg
 
@@ -285,7 +286,8 @@ def make_handler(club, syncer, cfg):
                 return self._redirect("/#/?login=failed&why=" + why)
             except intervals.ApiError as e:
                 print("token exchange failed: %s" % e, file=sys.stderr)
-                return self._redirect("/#/?login=failed&why=" + e.why)
+                # intervals.icu answers 404 "Client and/or secret not found" for a wrong id/secret pair
+                return self._redirect("/#/?login=failed&why=" + ("secret" if e.why == "http-404" else e.why))
             athlete = tok.get("athlete") or {}
             aid = str(athlete.get("id") or "")
             if not aid:

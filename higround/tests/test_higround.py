@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -237,6 +238,8 @@ class HttpTest(unittest.TestCase):
         loc, ex = self.callback_location(exc=intervals.ApiError("boom", "http-400"))
         self.assertEqual(loc, "/#/?login=failed&why=http-400")
         self.assertTrue(ex.call_args.args[4].endswith("/auth/callback"))   # redirect_uri sent
+        loc, _ = self.callback_location(exc=intervals.ApiError("Client and/or secret not found", "http-404"))
+        self.assertEqual(loc, "/#/?login=failed&why=secret")
         loc, _ = self.callback_location(exc=intervals.AuthError("no"))
         self.assertIn("why=", loc)
         loc, _ = self.callback_location(answer={"access_token": "t"})
@@ -255,6 +258,17 @@ class HttpTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as e:
             self.get("/../server.py")
         self.assertEqual(e.exception.code, 404)
+
+
+class ConfigTest(unittest.TestCase):
+    def test_id_and_secret_are_trimmed(self):
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / "c.json"
+            p.write_text(json.dumps({"intervals_client_id": 1999, "intervals_client_secret": " abc \n"}))
+            with mock.patch.dict("os.environ"):
+                os.environ.pop("HG_INTERVALS_SECRET", None)
+                cfg = server.load_config(p)
+            self.assertEqual((cfg["intervals_client_id"], cfg["intervals_client_secret"]), ("1999", "abc"))
 
 
 class SyncTest(unittest.TestCase):
