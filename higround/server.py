@@ -278,14 +278,19 @@ def make_handler(club, syncer, cfg):
                 return self._redirect("/#/?login=expired")
             try:
                 tok = intervals.exchange_code(cfg["intervals_client_id"], cfg["intervals_client_secret"],
-                                              arg("code"), verifier)
-            except (intervals.ApiError, intervals.AuthError) as e:
+                                              arg("code"), verifier, redirect_uri(cfg))
+            except intervals.AuthError as e:
+                print("token exchange refused: %s" % e, file=sys.stderr)
+                why = "secret" if cfg["intervals_client_secret"] else "no-secret"
+                return self._redirect("/#/?login=failed&why=" + why)
+            except intervals.ApiError as e:
                 print("token exchange failed: %s" % e, file=sys.stderr)
-                return self._redirect("/#/?login=failed")
+                return self._redirect("/#/?login=failed&why=" + e.why)
             athlete = tok.get("athlete") or {}
             aid = str(athlete.get("id") or "")
             if not aid:
-                return self._redirect("/#/?login=failed")
+                print("token answer has no athlete id; keys: %s" % sorted(tok), file=sys.stderr)
+                return self._redirect("/#/?login=failed&why=no-athlete")
             mid = club.upsert_member(aid, athlete.get("name"), tok["access_token"], tok.get("scope", ""),
                                      admin=aid in admins)
             m = club.member(mid)

@@ -95,7 +95,8 @@ addEventListener("hashchange", () => { scrollTo(0, 0); route(); });
 async function pageHome(q) {
   const b = await api("/api/leaderboard?period=month");
   const top = b.rows.slice(0, 3);
-  const msg = { denied: "Lu batal ngasih akses di intervals.icu.", expired: "Login kelamaan, coba lagi ya.", failed: "Login ke intervals.icu gagal. Coba lagi bentar lagi." }[q.get("login")];
+  const msg = { denied: "Lu batal ngasih akses di intervals.icu.", expired: "Login kelamaan, coba lagi ya.", failed: "Login ke intervals.icu gagal. Coba lagi bentar lagi." }[q.get("login")]
+    ?.concat(q.get("why") ? ` (kode: ${q.get("why")})` : "");
   $app.innerHTML = `
     ${msg ? `<div class="note err" role="alert">${esc(msg)}</div>` : ""}
     <section class="hero">

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 import secrets
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,7 +33,11 @@ class AuthError(Exception):
 
 
 class ApiError(Exception):
-    pass
+    """`why` is a short code safe to show in the browser (no secrets)."""
+
+    def __init__(self, message, why="api"):
+        super().__init__(message)
+        self.why = why
 
 
 def pkce_pair():
@@ -63,21 +68,33 @@ def _request(url, data=None, token=None, method=None, timeout=30):
     except urllib.error.HTTPError as e:
         detail = e.read()[:300].decode("utf-8", "replace")
         if e.code in (401, 403):
-            raise AuthError("intervals.icu menolak token (HTTP %d)" % e.code) from None
-        raise ApiError("intervals.icu HTTP %d: %s" % (e.code, detail)) from None
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise ApiError("intervals.icu nggak bisa dihubungi: %s" % e) from None
-    return json.loads(raw) if raw else None
+            raise AuthError("intervals.icu menolak (HTTP %d): %s" % (e.code, detail)) from None
+        raise ApiError("intervals.icu HTTP %d: %s" % (e.code, detail), "http-%d" % e.code) from None
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, ssl.SSLCertVerificationError):
+            raise ApiError("Python nggak bisa cek sertifikat HTTPS (%s). Di Mac: jalankan 'Install "
+                           "Certificates.command' di folder Python, atau pakai /usr/bin/python3." % e.reason,
+                           "ssl") from None
+        raise ApiError("intervals.icu nggak bisa dihubungi: %s" % e, "network") from None
+    except (TimeoutError, OSError) as e:
+        raise ApiError("intervals.icu nggak bisa dihubungi: %s" % e, "network") from None
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        raise ApiError("intervals.icu balas bukan JSON: %r" % raw[:200], "not-json") from None
 
 
-def exchange_code(client_id, client_secret, code, verifier=None):
+def exchange_code(client_id, client_secret, code, verifier=None, redirect_uri=None):
     """-> {"access_token", "scope", "athlete": {"id", "name"}}"""
     data = {"client_id": client_id, "client_secret": client_secret, "code": code}
+    if redirect_uri:
+        data["redirect_uri"] = redirect_uri
     if verifier:
         data["code_verifier"] = verifier
     out = _request(TOKEN_URL, data=data)
     if not isinstance(out, dict) or not out.get("access_token"):
-        raise ApiError("Jawaban token intervals.icu nggak lengkap")
+        raise ApiError("Jawaban token intervals.icu nggak lengkap, kunci: %s"
+                       % sorted(out) if isinstance(out, dict) else type(out).__name__, "no-token")
     return out
 
 

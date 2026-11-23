@@ -164,7 +164,9 @@ class HttpTest(unittest.TestCase):
         cls.club = store.Club(Path(cls.tmp.name) / "h.db")
         demo.seed(cls.club, days=200)
         cfg = dict(server.DEFAULT_CONFIG, demo=True, port=0)
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(cls.club, server.Syncer(cls.club, cfg), cfg))
+        syncer = server.Syncer(cls.club, cfg)
+        syncer.sync_member = lambda m, full=False: {}     # tests never call intervals.icu
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(cls.club, syncer, cfg))
         cls.base = "http://127.0.0.1:%d" % cls.httpd.server_port
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
 
@@ -218,6 +220,32 @@ class HttpTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(req)
         self.assertEqual(e.exception.code, 415)
+
+    def callback_location(self, exc=None, answer=None):
+        st = self.club.new_state("v")
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a):
+                return None
+        kw = {"side_effect": exc} if exc else {"return_value": answer}
+        with mock.patch.object(intervals, "exchange_code", **kw) as ex:
+            try:
+                urllib.request.build_opener(NoRedirect).open(self.base + "/auth/callback?code=c&state=" + st)
+            except urllib.error.HTTPError as e:
+                return e.headers["Location"], ex
+
+    def test_callback_failure_reports_why(self):
+        loc, ex = self.callback_location(exc=intervals.ApiError("boom", "http-400"))
+        self.assertEqual(loc, "/#/?login=failed&why=http-400")
+        self.assertTrue(ex.call_args.args[4].endswith("/auth/callback"))   # redirect_uri sent
+        loc, _ = self.callback_location(exc=intervals.AuthError("no"))
+        self.assertIn("why=", loc)
+        loc, _ = self.callback_location(answer={"access_token": "t"})
+        self.assertEqual(loc, "/#/?login=failed&why=no-athlete")
+
+    def test_callback_success_logs_in(self):
+        loc, _ = self.callback_location(answer={"access_token": "t", "athlete": {"id": "i777", "name": "Baru"}})
+        self.assertEqual(loc, "/#/me?welcome=1")
+        self.assertTrue(any(m["athlete_id"] == "i777" for m in self.club.members()))
 
     def test_privacy_page(self):
         with urllib.request.urlopen(self.base + "/privacy") as r:
