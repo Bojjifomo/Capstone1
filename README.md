@@ -36,6 +36,7 @@ orchestrator-nya: **[TOOLS.md](TOOLS.md)**.
 | [`elysium_terminal/`](elysium_terminal/README.md) | **Elysium Terminal** + [`elysium_wallet_finder/`](elysium_wallet_finder/README.md): versi Elysium dari RH Terminal dan Wallet Finder |
 | [`dlmm_terminal/`](dlmm_terminal/README.md) | Solana LP: filter entry pool Meteora DLMM + monitor PnL & auto exit (spec v1) |
 | [`rpc_monitor/`](rpc_monitor/README.md) | **RPC Monitor**: semua RPC yang dipakai semua bot, mana yang udah mau limit (kuota, 429, probe), dibuka dari HP (Tailscale) |
+| [`higround/`](higround/README.md) | **HiGround Run Club**: leaderboard mileage bulanan + dashboard lari member, sync otomatis dari intervals.icu (Garmin/COROS/Polar/Suunto), dibuka publik lewat Tailscale Funnel |
 | [`fund/`](fund/README.md) | **Fund**: net worth, pengeluaran, saran fund manager + realisasinya, LP auto-track (0 RPC). Terpisah dari tools LP, dibuka dari HP (Tailscale) |
 | [`FUND_MANAGER.md`](FUND_MANAGER.md) | Fund manager: sleeves, IPS, workflow harian → tahunan, subagent `fund-manager` |
 | [`orchestrator/`](TOOLS.md#orchestrator-satu-agent-buat-semuanya) | Agent Claude yang ngejalanin tools di atas |

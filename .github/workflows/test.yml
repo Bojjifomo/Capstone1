@@ -34,6 +34,9 @@ jobs:
           - program: fund
             workdir: fund
             command: python -m unittest discover -s tests
+          - program: higround
+            workdir: higround
+            command: python -m unittest discover -s tests
           - program: rh_wallet_finder
             workdir: .
             command: python -m unittest discover -s rh_wallet_finder/tests
