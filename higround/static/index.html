@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>HiGround Run Club</title>
+  <meta name="description" content="Leaderboard mileage bulanan dan dashboard lari HiGround Run Club.">
+  <meta name="theme-color" content="#F4EEE2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17140F" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Caveat+Brush&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">
+      <span class="logo">HIGROUND</span>
+      <span class="script">run club</span>
+    </a>
+    <nav id="nav"></nav>
+  </header>
+  <main id="app" tabindex="-1"></main>
+  <footer class="foot">
+    <p>HiGround Run Club · data lari lewat <a href="https://intervals.icu" rel="noopener" target="_blank">intervals.icu</a></p>
+    <p id="garmin" class="muted" hidden>Garmin® dan nama perangkat Garmin adalah merek dagang Garmin Ltd. Data dari perangkat Garmin ditandai di daftar aktivitas.</p>
+  </footer>
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

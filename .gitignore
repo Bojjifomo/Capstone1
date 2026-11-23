@@ -41,3 +41,9 @@ rpc_monitor/logs/
 .env.*
 !.env.example
 !*.env.example
+
+# higround
+higround/config.json
+higround/*.db
+higround/*.db-*
+higround/logs/
