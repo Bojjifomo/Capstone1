@@ -219,6 +219,10 @@ class HttpTest(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(e.exception.code, 415)
 
+    def test_privacy_page(self):
+        with urllib.request.urlopen(self.base + "/privacy") as r:
+            self.assertIn(b"ACTIVITY:READ", r.read())
+
     def test_static_no_traversal(self):
         with self.assertRaises(urllib.error.HTTPError) as e:
             self.get("/../server.py")

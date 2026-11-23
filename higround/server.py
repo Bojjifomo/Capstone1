@@ -294,7 +294,7 @@ def make_handler(club, syncer, cfg):
                                   self._cookie(club.new_session(mid), store.SESSION_DAYS * 86400))
 
         def _static(self, p):
-            name = "index.html" if p in ("/", "") else p.lstrip("/")
+            name = {"/": "index.html", "": "index.html", "/privacy": "privacy.html"}.get(p) or p.lstrip("/")
             f = (STATIC / name).resolve()
             if STATIC.resolve() not in f.parents or not f.is_file():
                 return self._send(404, {"error": "not found"})
