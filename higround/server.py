@@ -279,15 +279,19 @@ def make_handler(club, syncer, cfg):
                 return self._redirect("/#/?login=expired")
             try:
                 tok = intervals.exchange_code(cfg["intervals_client_id"], cfg["intervals_client_secret"],
-                                              arg("code"), verifier, redirect_uri(cfg))
+                                              arg("code"), verifier)
             except intervals.AuthError as e:
                 print("token exchange refused: %s" % e, file=sys.stderr)
-                why = "secret" if cfg["intervals_client_secret"] else "no-secret"
+                why = "secret" if cfg["intervals_client_secret"] else "public"
                 return self._redirect("/#/?login=failed&why=" + why)
             except intervals.ApiError as e:
                 print("token exchange failed: %s" % e, file=sys.stderr)
                 # intervals.icu answers 404 "Client and/or secret not found" for a wrong id/secret pair
-                return self._redirect("/#/?login=failed&why=" + ("secret" if e.why == "http-404" else e.why))
+                if e.why == "http-404":   # "Client and/or secret not found"
+                    why = "secret" if cfg["intervals_client_secret"] else "public"
+                else:
+                    why = e.why
+                return self._redirect("/#/?login=failed&why=" + why)
             athlete = tok.get("athlete") or {}
             aid = str(athlete.get("id") or "")
             if not aid:

@@ -84,11 +84,16 @@ def _request(url, data=None, token=None, method=None, timeout=30):
         raise ApiError("intervals.icu balas bukan JSON: %r" % raw[:200], "not-json") from None
 
 
-def exchange_code(client_id, client_secret, code, verifier=None, redirect_uri=None):
-    """-> {"access_token", "scope", "athlete": {"id", "name"}}"""
-    data = {"client_id": client_id, "client_secret": client_secret, "code": code}
-    if redirect_uri:
-        data["redirect_uri"] = redirect_uri
+def exchange_code(client_id, client_secret, code, verifier=None):
+    """-> {"access_token", "scope", "athlete": {"id", "name"}}
+
+    Sends exactly what intervals.icu documents: client_id, code, code_verifier (PKCE) and, for a
+    confidential client, client_secret. With an empty secret this is a *public* client (tick
+    "Public Client" on the intervals.icu app): PKCE alone proves the request is ours.
+    """
+    data = {"client_id": client_id, "code": code}
+    if client_secret:
+        data["client_secret"] = client_secret
     if verifier:
         data["code_verifier"] = verifier
     out = _request(TOKEN_URL, data=data)
