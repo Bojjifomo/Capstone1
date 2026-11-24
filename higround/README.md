@@ -63,8 +63,9 @@ Catat URL `https://….ts.net` yang muncul. Itu `public_url`.
 1. Login intervals.icu → apply OAuth app di https://intervals.icu/oauth/apply
 2. Redirect URI (harus persis): `https://<nama-mac>.<tailnet>.ts.net/auth/callback`
 3. Scope: `ACTIVITY:READ`
-4. Tunggu app di-approve. Selama status masih *Pending*, login belum bisa jalan.
-5. Simpan Client ID dan Client Secret.
+4. Centang **Public Client** dan **Require PKCE** (HiGround selalu pakai PKCE, jadi secret nggak diperlukan)
+5. Tunggu app di-approve. Selama status masih *Pending*, login belum bisa jalan.
+6. Simpan Client ID.
 
 ### 3. Install
 
@@ -80,7 +81,7 @@ pasang launchd supaya server jalan terus (dan nyala lagi sendiri habis restart).
 | --- | --- |
 | `public_url` | URL Funnel dari langkah 1 |
 | `intervals_client_id` | dari langkah 2 |
-| `intervals_client_secret` | dari langkah 2 (atau env `HG_INTERVALS_SECRET`) |
+| `intervals_client_secret` | kosongkan (`""`) kalau app di intervals.icu dicentang **Public Client** + **Require PKCE** (disarankan: nggak ada secret yang bisa salah copy). Kalau bukan public client: isi dari **VIEW SECRET** (atau env `HG_INTERVALS_SECRET`) |
 | `admins` | athlete id intervals.icu lu, misalnya `["i12345"]` (lihat di URL profil intervals.icu) |
 | `sync_every_minutes` | default 30 (48 call per member per hari, batas intervals.icu 100) |
 | `backfill_days` | seberapa jauh ke belakang sync pertama narik data (default 730 hari) |

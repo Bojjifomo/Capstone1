@@ -55,6 +55,14 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(r["status"], "skipped")
         self.assertIn("Strava", r["reason"])
 
+    def test_token_request_public_and_confidential(self):
+        with mock.patch.object(intervals, "_request", return_value={"access_token": "t"}) as req:
+            intervals.exchange_code("1999", "", "c", "ver")
+            self.assertEqual(req.call_args.kwargs["data"], {"client_id": "1999", "code": "c", "code_verifier": "ver"})
+            intervals.exchange_code("1999", "sek", "c", "ver")
+            self.assertEqual(req.call_args.kwargs["data"]["client_secret"], "sek")
+            self.assertNotIn("redirect_uri", req.call_args.kwargs["data"])
+
     def test_pkce(self):
         v, c = intervals.pkce_pair()
         self.assertGreater(len(v), 43)
@@ -237,9 +245,9 @@ class HttpTest(unittest.TestCase):
     def test_callback_failure_reports_why(self):
         loc, ex = self.callback_location(exc=intervals.ApiError("boom", "http-400"))
         self.assertEqual(loc, "/#/?login=failed&why=http-400")
-        self.assertTrue(ex.call_args.args[4].endswith("/auth/callback"))   # redirect_uri sent
+        self.assertEqual(ex.call_args.args[3], "v")                       # PKCE verifier sent
         loc, _ = self.callback_location(exc=intervals.ApiError("Client and/or secret not found", "http-404"))
-        self.assertEqual(loc, "/#/?login=failed&why=secret")
+        self.assertEqual(loc, "/#/?login=failed&why=public")   # demo config has no secret
         loc, _ = self.callback_location(exc=intervals.AuthError("no"))
         self.assertIn("why=", loc)
         loc, _ = self.callback_location(answer={"access_token": "t"})
