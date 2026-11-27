@@ -123,8 +123,43 @@ def pool_rows(force: bool = False) -> dict:
 _ping_sent: dict = {}
 
 
+_blast_at = {"t": 0.0}
+
+
+def _fmt_usd(v) -> str:
+    if v is None:
+        return "?"
+    return f"${v / 1e6:.2f}M" if v >= 1e6 else f"${v / 1e3:.1f}k" if v >= 1e3 else f"${v:.0f}"
+
+
+def blast_text(data: dict) -> str | None:
+    """DLMM-style top-N card: one block per PING pool, best first."""
+    rows = {r["pool"]: r for r in data["rows"]}
+    ping = [rows[x["pool"]] for x in data["ping"].get("rows") or [] if x["pool"] in rows]
+    if not ping:
+        return None
+    out = [f"📡 RH TOP {len(ping)} USDG POOLS · {datetime.now():%H:%M}", f"filter: {data['ping'].get('filter', '')}", ""]
+    for n, r in enumerate(ping, 1):
+        c1 = (r.get("chg") or {}).get("1h")
+        vm = r.get("volMcap24h")
+        out += [f"{n}. {r['symbol']} · fee {r['lpFeePct']}% · {r['verdict']['level']}",
+                f"   🧹 {r.get('feePace24h') or 0:.1f}%/hari · 💰 fee 1j {_fmt_usd(r['fees'].get('1h'))} · 📊 TVL {_fmt_usd(r['tvlUsd'])}",
+                f"   📌 mcap {_fmt_usd(r['mcapUsd'])} · 🥩 vol/mcap {vm if vm is not None else '?'}x · ⏳ 1j {c1 if c1 is not None else '?'}% · ⏰ {r['ageHours'] or 0:.0f}j",
+                f"   https://dexscreener.com/robinhood/{r['pool']}"]
+    return "\n".join(out)
+
+
 def _ping_notify(data: dict) -> None:
-    """Telegram (if set) when a pool newly enters PING; once per pool per 6 hours."""
+    """Telegram (if set). ping.mode new: once per pool per 6 hours when it newly enters PING.
+    blast: the whole top N every ping.blastEveryMin minutes (DLMM's card)."""
+    p = Handler.cfg.get("ping") or {}
+    if p.get("mode") == "blast":
+        if time.time() - _blast_at["t"] >= float(p.get("blastEveryMin") or 30) * 60:
+            txt = blast_text(data)
+            if txt:
+                _blast_at["t"] = time.time()
+                notify(txt)
+        return
     rows = {r["pool"]: r for r in data["rows"]}
     for p in data["ping"].get("new") or []:
         if time.time() - _ping_sent.get(p, 0) < 6 * 3600 or p not in rows:
@@ -185,7 +220,48 @@ def auto_set(pool: str, symbol: str, pct: float | None) -> dict:
         return d
 
 
+SELL_TRIES = 6
+
+
+def _retry_sells(cfg: dict, wallet: str) -> None:
+    """A ladder the auto exit closed but whose token did not sell (pool too thin, price moved, RPC):
+    try the sale again on every check, up to SELL_TRIES times, then leave it for Cleanup. (DLMM)"""
+    with _auto_lock:
+        todo = {k: v for k, v in auto_load().items() if v.get("status") == "selling" and v.get("leftover")}
+    for pool, a in todo.items():
+        left = a["leftover"]
+        args = ["--pool", left.get("pool") or pool, "--amount", str(left["amount"]), "--cap-balance",
+                "--maxloss", str(cfg["trade"]["maxLossPct"])]
+        if practice_mode():
+            args += ["--dry-run", "--owner", wallet]
+        res = node.run("swap.mjs", args, timeout=300)
+        tries = int(a.get("sellTries") or 0) + 1
+        ok = bool(res.get("ok"))
+        with _auto_lock:
+            d = auto_load()
+            if pool not in d:
+                continue
+            if ok and res.get("left") and int(res["left"]) > 0 and tries < SELL_TRIES:
+                d[pool].update(leftover={**left, "amount": str(res["left"])}, sellTries=tries,
+                               msg=f"closed, sebagian token kejual, sisa dicoba lagi ({tries}/{SELL_TRIES})")
+            elif ok:
+                got = "token dijual" if res.get("hash") else "token udah nggak ada di wallet"
+                d[pool].update(status="done", msg=f"closed · {got} (percobaan {tries})", sellTries=tries)
+            elif tries >= SELL_TRIES:
+                d[pool].update(status="failed", sellTries=tries,
+                               msg=f"closed, token gagal dijual {tries}x: {(res.get('error') or '')[:120]}. Pakai Cleanup.")
+            else:
+                d[pool].update(sellTries=tries, msg=f"closed, token belum kejual (coba {tries}/{SELL_TRIES}): {(res.get('error') or '')[:100]}")
+            _jsave("auto_exit.json", d)
+            status, msg = d[pool]["status"], d[pool]["msg"]
+        if status != "selling":
+            append("closes.jsonl", {"ts": _now_iso(), "source": "auto-exit-sell", "pool": pool, "symbol": a.get("symbol"),
+                                    "tries": tries, **{k: res.get(k) for k in ("ok", "error", "hash", "practice")}})
+            notify(f"{'✅' if status == 'done' else '❌'} AUTO EXIT {a.get('symbol')}: {msg}")
+
+
 def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
+    _retry_sells(cfg, wallet)
     with _auto_lock:
         armed = {k: v for k, v in auto_load().items() if v.get("status") == "armed"}
     if not armed:
@@ -217,12 +293,18 @@ def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
             args += ["--dry-run", "--owner", wallet]
         res = node.run("reenter.mjs", args, timeout=900)
         ok = bool(res.get("ok"))
-        msg = ("simulasi (practice mode)" if res.get("dryRun") else exit_summary(res)) if ok else \
-            f"{exit_summary(res)} · gagal di {res.get('step') or '?'}: {res.get('error') or 'gagal'}"
+        left = res.get("leftover")
+        if ok:
+            msg = "simulasi (practice mode)" if res.get("dryRun") else exit_summary(res)
+        elif left:
+            msg = f"closed, token belum kejual ({(res.get('saleError') or 'sebagian sisa')[:120]}): dicoba jual lagi tiap cek"
+        else:
+            msg = f"{exit_summary(res)} · gagal di {res.get('step') or '?'}: {res.get('error') or 'gagal'}"
         with _auto_lock:
             d = auto_load()
             if pool in d:
-                d[pool].update(status="done" if ok else "failed", msg=msg[:200], firedAt=time.time())
+                d[pool].update(status="done" if ok else "selling" if left else "failed", msg=msg[:220], firedAt=time.time(),
+                               **({"leftover": {k: str(v) for k, v in left.items()}, "sellTries": 0} if left else {}))
                 _jsave("auto_exit.json", d)
         append("closes.jsonl", {"ts": _now_iso(), "source": "auto-exit", "pool": pool, "symbol": g["symbol"], "ids": ids,
                                 "rule": f"takeProfit {a['pct']:g}%", "pnlPct": g["pnlPct"], "ok": ok, "error": res.get("error")})
@@ -238,9 +320,22 @@ def exit_summary(res: dict) -> str:
         st = s.get("step") or s.get("label") or "tx"
         if s.get("skipped"):
             parts.append(f"{st}: dilewati ({s['skipped']})")
+        elif s.get("failed"):
+            parts.append(f"{st}: gagal ({s['failed'][:80]})")
         elif s.get("hash"):
             parts.append(f"{st} ✓" + (f" ({s['note']})" if s.get("note") else ""))
     return " · ".join(parts) or "closed"
+
+
+def _pool_loop(cfg: dict) -> None:
+    """Keep the pool table (and with it PING / blast to Telegram) fresh with no browser open."""
+    time.sleep(90)                       # let the swap index read its first hour
+    while True:
+        try:
+            pool_rows(force=True)
+        except Exception as exc:
+            print(f"[pools] {exc}", file=sys.stderr, flush=True)
+        time.sleep(max(1, float(cfg["web"].get("refreshMin", 2))) * 60)
 
 
 def _auto_loop(cfg: dict) -> None:
@@ -537,6 +632,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8892) -> None:
     print("Index swap: baca chain (pertama kali ±15–30 detik buat 1 jam terakhir)…", flush=True)
     ix.start()
     threading.Thread(target=_auto_loop, args=(cfg,), daemon=True, name="auto-exit").start()
+    threading.Thread(target=_pool_loop, args=(cfg,), daemon=True, name="pool-refresh").start()
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"RH Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)

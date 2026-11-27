@@ -73,7 +73,16 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     const signer = dry ? null : loadSigner((await pickTradeProvider()));
     if (!dry && !signer) throw new Error("no RH_PRIVATE_KEY in .env");
     const owner = dry ? a.owner : signer.address;
-    const r = await sellToken({ signer, owner, pool: String(a.pool).toLowerCase(), amount: a.amount || "all",
+    let amount = a.amount || "all";
+    if (a["cap-balance"] && amount !== "all") {
+      // a leftover recorded earlier: never more than what the wallet holds now (sold by hand meanwhile)
+      const pr = signer ? signer.provider : await pickTradeProvider();
+      const key = await poolKey(pr, String(a.pool).toLowerCase());
+      const q = quoteSide(key), tok = q === 0 ? key.currency1 : key.currency0;
+      const bal = await balanceOf(pr, tok, owner);
+      if (BigInt(amount) > bal) amount = bal;
+    }
+    const r = await sellToken({ signer, owner, pool: String(a.pool).toLowerCase(), amount,
       maxLossPct: Number(a.maxloss || 5), dry });
     done({ ok: true, dryRun: dry, ...r });
   } catch (e) { fail(e); }

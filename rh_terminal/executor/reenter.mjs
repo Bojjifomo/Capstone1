@@ -66,10 +66,18 @@ try {
   const tokOut = c.received[token] || 0n;
   let quoteBack = c.received[quote] || 0n;
   if (tokOut > 0n) {
-    const s = await sellToken({ signer, owner, pool: poolId, key, amount: tokOut, maxLossPct: Number(a.maxloss || 5) });
-    out.steps.push({ step: "swap", hash: s.hash, received: s.received, sold: s.sold, left: s.left, note: s.note });
-    if (s.left > 0n) out.tokenLeft = s.left;
-    quoteBack += s.received || 0n;
+    // A sale that fails (pool too thin, price moved) no longer stops the re-open, as in DLMM:
+    // the token stays in the wallet as a leftover the auto exit retries and Cleanup can sell.
+    try {
+      const s = await sellToken({ signer, owner, pool: poolId, key, amount: tokOut, maxLossPct: Number(a.maxloss || 5) });
+      out.steps.push({ step: "swap", hash: s.hash, received: s.received, sold: s.sold, left: s.left, note: s.note });
+      quoteBack += s.received || 0n;
+      if (s.left > 0n) out.leftover = { token, pool: poolId, amount: s.left };
+    } catch (e) {
+      out.steps.push({ step: "swap", failed: String(e.shortMessage || e.message).slice(0, 200) });
+      out.leftover = { token, pool: poolId, amount: tokOut };
+      out.saleError = String(e.shortMessage || e.message).slice(0, 200);
+    }
   } else {
     out.steps.push({ step: "swap", skipped: "nggak ada token keluar (ladder belum pernah kena harga), langsung lanjut" });
   }
@@ -98,7 +106,9 @@ try {
     out.positions = minted;
     out.reopened = total;
   }
-  out.ok = true;
+  // ok = everything asked for happened; a leftover after a close without re-open is not ok (yet)
+  out.ok = !out.leftover || !!out.reopened;
+  if (!out.ok) out.error = `closed, tapi token belum kejual: ${out.saleError || "sebagian sisa"}`;
   delete out.step;
   done(out);
 } catch (e) { fail(e, { step: out.step, steps: out.steps, quoteBack: out.quoteBack }); }

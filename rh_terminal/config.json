@@ -18,7 +18,9 @@
     "minTvlUsd": 2000,
     "minMcapUsd": null,
     "minFeePctDay": 2,
-    "_minFeePctDay": "best of the 1h pace and the 24h figure, fees / TVL per day"
+    "_minFeePctDay": "fees 24h / TVL per day (pool < 24h: over its own hours). preset dlmm: 2.74 (= 1000% APR)",
+    "maxPriceChg1hPct": 5,
+    "_maxPriceChg1hPct": "DLMM owner review Nov 2026: entering with price 1h <= +5% made +2.5% vs +0.4% above. null = off"
   },
   "flags": {
     "pump1hPct": 25,
@@ -29,7 +31,13 @@
     "nightEntryLocalHours": null,
     "_nightEntryLocalHours": "DLMM found night entries worse on Solana; no RH data yet. [0, 9] turns the flag on (WIB)",
     "utcOffsetHours": 7,
-    "cloneSymbol": true
+    "cloneSymbol": true,
+    "youngPoolHours": 6,
+    "volMcapBand": [
+      0,
+      3
+    ],
+    "_review2026_11": "DLMM Nov 2026 review: pools < 6h lost the most to price; 24h vol/mcap above 3x was churn/dump. Its 0.3x floor would flag ~95% of RH pools (median 0.00x), so the RH preset only flags above 3x."
   },
   "position": {
     "defaultSizeUsd": 400,
@@ -43,7 +51,7 @@
   "ping": {
     "top": 10,
     "sortBy": "fee1hPct",
-    "_sortBy": "fee1hPct (fees last hour / TVL) | fees1hUsd | volTvl1h | fee24hPct",
+    "_sortBy": "volMcapFit (24h vol/mcap inside 0.3-3x, DLMM default) | fee1hPct | fees1hUsd | volTvl1h | fee24hPct",
     "minTvlUsd": 5000,
     "minMcapUsd": 100000,
     "maxMcapUsd": null,
@@ -51,7 +59,11 @@
     "maxPoolAgeHours": null,
     "minFees1hUsd": 5,
     "requireGates": true,
-    "skipClones": true
+    "skipClones": true,
+    "minVol24hUsd": 10000,
+    "mode": "new",
+    "_mode": "new = one Telegram ping per pool when it newly enters PING | blast = one card with the top N every blastEveryMin",
+    "blastEveryMin": 30
   },
   "exits": {
     "alertAtPnlPct": -10,
@@ -67,5 +79,7 @@
   "trade": {
     "maxLossPct": 5,
     "gasReserveEth": 0.0005
-  }
+  },
+  "filterPreset": "rh",
+  "_filterPreset": "rh = these values (fitted to RH pool data) | dlmm = DLMM Terminal's Solana numbers (settings.PRESETS); a value you set in ⚙ wins over either"
 }

@@ -396,7 +396,7 @@ function paintWallet() {
   $("#practiceChip").classList.toggle("hidden", !practice());
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.skipped ? "dilewati, " + esc(x.skipped) : x.note ? esc(x.note) : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}${x.hash && x.note ? " · " + esc(x.note) : ""}${(x.positions || []).length ? " · posisi #" + x.positions.join(", #") : ""}`).join("<br>");
+const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.failed ? `<span class="neg">gagal, ${esc(x.failed)}</span>` : x.skipped ? "dilewati, " + esc(x.skipped) : x.note ? esc(x.note) : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}${x.hash && x.note ? " · " + esc(x.note) : ""}${(x.positions || []).length ? " · posisi #" + x.positions.join(", #") : ""}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
 function openZap(r, size) {
@@ -536,6 +536,7 @@ function autoExitCell(p) {
   let st = "";
   if (a && a.status === "armed") st = `<span class="tp on">🎯 nyala · close+swap di +${a.pct}%${p.pnlPct != null ? ` (kurang ${(a.pct - p.pnlPct).toFixed(2)}%)` : ""}</span>`;
   else if (a && a.status === "firing") st = `<span class="tp warn">⏳ lagi close + swap…</span>`;
+  else if (a && a.status === "selling") st = `<span class="tp warn">🔁 ${esc(a.msg || "token belum kejual, dicoba lagi tiap cek")}</span>`;
   else if (a && a.status === "done") st = `<span class="tp pos">✓ auto exit: ${esc(a.msg || "")}</span>`;
   else if (a && a.status === "failed") st = `<span class="tp neg">✗ auto exit gagal: ${esc(a.msg || "")}</span>`;
   return `<div class="tpbox"><select class="tpsel" data-tp="${p.pool}" data-sym="${esc(p.symbol)}" title="Close semua slice + jual token saat PnL ladder ≥ target. Dicek server tiap ${state.pf.autoExitCheckMin || 2} menit selama RH Terminal jalan.">${opts}</select>${st}</div>`;
