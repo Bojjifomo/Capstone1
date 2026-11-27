@@ -215,6 +215,11 @@ function rowsView() {
   return rows;
 }
 
+// RPCs refused / blocked on this network: say what to do instead of only the raw error.
+const rpcHint = err => /refused|HTTP 403|nodename|getaddrinfo|Name or service/i.test(String(err || ""))
+  ? " — RPC diblokir jaringan ini (biasanya DNS provider internet). Ganti DNS Mac ke 1.1.1.1 / 8.8.8.8, atau jalanin `python3 -m rh_terminal doctor` buat lihat RPC mana yang bisa."
+  : "";
+
 // ---------- render: top ----------
 function renderTop() {
   const d = state.data;
@@ -225,9 +230,9 @@ function renderTop() {
     const chip = $("#idxChip");
     chip.textContent = `⛓ ${ix.pools || 0} pool · ${(ix.coverageHours || 0).toFixed(1)}h`;
     chip.classList.toggle("err", !!ix.error);
-    chip.title = ix.error ? `Index error: ${ix.error}` : `Index swap: ${ix.pools} pool USDG/ETH yang trading, histori ${ix.coverageHours} jam, block ${ix.head || "?"}. Klik = refresh.`;
+    chip.title = ix.error ? `Index error: ${ix.error}${rpcHint(ix.error)}` : `Index swap: ${ix.pools} pool USDG/ETH yang trading, histori ${ix.coverageHours} jam, block ${ix.head || "?"}. Klik = refresh.`;
     $("#idxLine").textContent = `Index swap dari chain: ${ix.pools || 0} pool aktif · histori ${(ix.coverageHours || 0).toFixed(1)} jam (makin lama server nyala, makin lengkap sampai 24 jam) · `
-      + `poll terakhir ${ix.lastPoll ? Math.round(Date.now() / 1000 - ix.lastPoll) + " detik lalu" : "--"}${ix.error ? " · error: " + ix.error : ""}`;
+      + `poll terakhir ${ix.lastPoll ? Math.round(Date.now() / 1000 - ix.lastPoll) + " detik lalu" : "--"}${ix.error ? " · error: " + ix.error + rpcHint(ix.error) : ""}`;
   }
   const pf = state.pf;
   if (pf && !pf.error) {
@@ -354,23 +359,29 @@ function renderDetail(r, keepChart) {
 // ---------- trading ----------
 const trade = {
   info: null, pin: null,
-  ready() { return !!(this.info && this.info.enabled && (this.info.local || this.info.pin)); },
+  ready() { return !!(this.info && this.info.enabled && (this.info.local || this.info.trusted || this.info.pin)); },
   why() {
     const t = this.info || {};
     if (!t.enabled) return t.error ? `Key error: ${t.error}` : "Read-only: isi RH_PRIVATE_KEY di rh_terminal/.env (atau RH Secrets di iCloud)";
     if (!t.local && !t.pin) return "Trading cuma dari Mac yang jalanin server (atau set RH_WEB_PIN buat dari HP)";
     return "";
   },
-  async call(url, body) {
-    if (this.info && this.info.pin && !this.info.local && !this.pin) {
-      const p = prompt("PIN trading (RH_WEB_PIN):");
-      if (!p) throw new Error("dibatalin");
-      this.pin = p;
-    }
+  askPin(msg) {
+    const p = prompt(msg || "PIN trading (RH_WEB_PIN di .env Mac mini):");
+    if (!p) throw new Error("dibatalin");
+    this.pin = p.trim();
+  },
+  async call(url, body, retried) {
+    if (this.info && this.info.pin && !this.info.local && !this.info.trusted && !this.pin) this.askPin();
     try {
       return await getJson(url, { method: "POST", headers: { "Content-Type": "application/json", "X-RH-Trade": "1" },
         body: JSON.stringify(Object.assign({}, body, { pin: this.pin })) }, 900000);
     } catch (e) {
+      // the server wants a PIN this page did not ask for (or the one typed was wrong): ask, try once more
+      if (/PIN salah/.test(e.message) && !retried) {
+        this.askPin(this.pin ? "PIN salah, ketik lagi (RH_WEB_PIN di .env Mac mini):" : undefined);
+        return this.call(url, body, true);
+      }
       if (/PIN/.test(e.message)) this.pin = null;
       throw e;
     }
@@ -385,7 +396,7 @@ function paintWallet() {
   $("#practiceChip").classList.toggle("hidden", !practice());
 }
 const post = (url, body) => getJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}`).join("<br>");
+const stepsHtml = s => (s.steps || []).map(x => `${x.step || x.label || "tx"}: ${x.hash ? "✓ " + txLink(x.hash) : x.simulated ? "✓ simulasi lolos" : x.failed ? `<span class="neg">gagal, ${esc(x.failed)}</span>` : x.skipped ? "dilewati, " + esc(x.skipped) : x.note ? esc(x.note) : x.needed ? "perlu approve" : x.received != null ? "✓" : "–"}${x.hash && x.note ? " · " + esc(x.note) : ""}${(x.positions || []).length ? " · posisi #" + x.positions.join(", #") : ""}`).join("<br>");
 const practiceNote = s => s.practice || s.dryRun ? `<br><span class="warn">PRACTICE MODE: cuma simulasi, nggak ada yang dikirim.</span>${s.note ? " " + esc(s.note) : ""}` : "";
 
 function openZap(r, size) {
@@ -488,7 +499,8 @@ async function act(p, btn, url, body, confirmMsg, okText) {
   const out = cell.querySelector("[data-r]");
   try {
     const s = await trade.call(url, body);
-    out.innerHTML = s.ok ? `${s.hash ? "✓ " + txLink(s.hash) : stepsHtml(s) || "✓"} ${okText(s)}${practiceNote(s)}` : `<span class="neg">✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}</span>`;
+    out.innerHTML = s.ok ? `${s.hash ? "✓ " + txLink(s.hash) : stepsHtml(s) || "✓"} ${okText(s)}${practiceNote(s)}`
+      : `${stepsHtml(s) ? stepsHtml(s) + "<br>" : ""}<span class="neg">✗ ${esc(s.step || "")} ${esc(s.error || "gagal")}</span>`;
     if (s.ok && !s.dryRun) setTimeout(() => loadPortfolio(true), 4000);
   } catch (e) { out.innerHTML = `<span class="neg">✗ ${esc(e.message || e)}</span>`; }
   finally { btn.disabled = false; }
@@ -524,6 +536,7 @@ function autoExitCell(p) {
   let st = "";
   if (a && a.status === "armed") st = `<span class="tp on">🎯 nyala · close+swap di +${a.pct}%${p.pnlPct != null ? ` (kurang ${(a.pct - p.pnlPct).toFixed(2)}%)` : ""}</span>`;
   else if (a && a.status === "firing") st = `<span class="tp warn">⏳ lagi close + swap…</span>`;
+  else if (a && a.status === "selling") st = `<span class="tp warn">🔁 ${esc(a.msg || "token belum kejual, dicoba lagi tiap cek")}</span>`;
   else if (a && a.status === "done") st = `<span class="tp pos">✓ auto exit: ${esc(a.msg || "")}</span>`;
   else if (a && a.status === "failed") st = `<span class="tp neg">✗ auto exit gagal: ${esc(a.msg || "")}</span>`;
   return `<div class="tpbox"><select class="tpsel" data-tp="${p.pool}" data-sym="${esc(p.symbol)}" title="Close semua slice + jual token saat PnL ladder ≥ target. Dicek server tiap ${state.pf.autoExitCheckMin || 2} menit selama RH Terminal jalan.">${opts}</select>${st}</div>`;
@@ -564,14 +577,15 @@ function rangeStrip(p) {
 function renderPortfolio() {
   const pf = state.pf;
   if (!pf) return;
-  if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error; $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
+  if (pf.error) { $("#pfEmpty").classList.remove("hidden"); $("#pfEmpty").textContent = "Gagal baca: " + pf.error + rpcHint(pf.error); $("#positions tbody").innerHTML = ""; $("#pfCards").innerHTML = ""; return; }
   const pnlPct = pf.depositUsd ? pf.pnlUsd / pf.depositUsd * 100 : null, b = pf.balances || {};
   $("#pfSummary").innerHTML = `<span>nilai <b>${mU(pf.valueUsd)}</b></span>
     <span>fees unclaimed <b class="pos">${mU(pf.feesUsd)}</b></span>
     <span>PnL <b class="big ${cls(pf.pnlUsd)}">${pf.pnlUsd > 0 ? "+" : ""}${mU(pf.pnlUsd)}</b> <span class="${cls(pnlPct)}">${fmtPct(pnlPct, 2, true)}</span></span>
     <span>deposit <b>${mU(pf.depositUsd)}</b></span>
     <span>wallet <b>${b.usdg != null ? b.usdg.toFixed(2) : "--"} USDG · ${b.eth != null ? fmtEth(b.eth) : "--"}</b></span>
-    <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>`;
+    <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>
+    ${pf.note ? `<span class="warn">⏳ ${esc(pf.note)}</span>` : ""}`;
   $("#pfEmpty").classList.toggle("hidden", pf.rows.length > 0);
   if (!pf.rows.length) $("#pfEmpty").textContent = "Nggak ada posisi Uniswap V4 terbuka di wallet ini.";
   const cards = [];
@@ -768,7 +782,7 @@ $("#keyBtn").onclick = async () => {
   try { state.cfg = await getJson("/api/config"); trade.info = state.cfg && state.cfg.trade; paintWallet(); } catch (e) {}
   if (trade.ready()) {
     $("#wallet").value = trade.info.wallet;
-    return alert(`Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (RH_WEB_PIN)." : "\nTrading cuma dari Mac ini."}${practice() ? "\n\nPRACTICE MODE nyala: semua tombol cuma simulasi." : ""}`);
+    return alert(`Trading wallet: ${trade.info.wallet}${trade.info.pin ? "\nPIN aktif (RH_WEB_PIN) buat device lain." : "\nTanpa PIN: Mac ini, Wi-Fi rumah, dan Tailscale."}${practice() ? "\n\nPRACTICE MODE nyala: semua tombol cuma simulasi." : ""}`);
   }
   const chk = (trade.info && trade.info.envCheck) || [];
   alert(trade.why() + (chk.length ? "\n\nCek:\n• " + chk.join("\n• ") : "")
@@ -806,9 +820,9 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#win button").forEach(x => x.classList.toggle("on", x.dataset.w === state.win));
   state.sort = store.get("sort", state.sort);
   const f = store.get("filters", null);
-  if (f) { $("#hideSkip").checked = f.skip !== false; $("#quote").value = f.quote || ""; }
+  if (f) $("#hideSkip").checked = f.skip !== false;   // quote filter gone: the server lists USDG pools only
   $("#tvl").value = store.get("tvl", "2000");
-  state.unit = store.get("unit", "usd");
+  state.unit = "usd";   // USDG only: everything reads in dollars
   document.querySelectorAll("#unit button").forEach(b => b.classList.toggle("on", b.dataset.u === state.unit));
   state.mode = store.get("mode", "all");
   document.querySelectorAll("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === state.mode));
@@ -819,6 +833,8 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   const pools = loadPools();
   try { state.cfg = await getJson("/api/config"); } catch (e) {}
   trade.info = state.cfg && state.cfg.trade;
+  const v = state.cfg && state.cfg.version;
+  if (v && v.commit) { $("#ver").textContent = v.commit; $("#ver").title = `versi ${v.commit} · ${v.date} · branch ${v.branch}`; }
   paintWallet();
   $("#wallet").value = (trade.info && trade.info.wallet) || store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
   try { setView(store.get("view", "pools")); } catch (e) { setView("pools"); }

@@ -3,6 +3,16 @@
 # Biarin jendela Terminal ini kebuka selama dipakai. caffeinate = Mac nggak sleep.
 # Dari HP / MacBook lewat Tailscale: http://<nama-mac>:<port>  (port = RH_WEB_PORT di .env, default 8892)
 cd "$(dirname "$0")/.." || exit 1
+echo "Folder: $(pwd)"
+# Selalu ambil versi terbaru dari branch yang lagi dipakai (cuma fast-forward: perubahan lokal nggak ditimpa).
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+  BR=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  if git fetch -q origin "$BR" 2>/dev/null && git merge -q --ff-only FETCH_HEAD 2>/dev/null; then
+    echo "Update: $(git log -1 --format='%h %cs') (branch $BR)"
+  else
+    echo "⚠ Update otomatis gagal (offline, atau ada perubahan lokal). Jalan pakai versi $(git log -1 --format='%h %cs') branch $BR."
+  fi
+fi
 # First run: make rh_terminal/.env from the template and open it in TextEdit.
 if [ ! -f rh_terminal/.env ]; then
   cp rh_terminal/.env.example rh_terminal/.env
@@ -27,10 +37,17 @@ PID=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
 if [ -n "$PID" ]; then
   CMD=$(ps -p "$PID" -o command= 2>/dev/null)
   if echo "$CMD" | grep -q "rh_terminal web"; then
-    echo "RH Terminal udah jalan di $URL (jendela Terminal lain). Buka browser aja."
-    open "$URL"
-    exit 0
+    # A server that is already running keeps the code it started with: stop it so this one
+    # (just updated) takes over. Auto exit picks up again from data/auto_exit.json.
+    OLD=$(lsof -a -p "$PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    echo "Server lama masih jalan (folder: ${OLD:-?}, pid $PID): dimatiin, diganti versi ini…"
+    kill "$PID" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1 || break; sleep 1; done
+    if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then kill -9 "$PID" 2>/dev/null; sleep 1; fi
+    PID=""
   fi
+fi
+if [ -n "$PID" ]; then
   echo ""
   echo "Port $PORT kepake app lain: $CMD"
   echo "Ganti port: buka rh_terminal/.env, isi misalnya RH_WEB_PORT=8894, save, lalu double-click file ini lagi."

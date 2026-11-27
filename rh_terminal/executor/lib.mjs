@@ -25,7 +25,10 @@ export const ZERO = ethers.ZeroAddress;
 export const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
 export const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
 const QUOTE_RANK = { [USDG]: 2, [ZERO]: 1, [WETH]: 1 };
-export const PUBLIC_RPCS = ["https://rpc.mainnet.chain.robinhood.com", "https://robinhood-rpc.publicnode.com"];
+// The chain's own node and PublicNode first; Daybreak and dRPC for networks that block those two
+// (seen behind Indonesian ISPs: connection refused / HTTP 403).
+export const PUBLIC_RPCS = ["https://rpc.mainnet.chain.robinhood.com", "https://robinhood-rpc.publicnode.com",
+  "https://robinhood.daybreak-rpc.network", "https://robinhood.drpc.org"];
 
 export const ACT = { DECREASE: 0x01, MINT: 0x02, BURN: 0x03, SWAP_EXACT_IN_SINGLE: 0x06, SETTLE_ALL: 0x0c,
   SETTLE_PAIR: 0x0d, TAKE_ALL: 0x0f, TAKE_PAIR: 0x11, CLOSE_CURRENCY: 0x12, SWEEP: 0x14 };
@@ -77,22 +80,32 @@ function counted(url) {
   req.preflightFunc = async r => { stats.calls++; stats.byHost[host] = (stats.byHost[host] || 0) + 1; return r; };
   return new ethers.JsonRpcProvider(req, Number(CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
 }
-export function tradeUrl() {
+export function keyedUrl() {
   const custom = (process.env.RH_RPC_URL || "").trim();
   if (custom) return custom;
   const k = (process.env.ALCHEMY_API_KEY || "").trim();
   if (/^[A-Za-z0-9_-]+$/.test(k)) return `https://robinhood-mainnet.g.alchemy.com/v2/${k}`;
-  return PUBLIC_RPCS[0];
+  return null;
 }
-// Reads: the public node first, the keyed one if it fails. Sends: the keyed one (Alchemy estimates
-// gas reliably; the public node is the fallback when no key is set).
+export const tradeUrl = () => keyedUrl() || PUBLIC_RPCS[0];
+// Reads: the public nodes in turn, the keyed one last. Sends: the keyed one (Alchemy estimates gas
+// reliably); without a key, the first public node that answers.
 export const readProvider = () => counted(PUBLIC_RPCS[0]);
-export const tradeProvider = () => counted(tradeUrl());
-export async function withRead(fn) {
-  try { return await fn(readProvider()); } catch (e) {
-    if (tradeUrl() === PUBLIC_RPCS[0]) return await fn(counted(PUBLIC_RPCS[1]));
-    return await fn(tradeProvider());
+let _tradeUrl = null;
+export function tradeProvider() { return counted(_tradeUrl || tradeUrl()); }
+export async function pickTradeProvider() {
+  if (keyedUrl()) return tradeProvider();
+  for (const u of PUBLIC_RPCS) {
+    try { await counted(u).getBlockNumber(); _tradeUrl = u; return counted(u); } catch (e) {}
   }
+  return tradeProvider();
+}
+export async function withRead(fn) {
+  let last;
+  for (const u of [...PUBLIC_RPCS, keyedUrl()].filter(Boolean)) {
+    try { return await fn(counted(u)); } catch (e) { last = e; if (e && /revert|CALL_EXCEPTION/i.test(String(e.code || e.message))) throw e; }
+  }
+  throw last;
 }
 
 // ------------------------------------------------------------------ key ----
@@ -236,8 +249,11 @@ export function closeCalldata(positions, recipient, dl, claimOnly = false) {
 export function swapCalldata(key, zeroForOne, amountIn, minOut, dl) {
   const cin = zeroForOne ? key.currency0 : key.currency1, cout = zeroForOne ? key.currency1 : key.currency0;
   const params = [
-    enc(["tuple(" + KEY + " poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,bytes hookData)"],
-      [[keyTuple(key), zeroForOne, amountIn, minOut, "0x"]]),
+    // The router on Robinhood Chain takes the newer ExactInputSingleParams: one uint256 between
+    // amountOutMinimum and hookData (0 in every mined swap). The old 5-field layout decodes into
+    // garbage there: it happened to pass for most pools and reverts for others (FOBO).
+    enc(["tuple(" + KEY + " poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData)"],
+      [[keyTuple(key), zeroForOne, amountIn, minOut, 0n, "0x"]]),
     enc(["address", "uint256"], [cin, amountIn]),
     enc(["address", "uint256"], [cout, minOut]),
   ];
@@ -267,20 +283,73 @@ export async function approvalTxs(provider, owner, token, spender, amount) {
 
 // ------------------------------------------------------------------ send ----
 // simulate (eth_call) -> estimate x1.3 -> sign + send -> wait. Throws before signing if it would revert.
-export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from } = {}) {
-  const provider = signer ? signer.provider : tradeProvider();
+const _nextNonce = {};   // per sender: a node that lags one block behind must not hand back a used nonce
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// retries: how many more times to re-simulate when the call reverts. For a tx that depends on the one
+// just mined (re-open right after close): a load-balanced RPC can answer from a node a block behind.
+export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from, retries = 0 } = {}) {
+  const provider = signer ? signer.provider : await pickTradeProvider();
   const sender = from || (signer && signer.address);
-  try {
-    await provider.call({ from: sender, to, data, value });
-  } catch (e) {
-    throw new Error(`${label}: would revert, not sent (${String(e.shortMessage || e.reason || e.message).slice(0, 160)})`);
+  for (let i = 0; ; i++) {
+    try {
+      await provider.call({ from: sender, to, data, value });
+      break;
+    } catch (e) {
+      if (i < retries) { await sleep(3000); continue; }
+      throw new Error(`${label}: would revert, not sent (${String(e.shortMessage || e.reason || e.message).slice(0, 160)})`);
+    }
   }
   if (dryRun) return { label, simulated: true };
   const gas = (await provider.estimateGas({ from: sender, to, data, value })) * 13n / 10n;
-  const tx = await signer.sendTransaction({ to, data, value, gasLimit: gas, chainId: CHAIN_ID });
+  const who = sender.toLowerCase();
+  const pending = await provider.getTransactionCount(sender, "pending");
+  const nonce = Math.max(pending, _nextNonce[who] || 0);
+  const tx = await signer.sendTransaction({ to, data, value, gasLimit: gas, chainId: CHAIN_ID, nonce });
+  _nextNonce[who] = nonce + 1;
   const rc = await tx.wait(1, 180_000);
   if (!rc || rc.status !== 1) throw new Error(`${label}: reverted on chain ${tx.hash}`);
-  return { label, hash: tx.hash, gasUsed: rc.gasUsed, fee: rc.gasUsed * (rc.gasPrice || 0n), logs: rc.logs };
+  return { label, hash: tx.hash, gasUsed: rc.gasUsed, fee: rc.gasUsed * (rc.gasPrice || 0n), logs: rc.logs, block: rc.blockNumber };
+}
+
+// What `owner` received in one receipt, per ERC-20 (Transfer logs to owner minus from owner).
+// Read from the receipt itself, so it never depends on a balance read from a node that lags.
+const TRANSFER = ethers.id("Transfer(address,address,uint256)");
+export function receivedFromLogs(logs, owner, tokens) {
+  const me = owner.toLowerCase(), out = {};
+  for (const t of tokens) if (t !== ZERO) out[t] = 0n;
+  for (const l of logs || []) {
+    const t = l.address.toLowerCase();
+    if (!(t in out) || l.topics[0] !== TRANSFER || l.topics.length < 3) continue;
+    const from = ("0x" + l.topics[1].slice(26)).toLowerCase(), to = ("0x" + l.topics[2].slice(26)).toLowerCase();
+    const v = BigInt(l.data);
+    if (to === me) out[t] += v;
+    if (from === me) out[t] -= v;
+  }
+  return out;
+}
+
+// Native ETH balance change across one block: balance at the block minus the block before.
+export async function ethDeltaAt(provider, owner, block) {
+  const [a, b] = await Promise.all([provider.getBalance(owner, block - 1), provider.getBalance(owner, block)]);
+  return b - a;
+}
+
+// Wait until a node shows at least `need` of `token` in the wallet (the block that paid it is mined,
+// but the RPC may answer from a node a few blocks behind). Returns the balance it saw last.
+export async function waitForBalance(provider, token, owner, need, timeoutMs = 30000) {
+  const end = Date.now() + timeoutMs;
+  let bal = await balanceOf(provider, token, owner);
+  while (bal < need && Date.now() < end) { await sleep(2000); bal = await balanceOf(provider, token, owner); }
+  return bal;
+}
+
+// Token amounts a position holds at the pool's current price (fees not included).
+export function positionAmounts(p, sqrtPriceX96) {
+  const L = Number(p.liquidity);
+  const sp = Number(sqrtPriceX96) / 2 ** 96, sa = sqrtAt(p.tickLower), sb = sqrtAt(p.tickUpper);
+  const c = Math.min(Math.max(sp, sa), sb);
+  return { amount0: BigInt(Math.floor(L * (1 / c - 1 / sb))), amount1: BigInt(Math.floor(L * (c - sa))) };
 }
 
 // Position NFT ids minted to `owner` in a receipt (Transfer from 0x0).

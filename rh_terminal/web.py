@@ -6,15 +6,18 @@ watchlist, ladder zap, and your wallet's ladders with exits, close, claim, re-en
 
 Trading: the key in .env (RH_PRIVATE_KEY) or in RH Secrets (iCloud Scriptable) stays in the Node
 executor; the browser only sees the address. Who may trade:
-  * without RH_WEB_PIN: only a browser on this Mac (127.0.0.1)
-  * with RH_WEB_PIN: any device that reaches the page, with the PIN
+  * only this Mac and Tailscale devices reach the page at all (plain Wi-Fi: RH_WEB_ALLOW_LAN=true)
+  * without RH_WEB_PIN: all of those trade, no PIN
+  * with RH_WEB_PIN: this Mac without it, every other device with the PIN
 Trade requests also need the X-RH-Trade header, which another website open in your browser
 cannot add without a CORS preflight this server never answers.
 RH_PRACTICE_MODE=true: every button only simulates (eth_call), nothing is sent.
 """
 from __future__ import annotations
 
+import gzip
 import hmac
+import ipaddress
 import json
 import os
 import sys
@@ -30,6 +33,23 @@ from . import chain, filters, node, pools, portfolio, settings
 from .cli import DATA, append, env_report, load_config, load_env, make_index, notify, practice_mode
 
 STATIC = Path(__file__).resolve().parent / "web"
+
+
+def code_version() -> dict:
+    """The commit this server runs, so the page can say when it is not the latest one pulled."""
+    import subprocess
+    root = Path(__file__).resolve().parent
+    try:
+        out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%h %cs"], capture_output=True,
+                             text=True, timeout=5).stdout.split()
+        br = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
+                            text=True, timeout=5).stdout.strip()
+        return {"commit": out[0], "date": out[1], "branch": br} if len(out) == 2 else {}
+    except Exception:
+        return {}
+
+
+VERSION = code_version()
 POOL_TTL = 30
 PF_TTL = 30
 
@@ -103,8 +123,43 @@ def pool_rows(force: bool = False) -> dict:
 _ping_sent: dict = {}
 
 
+_blast_at = {"t": 0.0}
+
+
+def _fmt_usd(v) -> str:
+    if v is None:
+        return "?"
+    return f"${v / 1e6:.2f}M" if v >= 1e6 else f"${v / 1e3:.1f}k" if v >= 1e3 else f"${v:.0f}"
+
+
+def blast_text(data: dict) -> str | None:
+    """DLMM-style top-N card: one block per PING pool, best first."""
+    rows = {r["pool"]: r for r in data["rows"]}
+    ping = [rows[x["pool"]] for x in data["ping"].get("rows") or [] if x["pool"] in rows]
+    if not ping:
+        return None
+    out = [f"📡 RH TOP {len(ping)} USDG POOLS · {datetime.now():%H:%M}", f"filter: {data['ping'].get('filter', '')}", ""]
+    for n, r in enumerate(ping, 1):
+        c1 = (r.get("chg") or {}).get("1h")
+        vm = r.get("volMcap24h")
+        out += [f"{n}. {r['symbol']} · fee {r['lpFeePct']}% · {r['verdict']['level']}",
+                f"   🧹 {r.get('feePace24h') or 0:.1f}%/hari · 💰 fee 1j {_fmt_usd(r['fees'].get('1h'))} · 📊 TVL {_fmt_usd(r['tvlUsd'])}",
+                f"   📌 mcap {_fmt_usd(r['mcapUsd'])} · 🥩 vol/mcap {vm if vm is not None else '?'}x · ⏳ 1j {c1 if c1 is not None else '?'}% · ⏰ {r['ageHours'] or 0:.0f}j",
+                f"   https://dexscreener.com/robinhood/{r['pool']}"]
+    return "\n".join(out)
+
+
 def _ping_notify(data: dict) -> None:
-    """Telegram (if set) when a pool newly enters PING; once per pool per 6 hours."""
+    """Telegram (if set). ping.mode new: once per pool per 6 hours when it newly enters PING.
+    blast: the whole top N every ping.blastEveryMin minutes (DLMM's card)."""
+    p = Handler.cfg.get("ping") or {}
+    if p.get("mode") == "blast":
+        if time.time() - _blast_at["t"] >= float(p.get("blastEveryMin") or 30) * 60:
+            txt = blast_text(data)
+            if txt:
+                _blast_at["t"] = time.time()
+                notify(txt)
+        return
     rows = {r["pool"]: r for r in data["rows"]}
     for p in data["ping"].get("new") or []:
         if time.time() - _ping_sent.get(p, 0) < 6 * 3600 or p not in rows:
@@ -165,7 +220,48 @@ def auto_set(pool: str, symbol: str, pct: float | None) -> dict:
         return d
 
 
+SELL_TRIES = 6
+
+
+def _retry_sells(cfg: dict, wallet: str) -> None:
+    """A ladder the auto exit closed but whose token did not sell (pool too thin, price moved, RPC):
+    try the sale again on every check, up to SELL_TRIES times, then leave it for Cleanup. (DLMM)"""
+    with _auto_lock:
+        todo = {k: v for k, v in auto_load().items() if v.get("status") == "selling" and v.get("leftover")}
+    for pool, a in todo.items():
+        left = a["leftover"]
+        args = ["--pool", left.get("pool") or pool, "--amount", str(left["amount"]), "--cap-balance",
+                "--maxloss", str(cfg["trade"]["maxLossPct"])]
+        if practice_mode():
+            args += ["--dry-run", "--owner", wallet]
+        res = node.run("swap.mjs", args, timeout=300)
+        tries = int(a.get("sellTries") or 0) + 1
+        ok = bool(res.get("ok"))
+        with _auto_lock:
+            d = auto_load()
+            if pool not in d:
+                continue
+            if ok and res.get("left") and int(res["left"]) > 0 and tries < SELL_TRIES:
+                d[pool].update(leftover={**left, "amount": str(res["left"])}, sellTries=tries,
+                               msg=f"closed, sebagian token kejual, sisa dicoba lagi ({tries}/{SELL_TRIES})")
+            elif ok:
+                got = "token dijual" if res.get("hash") else "token udah nggak ada di wallet"
+                d[pool].update(status="done", msg=f"closed · {got} (percobaan {tries})", sellTries=tries)
+            elif tries >= SELL_TRIES:
+                d[pool].update(status="failed", sellTries=tries,
+                               msg=f"closed, token gagal dijual {tries}x: {(res.get('error') or '')[:120]}. Pakai Cleanup.")
+            else:
+                d[pool].update(sellTries=tries, msg=f"closed, token belum kejual (coba {tries}/{SELL_TRIES}): {(res.get('error') or '')[:100]}")
+            _jsave("auto_exit.json", d)
+            status, msg = d[pool]["status"], d[pool]["msg"]
+        if status != "selling":
+            append("closes.jsonl", {"ts": _now_iso(), "source": "auto-exit-sell", "pool": pool, "symbol": a.get("symbol"),
+                                    "tries": tries, **{k: res.get(k) for k in ("ok", "error", "hash", "practice")}})
+            notify(f"{'✅' if status == 'done' else '❌'} AUTO EXIT {a.get('symbol')}: {msg}")
+
+
 def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
+    _retry_sells(cfg, wallet)
     with _auto_lock:
         armed = {k: v for k, v in auto_load().items() if v.get("status") == "armed"}
     if not armed:
@@ -197,17 +293,49 @@ def auto_exit_once(cfg: dict, wallet: str) -> list[dict]:
             args += ["--dry-run", "--owner", wallet]
         res = node.run("reenter.mjs", args, timeout=900)
         ok = bool(res.get("ok"))
-        msg = ("simulasi (practice mode)" if res.get("dryRun") else "closed + swapped") if ok else f"{res.get('step') or ''} {res.get('error') or 'gagal'}"
+        left = res.get("leftover")
+        if ok:
+            msg = "simulasi (practice mode)" if res.get("dryRun") else exit_summary(res)
+        elif left:
+            msg = f"closed, token belum kejual ({(res.get('saleError') or 'sebagian sisa')[:120]}): dicoba jual lagi tiap cek"
+        else:
+            msg = f"{exit_summary(res)} · gagal di {res.get('step') or '?'}: {res.get('error') or 'gagal'}"
         with _auto_lock:
             d = auto_load()
             if pool in d:
-                d[pool].update(status="done" if ok else "failed", msg=msg[:200], firedAt=time.time())
+                d[pool].update(status="done" if ok else "selling" if left else "failed", msg=msg[:220], firedAt=time.time(),
+                               **({"leftover": {k: str(v) for k, v in left.items()}, "sellTries": 0} if left else {}))
                 _jsave("auto_exit.json", d)
         append("closes.jsonl", {"ts": _now_iso(), "source": "auto-exit", "pool": pool, "symbol": g["symbol"], "ids": ids,
                                 "rule": f"takeProfit {a['pct']:g}%", "pnlPct": g["pnlPct"], "ok": ok, "error": res.get("error")})
         notify(f"{'✅' if ok else '❌'} AUTO EXIT {g['symbol']}: {msg}")
         fired.append({"pool": pool, "ok": ok, "msg": msg})
     return fired
+
+
+def exit_summary(res: dict) -> str:
+    """One line per step of a close+swap for Telegram / the ladder row: what was sold, what stayed."""
+    parts = []
+    for s in res.get("steps") or []:
+        st = s.get("step") or s.get("label") or "tx"
+        if s.get("skipped"):
+            parts.append(f"{st}: dilewati ({s['skipped']})")
+        elif s.get("failed"):
+            parts.append(f"{st}: gagal ({s['failed'][:80]})")
+        elif s.get("hash"):
+            parts.append(f"{st} ✓" + (f" ({s['note']})" if s.get("note") else ""))
+    return " · ".join(parts) or "closed"
+
+
+def _pool_loop(cfg: dict) -> None:
+    """Keep the pool table (and with it PING / blast to Telegram) fresh with no browser open."""
+    time.sleep(90)                       # let the swap index read its first hour
+    while True:
+        try:
+            pool_rows(force=True)
+        except Exception as exc:
+            print(f"[pools] {exc}", file=sys.stderr, flush=True)
+        time.sleep(max(1, float(cfg["web"].get("refreshMin", 2))) * 60)
 
 
 def _auto_loop(cfg: dict) -> None:
@@ -248,19 +376,60 @@ def cleanup_list(wallet: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------- handler ----
+_TAILSCALE = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+def lan_allowed() -> bool:
+    return os.environ.get("RH_WEB_ALLOW_LAN", "").strip().lower() in ("1", "true", "yes")
+
+
+def is_allowed_address(addr: str) -> bool:
+    """This Mac or a Tailscale device. Plain Wi-Fi / LAN only with RH_WEB_ALLOW_LAN=true; never public IPs."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or any(ip.version == n.version and ip in n for n in _TAILSCALE):
+        return True
+    return lan_allowed() and ip.is_private and not ip.is_global
+
+_REFUSED_PAGE = ("RH Terminal cuma bisa dibuka dari Mac ini atau lewat Tailscale.\n"
+                 "Nyalain Tailscale di device ini, lalu buka http://<nama-mac>:8892\n").encode()
+
+
+class ClientGone(Exception):
+    """The browser closed the connection (tab closed, phone locked, refresh) before the answer was sent."""
+
+
 class Handler(BaseHTTPRequestHandler):
     cfg: dict = {}
 
     def log_message(self, fmt, *a):
         pass
 
+    def handle(self):
+        try:
+            super().handle()
+        except ClientGone:
+            pass                    # nothing to answer; not an error worth a traceback
+
     def _send(self, code: int, body: bytes, ctype: str):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        gz = len(body) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:
+            body = gzip.compress(body, 5)   # /api/pools is a few MB of JSON; phones over Tailscale feel it
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            if gz:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            raise ClientGone() from None
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, default=str).encode(), "application/json")
@@ -268,13 +437,30 @@ class Handler(BaseHTTPRequestHandler):
     def _is_local(self) -> bool:
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    def _is_allowed(self) -> bool:
+        return is_allowed_address(self.client_address[0])
+
+    def _refuse_outsider(self) -> bool:
+        if self._is_allowed():
+            return False
+        print(f"[{datetime.now():%H:%M:%S}] ditolak: {self.client_address[0]} (bukan Mac ini / Tailscale)",
+              file=sys.stderr, flush=True)
+        self._send(403, _REFUSED_PAGE, "text/plain; charset=utf-8")
+        return True
+
     def _trade_refused(self, body: dict) -> str | None:
         if self.headers.get("X-RH-Trade") != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
             return "missing trade header"
+        # The Mac running the server never needs the PIN. Without RH_WEB_PIN, Tailscale devices
+        # trade without one too; anything else never got past _refuse_outsider.
+        if not self._is_allowed():
+            return "cuma dari Mac ini atau Tailscale"
+        if self._is_local():
+            return None
         pin = os.environ.get("RH_WEB_PIN")
         if pin:
             return None if hmac.compare_digest(str(body.get("pin") or ""), pin) else "PIN salah"
-        return None if self._is_local() else "trading cuma dari Mac ini (set RH_WEB_PIN di .env buat dari HP)"
+        return None
 
     def reload_cfg(self) -> None:
         new = load_config()
@@ -284,6 +470,8 @@ class Handler(BaseHTTPRequestHandler):
             _cache.clear()
 
     def do_GET(self):
+        if self._refuse_outsider():
+            return
         u = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         try:
@@ -305,14 +493,17 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/config":
                 load_env(reload=True)                       # a key pasted into .env works without a restart
                 tw = node.trade_wallet() if not node.ready() else {"ok": False}
-                return self._json({"cfg": self.cfg, "executor": node.ready(), "index": STATE["book"].index_status(),
+                return self._json({"cfg": self.cfg, "version": VERSION, "executor": node.ready(), "index": STATE["book"].index_status(),
                                    "maxPositionUsd": filters.max_position_usd(self.cfg), "rpc": chain.STATS,
                                    "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("address"),
                                              "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
                                              "pin": bool(os.environ.get("RH_WEB_PIN")), "local": self._is_local(),
+                                             "trusted": self._is_local() or (not os.environ.get("RH_WEB_PIN") and self._is_allowed()),
                                              "practice": practice_mode(),
                                              "envCheck": None if tw.get("ok") or not self._is_local() else env_report()},
                                    "wallet": os.environ.get("RH_WALLET")})
+        except ClientGone:
+            raise
         except Exception as exc:
             print(f"[{datetime.now():%H:%M:%S}] {u.path} failed: {exc}", file=sys.stderr, flush=True)
             if "CERTIFICATE_VERIFY_FAILED" in str(exc):
@@ -339,6 +530,8 @@ class Handler(BaseHTTPRequestHandler):
         return res
 
     def do_POST(self):
+        if self._refuse_outsider():
+            return
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         except ValueError:
@@ -422,6 +615,8 @@ class Handler(BaseHTTPRequestHandler):
                 res = self._trade("cleanup.mjs", args, wallet, 900)
                 append("closes.jsonl", {"ts": _now_iso(), "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "tokens", "practice")}})
                 return self._json(res)
+        except ClientGone:
+            raise
         except (KeyError, ValueError) as exc:
             return self._json({"ok": False, "error": f"{exc}"}, 400)
         except Exception as exc:
@@ -437,9 +632,16 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8892) -> None:
     print("Index swap: baca chain (pertama kali ±15–30 detik buat 1 jam terakhir)…", flush=True)
     ix.start()
     threading.Thread(target=_auto_loop, args=(cfg,), daemon=True, name="auto-exit").start()
+    threading.Thread(target=_pool_loop, args=(cfg,), daemon=True, name="pool-refresh").start()
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"RH Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)
+    if VERSION:
+        print(f"  versi {VERSION['commit']} ({VERSION['date']}, branch {VERSION['branch']})", flush=True)
+    if host in ("127.0.0.1", "localhost", "::1"):
+        print("  ⚠ --host 127.0.0.1: iPhone / MacBook NGGAK bisa buka. Jalanin tanpa --host (atau --host 0.0.0.0).", flush=True)
+    else:
+        print(f"  iPhone / MacBook: Tailscale nyala, buka http://<nama-mac-di-Tailscale>:{port} atau http://100.x.y.z:{port}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

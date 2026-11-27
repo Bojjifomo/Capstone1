@@ -6,12 +6,13 @@ server di Mac, dibuka dari browser Mac dan HP (Tailscale), dengan semua utility-
 | Fitur | Isinya |
 | --- | --- |
 | **Pool dari chain langsung** | Index swap baca semua event Swap Uniswap V4 dari RPC publik Robinhood (±25 ribu swap/jam, 0 kuota Alchemy). **Semua** pool USDG / ETH yang lagi trading, nggak cuma top 200 GeckoTerminal. Fee LP persis dari chain (protocol fee udah dipotong), volume & fee per 5m / 1h / 6h / 24h. |
-| **ENTRY CHECK** | `OPEN / CAREFUL / WAIT / SKIP` + alasan ✓/✗: fee LP 0% (hook) / honeypot = SKIP, pool baru / TVL tipis / mcap kecil / fee pelan = WAIT, pump, dump, pool tipis, seller dominan, pool ber-hook = flag. Info: volume picking up, buyers lead. |
-| **📡 PING** | Top N pool (satu per token) yang lolos gate + band TVL / mcap / umur / fee 1 jam, urut fee 1 jam ÷ TVL. Dihitung tiap refresh, 0 request tambahan. Telegram + notif browser kalau ada yang baru masuk. |
+| **ENTRY CHECK** | `OPEN / CAREFUL / WAIT / SKIP` + alasan ✓/✗ (aturan DLMM Terminal, diadaptasi ke USDG): fee LP 0% (hook) / honeypot = SKIP · pool < 1 jam / TVL tipis / mcap kecil / fee 24h ÷ TVL < 2%/hari / **harga naik > +5% sejam (tunggu dip)** = WAIT · pump, dump, pool tipis, **pool < 6 jam**, **vol 24h ÷ mcap > 3x**, seller dominan, hook, kloningan = flag. ⚙ → **Preset filter**: `rh` (default, angka disesuaiin data pool RH) atau `dlmm` (angka DLMM Solana persis: fee ≥ 2.74%/hari, vol/mcap 0.3–3x, PING mcap $400K–$10M, umur ≤ 250j, vol ≥ $50K; di RH bikin PING hampir kosong). |
+| **📡 PING** | Top N pool (satu per token / simbol) yang lolos gate + band TVL, mcap ≥ $100K, volume 24h ≥ $10K, umur, fee 1 jam (preset `dlmm`: mcap $400K–$10M, umur ≤ 250j, vol ≥ $50K, urut **volMcapFit**). Telegram: `new` = per pool yang baru masuk, `blast` = kartu top N tiap 30 menit. Jalan terus di Mac walau browser ditutup. |
 | **★ WATCH, 🔎 search** | Watchlist disimpan di Mac (sama di HP). Search (Enter) nyari **semua** pool V4 USDG/ETH buat nama / CA / pool id, termasuk yang kecil. |
-| **⚡ Zap ladder** | Bentuk RH Pool: slice sama lebar dari `mulai` sampai `bottom` di bawah harga, isi 1:2:…:n, quote-only (USDG atau **ETH native**). Plan dihitung dari harga pool sekarang, cap loss budget, warning size vs TVL. Approve Permit2 otomatis kalau perlu. |
+| **🧬 Kloningan** | Token dengan simbol sama tapi kontrak beda (CLAUDIA, OMEN, dsb yang dibikin berulang): yang bukan paling tua ditandai CAREFUL dan dibuang dari PING. |
+| **⚡ Zap ladder** | Bentuk RH Pool: slice sama lebar dari `mulai` sampai `bottom` di bawah harga, isi 1:2:…:n, USDG-only (pool ETH disembunyiin; ⚙ Gate → Quote pool = `USDG+ETH` buat munculin lagi). Plan dihitung dari harga pool sekarang, cap loss budget, warning size vs TVL. Approve Permit2 otomatis kalau perlu. |
 | **💼 Portfolio** | Posisi wallet dibaca dari chain (NFT dari log Transfer, tanpa explorer): satu baris per ladder, PnL $ / %, fee unclaimed, strip range (mcap bawah ▮ atas, posisi harga, in range / di atas / di celah / lewat bawah), exit check. |
-| **Aksi** | **Close** (burn semua slice, satu tx) · **Claim** (fee aja) · **Close+swap** (close + jual token ke USDG/ETH, batal kalau > max loss di bawah harga pool) · **Re-entry** (close + jual + buka ladder baru di harga sekarang) · **Cleanup** (jual sisa token di wallet) · **🎯 auto exit** TP per ladder. |
+| **Aksi** | **Close** (burn semua slice, satu tx) · **Claim** (fee aja) · **Close+swap** (close + jual token ke USDG/ETH, batal kalau > max loss di bawah harga pool) · **Re-entry** (close + jual + buka ladder baru di harga sekarang) · **Cleanup** (jual sisa token di wallet) · **🎯 auto exit** TP per ladder: close + jual; kalau token gagal kejual, dicoba lagi tiap cek sampai 6x (🔁), sisanya buat Cleanup. Re-entry tetap buka ladder baru walau jual tokennya gagal. |
 | **⚙ Settings, $ / Ξ, PIN, practice** | Semua angka (ladder, risk, gate, flag, PING, exit) diubah dari web. Toggle dolar / ETH. PIN buat trading dari HP. `RH_PRACTICE_MODE=true` = semua tombol cuma simulasi. |
 
 ## Buka di Mac
@@ -29,8 +30,9 @@ server di Mac, dibuka dari browser Mac dan HP (Tailscale), dengan semua utility-
 4. Chip kanan atas jadi **🔑 0x…** kalau key kebaca, **🔒 read-only** kalau belum (klik buat lihat kenapa).
    Di Terminal: `python3 -m rh_terminal doctor` (nggak pernah nampilin key).
 
-Dari HP / MacBook lewat Tailscale: `http://<nama-mac>:8892`, Add to Home Screen. Buat trading dari
-sana, isi `RH_WEB_PIN=` di `.env`; tanpa PIN, trading cuma dari browser di Mac itu sendiri.
+Dari HP / MacBook lewat Tailscale: `http://<nama-mac>:8892`, Add to Home Screen. Yang bisa buka cuma
+Mac itu sendiri dan device di Tailscale; device yang cuma nyambung Wi-Fi rumah ditolak (kecuali
+`RH_WEB_ALLOW_LAN=true`). Tanpa PIN semuanya langsung bisa trading; mau dikunci, isi `RH_WEB_PIN=`.
 
 Pertama kali index swap baca 1 jam terakhir (±15–30 detik). Makin lama server nyala, makin panjang
 historinya (sampai 24 jam, disimpan di `data/activity.json`, jadi restart nggak hilang). Fee 6h / 24h

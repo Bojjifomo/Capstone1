@@ -54,8 +54,48 @@ def _ids_file(data: Path, wallet: str) -> Path:
     return data / f"ids_{wallet.lower()}.json"
 
 
-def position_ids(data: Path, wallet: str) -> tuple[list[int], dict]:
-    """Position NFTs the wallet holds now, and {id: mint block} for those minted to it."""
+SCAN_BATCH = 500          # ownerOf calls per multicall in the fallback scan
+SCAN_BUDGET_SEC = 40     # per refresh; a long history is finished over the next refreshes
+
+
+def _owner_scan(st: dict, w: str) -> str | None:
+    """Fallback when no reachable RPC can read wide log ranges (the chain's own node and
+    PublicNode blocked, only Alchemy / dRPC / Daybreak left): find the wallet's NFTs with
+    ownerOf, a plain eth_call any RPC serves. New ids since the last scan are checked every
+    refresh; older ones are walked downwards until balanceOf's count is found. Returns a note
+    for the page while the walk is unfinished."""
+    nxt = chain.to_int(chain.words(chain.eth_call(chain.POSITION_MANAGER, "0x75794a3c"))[0])
+    expected = chain.to_int(chain.words(chain.eth_call(chain.POSITION_MANAGER, chain.SEL["balanceOf"] + chain.addr_word(w)))[0])
+    sc = st.setdefault("scan", {"top": nxt - 1, "low": nxt})
+    t0 = time.time()
+
+    def check(lo: int, hi: int) -> None:          # ids lo..hi inclusive
+        ids = list(range(lo, hi + 1))
+        res = chain.multicall([(chain.POSITION_MANAGER, chain.SEL["ownerOf"] + chain.u256(i)) for i in ids], chunk=SCAN_BATCH)
+        for i, o in zip(ids, res):
+            if o and chain.word_addr(chain.words(o)[0]) == w:
+                st["ids"].setdefault(str(i), None)
+
+    a = sc["top"] + 1
+    while a < nxt and time.time() - t0 < SCAN_BUDGET_SEC:
+        b = min(nxt - 1, a + SCAN_BATCH * 4 - 1)
+        check(a, b)
+        sc["top"] = b
+        a = b + 1
+    owned = lambda: sum(1 for _ in st["ids"])
+    while owned() < expected and sc["low"] > 1 and time.time() - t0 < SCAN_BUDGET_SEC:
+        lo = max(1, sc["low"] - SCAN_BATCH * 4)
+        check(lo, sc["low"] - 1)
+        sc["low"] = lo
+    if owned() < expected and sc["low"] > 1:
+        return (f"Masih nyari posisi lama lewat ownerOf (RPC yang bisa baca log diblokir di jaringan ini): "
+                f"{owned()}/{expected} NFT ketemu, udah dicek sampai id {sc['low']:,}. Lanjut tiap refresh.")
+    return None
+
+
+def position_ids(data: Path, wallet: str) -> tuple[list[int], dict, str | None]:
+    """Position NFTs the wallet holds now, {id: mint block} for those minted to it (when known),
+    and a note when the search is still running."""
     w = wallet.lower()
     f = _ids_file(data, w)
     try:
@@ -65,21 +105,30 @@ def position_ids(data: Path, wallet: str) -> tuple[list[int], dict]:
     head = chain.block_number()
     topic_to = "0x" + chain.addr_word(w)
     start = st["scannedTo"] + 1
-    if start <= head:
-        logs = chain.get_logs(chain.POSITION_MANAGER, [chain.TOPIC["Transfer"], None, topic_to], start, head,
-                              chunk=10_000_000, pause=0.1)
-        for l in logs:
-            tid = int(l["topics"][3], 16)
-            minted = int(l["topics"][1], 16) == 0
-            cur = st["ids"].get(str(tid))
-            st["ids"][str(tid)] = int(l["blockNumber"], 16) if minted else (cur if cur is not None else None)
-        st["scannedTo"] = head
+    note = None
+    span = chain.max_log_span()
+    # Transfer logs to the wallet: a handful of requests when a wide-range endpoint is reachable.
+    # Without one, a full history would be tens of thousands of requests: scan ownerOf instead.
+    if start <= head and span and (head - start) / span <= 60:
+        try:
+            logs = chain.get_logs(chain.POSITION_MANAGER, [chain.TOPIC["Transfer"], None, topic_to], start, head,
+                                  chunk=10_000_000, pause=0.1)
+            for l in logs:
+                tid = int(l["topics"][3], 16)
+                minted = int(l["topics"][1], 16) == 0
+                cur = st["ids"].get(str(tid))
+                st["ids"][str(tid)] = int(l["blockNumber"], 16) if minted else (cur if cur is not None else None)
+            st["scannedTo"] = head
+        except chain.RpcError:
+            note = _owner_scan(st, w)
+    elif start <= head:
+        note = _owner_scan(st, w)
     ids = sorted(int(i) for i in st["ids"])
-    owners = chain.multicall([(chain.POSITION_MANAGER, chain.SEL["ownerOf"] + chain.u256(i)) for i in ids]) if ids else []
+    owners = chain.multicall([(chain.POSITION_MANAGER, chain.SEL["ownerOf"] + chain.u256(i)) for i in ids], chunk=SCAN_BATCH) if ids else []
     held = [i for i, o in zip(ids, owners) if o and chain.word_addr(chain.words(o)[0]) == w]
     data.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(st))
-    return held, {i: st["ids"].get(str(i)) for i in held}
+    return held, {i: st["ids"].get(str(i)) for i in held}, note
 
 
 def _block_times(data: Path, blocks: list[int]) -> dict[int, int]:
@@ -175,7 +224,7 @@ def exit_events(lad: dict, cfg: dict) -> list[dict]:
 def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
     now = time.time()
     with _lock:
-        ids, mint_blocks = position_ids(data, wallet)
+        ids, mint_blocks, note = position_ids(data, wallet)
     pos = read_positions(ids)
     pools = sorted({p["pool"] for p in pos})
     s0 = chain.slot0s(pools) if pools else {}
@@ -264,5 +313,5 @@ def portfolio(wallet: str, cfg: dict, data: Path, book) -> dict:
     bal = wallet_balances(wallet)
     return {"wallet": wallet.lower(), "t": now, "rows": rows, "ethUsd": eth, "valueUsd": tot("valueUsd"),
             "feesUsd": tot("feesUsd"), "depositUsd": tot("depositUsd"), "pnlUsd": tot("pnlUsd"),
-            "balances": bal, "exitsCfg": cfg["exits"],
+            "balances": bal, "exitsCfg": cfg["exits"], "note": note,
             "walletUsd": (bal["usdg"] or 0) + ((bal["eth"] or 0) + (bal["weth"] or 0)) * (eth or 0)}

@@ -12,12 +12,13 @@ from rh_terminal import activity, chain, filters, portfolio, settings
 from rh_terminal.cli import read_secrets
 
 CFG = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+DLMM_CFG = settings.apply(json.loads(json.dumps(CFG)), {"filterPreset": "dlmm"})
 
 
 def row(**kw):
     r = {"lpFeePct": 1.0, "ageHours": 30, "tvlUsd": 50_000, "mcapUsd": 2_000_000, "feePctDay": {"1h": 10, "24h": 8},
          "chg": {"1h": 2, "6h": -3}, "txns": {"h1": {"buys": 10, "sells": 10}, "h24": {"buys": 100, "sells": 100}},
-         "vol": {"1h": 1000, "24h": 24000}, "hooks": chain.ZERO}
+         "vol": {"1h": 100_000, "24h": 2_000_000}, "fees": {"1h": 200, "24h": 4000}, "hooks": chain.ZERO}
     r.update(kw)
     return r
 
@@ -102,10 +103,35 @@ class Verdict(unittest.TestCase):
     def test_unknown_tvl_waits(self):
         self.assertEqual(self.ev(row(tvlUsd=None))["level"], "WAIT")
 
-    def test_pump_is_careful(self):
-        v = self.ev(row(chg={"1h": 40, "6h": 10}))
+    def test_pump_waits_for_a_dip(self):
+        v = self.ev(row(chg={"1h": 8, "6h": 10}))
+        self.assertEqual(v["level"], "WAIT")
+        self.assertTrue(any(g.startswith("pump1h") for g in v["gatesFailed"]))
+
+    def test_pump_flag_when_gate_off(self):
+        cfg = json.loads(json.dumps(CFG)); cfg["gates"]["maxPriceChg1hPct"] = None
+        v = filters.evaluate(row(chg={"1h": 40, "6h": 10}), cfg, time.time())
         self.assertEqual(v["level"], "CAREFUL")
         self.assertIn("pump1h +40%", v["flags"])
+
+    def test_fee_pace_24h_young_pool(self):
+        # $500 of fees in a 12h-old pool with $10k TVL: 5% in 12h = 10%/day, not 5
+        self.assertAlmostEqual(filters.fee_pace_24h({"fees": {"24h": 500}, "tvlUsd": 10_000, "ageHours": 12}), 10)
+
+    def test_slow_fees_wait(self):
+        v = self.ev(row(fees={"24h": 500}))           # 1%/day < 2.74
+        self.assertEqual(v["level"], "WAIT")
+
+    def test_young_pool_and_vol_mcap_flags(self):
+        v = self.ev(row(ageHours=3, vol={"1h": 10, "24h": 9_000_000}))          # 4.5x mcap: churn
+        self.assertEqual(v["level"], "CAREFUL")
+        self.assertTrue(any(f.startswith("pool muda") for f in v["flags"]))
+        self.assertTrue(any(f.startswith("vol/mcap") for f in v["flags"]))
+
+    def test_dlmm_preset_flags_low_volume(self):
+        v = filters.evaluate(row(vol={"1h": 10, "24h": 100_000}), DLMM_CFG, time.time())   # 0.05x
+        self.assertTrue(any(f.startswith("vol/mcap") for f in v["flags"]))
+        self.assertFalse(any(f.startswith("vol/mcap") for f in self.ev(row(vol={"1h": 10, "24h": 100_000}))["flags"]))
 
     def test_max_position(self):
         self.assertAlmostEqual(filters.max_position_usd(CFG), 8000 * 0.05 / 0.9)
@@ -218,3 +244,164 @@ class EnvPrecedence(unittest.TestCase):
                     os.environ.pop(k, None)
                     if v is not None:
                         os.environ[k] = v
+
+
+class RpcFallback(unittest.TestCase):
+    def test_range_limits_from_real_errors(self):
+        f = chain._range_limit
+        self.assertEqual(f("Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range."), 10)
+        self.assertEqual(f("query exceeds max block range 2000"), 2000)
+        self.assertEqual(f("eth_getLogs block range exceeds 100 blocks"), 100)
+        self.assertIsNone(f("logs matched by query exceeds limit of 10000"))     # too many logs: halve instead
+
+    def test_logs_never_go_to_alchemy(self):
+        with mock.patch.dict("os.environ", {"ALCHEMY_API_KEY": "abc"}):
+            eps = dict(chain.endpoints())
+        self.assertEqual(eps["https://robinhood-mainnet.g.alchemy.com/v2/abc"], 10)
+        self.assertGreaterEqual(chain.max_log_span(), 2000)
+
+
+class TradeAccess(unittest.TestCase):
+    def _h(self, addr):
+        from rh_terminal import web
+        h = web.Handler.__new__(web.Handler)
+        h.client_address = (addr, 0)
+        h.headers = {"X-RH-Trade": "1", "Content-Type": "application/json"}
+        return h
+
+    def test_only_mac_and_tailscale(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "", "RH_WEB_ALLOW_LAN": ""}):
+            for a in ("127.0.0.1", "::1", "100.101.5.9", "fd7a:115c:a1e0::1234"):
+                self.assertTrue(self._h(a)._is_allowed(), a)
+                self.assertIsNone(self._h(a)._trade_refused({}), a)
+            for a in ("192.168.1.20", "10.0.0.5", "::ffff:192.168.0.3", "8.8.8.8"):
+                self.assertFalse(self._h(a)._is_allowed(), a)
+                self.assertIsNotNone(self._h(a)._trade_refused({}), a)
+
+    def test_lan_opt_in(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "", "RH_WEB_ALLOW_LAN": "true"}):
+            self.assertTrue(self._h("192.168.1.20")._is_allowed())
+            self.assertFalse(self._h("8.8.8.8")._is_allowed())
+
+    def test_pin_set_local_skips_others_need_it(self):
+        with mock.patch.dict("os.environ", {"RH_WEB_PIN": "4829"}):
+            self.assertIsNone(self._h("127.0.0.1")._trade_refused({}))
+            self.assertEqual(self._h("100.101.5.9")._trade_refused({}), "PIN salah")
+            self.assertIsNone(self._h("100.101.5.9")._trade_refused({"pin": "4829"}))
+
+    def test_header_required(self):
+        h = self._h("127.0.0.1"); h.headers = {}
+        self.assertEqual(h._trade_refused({}), "missing trade header")
+
+
+class Send(unittest.TestCase):
+    def _h(self, enc=""):
+        import io as _io
+        from rh_terminal import web
+        h = web.Handler.__new__(web.Handler)
+        h.headers = {"Accept-Encoding": enc}
+        h.request_version = "HTTP/1.1"; h.requestline = "GET / HTTP/1.1"; h.command = "GET"
+        h.client_address = ("127.0.0.1", 0)
+        h.wfile = _io.BytesIO()
+        return h
+
+    def test_gzip_when_asked(self):
+        import gzip as _gz
+        h = self._h("gzip, deflate"); body = b'{"rows": []}' * 500
+        h._send(200, body, "application/json")
+        raw = h.wfile.getvalue()
+        self.assertIn(b"Content-Encoding: gzip", raw)
+        self.assertEqual(_gz.decompress(raw.split(b"\r\n\r\n", 1)[1]), body)
+
+    def test_closed_client_is_quiet(self):
+        from rh_terminal import web
+        h = self._h()
+        class Dead:
+            def write(self, b): raise BrokenPipeError(32, "Broken pipe")
+        h.wfile = Dead()
+        with self.assertRaises(web.ClientGone):
+            h._send(200, b"x", "text/plain")
+
+
+class UsdgOnly(unittest.TestCase):
+    def test_quote_filter(self):
+        from rh_terminal import pools
+        tok = "0x" + "ab" * 20
+        usdg = {"currency0": chain.USDG, "currency1": tok, "fee": 10000, "tickSpacing": 200, "hooks": "0x" + "0" * 40}
+        eth = dict(usdg, currency0="0x" + "0" * 40)
+        cfg = {"universe": {"quotes": "USDG"}}
+        self.assertTrue(pools.quote_ok(usdg, cfg))
+        self.assertFalse(pools.quote_ok(eth, cfg))
+        self.assertTrue(pools.quote_ok(eth, {"universe": {"quotes": "USDG+ETH"}}))
+        self.assertFalse(pools.quote_ok(None, cfg))
+
+    def test_clones(self):
+        from rh_terminal import pools
+        rows = [{"symbol": "CLAUDIA", "token": "0xa", "ageHours": 30},
+                {"symbol": "claudia", "token": "0xb", "ageHours": 2},
+                {"symbol": "CLAUDIA", "token": "0xa", "ageHours": 30},
+                {"symbol": "GAGE", "token": "0xc", "ageHours": 5}]
+        pools.mark_clones(rows)
+        self.assertIsNone(rows[0]["clone"])
+        self.assertEqual(rows[1]["clone"], {"others": 1, "original": "0xa"})
+        self.assertIsNone(rows[3]["clone"])
+
+
+class AutoSellRetry(unittest.TestCase):
+    def setUp(self):
+        from rh_terminal import web
+        self.web = web
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p = [mock.patch.object(web, "DATA", Path(self.tmp.name)), mock.patch.object(web, "notify", lambda *a: None),
+                  mock.patch.object(web, "practice_mode", lambda: False)]
+        for x in self.p:
+            x.start()
+        self.cfg = {"trade": {"maxLossPct": 5}}
+        web._jsave("auto_exit.json", {"0xpool": {"pct": 5, "symbol": "FOBO", "status": "selling", "sellTries": 0,
+                                                 "leftover": {"token": "0xt", "pool": "0xpool", "amount": "1000"}}})
+
+    def tearDown(self):
+        for x in self.p:
+            x.stop()
+        self.tmp.cleanup()
+
+    def run_with(self, res):
+        with mock.patch.object(self.web.node, "run", lambda *a, **k: res):
+            self.web._retry_sells(self.cfg, "0xw")
+        return self.web.auto_load()["0xpool"]
+
+    def test_failure_retries_then_gives_up(self):
+        for i in range(1, self.web.SELL_TRIES):
+            a = self.run_with({"ok": False, "error": "would revert"})
+            self.assertEqual((a["status"], a["sellTries"]), ("selling", i))
+        a = self.run_with({"ok": False, "error": "would revert"})
+        self.assertEqual(a["status"], "failed")
+
+    def test_sale_finishes(self):
+        a = self.run_with({"ok": True, "hash": "0xabc"})
+        self.assertEqual(a["status"], "done")
+
+    def test_partial_keeps_the_rest(self):
+        a = self.run_with({"ok": True, "hash": "0xabc", "left": "300"})
+        self.assertEqual((a["status"], a["leftover"]["amount"]), ("selling", "300"))
+
+
+class PingBlast(unittest.TestCase):
+    def test_vol_mcap_sort_and_volume_band(self):
+        from rh_terminal import pools
+        cfg = json.loads(json.dumps(DLMM_CFG))
+        book = pools.Book.__new__(pools.Book)
+        book.cfg, book.prev_ping, book.ping_new = cfg, None, []
+        mk = lambda sym, vol24, mc: dict(row(vol={"1h": 1, "24h": vol24}, mcapUsd=mc), symbol=sym, token="0x" + sym,
+                                         pool="0xp" + sym, verdict={"level": "OPEN"}, volMcap24h=round(vol24 / mc, 2))
+        rows = [mk("A", 600_000, 2_000_000), mk("B", 4_000_000, 2_000_000), mk("C", 9_000_000, 2_000_000), mk("D", 20_000, 2_000_000)]
+        got = [r["symbol"] for r in book.ping(rows)["rows"]]
+        self.assertEqual(got[:2], ["B", "A"])       # inside 0.3-3x first, best ratio first
+        self.assertNotIn("D", got)                   # 24h volume under $50K
+
+    def test_blast_text(self):
+        from rh_terminal import web
+        r = dict(row(), symbol="GAGE", pool="0xpool", quoteSymbol="USDG", verdict={"level": "OPEN"}, feePace24h=8.0, volMcap24h=1.0)
+        txt = web.blast_text({"rows": [r], "ping": {"rows": [{"pool": "0xpool", "symbol": "GAGE"}], "filter": "f"}})
+        self.assertIn("1. GAGE", txt)
+        self.assertIn("dexscreener.com/robinhood/0xpool", txt)

@@ -104,7 +104,10 @@ class Index:
         """Fold every swap since the last poll into the buckets. Returns swaps folded."""
         head = chain.block_number()
         self._calibrate(head)
-        if not self.head or (head - self.head) * self.spb > KEEP:
+        # First run, or the Mac was asleep / the server off for a while: do not crawl hours of swaps
+        # (tens of thousands an hour, minutes of RPC). Read the last backfill window only; the 6h/24h
+        # numbers come from DexScreener until the index has that much history again.
+        if not self.head or (head - self.head) * self.spb > max(2 * 3600, self.backfill_hours * 3600 * 2):
             self.head = head - int(self.backfill_hours * 3600 / self.spb)
             self.started = self.ts_of(self.head)
         start = self.head + 1
