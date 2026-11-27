@@ -7,7 +7,7 @@ const CHAIN_RUNG = {
   ceo: ["👑", "CEO", "Steps in when the Operations Manager fails or cannot fix an incident, and keeps the purse: picks Haiku, Sonnet or Opus for each person."],
   ops: ["⚔️", "Operations Manager", "The orchestrator: makes rounds over every intern and sends the right person."],
   innovator: ["✒️", "Innovator", "Reviews the interns and their incidents, then files petitions for you."],
-  reviewer: ["🔍", "Reviewer", "Reads every pull request the guild opens and gives a verdict before you merge. Never merges."],
+  reviewer: ["🔍", "Reviewer", "Reads every pull request the office opens and gives a verdict before you merge. Never merges."],
 };
 const OUTCOME = { done: "✅ done", blocked: "⛔ blocked", "needs-you": "🙋 needs you", failed: "❌ failed" };
 
@@ -28,7 +28,7 @@ function reviewsHTML(c) {
     (r.note ? `<p class="sub">${esc(r.note)}</p>` : "") +
     `<button type="button" class="btn small" data-sid="${esc(r.sid)}">Open</button></div>`).join("");
   return `<section class="panel-sec"><h3>Pull request reviews</h3>` +
-    (reviewer ? `<p class="sub">${esc(reviewer)} reads every pull request a guild run opens${c.settings.auto_review ? "" : " (automatic reviews are off)"}. Or paste one:</p>` +
+    (reviewer ? `<p class="sub">${esc(reviewer)} reads every pull request a team run opens${c.settings.auto_review ? "" : " (automatic reviews are off)"}. Or paste one:</p>` +
       `<form id="chain-review-form" class="form inline"><input type="url" name="url" required placeholder="https://github.com/…/pull/12">` +
       `<button type="submit" class="btn">Review</button></form>`
       : `<p class="sub">Appoint a Reviewer above to get a verdict on every pull request before you merge.</p>`) +
@@ -75,9 +75,9 @@ function rungHTML(role, p, staff) {
     `<div class="btn-row">` +
     (p.name ? (role === "reviewer" ? "" : `<button type="button" class="btn" data-panel-act="chain-round" data-kind="${role}">${action}</button>`) +
       budget + (r.sid ? `<button type="button" class="btn" data-sid="${esc(r.sid)}">Open the round</button>` : "")
-      : `<button type="button" class="btn primary" data-panel-act="chain-recruit" data-role="${role}">Recruit one</button>`) +
+      : `<button type="button" class="btn primary" data-panel-act="chain-recruit" data-role="${role}">Hire one</button>`) +
     `</div><form class="form inline" data-form="chain-appoint" data-role="${role}"><select name="staff" aria-label="Appoint ${esc(title)}">` +
-    staffOptions(staff, p.staff, p.name ? "Nobody (leave vacant)" : "Appoint someone already in the guild…") +
+    staffOptions(staff, p.staff, p.name ? "Nobody (leave vacant)" : "Appoint someone already in the office…") +
     `</select><button type="submit" class="btn">Appoint</button></form></div></div>`;
 }
 
@@ -140,7 +140,7 @@ function settingsHTML(s, dispatched) {
     `<label>${esc(label)}<input type="number" name="${name}" min="${min}" max="${max}" value="${esc(s[name])}"></label>`;
   return `<form id="chain-settings-form" class="form">` +
     `<label class="check"><input type="checkbox" name="auto_review"${s.auto_review ? " checked" : ""}><span>Review every pull request` +
-    `<small>The Reviewer reads each pull request a guild run opens and sends you a verdict. Counts toward the daily dispatch limit.</small></span></label>` +
+    `<small>The Reviewer reads each pull request a team run opens and sends you a verdict. Counts toward the daily dispatch limit.</small></span></label>` +
     `<label class="check"><input type="checkbox" name="auto"${s.auto ? " checked" : ""}><span>Autopilot` +
     `<small>Incidents go up the chain and rounds happen on their own. Off: checks still run, people only move when you press a button.</small></span></label>` +
     `<div class="two">${n("check_minutes", "Check every (min)", 1, 240)}${n("fail_after", "Failed checks before an incident", 1, 10)}</div>` +
@@ -157,9 +157,9 @@ function settingsHTML(s, dispatched) {
 }
 
 Hooks.panels.chain = {
-  title: "Chain of command",
+  title: "Org chart",
   subtitle: "Your programs are interns. Wardens keep them, the Operations Manager oversees, the CEO is the backup, you have the last word.",
-  icon: '<span class="panel-icon">⚜️</span>',
+  icon: '<span class="panel-icon">🏢</span>',
   async render(body) {
     const [c, { projects }, bots, kn] = await Promise.all([api("/api/chain"), api("/api/projects"),
       api("/api/bots").catch(() => ({ jobs: [] })), api("/api/chain/known").catch(() => ({ known: [] }))]);
@@ -171,10 +171,10 @@ Hooks.panels.chain = {
       startHTML(c.start || []) +
       `<section class="panel-sec chain-ladder"><h3>The ladder</h3>` +
       (["ceo", "ops", "innovator", "reviewer"].some((r) => !c.people[r].name)
-        ? `<p><button type="button" class="btn primary wide" data-panel-act="chain-team">Recruit the standing team</button>` +
-          `<small class="hint">CEO, Operations Manager, Innovator and two wardens (Lyra, Thorne), each with their own written role. Anyone already in the guild is kept as is.</small></p>` : "") +
+        ? `<p><button type="button" class="btn primary wide" data-panel-act="chain-team">Hire the standing team</button>` +
+          `<small class="hint">CEO, Operations Manager, Innovator and two wardens (Lyra, Thorne), each with their own written role. Anyone already in the office is kept as is.</small></p>` : "") +
       `<div class="rung r-you"><span class="rung-icon" aria-hidden="true">🛡️</span><div class="rung-body">` +
-      `<p class="rung-title">Guildmaster · <b>bojjifomo</b></p><p class="sub">You approve petitions and seals. What nobody below could fix comes to your phone.</p>` +
+      `<p class="rung-title">Owner · <b>bojjifomo</b></p><p class="sub">You approve proposals and codes. What nobody below could fix comes to your phone.</p>` +
       (c.needs_you ? `<p><span class="tag t-down">${esc(c.needs_you)} incident${c.needs_you > 1 ? "s" : ""} need you</span></p>` : "") + `</div></div>` +
       ["ceo", "ops", "innovator", "reviewer"].map((r) => rungHTML(r, c.people[r], c.staff)).join("") +
       `<div class="rung r-warden"><span class="rung-icon" aria-hidden="true">🗝️</span><div class="rung-body"><p class="rung-title">Wardens</p>` +
@@ -196,7 +196,7 @@ Hooks.panels.chain = {
 Object.assign(Hooks.forms, {
   async "chain-review-form"(form) {
     const r = await api("/api/chain/review", { url: form.url.value.trim() });
-    toast(`${r.who} is reading it. The verdict comes as a raven.`);
+    toast(`${r.who} is reading it. The verdict arrives as a notification.`);
     Hooks.panels.chain.render($("#sheet-body"));
   },
   async "chain-intern-form"(form) {
@@ -237,13 +237,13 @@ Object.assign(Hooks.panelActions, {
     const r = await api("/api/chain/interns/known", {});
     const added = r.interns.filter((d) => d.status.startsWith("added")).map((d) => d.name);
     const skipped = r.interns.filter((d) => d.status.startsWith("skipped"));
-    toast((added.length ? `Added ${added.join(", ")}.` : "Nothing new added.") + (skipped.length ? ` Skipped ${skipped.map((d) => d.name).join(", ")}: see the guild log.` : ""));
+    toast((added.length ? `Added ${added.join(", ")}.` : "Nothing new added.") + (skipped.length ? ` Skipped ${skipped.map((d) => d.name).join(", ")}: see the log.` : ""));
   },
   async "chain-team"() {
     const r = await api("/api/chain/team", {});
-    const names = r.team.filter((d) => d.status.startsWith("recruited")).map((d) => d.name);
+    const names = r.team.filter((d) => d.status.startsWith("hireed")).map((d) => d.name);
     const added = (r.interns || []).filter((d) => d.status.startsWith("added")).map((d) => d.name);
-    toast((names.length ? names.join(", ") + " joined the guild." : "Everyone is already here.") +
+    toast((names.length ? names.join(", ") + " joined the office." : "Everyone is already here.") +
       (added.length ? ` New interns: ${added.join(", ")}.` : ""));
     poll();
   },
@@ -269,7 +269,7 @@ Object.assign(Hooks.panelActions, {
     toast("Marked fixed.");
   },
   async "chain-remove"(btn) {
-    if (!confirm("Remove this intern from the guild? Their program is not touched.")) return false;
+    if (!confirm("Remove this intern from the office? Their program is not touched.")) return false;
     await api(`/api/chain/interns/${btn.dataset.id}/remove`, {});
     toast("Removed.");
   },
@@ -289,5 +289,5 @@ document.addEventListener("change", (ev) => {
   form.fresh.value = k.fresh || "";
   form.fresh_hours.value = k.fresh_hours || 24;
   form.warden.value = k.warden || "";
-  if (hint) hint.textContent = `Folder: ${k.project_label}. ` + (k.warden ? `Warden: ${k.warden_name}. ` : `Recruit ${k.warden_name} to be its warden. `) + (k.hint || "");
+  if (hint) hint.textContent = `Folder: ${k.project_label}. ` + (k.warden ? `Warden: ${k.warden_name}. ` : `Hire ${k.warden_name} to be its warden. `) + (k.hint || "");
 });

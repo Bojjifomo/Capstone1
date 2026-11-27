@@ -114,6 +114,36 @@ Aturan yang dipakai (sama dengan Mac): gate = pair SOL, bin step 20–250, umur 
 
 ---
 
+## Fitur baru (sama kayak DLMM Web di Mac)
+
+- **Jual lebih tahan banting.** Kalau rute pertama gagal (misal rute Pump.fun / Manifest error `0x1788`), `MET Portfolio` otomatis coba lagi tanpa venue itu, lalu cuma rute langsung, lalu jual dipecah 2 dan 4 bagian (mode Practice cuma simulasi, nggak dipecah). Batas rugi vs harga pool tetap berlaku di semua percobaan. Kalau gagal, **semua** error ditampilin (nggak dipotong cuma yang terakhir).
+- **Last sales.** Baris di bawah Wallet: 8 penjualan terakhir, apa yang dicoba, dan errornya. Tap buat lihat. Log-nya disimpan di HP (`met_sales.jsonl`).
+- **💩 sisa token.** Baris Wallet nulis berapa token sisa (dan berapa yang nggak punya harga). Habis **Cleanup**, ringkasannya nulis `💩 LEFT: N` atau `LEFT: 0, the wallet is clean`, jadi lu tau Cleanup udah abis atau belum.
+- **🎯 TP per ladder.** Tombol di tiap token di `MET Portfolio`: pilih 3 / 5 / 10% atau matiin. Default **mati**. Kalau PnL seluruh ladder nyampe angkanya, lu dapet notifikasi buat close + swap (mode auto: kebuka otomatis pas lu buka `MET Portfolio`). **Dicek cuma pas script refresh**, bukan pas HP tidur. Buat auto exit 24 jam, pakai DLMM Web di Mac.
+- **Semua pool token ini.** Di `MET Pool`, tap detail pool lalu **Semua pool token ini** buat lihat semua pool SOL token itu.
+- Buka posisi yang cuma kebuka sebagian: tombol **Retry** buka slice yang belum landed (udah ada sebelumnya).
+
+> Belum ada tes kirim transaksi beneran dari HP. Yang dites: logika jual (rute alternatif, pecah, error lengkap), TP, dan UI harness. Coba di Practice dulu.
+
+---
+
+## Filter dari review wallet (Nov 2026)
+
+Dari 67 posisi lu bulan ini (1–21 Nov):
+
+| Aturan | Jenis | Kenapa |
+|---|---|---|
+| Harga naik **> +5% dalam 1 jam** → **WAIT** (tunggu turun) | gate | Masuk pas harga ≤ +5%: rata-rata +2.54%. Di atasnya: +0.37%. Tetap kebukti walau koin mana pun dikeluarin. |
+| Pool **< 6 jam** | flag ⚠ | Fee paling gede, tapi rugi harga juga paling gede (net +0.29%). Boleh, size kecil. |
+| Volume 24h ÷ mcap **di luar 0.3–3×** | flag ⚠ | Di dalam: +2.5%. Di luar: +0.9%. Di atas 3× biasanya churn/dump. |
+| Bin step **> 100** | flag ⚠ | Bin step 200 cuma impas (4 posisi, data tipis). |
+
+PING bisa diurutin pakai **volMcapFit** (⚙ Settings → PING → Urut berdasarkan). Semua angka bisa diubah atau dimatiin di ⚙ Settings (kosong = off). Sampelnya kecil (3 minggu): anggap ini kebiasaan yang dibuktiin 2–3 minggu ke depan, bukan jaminan.
+
+**Re-entry** sekarang tetap buka ladder lagi walaupun tokennya gagal dijual (token ditinggal buat Cleanup), dan nunggu saldo SOL kebaca dulu sebelum buka.
+
+---
+
 ## Kalau ada masalah
 
 | Masalah | Coba |

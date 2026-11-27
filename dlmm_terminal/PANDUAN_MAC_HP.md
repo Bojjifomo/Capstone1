@@ -132,6 +132,23 @@ Refresh data otomatis tiap **15 menit** (⚙ Settings → Web). Tap chip **● �
 
 ---
 
+## Filter dari review wallet (Nov 2026)
+
+Dari 67 posisi lu bulan ini (1–21 Nov):
+
+| Aturan | Jenis | Kenapa |
+|---|---|---|
+| Harga naik **> +5% dalam 1 jam** → **WAIT** (tunggu turun) | gate | Masuk pas harga ≤ +5%: rata-rata +2.54%. Di atasnya: +0.37%. Tetap kebukti walau koin mana pun dikeluarin. |
+| Pool **< 6 jam** | flag ⚠ | Fee paling gede, tapi rugi harga juga paling gede (net +0.29%). Boleh, size kecil. |
+| Volume 24h ÷ mcap **di luar 0.3–3×** | flag ⚠ | Di dalam: +2.5%. Di luar: +0.9%. Di atas 3× biasanya churn/dump. |
+| Bin step **> 100** | flag ⚠ | Bin step 200 cuma impas (4 posisi, data tipis). |
+
+PING bisa diurutin pakai **volMcapFit** (⚙ Settings → PING → Urut berdasarkan). Semua angka bisa diubah atau dimatiin di ⚙ Settings (kosong = off). Sampelnya kecil (3 minggu): anggap ini kebiasaan yang dibuktiin 2–3 minggu ke depan, bukan jaminan.
+
+**Re-entry** sekarang tetap buka ladder lagi walaupun tokennya gagal dijual (token ditinggal buat Cleanup), dan nunggu saldo SOL kebaca dulu sebelum buka.
+
+---
+
 ## 7. Update ke versi baru
 
 Tutup jendela Terminal server, lalu:

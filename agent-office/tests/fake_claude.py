@@ -16,6 +16,14 @@ if "--no-session-persistence" in args:
     text = sys.stdin.read()
     if "JSON array" in system:
         result = '["Yes, go ahead.", "Show me the diff first.", "Leave the v1 endpoints for now."]'
+    elif "pick which teammates" in system:
+        names = re.findall(r"^- ([^:]+):", text.split("Team:", 1)[-1], re.M)
+        result = json.dumps({"names": names[:2], "why": "closest roles"})
+    elif "hiring form" in system:
+        model = args[args.index("--model") + 1]
+        result = json.dumps({"name": "Hyperion", "role": "Copy Trading Specialist", "division": "Finance",
+                             "instructions": "# Mission\n\nFollow the best LP wallets and report in casual Indonesian.\n" * 20,
+                             "model": "sonnet", "effort": "high", "reason": "drafted by %s" % model})
     else:
         result = "- Split payments into a service and a router\n- Asks whether to migrate the v1 endpoints (%d chars read)" % len(text)
     print(json.dumps({"type": "result", "result": result}))
@@ -45,10 +53,12 @@ def out(obj):
 log({"type": "user", "message": {"role": "user", "content": text}})
 out({"type": "system", "subtype": "init", "session_id": sid, "model": "claude-sonnet-5-5", "permissionMode": mode})
 mid = "msg_" + uuid.uuid4().hex[:10]
-reply = "**Heard you.** You said: %s\n\n```\nmode=%s pm=%s model=%s eco=%s\n```" % (
+reply = "**Heard you.** You said: %s\n\n```\nmode=%s pm=%s model=%s eco=%s effort=%s team=%s\n```" % (
     text[:200], mode, "yes" if "--append-system-prompt" in args else "no",
     args[args.index("--model") + 1] if "--model" in args else "default",
-    "yes" if "--append-system-prompt" in args and "eco-mode lead" in args[args.index("--append-system-prompt") + 1] else "no")
+    "yes" if "--append-system-prompt" in args and "eco-mode lead" in args[args.index("--append-system-prompt") + 1] else "no",
+    args[args.index("--effort") + 1] if "--effort" in args else "default",
+    "yes" if "--append-system-prompt" in args and "Your teammates for this task" in args[args.index("--append-system-prompt") + 1] else "no")
 if "ASKBACK" in text:
     reply += "\n\nShould I keep going with the next part?"
 out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": mid}}})

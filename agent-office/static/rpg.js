@@ -1,4 +1,4 @@
-// Ranks, the character sheet, the quest board badges.
+// Ranks, the character sheet, the session board badges.
 "use strict";
 
 function pips(into, span) {
@@ -23,14 +23,14 @@ function progressInner(p) {
     `<div class="xp-stats">${stat("Success", p.success == null ? null : p.success + "%")}` +
     `${stat("Thrift", p.efficiency == null ? null : p.efficiency)}${stat("Speed", p.speed)}</div>` +
     (medals ? `<div class="medals">${medals}</div>` : "") +
-    (history ? `<ul class="xp-history">${history}</ul>` : `<p class="sub">No quests written down yet.</p>`);
+    (history ? `<ul class="xp-history">${history}</ul>` : `<p class="sub">No sessions written down yet.</p>`);
 }
 
 function toastUnlocks(state) {
   const fresh = state.unlocks || [];
   if (!fresh.length) return;
   let seen = [];
-  try { seen = JSON.parse(localStorage.getItem("guild-badges") || "[]"); } catch (e) { seen = []; }
+  try { seen = JSON.parse(localStorage.getItem("office-badges") || "[]"); } catch (e) { seen = []; }
   let changed = false;
   fresh.forEach((u) => {
     const id = (u.key || "") + ":" + u.badge;
@@ -40,7 +40,7 @@ function toastUnlocks(state) {
     toast(`${u.name} unlocked ${u.label}`);
   });
   if (changed) {
-    try { localStorage.setItem("guild-badges", JSON.stringify(seen.slice(-80))); } catch (e) { /* private mode */ }
+    try { localStorage.setItem("office-badges", JSON.stringify(seen.slice(-80))); } catch (e) { /* private mode */ }
   }
 }
 

@@ -27,8 +27,11 @@ import gateway  # noqa: E402
 import grok  # noqa: E402
 import fundgate  # noqa: E402
 import haiku  # noqa: E402
+import limits  # noqa: E402
 import panels  # noqa: E402
 import petitions  # noqa: E402
+import prpage  # noqa: E402
+import projpick  # noqa: E402
 import orders  # noqa: E402
 import report  # noqa: E402
 import roster  # noqa: E402
@@ -222,12 +225,19 @@ APP = None
 
 @route("GET", "/api/state")
 def api_state(req, m):
+    sessions_now = APP.office.all_sessions()
     return {
         "version": APP.version,
         "name": APP.cfg.get("name", ""),
         "now": time.time(),
-        "sessions": APP.office.all_sessions(),
+        "sessions": sessions_now,
         "team": APP.office.team.roster(),
+        "system": APP.office.health(),
+        "limits": limits.snapshot(APP.cfg),
+        "eco": APP.office.eco_public(),
+        "programs": {k: v for k, v in APP.office.chain.programs().items() if k != "rows"},
+        "alerts": APP.office.alerts(sessions_now),
+        "grok_today": round(APP.office.grok.spent_today(), 4) if APP.office.grok else None,
         "cost_today": panels.cost_today(APP.office),
         "disk": APP.office.vault.free(),
         "petitions": APP.office.petitions.pending_count(),
@@ -277,7 +287,8 @@ def api_hook_notify(req, m):
 
 RID = r"(?P<rid>[0-9a-f]{12})"
 QID = r"(?P<qid>[0-9a-f]{8})"
-PURPOSE_RE = re.compile(r"^(bypass:(new|[0-9a-f-]{36})|clean:[a-z0-9_]{1,32})$")
+PURPOSE_RE = re.compile(r"^(bypass:(new|[0-9a-f-]{36})|clean:[a-z0-9_]{1,32}"
+                        r"|merge:[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}#[0-9]{1,7})$")
 
 
 def text_field(body, key, limit=200):
@@ -287,7 +298,7 @@ def text_field(body, key, limit=200):
 
 @route("GET", "/api/options")
 def api_options(req, m):
-    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES),
+    return {"modes": list(runner.MODES), "risky": sorted(runner.RISKY_MODES), "efforts": list(runner.EFFORTS),
             "models": [m for m in runner.MODELS if not m or m in APP.office.offered_models()],
             "grok": {"on": bool(APP.office.grok), "model": grok.model_name(APP.cfg)},
             "default_mode": APP.cfg.get("default_mode", "acceptEdits"), "claude": bool(runner.find_claude(APP.cfg))}
@@ -299,18 +310,37 @@ def api_send(req, m):
     sid = m.group("sid")
     result = APP.office.send(sid, text_field(b, "text", runner.MAX_TEXT + 1), text_field(b, "mode"),
                              model=text_field(b, "model"), code_id=text_field(b, "code_id"),
-                             code=text_field(b, "code"), now_please=bool(b.get("now")))
+                             code=text_field(b, "code"), now_please=bool(b.get("now")), effort=text_field(b, "effort", 8))
     APP.office.ledger.add("queue" if "queued" in result else "send", text_field(b, "text"), sid=sid, mode=text_field(b, "mode"))
     return result
 
 
 @route("POST", "/api/session/" + SID + "/eco")
 def api_session_eco(req, m):
-    """Eco mode for this quest: an Opus lead that plans and reviews, Sonnet and Haiku helpers that do the work."""
+    """Eco mode for this session: an Opus lead that plans and reviews, Sonnet and Haiku helpers that do the work."""
     sid = m.group("sid")
     result = APP.office.set_eco(sid, bool(req.body.get("on")))
     APP.office.ledger.add("guild", "Eco mode %s" % ("on: Opus plans and reviews, helpers work" if result["eco"] else "off"), sid=sid)
     return result
+
+
+@route("GET", "/api/eco")
+def api_eco(req, m):
+    return APP.office.eco_public()
+
+
+@route("POST", "/api/eco")
+def api_eco_set(req, m):
+    """The Eco button in the header: on for every new session and every message sent from here."""
+    result = APP.office.set_eco_all(bool(req.body.get("on")))
+    APP.office.ledger.add("guild", "Eco %s for the whole office" % ("on" if result["all"] else "off"))
+    return result
+
+
+@route("POST", "/api/session/" + SID + "/effort")
+def api_session_effort(req, m):
+    APP.office.set_effort_pref(m.group("sid"), text_field(req.body, "effort", 8))
+    return {"ok": True}
 
 
 @route("POST", "/api/session/" + SID + "/model")
@@ -375,15 +405,26 @@ def api_projects(req, m):
     return {"projects": [{"id": p["id"], "label": p["label"]} for p in APP.office.projects()]}
 
 
+@route("POST", "/api/project/suggest")
+def api_project_suggest(req, m):
+    """The project folder a task most likely belongs in, for the New session sheet."""
+    office = APP.office
+    r = projpick.suggest_project(APP.cfg, text_field(req.body, "text", 2001), office.projects(),
+                                 interns=office.chain.interns, staff=office.team.staff)
+    return {"id": r["id"], "label": r["label"], "source": r["source"]}
+
+
 @route("POST", "/api/job")
 def api_job(req, m):
     b = req.body
     eco_mode = bool(b.get("eco"))
     system = PM_PROMPT if b.get("pm") and not eco_mode else ""
+    team_names = [str(x)[:40] for x in (b.get("team") or []) if isinstance(x, str)][:6] if isinstance(b.get("team"), list) else []
     result = APP.office.new_job(text_field(b, "project"), text_field(b, "text", runner.MAX_TEXT + 1),
                                 text_field(b, "mode"), model=text_field(b, "model"),
                                 code_id=text_field(b, "code_id"), code=text_field(b, "code"), system=system,
-                                external=req.external, override=bool(b.get("override")), eco_mode=eco_mode)
+                                external=req.external, override=bool(b.get("override")), eco_mode=eco_mode,
+                                effort=text_field(b, "effort", 8), team=team_names)
     if result.get("queued_for_gold"):
         APP.office.ledger.add("guild", "Queued until gold returns: " + text_field(b, "text")[:160])
         return result
@@ -412,7 +453,12 @@ def api_code(req, m):
     purpose = text_field(req.body, "purpose")
     if not PURPOSE_RE.match(purpose):
         raise HttpError(400, "unknown purpose")
-    label = "run with permissions bypassed" if purpose.startswith("bypass") else "run the " + purpose[6:] + " cleaner"
+    if purpose.startswith("bypass"):
+        label = "run with permissions bypassed"
+    elif purpose.startswith("merge:"):
+        label = "merge " + purpose[6:]
+    else:
+        label = "run the " + purpose[6:] + " cleaner"
     try:
         cid = APP.office.codes.request(purpose, label)
         APP.office.ledger.add("seal", "sent a seal to " + label)
@@ -484,17 +530,76 @@ def api_team_templates(req, m):
 
 @route("POST", "/api/staff")
 def api_hire(req, m):
+    """Hire a specialist. With model "auto" (or empty instructions) Sonnet fills in the form first."""
     b = req.body
+    fields = {k: text_field(b, k, 8001 if k == "instructions" else 80) for k in ("name", "role", "division", "instructions", "model", "effort")}
+    drafted = None
+    if fields["model"] == "auto" or (fields["role"].strip() and not fields["instructions"].strip()):
+        try:
+            drafted = APP.office.team.draft(APP.cfg, fields, APP.office.chain.allowed(), APP.office.team.divisions)
+        except Exception as e:  # noqa: BLE001 - say why, do not hire half a person
+            raise HttpError(409, "could not draft the form: %s" % str(e)[:200])
+        for k in ("name", "role", "division", "instructions", "model", "effort"):
+            if not fields[k] or k in ("model", "effort") and fields[k] in ("auto", ""):
+                fields[k] = drafted[k]
     try:
-        member, renamed = APP.office.team.hire(text_field(b, "name"), text_field(b, "role"),
-                                               text_field(b, "instructions", 8001), text_field(b, "division"),
-                                               text_field(b, "model") or "sonnet")
+        member, renamed = APP.office.team.hire(fields["name"], fields["role"], fields["instructions"], fields["division"],
+                                               fields["model"] or "sonnet", effort=fields["effort"])
     except ValueError as e:
         raise HttpError(400, str(e))
     except RuntimeError as e:
         raise HttpError(409, str(e))
     APP.office.ledger.add("hire", "%s the %s" % (member["name"], member["title"]))
-    return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio")}, "renamed_from": renamed}
+    return {"staff": {k: member[k] for k in ("id", "name", "title", "division", "bio", "model", "effort")}, "renamed_from": renamed,
+            "drafted": bool(drafted), "reason": (drafted or {}).get("reason", "")}
+
+
+@route("POST", "/api/team/draft")
+def api_team_draft(req, m):
+    """Fill in and polish the hire form with Sonnet. Nothing is hired."""
+    b = req.body
+    fields = {k: text_field(b, k, 8001 if k == "instructions" else 80) for k in ("name", "role", "division", "instructions", "model", "effort")}
+    try:
+        return APP.office.team.draft(APP.cfg, fields, APP.office.chain.allowed(), APP.office.team.divisions)
+    except Exception as e:  # noqa: BLE001
+        raise HttpError(409, "Sonnet could not fill in the form: %s" % str(e)[:200])
+
+
+@route("POST", "/api/team/suggest")
+def api_team_suggest(req, m):
+    """Teammates for a task, for the New session sheet."""
+    return APP.office.team.suggest(APP.cfg, text_field(req.body, "text", 2001))
+
+
+@route("POST", "/api/team/effort")
+def api_team_effort(req, m):
+    try:
+        return APP.office.team.set_effort(text_field(req.body, "name", 80), text_field(req.body, "effort", 8))
+    except LookupError as e:
+        raise HttpError(404, str(e).strip("'\""))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+@route("GET", "/api/money")
+def api_money(req, m):
+    return APP.office.money.snapshot()
+
+
+@route("POST", "/api/money/refresh")
+def api_money_refresh(req, m):
+    started = APP.office.money.refresh()
+    return {"started": started}
+
+
+@route("GET", "/api/programs")
+def api_programs(req, m):
+    return APP.office.chain.programs()
+
+
+@route("GET", "/api/alerts")
+def api_alerts(req, m):
+    return {"alerts": APP.office.alerts()}
 
 
 @route("GET", "/api/staff/" + STAFF)
@@ -762,7 +867,9 @@ def api_chain_scorecard(req, m):
 @route("POST", "/api/chain/review")
 def api_chain_review(req, m):
     """Ask the Reviewer to read one pull request now."""
-    r = chain_call(APP.office.chain.request_review, text_field(req.body, "url", 300), by="bojjifomo")
+    url = text_field(req.body, "url", 300)
+    sha = APP.office.chain.head_sha(url.strip()) if chain.handoff.PR_URL.fullmatch(url.strip()) else ""
+    r = chain_call(APP.office.chain.request_review, url, by="bojjifomo", sha=sha)
     if not r:
         raise HttpError(409, "the review could not start")
     return r
@@ -904,13 +1011,20 @@ def api_orchestrator_brief(req, m):
 def api_ledger_post(req, m):
     """A line in the town log, for example from the external assistant."""
     kind = " ".join(text_field(req.body, "kind", 20).split()).lower()
-    if kind not in ("guild", "chatter"):
-        raise HttpError(400, "kind must be guild or chatter")
+    if kind not in ("guild", "chatter", "merge"):
+        raise HttpError(400, "kind must be guild, chatter or merge")
     text = " ".join(text_field(req.body, "text", 400).split())
     if not text:
         raise HttpError(400, "text is required")
     by = " ".join(text_field(req.body, "by", 40).split())[:40] or "Guild Hall"
-    APP.office.ledger.add(kind, text[:300], by=by)
+    extra = {}
+    if kind == "merge":  # what went into main: PR title (text), number and head SHA
+        pr = " ".join(text_field(req.body, "pr", 10).split())
+        sha = " ".join(text_field(req.body, "sha", 40).split()).lower()
+        if not pr.isdigit() or not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+            raise HttpError(400, "a merge needs pr (a number) and sha (the head commit)")
+        extra = {"pr": int(pr), "sha": sha}
+    APP.office.ledger.add(kind, text[:300], by=by, **extra)
     return {"ok": True}
 
 
@@ -1036,6 +1150,85 @@ def api_petition_build(req, m):
     if result.get("queued_for_gold"):
         return result
     return dict(result, petition=item["id"])
+
+
+# ---- PR page: review and merge from the Guild Hall --------------------------------
+# These routes are not in TOKEN_ROUTES (a Funnel/token caller gets 403 "route", like the cleaners and seals),
+# and each handler also refuses req.external itself.
+
+def pr_target(b):
+    try:
+        return prpage.parse_target(b.get("repo"), b.get("number"))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+def local_only(req):
+    if req.external:
+        raise HttpError(403, "the PR page is for bojjifomo in the Guild Hall, not for token callers")
+
+
+@route("GET", "/api/prs")
+def api_prs(req, m):
+    local_only(req)
+    try:
+        return {"prs": prpage.list_open(APP.office.chain)}
+    except (RuntimeError, OSError, ValueError) as e:
+        raise HttpError(502, str(e))
+
+
+@route("GET", "/api/prs/diff")
+def api_prs_diff(req, m):
+    local_only(req)
+    repo, number = pr_target({"repo": (req.query.get("repo") or [""])[0], "number": (req.query.get("number") or [""])[0]})
+    try:
+        return {"diff": prpage.diff_of(repo, number)}
+    except (RuntimeError, OSError) as e:
+        raise HttpError(502, str(e))
+
+
+@route("POST", "/api/prs/merge")
+def api_prs_merge(req, m):
+    local_only(req)
+    repo, number = pr_target(req.body)
+    purpose = "merge:%s#%d" % (repo, number)
+    if not APP.office.codes.verify(text_field(req.body, "code_id"), text_field(req.body, "code"), purpose):
+        APP.office.ledger.add("seal", "wrong or expired seal for " + purpose)
+        raise core.Refused("this needs a fresh guild seal from your phone", needs_code=purpose)
+    try:
+        prpage.merge_checked(APP.office.chain, repo, number)
+    except PermissionError as e:
+        raise HttpError(409, str(e))
+    except (RuntimeError, OSError, ValueError) as e:
+        raise HttpError(502, str(e))
+    APP.office.ledger.add("approve", "bojjifomo merged %s#%d (squash)" % (repo, number))
+    return {"merged": True, "repo": repo, "number": number}
+
+
+@route("POST", "/api/prs/changes")
+def api_prs_changes(req, m):
+    """Minta perbaikan: comment on the PR, then send the text to the guild member who opened it."""
+    local_only(req)
+    repo, number = pr_target(req.body)
+    text = text_field(req.body, "text", 2000).strip()[:2000]
+    if not text:
+        raise HttpError(400, "write what should change")
+    try:
+        prpage.gh_comment(repo, number, "Requested changes from bojjifomo:\n\n" + text)
+    except (RuntimeError, OSError) as e:
+        raise HttpError(502, str(e))
+    url = prpage.pr_url(repo, number)
+    routed = ""
+    author = prpage.author_of(APP.office.chain, repo, number)
+    if author:
+        brief = ("bojjifomo reviewed your pull request %s and asks for changes:\n\n%s\n\n"
+                 "Push the fixes to the same branch and say what you changed. Do not merge it." % (url, text))
+        try:
+            routed = APP.office.team.ask(author, brief).get("name") or author
+        except (LookupError, ValueError, RuntimeError):
+            routed = ""
+    APP.office.ledger.add("send", "asked for changes on %s#%d%s" % (repo, number, (" via " + routed) if routed else ""))
+    return {"commented": True, "sent_to": routed}
 
 
 # ---- Fund (../fund) behind the same door --------------------------------

@@ -9,7 +9,10 @@ Escalation for a broken intern:  warden -> operations manager -> CEO -> you.
 Health checks are fixed and run here, never as shell text: a launchd job's state, an HTTP GET, a file's age.
 """
 import os
+import json
 import secrets
+import shutil
+import subprocess
 import threading
 import time
 import urllib.error
@@ -34,6 +37,8 @@ DEFAULTS = {
     "stuck_minutes": 90,          # a round still running after this counts as failed
     "max_auto_per_day": 12,       # automatic dispatches (incidents and rounds) per day
     "auto_review": True,          # the Reviewer reads every pull request a guild run opens
+    "auto_review_prs": True,      # the Reviewer reads every open pull request, once per head commit
+    "pr_sweep_minutes": 45,       # how often open pull requests are looked for
     "review_hours": 24,           # the CEO's budget review (0 = off)
     "guard_pct": 80,              # at this share of the daily budget, automatic rounds stop
     "opus_seats": 2,              # how many specialists may run on Opus at once
@@ -42,7 +47,9 @@ DEFAULTS = {
 MODEL_CHOICES = ("haiku", "sonnet", "opus")
 LIMITS = {"check_minutes": (1, 240), "fail_after": (1, 10), "ops_every_hours": (1, 72),
           "innovator_every_days": (1, 60), "stuck_minutes": (15, 600), "max_auto_per_day": (0, 100),
-          "review_hours": (0, 168), "guard_pct": (10, 100), "opus_seats": (0, 20)}
+          "pr_sweep_minutes": (10, 720), "review_hours": (0, 168), "guard_pct": (10, 100), "opus_seats": (0, 20)}
+PR_REPO = "Bojjifomo/Capstone1"
+PR_SWEEP_MAX = 3          # reviews started per sweep, to protect the budget
 MODE = "auto"  # Claude Code's guarded auto mode: no prompts, risky actions still blocked
 
 PRESETS = roster.PRESETS   # who gets recruited into each role; the text lives in roster.py
@@ -51,12 +58,12 @@ REVIEW_BRIEF = """You are the Reviewer of bojjifomo's guild. {by} just opened th
 
 {url}
 
-Read it: `gh pr view {url}` and `gh pr diff {url}` (or open the page). Run the project's tests on the branch if you can.
+{head}Read it: `gh pr view {url}` and `gh pr diff {url}` (or open the page). Run the project's tests on the branch if you can.
 Check what a careful reviewer checks: does it do what it says, are there tests, could it leak a secret or a key, does it
 weaken a security check or widen a network bind, can it spend RPC quota, money or tokens in a loop, does it touch
 wallets, is anything deleted that should not be.
 
-You review; you never merge, approve, push or comment on GitHub. Your answer comes back to the Guild Hall.
+You review; you never merge, approve, push or comment on GitHub (only Aurelian merges, under his own merge rules, and only what you mark safe). Your answer comes back to the Guild Hall.
 Your verdict is the RESULT line:
 RESULT: done - safe to merge (one sentence why)
 RESULT: blocked - do not merge yet: <the blocking problems, most important first>
@@ -70,6 +77,16 @@ RULES = """Rules for every guild run:
 - Never delete data, never read or print secrets (.env, keys, tokens), never move funds or touch wallets.
 - `{cli} chain` shows every intern and incident. `{cli} check <intern>` checks one again right now.
 - End with a short report: what was wrong, what you did, whether it is healthy now, what is left."""
+
+# Only the CEO (Aurelian) gets this exception; every other run keeps RULES as written.
+CEO_MERGE_LINE = "Never merge to main (only Aurelian, under the merge rules in his instructions), never force-push."
+
+
+def rules_for(role, cli):
+    text = RULES.format(cli=cli)
+    if role == "ceo":
+        text = text.replace("Never merge to main, never force-push.", CEO_MERGE_LINE)
+    return text
 
 WARDEN_BRIEF = """You are the warden of the intern "{name}" (a program in bojjifomo's guild).
 It is failing its health checks. Incident {iid}, opened {opened}.
@@ -164,7 +181,10 @@ class Chain:
         self.settings = dict(DEFAULTS, **(data.get("settings") or {}))
         self.dispatched = data.get("dispatched") or {"day": "", "n": 0, "warned": False}
         self.reviews = data.get("reviews") or []    # pull requests the Reviewer read
-        self.health = {}                            # intern id -> latest check, memory only
+        self.pr_seen = data.get("pr_seen") or {}    # "number:head sha" -> when it was reviewed (restarts do not re-review)
+        self._next_sweep = 0
+        self._sweeping = False
+        self.health = {}                           # intern id -> latest check, memory only
         self.fails = {}                             # intern id -> failed checks in a row
         self._next_check = 0
         self._checking = False
@@ -197,6 +217,7 @@ class Chain:
                 "roles": self.roles, "interns": self.interns, "incidents": self.incidents[-200:],
                 "runs": self.runs, "rounds": self.rounds, "settings": self.settings, "dispatched": self.dispatched,
                 "reviews": self.reviews[-50:],
+                "pr_seen": dict(sorted(self.pr_seen.items(), key=lambda kv: kv[1])[-300:]),
             })
 
     # ---- people ---------------------------------------------------------------------
@@ -352,7 +373,7 @@ class Chain:
                 started.append(r)
         return started
 
-    def request_review(self, url, by="bojjifomo", cwd="", automatic=False):
+    def request_review(self, url, by="bojjifomo", cwd="", automatic=False, sha=""):
         if not handoff.PR_URL.fullmatch(str(url or "").strip()):
             raise ValueError("give a GitHub pull request link, like https://github.com/owner/repo/pull/12")
         url = url.strip()
@@ -360,7 +381,8 @@ class Chain:
         if not reviewer:
             raise LookupError("appoint a Reviewer in the Chain panel first")
         with self.lock:
-            recent = next((x for x in self.reviews if x["url"] == url and (not x.get("ended") or time.time() - x["started"] < 86400)), None)
+            recent = next((x for x in self.reviews if x["url"] == url and (not x.get("ended") or (
+                not sha and time.time() - x["started"] < 86400))), None)
         if recent and automatic:
             return None
         if recent and not recent.get("ended"):
@@ -371,14 +393,19 @@ class Chain:
             if automatic:
                 return None
             raise RuntimeError("the treasury is empty")
-        brief = REVIEW_BRIEF.format(url=url, by=by, rules=RULES.format(cli=self.cli))
+        sha = str(sha or "").strip()[:40]
+        head = "Review the head commit %s (verify with `gh pr view %s --json headRefOid`).\n\n" % (sha[:7], url) if sha else ""
+        brief = REVIEW_BRIEF.format(url=url, by=by, head=head, rules=RULES.format(cli=self.cli))
         dirs = [cwd] if cwd and os.path.isdir(cwd) else []
         result = self.office.team.ask(reviewer["id"], brief, origin="review", mode=MODE, add_dirs=dirs)
         if not result.get("sid"):
             return None
         with self.lock:
             self.reviews.append({"url": url, "by": by, "reviewer": reviewer["name"], "sid": result["sid"],
-                                 "started": time.time(), "ended": None, "outcome": "", "note": ""})
+                                 "started": time.time(), "ended": None, "outcome": "", "note": "",
+                                 "pr": url.rsplit("/", 1)[-1], "sha": sha})
+            if sha:
+                self.pr_seen["%s:%s" % (url.rsplit("/", 1)[-1], sha)] = time.time()
             self.reviews = self.reviews[-50:]
             self.runs[result["sid"]] = {"kind": "review", "url": url}
             if automatic:
@@ -387,6 +414,59 @@ class Chain:
         self.office.ledger.add("guild", "%s is reviewing %s (opened by %s)" % (reviewer["name"], url, by),
                                by=reviewer["name"], sid=result["sid"])
         return {"who": reviewer["name"], "sid": result["sid"], "run": result.get("run"), "url": url}
+
+    # ---- the sweep: the Reviewer reads every open pull request, once per head commit -----------------------
+    def head_sha(self, url):
+        """The PR's current head commit, or "" when gh cannot say."""
+        try:
+            if not shutil.which("gh"):
+                return ""
+            proc = subprocess.run(["gh", "pr", "view", url, "--json", "headRefOid"], capture_output=True, text=True, timeout=20)
+            return str(json.loads(proc.stdout).get("headRefOid") or "") if proc.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    def open_prs(self):
+        """Open pull requests from gh; [] (quietly) when gh is missing, slow or fails."""
+        try:
+            if not shutil.which("gh"):
+                return []
+            proc = subprocess.run(["gh", "pr", "list", "--repo", PR_REPO, "--state", "open", "--json",
+                                   "number,url,headRefOid,isDraft,title"], capture_output=True, text=True, timeout=30)
+            if proc.returncode != 0:
+                raise RuntimeError((proc.stderr or "gh failed").strip()[:120])
+            data = json.loads(proc.stdout or "[]")
+            return [p for p in data if isinstance(p, dict)] if isinstance(data, list) else []
+        except Exception as e:
+            print("pr sweep: gh unavailable (%s)" % str(e)[:120])
+            return []
+
+    def sweep_prs(self):
+        """Start a review for each non-draft open PR whose head commit has not been reviewed. Returns the reviews started."""
+        if not self.settings.get("auto_review_prs") or not self.settings.get("auto_review") or not self.holder("reviewer"):
+            return []
+        started = []
+        for pr in sorted(self.open_prs(), key=lambda p: p.get("number") or 0):
+            if len(started) >= PR_SWEEP_MAX:
+                break
+            url, sha, number = str(pr.get("url") or ""), str(pr.get("headRefOid") or ""), pr.get("number")
+            if pr.get("isDraft") or not sha or not number or not handoff.PR_URL.fullmatch(url):
+                continue
+            with self.lock:
+                if "%s:%s" % (number, sha) in self.pr_seen:
+                    continue
+                if any(x["url"] == url and (not x.get("ended") or (not x.get("sha") and time.time() - x["started"] < 86400))
+                       for x in self.reviews):
+                    continue   # one is in flight, or a guild run's own review of this PR just happened
+            try:
+                r = self.request_review(url, by="the open-PR sweep", automatic=True, sha=sha)
+            except Exception as e:
+                self.office.ledger.add("guild", "No review for %s: %s" % (url, str(e)[:120]), by="Chain")
+                continue
+            if not r:
+                break   # treasury empty or the daily dispatch limit: try again next sweep
+            started.append(r)
+        return started
 
     # ---- START HERE FIRST: the setup, checked from the real state -------------------------------------------
     def start_steps(self):
@@ -711,7 +791,7 @@ class Chain:
         fields = dict(name=i["name"], iid=inc["id"], iid_intern=i["id"], opened=now_text(inc["opened"]),
                       project=i["project"], checks=self.checks_text(i) if "launchd" in i else "unknown",
                       reasons="; ".join(inc["reasons"]), history=history, cli=self.cli,
-                      rules=RULES.format(cli=self.cli))
+                      rules=rules_for(level, self.cli))
         if level == "warden":
             brief = WARDEN_BRIEF.format(**fields)
         else:
@@ -827,18 +907,18 @@ class Chain:
             data = report.build(self.office, 7)
             brief = BUDGET_BRIEF.format(when=when, report=report.text(data) + "\n\n" + self.scorecard_text(7),
                                         guide=report.MODEL_GUIDE, cli=self.cli,
-                                        rules=RULES.format(cli=self.cli))
+                                        rules=rules_for("ceo", self.cli))
         elif kind == "innovator":
             month = time.time() - 30 * 86400
             recent = [x for x in self.incidents if x["opened"] >= month]
             incidents = "\n".join("- %s %s: %s (%s)" % (now_text(x["opened"]), x["name"], "; ".join(x["reasons"])[:160],
                                                         x["status"]) for x in recent) or "- none"
             brief = INNOVATOR_BRIEF.format(when=when, situation=self.situation(), incidents=incidents,
-                                           cli=self.cli, rules=RULES.format(cli=self.cli))
+                                           cli=self.cli, rules=rules_for("innovator", self.cli))
         else:
             label = {"ops": "operations", "ceo": "CEO"}[kind]
             brief = ROUND_BRIEF.format(role=ROLE_NAMES[role], kind=label, when=when, takeover=takeover,
-                                       situation=self.situation(), rules=RULES.format(cli=self.cli))
+                                       situation=self.situation(), rules=rules_for(role, self.cli))
         result = self.office.team.ask(who["id"], brief, origin="chain", mode=MODE, add_dirs=dirs)
         if not result.get("sid"):
             raise RuntimeError("the treasury held the round back")
@@ -957,6 +1037,20 @@ class Chain:
                     with self.lock:
                         self.rounds["budget"] = dict(r, started=now, error=str(e)[:200])
                         self.save()
+        if self.settings.get("auto_review_prs") and not self._sweeping and now >= self._next_sweep and self.holder("reviewer"):
+            self._next_sweep = now + self.settings["pr_sweep_minutes"] * 60
+            self._sweeping = True
+
+            def sweep():
+                try:
+                    self.sweep_prs()
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    self._sweeping = False
+
+            threading.Thread(target=sweep, daemon=True, name="chain-pr-sweep").start()
         if self.holder("innovator"):
             r = self.rounds.get("innovator") or {}
             if not r.get("running") and now - r.get("started", 0) >= self.settings["innovator_every_days"] * 86400:
@@ -972,6 +1066,13 @@ class Chain:
         limit = self.settings["stuck_minutes"] * 60
         stuck = []
         with self.lock:
+            for rv in self.reviews:   # a review that never reports back is failed, so its commit can be tried again
+                if not rv.get("ended") and now - rv.get("started", now) > limit:
+                    rv.update(ended=now, outcome="failed", note="stuck for over %d minutes" % self.settings["stuck_minutes"])
+                    self.runs.pop(rv.get("sid"), None)
+                    if rv.get("pr") and rv.get("sha"):
+                        self.pr_seen.pop("%s:%s" % (rv["pr"], rv["sha"]), None)
+                    self.save()
             for inc in self.incidents:
                 if inc["status"] == "resolved":
                     continue
@@ -1008,6 +1109,8 @@ class Chain:
                 rv = next((x for x in self.reviews if x.get("sid") == run.sid), None)
                 if rv:
                     rv.update(ended=time.time(), outcome=result["outcome"], note=result["note"] or summary[:300])
+                    if result["outcome"] == "failed" and rv.get("pr") and rv.get("sha"):
+                        self.pr_seen.pop("%s:%s" % (rv["pr"], rv["sha"]), None)   # a failed review is tried again
                 self.save()
             elif entry["kind"] == "round":
                 kind = entry["round"]
@@ -1033,8 +1136,9 @@ class Chain:
                 verdict = {"done": "safe to merge", "blocked": "do not merge yet", "needs-you": "needs your decision",
                            "failed": "the review did not finish"}[result["outcome"]]
                 note = rv.get("note") or ""
-                self.office.ledger.add("guild", "%s %s reviewed %s: %s%s" % (
-                    handoff.ICON[result["outcome"]], rv["reviewer"], rv["url"], verdict, (" - " + note[:200]) if note else ""),
+                self.office.ledger.add("guild", "%s %s reviewed %s%s: %s%s" % (
+                    handoff.ICON[result["outcome"]], rv["reviewer"], rv["url"],
+                    (" (PR #%s %s)" % (rv["pr"], rv["sha"][:7])) if rv.get("sha") and rv.get("pr") else "", verdict, (" - " + note[:200]) if note else ""),
                     by=rv["reviewer"], sid=run.sid)
                 self.office.notify("PR review: %s" % verdict, "%s · %s" % (rv["url"].split("github.com/")[-1], note[:140]),
                                    tag="review-" + run.sid[:8], url="/#s=" + run.sid)
@@ -1074,7 +1178,7 @@ class Chain:
     def configure(self, changes):
         with self.lock:
             for key, value in changes.items():
-                if key in ("auto", "auto_review"):
+                if key in ("auto", "auto_review", "auto_review_prs"):
                     self.settings[key] = bool(value)
                 elif key == "allowed_models":
                     picked = [m for m in MODEL_CHOICES if isinstance(value, (list, tuple)) and m in value]
@@ -1117,7 +1221,7 @@ class Chain:
                 "open": sum(1 for x in self.incidents if x["status"] != "resolved"),
                 "needs_you": sum(1 for x in self.incidents if x["status"] == "needs-you"),
                 "dispatched": self.dispatched, "guard": self.guard_view(),
-                "reviews": list(reversed(self.reviews[-10:])), "start": self.start_steps(),
+                "reviews": list(reversed(self.reviews[-30:])), "start": self.start_steps(),
             }
 
     def guard_view(self):
@@ -1131,3 +1235,55 @@ class Chain:
             return {"open": sum(1 for x in self.incidents if x["status"] != "resolved"),
                     "needs_you": sum(1 for x in self.incidents if x["status"] == "needs-you"),
                     "ops_down": self.ops_down() if self.holder("ops") else False}
+
+    def open_incidents(self):
+        with self.lock:
+            return [dict(x) for x in self.incidents if x["status"] != "resolved"]
+
+    # ---- the server room: every program bojjifomo runs, checked in the background --------------------
+    PROGRAMS_EVERY = 90
+
+    def programs(self):
+        """Known programs with their health: registered interns use their last check, the rest a cached probe."""
+        now = time.time()
+        with self.lock:
+            cached = getattr(self, "_programs", None)
+            stale = not cached or now - cached["at"] > self.PROGRAMS_EVERY
+            busy = getattr(self, "_programs_busy", False)
+            if stale and not busy:
+                self._programs_busy = True
+                threading.Thread(target=self._probe_programs, daemon=True, name="programs").start()
+            rows = list((cached or {"rows": []})["rows"])
+        for r in rows:
+            i = self.intern(r["name"])
+            if i:
+                h = self.health.get(i["id"])
+                r["intern"] = True
+                if h:
+                    r["ok"], r["reasons"] = h["ok"], h["reasons"]
+        up = sum(1 for r in rows if r.get("ok"))
+        return {"rows": rows, "up": up, "trouble": sum(1 for r in rows if r.get("ok") is False), "total": len(rows),
+                "checked": (cached or {}).get("at", 0)}
+
+    def _probe_programs(self):
+        rows = []
+        try:
+            try:
+                jobs = self.office.familiars.jobs()
+            except Exception:
+                jobs = []
+            for k in self.known_interns():
+                probe = {"id": "probe-" + secrets.token_hex(3), "name": k["name"], "project": k["project_path"],
+                         "launchd": k["launchd"], "url": k["url"], "fresh": k["fresh"], "fresh_hours": k["fresh_hours"]}
+                try:
+                    result = self.check(probe, jobs)
+                except Exception as e:  # noqa: BLE001
+                    result = {"ok": False, "reasons": [str(e)[:120]]}
+                with self.lock:
+                    self.health.pop(probe["id"], None)
+                rows.append({"name": k["name"], "ok": result["ok"], "reasons": result["reasons"], "project": k["project_label"],
+                             "url": k["url"], "launchd": k["launchd"], "intern": k["added"], "warden": k["warden_name"]})
+        finally:
+            with self.lock:
+                self._programs = {"rows": rows, "at": time.time()}
+                self._programs_busy = False

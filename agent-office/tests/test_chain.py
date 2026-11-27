@@ -318,6 +318,30 @@ class ChainCase(unittest.TestCase):
         self.assertIn("RUNBOOK.md", roster.WARDENS["lyra"]["instructions"])
         self.assertIn("never merge", roster.WARDENS["thorne"]["instructions"].replace("you never merge", "never merge"))
 
+    def test_only_aurelian_may_merge_under_strict_rules(self):
+        import roster
+        ceo = roster.PRESETS["ceo"]["instructions"]
+        self.assertIn("## Merging pull requests", ceo)
+        for needle in ("gh pr merge <n> --repo Bojjifomo/Capstone1 --squash", "RESULT: done - safe to merge", "head SHA",
+                       "python3 -m unittest discover -s tests", "not authored by you", "mergeable", "do not resolve it yourself",
+                       ".env", "wallets", "fundgate.py", "fundaccess.py", "fund/", "guard.py", "server.py",
+                       "these merge rules themselves", "Never force-push", "main", "batches", "office merge", "`merge`"):
+            self.assertIn(needle, ceo, "Aurelian is missing %r" % needle)
+        self.assertIn("Aurelian merges what you mark safe", roster.WARDENS["thorne"]["instructions"])
+        for key, p in list(roster.PRESETS.items()) + list(roster.WARDENS.items()):
+            if p["name"] == "Aurelian":
+                continue
+            self.assertNotIn("Merging pull requests", p["instructions"], p["name"])
+            self.assertNotIn("gh pr merge", p["instructions"], p["name"])
+        self.assertIn("Merge to main", roster.PRESETS["ops"]["instructions"])
+        self.assertNotIn("Merge to main", ceo)
+        # the briefs: only the CEO's carries the exception
+        self.assertIn("Never merge to main, never force-push", chain.rules_for("ops", "office"))
+        self.assertIn("Never merge to main, never force-push", chain.rules_for("warden", "office"))
+        self.assertNotIn("Aurelian", chain.rules_for("innovator", "office"))
+        self.assertIn("only Aurelian", chain.rules_for("ceo", "office"))
+        self.assertIn("you never merge", chain.REVIEW_BRIEF)
+
     def test_every_role_fits_the_hire_form_without_being_cut(self):
         import roster
         everyone = list(roster.PRESETS.values()) + list(roster.WARDENS.values()) + roster.TEMPLATES

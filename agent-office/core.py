@@ -15,6 +15,8 @@ import gateway
 import grok
 import guard
 import handoff
+import limits
+import money
 import panels
 import personas
 import petitions
@@ -24,6 +26,7 @@ import raids
 import runner
 import sessions
 import store
+import system
 import team
 import weather
 import webhooks
@@ -50,6 +53,14 @@ def plain(text, limit=140):
     return text if len(text) <= limit else text[:limit - 1] + "\u2026"
 
 
+TEAM_NOTE = """
+
+## Your teammates for this task
+
+bojjifomo picked these teammates for you: {names}. Hand them the pieces that fit their role with
+`{cli} ask <name> "<self-contained brief>" --no-wait` and collect each answer with `{cli} result <session-id>`.
+Check what comes back before you build on it, and say in your report who did what."""
+
 STARTED_AS = {"cli": "Terminal", "sdk-cli": "Agent Office", "claude-desktop": "Claude app", "remote": "Remote control",
               "sdk-ts": "SDK", "sdk-py": "SDK", "claude-vscode": "VS Code", "mcp": "MCP"}
 
@@ -73,6 +84,7 @@ class Office:
         self.archived = store.load("archived.json", {})
         self.assigned = store.load("assignments.json", {})  # sid -> division
         self.model_prefs = store.load("models.json", {})    # sid -> model for messages sent from here
+        self.effort_prefs = store.load("efforts.json", {})  # sid -> effort for messages sent from here
         self.eco = eco.Eco()                                # quests whose Opus lead only plans and reviews
         self.chat_runs = {}                                 # sid -> who, for runs started from the guild chat
         self.flags = {}  # sid -> (ts, message), from the Notification hook; memory only
@@ -91,6 +103,7 @@ class Office:
         self.weather = weather.Weather()
         self.familiars = panels.Familiars(cfg)
         self.vault = panels.Vault()
+        self.money = money.Money(self)
         self.chain = chain.Chain(self, cli=str(Path(__file__).resolve().parent / "tools" / "office"))
         self.gateway = gateway.Gateway(cfg)
         self.grok = grok.Engine(cfg, self) if grok.ready(cfg) else None
@@ -169,6 +182,7 @@ class Office:
             info["staff"] = self.team.staff_for_session(t)
         info["division"] = self.assigned.get(t.id, "")
         info["model_pref"] = self.model_prefs.get(t.id, "")
+        info["effort_pref"] = self.effort_prefs.get(t.id, "")
         info["eco"] = self.eco.has(t.id)
         info["pay"] = t.pay()
         info["last_tool"] = t.last_tool
@@ -309,12 +323,80 @@ class Office:
         self.eco.set(sid, bool(on))
         return {"eco": self.eco.has(sid), "lead": self.chain.pick_model(eco.LEAD)}
 
-    def send(self, sid, text, mode, model="", code_id="", code="", now_please=False):
+    def set_eco_all(self, on):
+        self.eco.set_all(bool(on))
+        return self.eco_public()
+
+    def eco_public(self):
+        allowed = self.chain.allowed()
+        helpers = [m for m in eco.HELPERS if m in allowed] or ["sonnet"]
+        return {"all": self.eco.all, "lead": self.chain.pick_model(eco.LEAD), "helpers": helpers,
+                "sessions": len(self.eco.sids)}
+
+    def set_effort_pref(self, sid, effort):
+        if effort not in runner.EFFORTS:
+            raise Refused("pick low, medium, high, xhigh, max, or leave it as it is")
+        with self.lock:
+            if effort:
+                self.effort_prefs[sid] = effort
+            else:
+                self.effort_prefs.pop(sid, None)
+            store.save("efforts.json", self.effort_prefs)
+
+    # ---- the header: health, limits, alerts ------------------------------------
+    def health(self):
+        try:
+            can_free = sum(c.get("bytes") or 0 for c in self.vault.report().get("cleaners", []))
+        except Exception:
+            can_free = 0
+        return system.snapshot(can_free)
+
+    def alerts(self, sessions=None):
+        """Everything that wants bojjifomo's attention, newest first: sessions, incidents, bots, petitions, budget."""
+        out = []
+        for s in (sessions if sessions is not None else self.all_sessions()):
+            if s["status"] == "needs":
+                out.append({"kind": "needs", "title": s["name"], "text": s.get("note") or "needs you", "sid": s["id"],
+                            "ts": s.get("active") or 0})
+        try:
+            for inc in self.chain.open_incidents():
+                out.append({"kind": "incident", "title": inc["name"] + " is down", "text": "; ".join(inc.get("reasons") or [])[:200],
+                            "ts": inc.get("opened") or 0, "href": "#chain", "level": inc.get("level") or ""})
+        except Exception:
+            pass
+        try:
+            for j in self.familiars.jobs():
+                if j["failed"] and not j["ours"]:
+                    out.append({"kind": "bot", "title": j["label"].replace("com.", ""), "text": "exit %s %s" % (j["exit"], (j.get("error") or "")[:160]),
+                                "ts": j.get("last_run") or 0, "href": "#bots"})
+        except Exception:
+            pass
+        try:
+            n = self.petitions.pending_count()
+            if n:
+                out.append({"kind": "petition", "title": "%d petition%s waiting" % (n, "" if n == 1 else "s"), "text": "updates the team proposed",
+                            "ts": time.time(), "href": "#petitions"})
+        except Exception:
+            pass
+        try:
+            gold = self.economy.snapshot()
+            if gold.get("paused"):
+                out.append({"kind": "budget", "title": "Daily budget spent", "text": "%d waiting" % len(gold.get("queue") or []),
+                            "ts": time.time(), "href": "#usage"})
+        except Exception:
+            pass
+        out.sort(key=lambda a: -(a.get("ts") or 0))
+        return out[:60]
+
+    def send(self, sid, text, mode, model="", code_id="", code="", now_please=False, effort=""):
         if model == "grok":
-            raise Refused("a Claude Code quest cannot switch to Grok; give the errand to a Grok guild member")
+            raise Refused("a Claude Code session cannot switch to Grok; give the errand to a Grok teammate")
         self.check_offered(model)
+        if effort not in runner.EFFORTS:
+            raise Refused("unknown effort")
         pref = self.model_prefs.get(sid, "")
         model = model or (pref if pref in self.chain.allowed() else "")   # a saved choice that is no longer offered is ignored
+        effort = effort or self.effort_prefs.get(sid, "")
         text = str(text).strip()
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write a message (up to %d characters)" % runner.MAX_TEXT)
@@ -327,9 +409,9 @@ class Office:
         self.check_mode(mode, "bypass:" + sid, code_id, code)
         status, _ = self.status(t, live, time.time())
         if self.runner.active(sid) or (status == "working" and not now_please):
-            return {"queued": self.runner.enqueue(sid, text, mode, model)}
-        model, system = self.eco_run(sid, model)
-        run = self.runner.start(sid, t.cwd, text, mode, model=model, system=system)
+            return {"queued": self.runner.enqueue(sid, text, mode, model, effort)}
+        model, system_prompt = self.eco_run(sid, model)
+        run = self.runner.start(sid, t.cwd, text, mode, model=model, system=system_prompt, effort=effort)
         return {"run": run.id}
 
     def send_now(self, sid, qid):
@@ -344,8 +426,9 @@ class Office:
         if live and live.get("desktop"):
             self.runner.put_back(sid, item)
             raise Refused("open in the Claude app", desktop=True)
-        model, system = self.eco_run(sid, item.get("model", ""))
-        run = self.runner.start(sid, t.cwd, item["text"], item["mode"], model=model, system=system)
+        model, system_prompt = self.eco_run(sid, item.get("model", ""))
+        run = self.runner.start(sid, t.cwd, item["text"], item["mode"], model=model, system=system_prompt,
+                                effort=item.get("effort", ""))
         return {"run": run.id}
 
     def projects(self):
@@ -390,10 +473,18 @@ class Office:
         raise Refused("unknown project folder")
 
     def new_job(self, pid, text, mode, model="", code_id="", code="", system="", helper=False, origin="phone",
-                external=False, override=False, from_queue=False, add_dirs=(), eco_mode=False):
+                external=False, override=False, from_queue=False, add_dirs=(), eco_mode=False, effort="", team=()):
         text = str(text).strip()
-        if eco_mode:
+        if effort not in runner.EFFORTS:
+            raise Refused("unknown effort")
+        if eco_mode or (self.eco.all and not helper):
+            eco_mode = True
             model, system = self.chain.pick_model(eco.LEAD), self.eco_prompt()
+        if team and not helper:
+            names = [n for n in (self.team.find(x) or {} for x in team) if n]
+            if names:
+                system = (system or "") + TEAM_NOTE.format(cli=self.chain.cli, names=", ".join(
+                    "%s (%s)" % (n["name"], n["role"]) for n in names))
         self.check_offered(model)
         if not text or len(text) > runner.MAX_TEXT:
             raise Refused("write the first message (up to %d characters)" % runner.MAX_TEXT)
@@ -403,6 +494,7 @@ class Office:
             held = self.economy.consider(external, override, "job", text[:80], {
                 "project": pid, "text": text, "mode": mode, "model": model, "system": system,
                 "helper": bool(helper), "origin": origin, "add_dirs": list(add_dirs or ()), "eco": bool(eco_mode),
+                "effort": effort, "team": list(team or ()),
             })
             if held:
                 if held.get("blocked"):
@@ -412,7 +504,7 @@ class Office:
         if eco_mode:
             self.eco.set(sid, True)
         run = self.runner.start(sid, path, text, mode, new=True, model=model, system=system,
-                                origin=origin, helper=helper, add_dirs=add_dirs)
+                                origin=origin, helper=helper, add_dirs=add_dirs, effort=effort)
         if system:
             self.raids.begin(sid, text)
         return {"run": run.id, "sid": sid}
@@ -428,7 +520,8 @@ class Office:
         return self.new_job(payload.get("project") or "", payload.get("text") or "", payload.get("mode") or "acceptEdits",
                             model=payload.get("model") or "", system=payload.get("system") or "",
                             helper=bool(payload.get("helper")), origin=payload.get("origin") or "queue",
-                            from_queue=True, add_dirs=payload.get("add_dirs") or (), eco_mode=bool(payload.get("eco")))
+                            from_queue=True, add_dirs=payload.get("add_dirs") or (), eco_mode=bool(payload.get("eco")),
+                            effort=payload.get("effort") or "", team=payload.get("team") or ())
 
     def pump(self):
         """Start queued messages for sessions that have gone quiet."""
@@ -446,8 +539,9 @@ class Office:
                 continue
             item = self.runner.take(sid)
             try:
-                model, system = self.eco_run(sid, item.get("model", ""))
-                self.runner.start(sid, t.cwd, item["text"], item["mode"], model=model, system=system)
+                model, system_prompt = self.eco_run(sid, item.get("model", ""))
+                self.runner.start(sid, t.cwd, item["text"], item["mode"], model=model, system=system_prompt,
+                                  effort=item.get("effort", ""))
             except Exception:
                 self.runner.put_back(sid, item)
 

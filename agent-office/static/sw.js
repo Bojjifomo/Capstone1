@@ -9,7 +9,7 @@ self.addEventListener("push", (event) => {
     if (!data.title) {
       try { data = await (await fetch("/api/push/last")).json(); } catch (e) { data = {}; }
     }
-    await self.registration.showNotification(data.title || "The Guild Hall", {
+    await self.registration.showNotification(data.title || "Agent Office", {
       body: data.body || "",
       tag: data.tag || "office",
       data: { url: typeof data.url === "string" && data.url.startsWith("/") ? data.url : "/" },

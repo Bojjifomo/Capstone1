@@ -1,7 +1,7 @@
 // Usage dashboard: where the gold goes, who could run on a cheaper model, what the CEO changed.
 "use strict";
 
-const KIND_NAME = { you: "You", chain: "Chain", guild: "Guild" };
+const KIND_NAME = { you: "You", chain: "Chain", office: "Office" };
 const FAMILY_NAME = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku", other: "Other" };
 const IDEA_TAG = { likely: "likely", try: "worth a try", setting: "setting", habit: "habit" };
 
@@ -55,14 +55,14 @@ function scorecardHTML(sc) {
     `<td>${Object.entries(p.outcomes).filter(([o]) => o !== "done").map(([o, n]) => `${{ blocked: "⛔", "needs-you": "🙋", failed: "❌" }[o] || o} ${n}`).join(" ") || ""}</td></tr>`).join("");
   return `<section class="panel-sec"><h3>Scorecard · ${sc.days} days</h3>` +
     (rows ? `<div class="score-wrap"><table class="score"><thead><tr><th>Who</th><th>Runs</th><th>Done</th><th>Avg $</th><th>Avg time</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
-      : `<p class="sub">No guild runs in this window yet.</p>`) +
+      : `<p class="sub">No office runs in this window yet.</p>`) +
     `<p class="sub">Incidents: ${i.opened} opened, ${i.fixed} fixed${i.median_minutes != null ? ` (median ${i.median_minutes} min)` : ""}, ${i.reached_you} reached you.` +
     ` Reviews: ${sc.reviews.count} (${sc.reviews.safe} safe, ${sc.reviews.blocked} blocked).</p>` +
     `<p class="hint">Done counts the RESULT line each run ends with. Under 70% done is worth a look: clearer briefs, or a stronger model.</p></section>`;
 }
 
 Hooks.panels.report = {
-  title: "Where the gold goes",
+  title: "Usage",
   subtitle: "Usage by person, kind of work, model and project, and what could run cheaper.",
   icon: '<span class="panel-icon">📊</span>',
   async render(body) {
@@ -96,7 +96,7 @@ Hooks.panels.report = {
           (review && review.summary ? `<details><summary>Their last review</summary><div class="md">${MD.render(review.summary)}</div></details>` : "") +
           `<div class="btn-row"><button type="button" class="btn primary" data-panel-act="chain-round" data-kind="budget">Ask the CEO to review now</button>` +
           (review && review.sid ? `<button type="button" class="btn" data-sid="${esc(review.sid)}">Open the review</button>` : "") + `</div>`
-          : `<p class="sub">Recruit the CEO in ⚜️ Chain first.</p>`) + `</section>` : "") +
+          : `<p class="sub">Hire the CEO in the Org chart first.</p>`) + `</section>` : "") +
       `<p class="hint">${esc(r.note)}</p>`;
     applyBars(body);
   },

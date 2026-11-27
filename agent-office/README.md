@@ -1,11 +1,10 @@
-# Agent Office: the Guild Hall
+# Agent Office
 
-A small web dashboard on the Mac. Every Claude Code session is an adventurer at a quest table,
-and you can check on them and give them orders from your phone.
+A small web dashboard on the Mac. Every Claude Code session and every hired specialist is a person in a pixel
+office on your phone: at a desk when they work, on the phone when they need you, in the lounge on a break. The
+header shows what needs you, the Mac's health, your Claude limits and what the office earns.
 
 Python 3 standard library only, plain HTML/CSS/JS, no build step, no frameworks.
-
-![The guild town at night](docs/screens/town-night.png)
 
 ## Install / update on the Mac
 
@@ -19,9 +18,9 @@ office install-hook     # optional: exact "needs you" when a session waits on a 
 Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 
 * Mac: `http://127.0.0.1:7777`
-* Phone over Tailscale: `http://100.89.176.76:7777`
+* Phone over Tailscale: `http://<tailscale-ip>:7777` (`install.sh` prints the real address)
 * Push notifications and the home-screen app need https. Run `tailscale serve --bg --https=443 http://127.0.0.1:7777`
-  once, open `https://<your-mac>.<tailnet>.ts.net` on the phone, Share → Add to Home Screen, then 🪶 → *Send ravens to this phone*.
+  once, open `https://<your-mac>.<tailnet>.ts.net` on the phone, Share → Add to Home Screen, then ⚙︎ → *Notify this phone*.
   `install.sh` puts that ts.net name in the Host allowlist for you.
 * An external assistant on the public internet is a different door. See [External access](#external-access-tailscale-funnel). Funnel and Serve cannot share a port, so leave Serve on 443 for the phone.
 
@@ -29,24 +28,51 @@ Restart: `launchctl kickstart -k gui/$(id -u)/com.bojjifomo.agent-office`
 
 | Part | What it does |
 | --- | --- |
-| The town | An HD-2D pixel town (drawn in code, no assets): the Guild Hall on the plaza holds your lead sessions, each division is its own building. Agents write at desks, read by the fire, sleep in bed, and walk the road with a scroll when they carry an errand. Day and night follow the clock; tap a building to go inside, tap someone to open them. Under the map, the guild chat (All / Guild / System / Chatter) |
-| Life in town | Every agent has a fantasy persona (name, kin and calling, age, quirk, home town, bio, motto). Idle agents walk to **the Tavern** for a break and back to their desk when work starts; they chatter in speech bubbles ("Who broke main?" / "Not me!"). Sessions can be moved into a division's building. Tapping a building shows its roster |
-| Profile card | Top of every sheet: persona plus Started as, Division, Project, Branch, Model, Pay today / 7 days / 30 days, Last activity, Last tool, Folder. **✨ Summarize with Haiku** and **✨ Suggest replies** run one-shot Haiku calls (no tools, nothing saved) |
-| The hall | Sessions from `~/.claude/projects` and `ps`: questing (working), awaiting your word (a real question, AskUserQuestion, plan approval or a permission prompt), resting, returned, archived |
-| Sheet | Recent conversation as light markdown with copy buttons, a message box, a queue (Send now / Remove), Stop |
-| Post a quest | New session in a known project folder, a permission mode, a model, optional party leader (project manager) mode |
-| 🌿 Eco mode | A checkbox on Post a quest and a button on any quest's profile: the lead runs on Opus and only plans and reviews; Haiku and Sonnet subagents do the work (see below) |
-| The guild | Recruited specialists in `~/Agents/<name>`, grouped into division wings; `office team / who / ask / result` |
-| Chain of command | ⚜️ Chain: your programs as **interns** with health checks, a **warden** for each, the **Innovator**, the **Operations Manager** (orchestrator) and the **CEO** as its backup. Broken interns climb warden → ops → CEO → your phone. See [Chain of command](#chain-of-command) |
-| Petitions | Update proposals from the guild (`office propose`): read the plan, then Approve & build (a quest that ends in a PR, never a merge), Approve for later, or Reject with a note |
-| Usage | 📊 Usage: where the gold goes by person, kind of work (you / chain / guild), model and project, with savings ideas priced from the same tokens and one-tap model switches. See [Usage control](#usage-control) |
-| Treasury | Tokens and estimated cost per day, model and session |
-| Familiars | Your launchd jobs: running, last run, last error, Run now |
-| Vault | Free space, the biggest folders, six fixed cleaners (each needs a phone seal) |
-| Scrying | Search across every transcript |
-| Ledger | Every action taken from the page, and every token call from outside: messages, quests, errands, seals, cleaners |
-| 💰 Fund | Opens the Fund app (`../fund`: net worth, expenses, recommendations) at `/fund/` on this same address. See [The Counting House](#the-counting-house) |
-| Ravens & seals | Web push to your phone; one-time 6-digit seals for risky actions |
+| Header | The time and greeting; **working / need you / bots up / in trouble** tiles; the Mac's health (disk free, what the cleaners could free, CPU, memory, swap, uptime, last Time Machine backup); your Claude plan limits (session and week, with reset times) and today's spend at API prices; the **🌱 Eco** switch; *Find someone…*; **+ New** and **★ Hire**; People / Chat / Alerts tabs; one chip per project |
+| The map | A top-down pixel office drawn in code: a reception, one room per division (desks, monitors, whiteboard, plants, water cooler), a **Lounge** for people on a break and a **Server room** whose racks blink green or red for every program you run. People walk the corridors when their state changes, type at their desk while working, stand with the phone and a bouncing **!** when they need you, and chatter in speech bubbles. Tap a person to open them, tap a room's plate to filter the list below |
+| Division chips | Per division: people, working, need you, today's cost. Plus Lounge, Server room and Off (gone home) |
+| Money | Income sources from `money.json` (a URL, a command or a file that answers JSON), fixed costs, Earned / Net for Today / 7 days / 30 days, and *Claude at API prices* beside it. See [Money](#money) |
+| Payroll ranking | Who cost the most at API prices (Today / 7 days / 30 days) and the same per division |
+| Everyone | Every session and specialist in one list: name, role, kind (Your chat / Specialist / seat), project tag, status, how it runs. Filters, the header search box, and a Remove mode |
+| Chat | The office chat under the map (All / Office / System / Chatter / External / Orders). Type an order: plain text goes to the Operations Manager, `@Name` to one person, `/help` for commands (`/eco on`, `/check`, `/fix`, `/review`, `/round`, `/status`) |
+| Alerts | Everything that needs you: sessions with a question, open incidents, failed launchd jobs, proposals waiting, a spent budget |
+| New session | Project, **Team** (Haiku suggests teammates from your task; tick to change), permissions, **model and effort** (`--effort low…max`), the first message, Eco mode, PM mode |
+| Hire a specialist | Name, role, division (automatic from the role), standing instructions, model and effort (**Auto** lets Sonnet size the job), **✨ Fill in and polish with Sonnet**. They get a folder in `~/Agents/<name>` with their own memory |
+| Session sheet | Profile card (model, effort and eco pickers, pay, folder), the conversation as light markdown, a message box, a queue, Stop |
+| Org chart | Your programs as **interns** with health checks, a **warden** for each, the **Innovator**, the **Operations Manager** and the **CEO** as its backup. Broken interns climb warden → ops → CEO → your phone. See [Chain of command](#chain-of-command) |
+| Proposals | Update proposals from the team (`office propose`): read the plan, then Approve & build (a session that ends in a PR, never a merge), Approve for later, or Reject with a note |
+| Usage / Budget | Usage by person, kind of work, model and project with savings ideas; tokens and cost per day; the daily budget. See [Usage control](#usage-control) |
+| Programs | The server room (every known program: up / in trouble / why) and every launchd job on the Mac |
+| Disk / Search / Log | Free space and safe cleaners (each needs a phone code); search across every transcript; everything done from the page |
+| 💰 Fund | Opens the Fund app (`../fund`) at `/fund/` on this same address. See [Finance](#the-counting-house) |
+
+## Money
+
+`money.json` next to `server.py` (written on the Mac, never from the phone):
+
+```json
+{
+  "refresh_minutes": 15,
+  "fixed_monthly_usd": 7.89,
+  "sources": [
+    {"name": "Robinhood LP", "url": "http://127.0.0.1:7799/api/lp", "link": "http://127.0.0.1:8892/"},
+    {"name": "DLMM (Meteora)", "cmd": ["python3", "-m", "dlmm_terminal", "pnl", "--json"], "cwd": "~/Projects/Capstone1"},
+    {"name": "Widgetax fees", "file": "~/Projects/widgetax/earnings.json", "path": "earnings.usd"}
+  ]
+}
+```
+
+Each source answers JSON with `today`, `week` and `month` in USD (`7d` / `30d` also work; a bare number counts as
+today; `note` is shown under the amount). Commands run without a shell, from `cwd`, with a timeout. A source that
+fails keeps its last values and shows the error. **Earned** is the sum, **Fixed costs** spread the monthly figure over
+the window, **Net** is the difference, and **Claude at API prices** is what the same work would have cost at list
+prices (from the transcripts), so the size of the work stays visible even on a subscription.
+
+## Claude limits
+
+The header reads your plan's session (5 h) and week windows from the usage endpoint Claude Code itself uses, with the
+login it keeps in the macOS keychain (or `~/.claude/.credentials.json`). The token never leaves the server and is never
+logged. Refreshed every five minutes; `"limits": false` in `config.json` turns it off.
 
 ## Security
 
@@ -355,7 +381,7 @@ Pending petitions older than `petition_expire_days` (default 14, `0` turns it of
 
 After a build quest finishes, a GitHub pull-request URL in its report is stored on the petition. Every `pr_poll_seconds` (default 300, `0` turns it off) the hall asks `gh pr view` when `gh` is on the PATH, otherwise the public GitHub API. `merged` and `closed` update the petition; if GitHub cannot be reached the status stays `building`. A quest that fails before any PR link is `failed`.
 
-## The living town
+## The living office
 
 The clock is Asia/Jakarta, wherever the phone's own zone is set. Adventurers walk the paths to their building when a quest or errand starts, and walk back carrying a little chest when it ends. Resting ones stroll the road. Empty buildings are dimmed; a building with someone at work has lit windows and chimney smoke.
 
@@ -377,7 +403,7 @@ Ranks drive the title in the town: Apprentice at 0 XP, Journeyman at 40, Adept a
 
 `GET /api/quests` and `GET /api/progress` are on the token allowlist.
 
-## The Counting House
+## The Counting House (Finance)
 
 Quill the Treasurer is always on the roster, stationed in the Counting House (breaks at the Tavern, like any idle adventurer). *Write today's brief* or `office brief` runs `python3 -m orchestrator brief` with `ORCHESTRATOR_READ_ONLY=1` and never `--yes`, so write tools are not offered and cannot be confirmed. The report is kept in `orchestrator.json` and a short line is written to the guild log. Set `orchestrator_root` if this install is not sitting next to the `orchestrator` package. Token callers may read `GET /api/orchestrator` and may not start a brief.
 
@@ -445,7 +471,10 @@ python3 -m unittest discover -s tests        # parsing, status rules, security, 
 node tests/shoot.js stage1,stage2,stage4     # phone-width screenshots into docs/screens/
 ```
 
-## 🌿 Eco mode
+## 🌱 Eco mode
+
+The **🌱 Eco** button in the header switches eco on for the whole office: every new session and every message sent
+from here. `office eco on|off` and `/eco on|off` in the chat do the same.
 
 Opus is the most expensive model, so in eco mode it only does what it is best at: planning and reviewing.
 

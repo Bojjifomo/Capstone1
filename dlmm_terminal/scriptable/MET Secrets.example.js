@@ -94,7 +94,7 @@ module.exports = {
   DEFAULT_SIZE_SOL: "",
   // Gates and flags keep the spec's numbers unless you set them here:
   // SPEC_BIN_STEP_MIN 20, SPEC_BIN_STEP_MAX 250, SPEC_MIN_POOL_AGE_MIN 60,
-  // SPEC_MIN_FEE_APR_PCT 1000, SPEC_MAX_PCT_OF_TVL off (a number turns it on), SPEC_FLAG_PUMP_1H_PCT 25,
+  // SPEC_MIN_FEE_APR_PCT 1000, SPEC_MAX_PCT_OF_TVL off (a number turns it on), SPEC_MAX_PUMP_1H_PCT 5 (null = off), SPEC_FLAG_PUMP_1H_PCT 25,
   // SPEC_FLAG_DROP_6H_PCT -17, SPEC_FLAG_MIN_TVL_USD 25000,
   // SPEC_FLAG_NIGHT_FROM 0, SPEC_FLAG_NIGHT_TO 9, SPEC_UTC_OFFSET 7,
   // SPEC_RANGE_BOTTOM_PCT 70.

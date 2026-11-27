@@ -20,15 +20,15 @@ _cache = {}
 _lock = threading.Lock()
 
 
-def ask(cfg, system, text, timeout=60):
-    key = hashlib.sha256((system + "\0" + text).encode()).hexdigest()
+def ask(cfg, system, text, timeout=60, model="haiku"):
+    key = hashlib.sha256((model + "\0" + system + "\0" + text).encode()).hexdigest()
     with _lock:
         if key in _cache:
             return _cache[key]
     claude = runner.find_claude(cfg)
     if not claude:
         raise RuntimeError("claude was not found; set claude_bin in config.json")
-    argv = [claude, "-p", "--model", "haiku", "--no-session-persistence", "--tools", "",
+    argv = [claude, "-p", "--model", model, "--no-session-persistence", "--tools", "",
             "--system-prompt", system, "--output-format", "json"]
     try:
         p = subprocess.run(argv, input=text[-12000:], capture_output=True, text=True, timeout=timeout)

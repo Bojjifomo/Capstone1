@@ -1,0 +1,11 @@
+{
+  "port": 7820,
+  "bind": ["127.0.0.1"],
+  "public_url": "https://mac-mini.tailXXXX.ts.net",
+  "club_name": "HIGROUND RUN CLUB",
+  "intervals_client_id": "",
+  "intervals_client_secret": "",
+  "admins": ["i12345"],
+  "sync_every_minutes": 30,
+  "backfill_days": 730
+}

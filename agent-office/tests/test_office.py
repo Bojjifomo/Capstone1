@@ -199,7 +199,7 @@ class Stage1(ServerCase):
         self.assertEqual(self.request("GET", "/static/%2e%2e/server.py")[0], 404)
         status, body = self.request("GET", "/")
         self.assertEqual(status, 200)
-        self.assertIn(b"Guild Hall", body)
+        self.assertIn(b"Agent Office", body)
 
     def test_security_headers(self):
         conn = http.client.HTTPConnection("127.0.0.1", PORT)
@@ -397,12 +397,12 @@ class Stage3(ServerCase):
     def test_a_hire_unique_names_and_folder(self):
         a = self.hire(name="Lyra")
         self.assertEqual(a["staff"]["name"], "Lyra")
-        self.assertEqual(a["staff"]["title"], "Artificer of the Deep Halls")
-        self.assertEqual(a["staff"]["division"], "The Forge")
+        self.assertEqual(a["staff"]["title"], "Backend Engineer")
+        self.assertEqual(a["staff"]["division"], "Engineering")
         b = self.hire(name="lyra", role="DeFi researcher", instructions="Track LP fee yields on Robinhood Chain.")
         self.assertEqual(b["staff"]["name"], "lyra II")
         self.assertEqual(b["renamed_from"], "lyra")
-        self.assertEqual(b["staff"]["division"], "The Counting House")
+        self.assertEqual(b["staff"]["division"], "Finance")
         c = self.hire(role="Technical writer", instructions="Plain English, short sentences.")
         self.assertEqual(c["staff"]["name"], "Aldric")
         md = (self.home / "Agents" / "lyra" / "CLAUDE.md").read_text()
@@ -413,7 +413,7 @@ class Stage3(ServerCase):
     def test_b_who_and_team_cli(self):
         code, out = self.cli("team")
         self.assertEqual(code, 0, out)
-        self.assertIn("The Forge", out)
+        self.assertIn("Engineering", out)
         code, out = self.cli("who", "research the best LP fee pools")
         self.assertEqual(out.split()[0], "lyra")
         code, out = self.cli("who", "write the release notes")
@@ -757,6 +757,17 @@ class ExternalAccess(ServerCase):
         plain = self.request("GET", "/api/state", host=self.PHONE, headers={"Tailscale-Funnel-Request": "true"})
         self.assertEqual(plain[0], 200)  # only the exact Tailscale marker counts
 
+    def test_ledger_records_a_merge(self):
+        body = {"kind": "merge", "text": "Fix the thing", "pr": "107", "sha": "ABCDEF1234567", "by": "Aurelian"}
+        self.assertEqual(self.call("POST", "/api/ledger", body)[0], 200)
+        self.assertEqual(self.call("POST", "/api/ledger", dict(body, sha="nothex"))[0], 400)
+        self.assertEqual(self.call("POST", "/api/ledger", dict(body, pr="x"))[0], 400)
+        entries = self.call("GET", "/api/ledger")[1]["entries"]
+        merged = [e for e in entries if e.get("kind") == "merge"]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual((merged[0]["text"], merged[0]["pr"], merged[0]["sha"], merged[0]["by"]),
+                         ("Fix the thing", 107, "abcdef1234567", "Aurelian"))
+
     def test_ledger_post_and_audit_origin(self):
         status, body = self.call("POST", "/api/ledger", {"kind": "chatter", "text": "The watch reports all quiet.", "by": "Guild Hall"})
         self.assertEqual(status, 200, body)
@@ -911,7 +922,7 @@ class ChainRoutes(ServerCase):
                             {d["name"]: d["status"] for d in self.post("/api/chain/team", {})[1]["team"]}.values()))
         status, r = self.post("/api/chain/recruit/ops", {})
         self.assertEqual(status, 200, r)
-        self.assertEqual(r["staff"]["title"], "Marshal of the Guild")
+        self.assertEqual(r["staff"]["title"], "Operations Manager")
         roster = self.request("GET", "/api/team")[1]["staff"]
         self.assertIn("Operations Manager", next(s for s in roster if s["id"] == r["staff"]["id"])["chain"])
         self.assertEqual(self.post("/api/chain/interns/%s/warden" % self.request("GET", "/api/chain")[1]["interns"][0]["id"],
@@ -982,7 +993,7 @@ class UsageControl(ServerCase):
         hired = self.post("/api/staff", {"name": "", "role": pick["role"], "instructions": pick["instructions"],
                                          "division": pick["division"], "model": pick["model"]})
         self.assertEqual(hired[0], 200, hired[1])
-        self.assertEqual(hired[1]["staff"]["division"], "The Watchtower")
+        self.assertEqual(hired[1]["staff"]["division"], "Operations")
         roster_now = {s["name"]: s for s in self.request("GET", "/api/team")[1]["staff"]}
         self.assertEqual(roster_now[hired[1]["staff"]["name"]]["role"], pick["role"], "the role is not cut short")
         self.assertEqual(self.post("/api/staff", {"name": "Seatless", "role": "Architect", "instructions": "x",
