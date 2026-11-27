@@ -12,13 +12,12 @@ from rh_terminal import activity, chain, filters, portfolio, settings
 from rh_terminal.cli import read_secrets
 
 CFG = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
-DLMM_CFG = settings.apply(json.loads(json.dumps(CFG)), {"filterPreset": "dlmm"})
 
 
 def row(**kw):
     r = {"lpFeePct": 1.0, "ageHours": 30, "tvlUsd": 50_000, "mcapUsd": 2_000_000, "feePctDay": {"1h": 10, "24h": 8},
          "chg": {"1h": 2, "6h": -3}, "txns": {"h1": {"buys": 10, "sells": 10}, "h24": {"buys": 100, "sells": 100}},
-         "vol": {"1h": 100_000, "24h": 2_000_000}, "fees": {"1h": 200, "24h": 4000}, "hooks": chain.ZERO}
+         "vol": {"1h": 1000, "24h": 24000}, "hooks": chain.ZERO}
     r.update(kw)
     return r
 
@@ -103,35 +102,10 @@ class Verdict(unittest.TestCase):
     def test_unknown_tvl_waits(self):
         self.assertEqual(self.ev(row(tvlUsd=None))["level"], "WAIT")
 
-    def test_pump_waits_for_a_dip(self):
-        v = self.ev(row(chg={"1h": 8, "6h": 10}))
-        self.assertEqual(v["level"], "WAIT")
-        self.assertTrue(any(g.startswith("pump1h") for g in v["gatesFailed"]))
-
-    def test_pump_flag_when_gate_off(self):
-        cfg = json.loads(json.dumps(CFG)); cfg["gates"]["maxPriceChg1hPct"] = None
-        v = filters.evaluate(row(chg={"1h": 40, "6h": 10}), cfg, time.time())
+    def test_pump_is_careful(self):
+        v = self.ev(row(chg={"1h": 40, "6h": 10}))
         self.assertEqual(v["level"], "CAREFUL")
         self.assertIn("pump1h +40%", v["flags"])
-
-    def test_fee_pace_24h_young_pool(self):
-        # $500 of fees in a 12h-old pool with $10k TVL: 5% in 12h = 10%/day, not 5
-        self.assertAlmostEqual(filters.fee_pace_24h({"fees": {"24h": 500}, "tvlUsd": 10_000, "ageHours": 12}), 10)
-
-    def test_slow_fees_wait(self):
-        v = self.ev(row(fees={"24h": 500}))           # 1%/day < 2.74
-        self.assertEqual(v["level"], "WAIT")
-
-    def test_young_pool_and_vol_mcap_flags(self):
-        v = self.ev(row(ageHours=3, vol={"1h": 10, "24h": 9_000_000}))          # 4.5x mcap: churn
-        self.assertEqual(v["level"], "CAREFUL")
-        self.assertTrue(any(f.startswith("pool muda") for f in v["flags"]))
-        self.assertTrue(any(f.startswith("vol/mcap") for f in v["flags"]))
-
-    def test_dlmm_preset_flags_low_volume(self):
-        v = filters.evaluate(row(vol={"1h": 10, "24h": 100_000}), DLMM_CFG, time.time())   # 0.05x
-        self.assertTrue(any(f.startswith("vol/mcap") for f in v["flags"]))
-        self.assertFalse(any(f.startswith("vol/mcap") for f in self.ev(row(vol={"1h": 10, "24h": 100_000}))["flags"]))
 
     def test_max_position(self):
         self.assertAlmostEqual(filters.max_position_usd(CFG), 8000 * 0.05 / 0.9)
@@ -387,21 +361,9 @@ class AutoSellRetry(unittest.TestCase):
 
 
 class PingBlast(unittest.TestCase):
-    def test_vol_mcap_sort_and_volume_band(self):
-        from rh_terminal import pools
-        cfg = json.loads(json.dumps(DLMM_CFG))
-        book = pools.Book.__new__(pools.Book)
-        book.cfg, book.prev_ping, book.ping_new = cfg, None, []
-        mk = lambda sym, vol24, mc: dict(row(vol={"1h": 1, "24h": vol24}, mcapUsd=mc), symbol=sym, token="0x" + sym,
-                                         pool="0xp" + sym, verdict={"level": "OPEN"}, volMcap24h=round(vol24 / mc, 2))
-        rows = [mk("A", 600_000, 2_000_000), mk("B", 4_000_000, 2_000_000), mk("C", 9_000_000, 2_000_000), mk("D", 20_000, 2_000_000)]
-        got = [r["symbol"] for r in book.ping(rows)["rows"]]
-        self.assertEqual(got[:2], ["B", "A"])       # inside 0.3-3x first, best ratio first
-        self.assertNotIn("D", got)                   # 24h volume under $50K
-
     def test_blast_text(self):
         from rh_terminal import web
-        r = dict(row(), symbol="GAGE", pool="0xpool", quoteSymbol="USDG", verdict={"level": "OPEN"}, feePace24h=8.0, volMcap24h=1.0)
+        r = dict(row(), fees={"1h": 50}, symbol="GAGE", pool="0xpool", quoteSymbol="USDG", verdict={"level": "OPEN"})
         txt = web.blast_text({"rows": [r], "ping": {"rows": [{"pool": "0xpool", "symbol": "GAGE"}], "filter": "f"}})
         self.assertIn("1. GAGE", txt)
         self.assertIn("dexscreener.com/robinhood/0xpool", txt)

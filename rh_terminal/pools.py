@@ -200,18 +200,12 @@ class Book:
                 continue
             if p.get("minFees1hUsd") and (f1 or 0) < p["minFees1hUsd"]:
                 continue
-            if p.get("minVol24hUsd") and ((r.get("vol") or {}).get("24h") or 0) < p["minVol24hUsd"]:
-                continue
             hits.append(r)
         key = {
             "fee1hPct": lambda r: r["feePctDay"].get("1h") or 0,
             "fees1hUsd": lambda r: r["fees"].get("1h") or 0,
             "volTvl1h": lambda r: (r["vol"].get("1h") or 0) / r["tvlUsd"] if r["tvlUsd"] else 0,
-            "fee24hPct": lambda r: r.get("feePace24h") or r["feePctDay"].get("24h") or 0,
-            # DLMM default: 24h vol/mcap inside the 0.3-3x band ranks by its value, outside ranks last;
-            # ties (both outside) fall back to the 1h fee pace
-            "volMcapFit": lambda r: (filters.vol_mcap_fit(r.get("volMcap24h"), tuple(self.cfg["flags"].get("volMcapBand") or (0.3, 3))),
-                                     r["feePctDay"].get("1h") or 0),
+            "fee24hPct": lambda r: r["feePctDay"].get("24h") or 0,
         }.get(p.get("sortBy"), lambda r: r["feePctDay"].get("1h") or 0)
         best, seen = [], set()
         for r in sorted(hits, key=key, reverse=True):      # one pool per token (and per symbol): its best one
@@ -230,8 +224,7 @@ class Book:
                 "total": len(hits), "new": self.ping_new,
                 "filter": (f"gates v1 · TVL ≥ ${p.get('minTvlUsd') or 0:,.0f} · mcap ≥ ${p.get('minMcapUsd') or 0:,.0f}"
                            + (f" ≤ ${p['maxMcapUsd']:,.0f}" if p.get("maxMcapUsd") else "")
-                           + f" · umur {p.get('minPoolAgeHours') or 0}-{p.get('maxPoolAgeHours') or '∞'}h · fee 1h ≥ ${p.get('minFees1hUsd') or 0}"
-                           + (f" · vol 24h ≥ ${p['minVol24hUsd']:,.0f}" if p.get("minVol24hUsd") else "")
+                           + f" · umur ≥ {p.get('minPoolAgeHours') or 0}h · fee 1h ≥ ${p.get('minFees1hUsd') or 0}"
                            + f" · top {p.get('top', 10)} by {p.get('sortBy')}")}
 
     # -------------------------------------------------------------- search ----

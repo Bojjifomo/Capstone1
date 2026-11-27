@@ -141,10 +141,9 @@ def blast_text(data: dict) -> str | None:
     out = [f"📡 RH TOP {len(ping)} USDG POOLS · {datetime.now():%H:%M}", f"filter: {data['ping'].get('filter', '')}", ""]
     for n, r in enumerate(ping, 1):
         c1 = (r.get("chg") or {}).get("1h")
-        vm = r.get("volMcap24h")
         out += [f"{n}. {r['symbol']} · fee {r['lpFeePct']}% · {r['verdict']['level']}",
-                f"   🧹 {r.get('feePace24h') or 0:.1f}%/hari · 💰 fee 1j {_fmt_usd(r['fees'].get('1h'))} · 📊 TVL {_fmt_usd(r['tvlUsd'])}",
-                f"   📌 mcap {_fmt_usd(r['mcapUsd'])} · 🥩 vol/mcap {vm if vm is not None else '?'}x · ⏳ 1j {c1 if c1 is not None else '?'}% · ⏰ {r['ageHours'] or 0:.0f}j",
+                f"   🧹 {(r['feePctDay'].get('1h') or 0):.1f}%/hari (1j) · 💰 fee 1j {_fmt_usd(r['fees'].get('1h'))} · 📊 TVL {_fmt_usd(r['tvlUsd'])}",
+                f"   📌 mcap {_fmt_usd(r['mcapUsd'])} · ⏳ 1j {c1 if c1 is not None else '?'}% · ⏰ {r['ageHours'] or 0:.0f}j",
                 f"   https://dexscreener.com/robinhood/{r['pool']}"]
     return "\n".join(out)
 
