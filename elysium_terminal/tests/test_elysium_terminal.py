@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from elysium_terminal import activity, chain, filters, portfolio, settings
+from elysium_terminal import activity, chain, filters, pools, portfolio, settings, web
 from elysium_terminal import cli
 
 CFG = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
@@ -19,7 +19,8 @@ LIB = (Path(__file__).resolve().parents[1] / "executor" / "lib.mjs").read_text()
 def row(**kw):
     r = {"lpFeePct": 1.0, "ageHours": 30, "tvlUsd": 50_000, "mcapUsd": 2_000_000, "feePctDay": {"1h": 10, "24h": 8},
          "chg": {"1h": 2, "6h": -3}, "txns": {"h1": {"buys": 10, "sells": 10}, "h24": {"buys": 100, "sells": 100}},
-         "vol": {"1h": 1000, "24h": 24000}, "hooks": chain.ZERO}
+         "vol": {"1h": 40_000, "24h": 1_000_000}, "fees": {"1h": 160, "24h": 4000}, "hooks": chain.ZERO,
+         "symbol": "BOX", "token": "0x" + "b0" * 20}
     r.update(kw)
     return r
 
@@ -131,6 +132,129 @@ class Verdict(unittest.TestCase):
         v = self.ev(row(hooks="0x" + "11" * 20))
         self.assertEqual(v["level"], "CAREFUL")
         self.assertTrue(any("hook" in f for f in v["flags"]))
+
+
+    def test_fee_gate_uses_24h_fees_over_tvl_paced_for_young_pools(self):
+        self.assertEqual(self.ev(row(fees={"24h": 500}))["level"], "WAIT")       # 1%/day < 2%
+        young = row(ageHours=6, fees={"24h": 300})                                 # 300 in 6 h = 2.4%/day
+        self.assertNotIn("feePace", " ".join(self.ev(young)["gatesFailed"]))
+
+    def test_pump_in_the_last_hour_waits_for_a_dip(self):
+        v = self.ev(row(chg={"1h": 9, "6h": 0}))
+        self.assertEqual(v["level"], "WAIT")
+        self.assertTrue(any(g.startswith("pump1h") for g in v["gatesFailed"]))
+        self.assertEqual(self.ev(row(chg={"1h": 4, "6h": 0}))["level"], "OPEN")
+
+    def test_young_pool_and_volume_band_flag(self):
+        self.assertTrue(any("pool muda" in f for f in self.ev(row(ageHours=3))["flags"]))
+        self.assertTrue(any("vol/mcap" in f for f in self.ev(row(vol={"1h": 0, "24h": 10_000}))["flags"]))   # 0.005x
+        self.assertTrue(any("vol/mcap" in f for f in self.ev(row(vol={"1h": 0, "24h": 9_000_000}))["flags"]))  # 4.5x
+
+    def test_dlmm_preset_is_stricter(self):
+        dlmm = settings.apply(json.loads(json.dumps(CFG)), {"filterPreset": "dlmm"})
+        self.assertEqual(dlmm["flags"]["volMcapBand"], [0.3, 3])
+        self.assertEqual(dlmm["ping"]["minMcapUsd"], 400000)
+        v = filters.evaluate(row(vol={"1h": 0, "24h": 200_000}), dlmm, time.time())   # 0.1x: fine for elysium, not dlmm
+        self.assertEqual((self.ev(row(vol={"1h": 0, "24h": 200_000}))["level"], v["level"]), ("OPEN", "CAREFUL"))
+
+
+class Clones(unittest.TestCase):
+    def test_the_oldest_contract_is_the_original(self):
+        rows = [row(token="0x" + "a1" * 20, ageHours=200), row(token="0x" + "a2" * 20, ageHours=5),
+                row(token="0x" + "a3" * 20, symbol="OTHER")]
+        pools.mark_clones(rows)
+        self.assertIsNone(rows[0]["clone"])
+        self.assertEqual(rows[1]["clone"]["original"], "0x" + "a1" * 20)
+        self.assertIsNone(rows[2]["clone"])
+        v = filters.evaluate(rows[1], CFG, time.time())
+        self.assertEqual(v["level"], "CAREFUL")
+
+
+class Ping(unittest.TestCase):
+    def _row(self, sym, token, fee1h, vol24=1_000_000, clone=None):
+        r = row(symbol=sym, token=token, pool="0x" + token[2:6] * 16, feePctDay={"1h": fee1h, "24h": 8},
+                vol={"1h": 0, "24h": vol24}, fees={"1h": 50, "24h": 4000}, quoteSymbol="USDC", dex="v4")
+        r["clone"] = clone
+        r["verdict"] = {"level": "OPEN"}
+        return r
+
+    def test_one_pool_per_symbol_no_clones_and_a_volume_floor(self):
+        book = pools.Book.__new__(pools.Book)
+        book.cfg, book.prev_ping, book.ping_new = json.loads(json.dumps(CFG)), None, []
+        rows = [self._row("AAA", "0x" + "11" * 20, 30), self._row("AAA", "0x" + "12" * 20, 20),
+                self._row("BBB", "0x" + "13" * 20, 25, clone={"others": 1, "original": None}),
+                self._row("CCC", "0x" + "14" * 20, 15, vol24=5_000), self._row("DDD", "0x" + "15" * 20, 10)]
+        got = [x["symbol"] for x in book.ping(rows)["rows"]]
+        self.assertEqual(got, ["AAA", "DDD"])
+
+    def test_blast_card(self):
+        r = self._row("AAA", "0x" + "11" * 20, 30)
+        r.update(lpFeePct=1.0, tvlUsd=50_000, mcapUsd=2_000_000, ageHours=30, feePace24h=8.0, volMcap24h=0.5)
+        txt = web.blast_text({"rows": [r], "ping": {"rows": [{"pool": r["pool"]}], "filter": "x"}})
+        self.assertIn("ELYSIUM TOP 1", txt)
+        self.assertIn("dexscreener.com/elysium/" + r["pool"], txt)
+
+
+class Access(unittest.TestCase):
+    def test_only_this_mac_and_tailscale(self):
+        with mock.patch.dict(os.environ, {"ELYSIUM_WEB_ALLOW_LAN": ""}):
+            for a in ("127.0.0.1", "::1", "100.101.2.3", "::ffff:100.64.0.9", "fd7a:115c:a1e0::1"):
+                self.assertTrue(web.is_allowed_address(a), a)
+            for a in ("192.168.1.20", "10.0.0.5", "8.8.8.8", "nonsense"):
+                self.assertFalse(web.is_allowed_address(a), a)
+        with mock.patch.dict(os.environ, {"ELYSIUM_WEB_ALLOW_LAN": "true"}):
+            self.assertTrue(web.is_allowed_address("192.168.1.20"))
+            self.assertFalse(web.is_allowed_address("8.8.8.8"))
+
+
+class Leftovers(unittest.TestCase):
+    """A close that went through with the token unsold: queued, retried, then left for Cleanup."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p = [mock.patch.object(web, "DATA", Path(self.tmp.name)), mock.patch.object(web, "notify", lambda *_: None),
+                  mock.patch.object(web, "append", lambda *_: None)]
+        for x in self.p:
+            x.start()
+        self.cfg = {"trade": {"maxLossPct": 5}}
+
+    def tearDown(self):
+        for x in self.p:
+            x.stop()
+        self.tmp.cleanup()
+
+    def _queue(self):
+        res = {"ok": False, "sent": True, "leftover": {"pool": "0xpool", "token": "0xtok", "amount": "1000"}, "saleError": "too thin"}
+        return web.queue_leftover(res, {"symbol": "KNTQ"})
+
+    def test_close_without_sale_counts_as_done_and_is_retried(self):
+        res = {"ok": False, "sent": True, "leftover": {"pool": "0xpool", "token": "0xtok", "amount": "1000"}}
+        with mock.patch.object(web, "run_trade", return_value=res):
+            out = web.do_exit({"pool": "0xpool", "positions": [{"tokenId": 7}], "symbol": "KNTQ"}, "0xw", self.cfg)
+        self.assertTrue(out["ok"])
+        self.assertEqual(web.leftovers()["0xpool|0xtok"]["status"], "selling")
+
+    def test_partial_then_sold(self):
+        self.assertTrue(self._queue())
+        with mock.patch.object(web, "run_trade", return_value={"ok": True, "hash": "0x1", "left": "400"}):
+            web.retry_sells(self.cfg, "0xw")
+        e = web.leftovers()["0xpool|0xtok"]
+        self.assertEqual((e["status"], e["amount"], e["tries"]), ("selling", "400", 1))
+        with mock.patch.object(web, "run_trade", return_value={"ok": True, "hash": "0x2", "left": "0"}) as m:
+            web.retry_sells(self.cfg, "0xw")
+        self.assertIn("400", m.call_args[0][1])
+        self.assertEqual(web.leftovers()["0xpool|0xtok"]["status"], "done")
+
+    def test_gives_up_after_six_tries(self):
+        self._queue()
+        with mock.patch.object(web, "run_trade", return_value={"ok": False, "error": "would revert"}) as m:
+            for _ in range(8):
+                web.retry_sells(self.cfg, "0xw")
+        self.assertEqual(m.call_count, web.SELL_TRIES)
+        self.assertEqual(web.leftovers()["0xpool|0xtok"]["status"], "failed")
+
+    def test_practice_does_not_queue(self):
+        self.assertFalse(web.queue_leftover({"dryRun": True, "leftover": {"pool": "p", "token": "t", "amount": "5"}}, {}))
 
 
 class Practice(unittest.TestCase):

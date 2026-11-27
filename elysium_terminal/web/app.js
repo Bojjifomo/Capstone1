@@ -89,6 +89,7 @@ function nice(t) {
   if ((m = /^tvl: (.*) < (.*)/.exec(t))) return `TVL ${m[1]} (min ${m[2]})`;
   if ((m = /^mcap: (.*) < (.*)/.exec(t))) return `Mcap ${m[1]} (min ${m[2]})`;
   if ((m = /^feePace: (.*) < (.*)/.exec(t))) return `Fee pelan: ${m[1]} (min ${m[2]})`;
+  if ((m = /^pump1h: (.*) > (.*) \(tunggu dip\)/.exec(t))) return `Harga naik ${m[1]} sejam (maks ${m[2]}): tunggu dip`;
   if ((m = /^pump1h (.*)/.exec(t))) return `Pump 1 jam ${m[1]}`;
   if ((m = /^drop6h (.*)/.exec(t))) return `Turun 6 jam ${m[1]}`;
   if ((m = /^tvl (.*)/.exec(t))) return `Pool tipis: TVL ${m[1]}`;
@@ -303,7 +304,8 @@ function renderPools() {
     const reasons = [...v.reasons.filter(x => !x.ok), ...v.info].slice(0, 2).map(x => nice(x.text)).join(" · ") || (v.gatesFailed.length ? "" : "gates pass");
     const fee1hPct = r.tvlUsd && r.fees["1h"] != null ? r.fees["1h"] / r.tvlUsd * 100 : null;
     const icon = r.icon ? `<img src="${esc(r.icon)}" alt="" loading="lazy">` : `<span class="ph"></span>`;
-    const rank = pg ? `<span class="rank ${fresh.has(r.pool) ? "new" : ""}" title="PING #${pg.rank}">📡#${pg.rank}</span>` : "";
+    const rank = (pg ? `<span class="rank ${fresh.has(r.pool) ? "new" : ""}" title="PING #${pg.rank}">📡#${pg.rank}</span>` : "")
+      + (r.clone ? `<span class="rank clone" title="Kloningan: ${r.clone.others} token lain pakai simbol ini${r.clone.original ? ", yang paling tua " + esc(r.clone.original) : ""}">🧬</span>` : "");
     const star = `<button class="star ${watched(r.pool) ? "on" : ""}" data-star="${r.pool}" title="watchlist">${watched(r.pool) ? "★" : "☆"}</button>`;
     const sub = `${r.lpFeePct}%${r.dynamicFee ? " dyn" : ""} · ${age(r.ageHours)} · <span class="${cls(r.chg["24h"])}">${fmtPct(r.chg["24h"], 0, true)} 24h</span>${r.traders1h ? " · " + r.traders1h + " trader" : ""}${r.feeApr ? " · APR " + fmtPct(r.feeApr, 0) : ""}`;
     const zap = `<div class="zap"><button data-zap="${size / 2}">⚡${mU(size / 2)}</button><button data-zap="${size}">⚡${mU(size)}</button><button class="edit" data-zap="ask">✏️</button></div>`;
@@ -815,6 +817,11 @@ function renderPortfolio() {
     <span>wallet <b>${b.usdc != null ? b.usdc.toFixed(2) : "--"} USDC · ${b.hype != null ? fmtEth(b.hype) : "--"} HYPE${b.whype ? " · " + Number(b.whype).toFixed(4) + " WHYPE" : ""}</b></span>
     <span><button class="btn mini ${g.paused ? "danger" : ""}" id="autoPause" title="Jeda / lanjutkan semua rule auto">${g.paused ? "▶ lanjutkan auto" : `⏸ jeda auto (${armed} nyala)`}</button></span>
     <span class="muted">dicek ${new Date(pf.t * 1000).toLocaleTimeString()}</span>${warn}`;
+  const lefts = pf.leftovers || [];
+  $("#pfLeft").classList.toggle("hidden", !lefts.length);
+  $("#pfLeft").innerHTML = lefts.length ? `<span class="muted">💩 token sisa dari close:</span> ` + lefts.map(l =>
+    `<span class="${l.status === "failed" ? "neg" : l.status === "done" ? "muted" : "warn"}">${esc(l.symbol || l.token.slice(0, 8))}: ${esc(l.msg || l.status)}</span>`).join(" · ")
+    + (lefts.some(l => l.status === "failed") ? ` · <span class="muted">pakai Cleanup</span>` : "") : "";
   const ap = $("#autoPause");
   if (ap) ap.onclick = () => setAutoGlobal({ paused: !g.paused });
   $("#pfEmpty").classList.toggle("hidden", pf.rows.length > 0);
@@ -1275,6 +1282,8 @@ document.querySelectorAll("#bottomnav button").forEach(b => b.onclick = () => {
   const pools = loadPools();
   try { state.cfg = await getJson("/api/config"); } catch (e) {}
   trade.info = state.cfg && state.cfg.trade;
+  const ver = state.cfg && state.cfg.version;
+  if (ver && ver.commit) { $("#ver").textContent = ver.commit; $("#ver").title = `versi ${ver.commit} · ${ver.date} · branch ${ver.branch}`; }
   paintWallet();
   $("#wallet").value = (trade.info && trade.info.wallet) || store.get("wallet", "") || (state.cfg && state.cfg.wallet) || "";
   try { setView(store.get("view", "pools")); } catch (e) { setView("pools"); }

@@ -6,16 +6,19 @@ claim, re-entry, cleanup and per-position auto rules (TP, SL, re-entry or close 
   python3 -m elysium_terminal web --host 0.0.0.0   # reachable over Tailscale (phone, MacBook)
 
 Trading: the key in elysium_terminal/.env (ELYSIUM_PRIVATE_KEY) stays in the Node executor;
-the browser only sees the address. ELYSIUM_PRIVATE_KEY is never read. Who may trade:
-  * without ELYSIUM_WEB_PIN: only a browser on this Mac (127.0.0.1)
-  * with ELYSIUM_WEB_PIN: any device that reaches the page, with the PIN
+the browser only sees the address. Python never reads it. Who may trade:
+  * only this Mac and Tailscale devices reach the page at all (plain Wi-Fi: ELYSIUM_WEB_ALLOW_LAN=true)
+  * without ELYSIUM_WEB_PIN: all of those trade, no PIN
+  * with ELYSIUM_WEB_PIN: this Mac without it, every other device with the PIN
 Trade requests also need the X-ELY-Trade header, which another website open in your browser
 cannot add without a CORS preflight this server never answers.
 ELYSIUM_PRACTICE_MODE defaults to true: every button only simulates (eth_call), nothing is sent.
 """
 from __future__ import annotations
 
+import gzip
 import hmac
+import ipaddress
 import json
 import os
 import sys
@@ -31,6 +34,23 @@ from . import auto, chain, depth, filters, groups, node, pools, portfolio, setti
 from .cli import DATA, append, env_report, load_config, load_env, make_index, notify, practice_mode
 
 STATIC = Path(__file__).resolve().parent / "web"
+
+
+def code_version() -> dict:
+    """The commit this server runs, so the page can say when it is not the latest one pulled."""
+    import subprocess
+    root = Path(__file__).resolve().parent
+    try:
+        out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%h %cs"], capture_output=True,
+                             text=True, timeout=5).stdout.split()
+        br = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
+                            text=True, timeout=5).stdout.strip()
+        return {"commit": out[0], "date": out[1], "branch": br} if len(out) == 2 else {}
+    except Exception:
+        return {}
+
+
+VERSION = code_version()
 POOL_TTL = 30
 PF_TTL = 25
 LAST_CLIENT = 0.0
@@ -103,10 +123,43 @@ def pool_rows(force: bool = False) -> dict:
 
 
 _ping_sent: dict = {}
+_blast_at = {"t": 0.0}
+
+
+def _fmt_usd(v) -> str:
+    if v is None:
+        return "?"
+    return f"${v / 1e6:.2f}M" if v >= 1e6 else f"${v / 1e3:.1f}k" if v >= 1e3 else f"${v:.0f}"
+
+
+def blast_text(data: dict) -> str | None:
+    """DLMM-style top-N card: one block per PING pool, best first."""
+    rows = {r["pool"]: r for r in data["rows"]}
+    ping = [rows[x["pool"]] for x in data["ping"].get("rows") or [] if x["pool"] in rows]
+    if not ping:
+        return None
+    out = [f"📡 ELYSIUM TOP {len(ping)} POOLS · {datetime.now():%H:%M}", f"filter: {data['ping'].get('filter', '')}", ""]
+    for n, r in enumerate(ping, 1):
+        c1 = (r.get("chg") or {}).get("1h")
+        vm = r.get("volMcap24h")
+        out += [f"{n}. {r['symbol']}/{r['quoteSymbol']} {r.get('dex') or ''} · fee {r['lpFeePct']}% · {r['verdict']['level']}",
+                f"   🧹 {r.get('feePace24h') or 0:.1f}%/hari · 💰 fee 1j {_fmt_usd(r['fees'].get('1h'))} · 📊 TVL {_fmt_usd(r['tvlUsd'])}",
+                f"   📌 mcap {_fmt_usd(r['mcapUsd'])} · 🥩 vol/mcap {vm if vm is not None else '?'}x · ⏳ 1j {f'{c1:+.1f}' if c1 is not None else '?'}% · ⏰ {r['ageHours'] or 0:.0f}j",
+                f"   https://dexscreener.com/elysium/{r['pool']}"]
+    return "\n".join(out)
 
 
 def _ping_notify(data: dict) -> None:
-    """Telegram (if set) when a pool newly enters PING; once per pool per 6 hours."""
+    """Telegram (if set). ping.mode new: once per pool per 6 hours when it newly enters PING.
+    blast: the whole top N every ping.blastEveryMin minutes (DLMM's card)."""
+    p = Handler.cfg.get("ping") or {}
+    if p.get("mode") == "blast":
+        if time.time() - _blast_at["t"] >= float(p.get("blastEveryMin") or 30) * 60:
+            txt = blast_text(data)
+            if txt:
+                _blast_at["t"] = time.time()
+                notify(txt)
+        return
     rows = {r["pool"]: r for r in data["rows"]}
     for p in data["ping"].get("new") or []:
         if time.time() - _ping_sent.get(p, 0) < 6 * 3600 or p not in rows:
@@ -147,7 +200,8 @@ def _pf_view(pf: dict) -> dict:
     tw = node.trade_wallet() if node.key_configured() else {}
     if tw.get("ok") and tw.get("address", "").lower() == pf.get("wallet") and not pf.get("partial"):
         store.adopt_legacy(pf["rows"], time.time())
-    return {**pf, "auto": store.view(), "autoCheckSec": _auto_check_sec(), "practice": practice_mode()}
+    left = [v for v in leftovers().values() if v.get("status") != "done" or time.time() - (v.get("checkedAt") or v.get("at") or 0) < 6 * 3600]
+    return {**pf, "auto": store.view(), "autoCheckSec": _auto_check_sec(), "practice": practice_mode(), "leftovers": left}
 
 
 def _drop_pf_cache() -> None:
@@ -277,10 +331,80 @@ def _ids(row: dict) -> str:
     return ",".join(str(p["tokenId"]) for p in row["positions"])
 
 
+# ------------------------------------------------------------- leftovers ----
+# data/leftovers.json: {"<pool>|<token>": {"pool", "token", "symbol", "amount", "tries", "status", "msg", "at"}}
+# A close went through but the token did not sell (pool too thin, price moved, node lagging):
+# the server tries the sale again on every auto check, up to SELL_TRIES times, then leaves it
+# for Cleanup. (RH Terminal / DLMM)
+SELL_TRIES = 6
+_left_lock = threading.Lock()
+
+
+def leftovers() -> dict:
+    return _jload("leftovers.json", {})
+
+
+def queue_leftover(res: dict, row: dict) -> bool:
+    left = res.get("leftover")
+    if res.get("dryRun") or not left or not left.get("amount") or int(left["amount"]) <= 0:
+        return False
+    k = f"{left['pool']}|{left['token']}"
+    with _left_lock:
+        d = leftovers()
+        d[k] = {"pool": left["pool"], "token": left["token"], "symbol": row.get("symbol"), "amount": str(left["amount"]),
+                "tries": 0, "status": "selling", "at": time.time(),
+                "msg": f"closed, token belum kejual ({(res.get('saleError') or 'sebagian sisa')[:100]}): dicoba jual lagi tiap cek"}
+        _jsave("leftovers.json", d)
+    notify(f"⚠ {row.get('symbol')}: posisi ketutup tapi token belum kejual. Dicoba lagi tiap cek, maks {SELL_TRIES}x.")
+    return True
+
+
+def retry_sells(cfg: dict, wallet: str) -> None:
+    with _left_lock:
+        todo = {k: v for k, v in leftovers().items() if v.get("status") == "selling"}
+    for k, v in todo.items():
+        args = ["--pool", v["pool"], "--amount", str(v["amount"]), "--cap-balance", "--maxloss", str(cfg["trade"]["maxLossPct"])]
+        res = run_trade("swap.mjs", args, wallet, 300, pool=v["pool"])
+        tries = int(v.get("tries") or 0) + 1
+        ok = bool(res.get("ok"))
+        with _left_lock:
+            d = leftovers()
+            if k not in d:
+                continue
+            e = d[k]
+            if res.get("dryRun"):
+                e.update(tries=tries, msg=f"practice: jual {tries}x disimulasikan, tidak ada yang dikirim")
+                if tries >= SELL_TRIES:
+                    e["status"] = "done"
+            elif ok and res.get("left") and int(res["left"]) > 0 and tries < SELL_TRIES:
+                e.update(amount=str(res["left"]), tries=tries, msg=f"sebagian kejual, sisa dicoba lagi ({tries}/{SELL_TRIES})")
+            elif ok:
+                e.update(status="done", tries=tries,
+                         msg=f"{'token dijual' if res.get('hash') else 'token udah nggak ada di wallet'} (percobaan {tries})")
+            elif tries >= SELL_TRIES:
+                e.update(status="failed", tries=tries, msg=f"gagal dijual {tries}x: {(res.get('error') or '')[:120]}. Pakai Cleanup.")
+            else:
+                e.update(tries=tries, msg=f"belum kejual (coba {tries}/{SELL_TRIES}): {(res.get('error') or '')[:100]}")
+            e["checkedAt"] = time.time()
+            _jsave("leftovers.json", d)
+            status, msg = e["status"], e["msg"]
+        if status != "selling":
+            append("closes.jsonl", {"ts": _now_iso(), "source": "leftover-sell", "pool": v["pool"], "symbol": v.get("symbol"),
+                                    "tries": tries, **{x: res.get(x) for x in ("ok", "error", "hash", "practice")}})
+            notify(f"{'✅' if status == 'done' else '❌'} {v.get('symbol')}: {msg}")
+
+
 def do_exit(row: dict, wallet: str, cfg: dict) -> dict:
-    """Close every NFT of the position and sell the token back to the quote."""
+    """Close every NFT of the position and sell the token back to the quote.
+
+    A close that went through with the token unsold counts as done for the position: the
+    sale is queued and retried, so an auto rule does not stop on it.
+    """
     args = ["--pool", row["pool"], "--ids", _ids(row), "--maxloss", str(cfg["trade"]["maxLossPct"])]
-    return run_trade("reenter.mjs", args, wallet, 900, pool=row["pool"])
+    res = run_trade("reenter.mjs", args, wallet, 900, pool=row["pool"])
+    if not res.get("ok") and queue_leftover(res, row):
+        res.update(ok=True, note=f"closed; token belum kejual, dicoba lagi tiap cek (maks {SELL_TRIES}x)")
+    return res
 
 
 def do_reentry(row: dict, wallet: str, cfg: dict) -> dict:
@@ -290,6 +414,7 @@ def do_reentry(row: dict, wallet: str, cfg: dict) -> dict:
     """
     args = ["--pool", row["pool"], "--ids", _ids(row), "--maxloss", str(cfg["trade"]["maxLossPct"]), "--reopen", "--same"]
     res = run_trade("reenter.mjs", args, wallet, 900, pool=row["pool"])
+    queue_leftover(res, row)
     if res.get("ok") and not res.get("dryRun"):
         basis = row["depositUsd"] / row["quoteUsd"] if row.get("depositUsd") and row.get("quoteUsd") else res.get("reopenedQuote")
         res["newId"] = _register(res, "ladder" if row.get("posCount", 1) > 1 else "range", depositQuote=basis,
@@ -330,9 +455,21 @@ def _auto_loop(cfg: dict) -> None:
         try:
             tw = node.trade_wallet() if node.key_configured() else {}
             if tw.get("ok"):
+                retry_sells(cfg, tw["address"])
                 auto_once(cfg, tw["address"])
         except Exception as exc:
             print(f"[auto] {exc}", file=sys.stderr, flush=True)
+
+
+def _pool_loop(cfg: dict) -> None:
+    """Keep the pool table (and with it PING / blast to Telegram) fresh with no browser open."""
+    time.sleep(90)                       # let the swap index read its first hour
+    while True:
+        try:
+            pool_rows(force=True)
+        except Exception as exc:
+            print(f"[pools] {exc}", file=sys.stderr, flush=True)
+        time.sleep(max(1, float(Handler.cfg["web"].get("refreshMin", 2))) * 60)
 
 
 # ----------------------------------------------------------------- tight ----
@@ -437,19 +574,61 @@ def cleanup_list(wallet: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------- handler ----
+_TAILSCALE = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+def lan_allowed() -> bool:
+    return os.environ.get("ELYSIUM_WEB_ALLOW_LAN", "").strip().lower() in ("1", "true", "yes")
+
+
+def is_allowed_address(addr: str) -> bool:
+    """This Mac or a Tailscale device. Plain Wi-Fi / LAN only with ELYSIUM_WEB_ALLOW_LAN=true; never public IPs."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or any(ip.version == n.version and ip in n for n in _TAILSCALE):
+        return True
+    return lan_allowed() and ip.is_private and not ip.is_global
+
+
+_REFUSED_PAGE = ("Elysium Terminal cuma bisa dibuka dari Mac ini atau lewat Tailscale.\n"
+                 "Nyalain Tailscale di device ini, lalu buka http://<nama-mac>:8893\n").encode()
+
+
+class ClientGone(Exception):
+    """The browser closed the connection (tab closed, phone locked, refresh) before the answer was sent."""
+
+
 class Handler(BaseHTTPRequestHandler):
     cfg: dict = {}
 
     def log_message(self, fmt, *a):
         pass
 
+    def handle(self):
+        try:
+            super().handle()
+        except ClientGone:
+            pass                    # nothing to answer; not an error worth a traceback
+
     def _send(self, code: int, body: bytes, ctype: str):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        gz = len(body) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:
+            body = gzip.compress(body, 5)   # /api/pools is a few MB of JSON; phones over Tailscale feel it
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            if gz:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            raise ClientGone() from None
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, default=str).encode(), "application/json")
@@ -457,13 +636,30 @@ class Handler(BaseHTTPRequestHandler):
     def _is_local(self) -> bool:
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    def _is_allowed(self) -> bool:
+        return is_allowed_address(self.client_address[0])
+
+    def _refuse_outsider(self) -> bool:
+        if self._is_allowed():
+            return False
+        print(f"[{datetime.now():%H:%M:%S}] ditolak: {self.client_address[0]} (bukan Mac ini / Tailscale)",
+              file=sys.stderr, flush=True)
+        self._send(403, _REFUSED_PAGE, "text/plain; charset=utf-8")
+        return True
+
     def _trade_refused(self, body: dict) -> str | None:
         if self.headers.get("X-ELY-Trade") != "1" or "application/json" not in (self.headers.get("Content-Type") or ""):
             return "missing trade header"
+        # The Mac running the server never needs the PIN. Without ELYSIUM_WEB_PIN, Tailscale devices
+        # trade without one too; anything else never got past _refuse_outsider.
+        if not self._is_allowed():
+            return "cuma dari Mac ini atau Tailscale"
+        if self._is_local():
+            return None
         pin = os.environ.get("ELYSIUM_WEB_PIN")
         if pin:
             return None if hmac.compare_digest(str(body.get("pin") or ""), pin) else "PIN salah"
-        return None if self._is_local() else "trading cuma dari Mac ini (set ELYSIUM_WEB_PIN di .env buat dari HP)"
+        return None
 
     def reload_cfg(self) -> None:
         new = load_config()
@@ -473,6 +669,8 @@ class Handler(BaseHTTPRequestHandler):
             _cache.clear()
 
     def do_GET(self):
+        if self._refuse_outsider():
+            return
         u = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         try:
@@ -513,7 +711,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/config":
                 load_env(reload=True)                       # a key pasted into .env works without a restart
                 tw = node.trade_wallet() if not node.ready() else {"ok": False}
-                return self._json({"cfg": self.cfg, "executor": node.ready(), "index": STATE["book"].index_status(),
+                return self._json({"cfg": self.cfg, "version": VERSION, "executor": node.ready(), "index": STATE["book"].index_status(),
                                    "maxPositionUsd": filters.max_position_usd(self.cfg), "rpc": chain.STATS,
                                    "trade": {"enabled": bool(tw.get("ok")), "wallet": tw.get("address"),
                                              "error": None if tw.get("ok") or not node.key_configured() else tw.get("error"),
@@ -521,6 +719,8 @@ class Handler(BaseHTTPRequestHandler):
                                              "practice": practice_mode(),
                                              "envCheck": None if tw.get("ok") or not self._is_local() else env_report()},
                                    "wallet": os.environ.get("ELYSIUM_WALLET")})
+        except ClientGone:
+            raise
         except Exception as exc:
             print(f"[{datetime.now():%H:%M:%S}] {u.path} failed: {exc}", file=sys.stderr, flush=True)
             if "CERTIFICATE_VERIFY_FAILED" in str(exc):
@@ -537,6 +737,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, f.read_bytes(), ctype)
 
     def do_POST(self):
+        if self._refuse_outsider():
+            return
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         except ValueError:
@@ -696,6 +898,8 @@ class Handler(BaseHTTPRequestHandler):
                 res = run_trade("cleanup.mjs", args, wallet, 900)
                 append("closes.jsonl", {"ts": _now_iso(), "source": "web", "rule": "cleanup", **{k: res.get(k) for k in ("ok", "error", "tokens", "practice")}})
                 return self._json(res)
+        except ClientGone:
+            raise
         except (KeyError, ValueError) as exc:
             return self._json({"ok": False, "error": f"{exc}"}, 400)
         except Exception as exc:
@@ -711,9 +915,16 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8893) -> None:
     print("Index swap: baca chain (pertama kali ±15–30 detik buat 1 jam terakhir)…", flush=True)
     ix.start()
     threading.Thread(target=_auto_loop, args=(cfg,), daemon=True, name="auto").start()
+    threading.Thread(target=_pool_loop, args=(cfg,), daemon=True, name="pool-refresh").start()
     srv = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"Elysium Terminal web → http://{shown}:{port}  (Ctrl+C buat stop)", flush=True)
+    if VERSION:
+        print(f"  versi {VERSION['commit']} ({VERSION['date']}, branch {VERSION['branch']})", flush=True)
+    if host in ("127.0.0.1", "localhost", "::1"):
+        print("  ⚠ --host 127.0.0.1: iPhone / MacBook NGGAK bisa buka. Jalanin tanpa --host (atau --host 0.0.0.0).", flush=True)
+    else:
+        print(f"  iPhone / MacBook: Tailscale nyala, buka http://<nama-mac-di-Tailscale>:{port} atau http://100.x.y.z:{port}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

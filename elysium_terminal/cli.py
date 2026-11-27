@@ -1,7 +1,7 @@
 """Elysium Terminal CLI.
 
-  python3 -m elysium_terminal web                 # http://localhost:8893
-  python3 -m elysium_terminal web --host 0.0.0.0  # phone over Tailscale
+  python3 -m elysium_terminal web                    # http://localhost:8893, plus Tailscale devices
+  python3 -m elysium_terminal web --host 127.0.0.1   # this Mac only
   python3 -m elysium_terminal screen              # pool table (OPEN/CAREFUL, fee 1h)
   python3 -m elysium_terminal portfolio [--wallet 0x..]
   python3 -m elysium_terminal open POOL --usd 400 [--slices 5 --bottom 60] [--dry-run]
@@ -232,7 +232,8 @@ def cmd_doctor(a, cfg):
     print("== lainnya ==")
     print("  ALCHEMY_API_KEY:", "terisi" if os.environ.get("ALCHEMY_API_KEY") else "kosong (baca/kirim lewat RPC publik, rate-limited)")
     print("  practice mode:", "NYALA (semua tombol cuma simulasi)" if practice_mode() else "mati (tombol kirim transaksi beneran)")
-    print("  ELYSIUM_WEB_PIN:", "terisi (HP / MacBook bisa trading)" if os.environ.get("ELYSIUM_WEB_PIN") else "kosong (trading cuma dari Mac ini)")
+    print("  ELYSIUM_WEB_PIN:", "terisi (device Tailscale wajib PIN)" if os.environ.get("ELYSIUM_WEB_PIN") else "kosong (Mac ini + Tailscale trading tanpa PIN)")
+    print("  ELYSIUM_WEB_ALLOW_LAN:", "true (Wi-Fi tanpa Tailscale boleh)" if os.environ.get("ELYSIUM_WEB_ALLOW_LAN", "").strip().lower() in ("1", "true", "yes") else "kosong (cuma Mac ini + Tailscale)")
     print("  ELYSIUM_WEB_PORT:", os.environ.get("ELYSIUM_WEB_PORT") or "8893 (default)")
     print("  executor:", node.ready() or "OK")
     try:
@@ -255,7 +256,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="elysium_terminal", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     w = sub.add_parser("web")
-    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--host", default="0.0.0.0", help="0.0.0.0 = iPhone/MacBook lewat Tailscale bisa buka (cuma Mac ini + Tailscale yang diizinin); 127.0.0.1 = cuma Mac ini")
     w.add_argument("--port", type=int)
     s = sub.add_parser("screen")
     s.add_argument("--top", type=int, default=25)

@@ -300,7 +300,10 @@ def rpc(method: str, params: list, timeout: float = 30, _round: int = 0):
             _note_rpc("errors")
             _meter_hit(url, "error")
             fails.append(f"{host}: {str(e)[:60]}")
-            _cool[url] = time.time() + 10
+            low = str(e).lower()
+            # refused, no DNS, or a certificate that is not the site's (an ISP block page): blocked, rest 5 min
+            blocked = any(x in low for x in ("refused", "nodename", "name or service", "certificate"))
+            _cool[url] = time.time() + (300 if blocked else 10)
             continue
         if "error" in j:
             msg = str((j["error"] or {}).get("message") or j["error"])
