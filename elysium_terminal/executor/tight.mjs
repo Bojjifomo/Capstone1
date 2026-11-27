@@ -135,7 +135,7 @@ try {
     if (dry && (mode === "rebalance" || wrapPlanned)) {      // the tokens to swap do not exist yet
       out.steps.push({ step: "swap", label: `swap ${(plan2.frac * 100).toFixed(1)}% (direncanakan)`, planned: true });
     } else {
-      const sw = await swapInPool({ signer, owner, desc, zeroForOne: plan2.zeroForOne, amount: plan2.amountIn, maxLossPct: slipPct, dry, label: "tight swap" });
+      const sw = await swapInPool({ signer, owner, desc, zeroForOne: plan2.zeroForOne, amount: plan2.amountIn, maxLossPct: slipPct, dry, label: "tight swap", partial: false });
       push("swap", sw);
       if (!dry) {
         const got = sw.received || 0n;

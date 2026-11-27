@@ -14,6 +14,28 @@ from . import chain, filters, market
 META_TTL = 6 * 3600
 
 
+def mark_clones(rows: list[dict]) -> None:
+    """Same symbol, different token contract: the oldest one is most likely the original,
+    the rest are look-alikes (often wash-traded to look busy). Sets row["clone"]."""
+    groups: dict[str, dict[str, float]] = {}
+    for r in rows:
+        sym = (r.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        age = r.get("ageHours")
+        g = groups.setdefault(sym, {})
+        g[r["token"]] = max(g.get(r["token"], -1.0), age if age is not None else -1.0)
+    for r in rows:
+        g = groups.get((r.get("symbol") or "").strip().upper()) or {}
+        others = len(g) - 1
+        r["clone"] = None
+        if others <= 0:
+            continue
+        oldest = max(g, key=lambda t: g[t])
+        if g[oldest] < 0 or r["token"] != oldest:
+            r["clone"] = {"others": others, "original": oldest if g[oldest] >= 0 else None}
+
+
 class Book:
     def __init__(self, index, cfg: dict):
         self.ix = index
@@ -248,11 +270,10 @@ class Book:
         meta = self.tokens(sorted(toks))
         self.ensure_hooks(keys)
         size = filters.planned_size_usd(cfg)
-        out = []
-        for i in ids:
-            r = self._row(i, keys[i], act.get(i), dx.get(i), meta, hype, now, s0.get(i))
+        out = [self._row(i, keys[i], act.get(i), dx.get(i), meta, hype, now, s0.get(i)) for i in ids]
+        mark_clones(out)
+        for r in out:
             r["verdict"] = filters.evaluate(r, cfg, now, size)
-            out.append(r)
         return {"t": now, "rows": out, "ethUsd": hype, "hypeUsd": hype, "ping": self.ping(out),
                 "index": self.index_status(), "rpc": chain.budget_view(),
                 "sizeUsd": size, "maxPositionUsd": filters.max_position_usd(cfg)}
@@ -287,18 +308,25 @@ class Book:
                 continue
             if p.get("minFees1hUsd") and (f1 or 0) < p["minFees1hUsd"]:
                 continue
+            if p.get("minVol24hUsd") and ((r.get("vol") or {}).get("24h") or 0) < p["minVol24hUsd"]:
+                continue
             hits.append(r)
         keyf = {
             "fee1hPct": lambda r: r["feePctDay"].get("1h") or 0,
             "fees1hUsd": lambda r: r["fees"].get("1h") or 0,
             "volTvl1h": lambda r: (r["vol"].get("1h") or 0) / r["tvlUsd"] if r["tvlUsd"] else 0,
-            "fee24hPct": lambda r: r["feePctDay"].get("24h") or 0,
+            "fee24hPct": lambda r: r.get("feePace24h") or r["feePctDay"].get("24h") or 0,
+            # DLMM: 24h vol/mcap inside the band ranks by its value, outside ranks last;
+            # ties fall back to the 1h fee pace
+            "volMcapFit": lambda r: (filters.vol_mcap_fit(r.get("volMcap24h"), tuple(self.cfg["flags"].get("volMcapBand") or (0.3, 3))),
+                                     r["feePctDay"].get("1h") or 0),
         }.get(p.get("sortBy"), lambda r: r["feePctDay"].get("1h") or 0)
         best, seen = [], set()
-        for r in sorted(hits, key=keyf, reverse=True):
-            if r["token"] in seen:
+        for r in sorted(hits, key=keyf, reverse=True):      # one pool per token (and per symbol): its best one
+            sym = (r.get("symbol") or "").strip().upper()
+            if r["token"] in seen or (sym and sym in seen) or (p.get("skipClones", True) and r.get("clone")):
                 continue
-            seen.add(r["token"])
+            seen.update((r["token"], sym))
             best.append(r)
             if len(best) >= int(p.get("top", 10)):
                 break
@@ -310,7 +338,8 @@ class Book:
                 "total": len(hits), "new": self.ping_new,
                 "filter": (f"gates · TVL ≥ ${p.get('minTvlUsd') or 0:,.0f} · mcap ≥ ${p.get('minMcapUsd') or 0:,.0f}"
                            + (f" ≤ ${p['maxMcapUsd']:,.0f}" if p.get("maxMcapUsd") else "")
-                           + f" · umur ≥ {p.get('minPoolAgeHours') or 0}h · fee 1h ≥ ${p.get('minFees1hUsd') or 0}"
+                           + f" · umur {p.get('minPoolAgeHours') or 0}-{p.get('maxPoolAgeHours') or '∞'}h · fee 1h ≥ ${p.get('minFees1hUsd') or 0}"
+                           + (f" · vol 24h ≥ ${p['minVol24hUsd']:,.0f}" if p.get("minVol24hUsd") else "")
                            + f" · top {p.get('top', 10)} by {p.get('sortBy')}")}
 
     def search(self, q: str) -> list[dict]:
@@ -362,11 +391,13 @@ class Book:
             if not keys.get(i):
                 continue
             r = self._row(i, keys[i], act.get(i), dx.get(i), meta, hype, now, s0.get(i))
-            r["verdict"] = filters.evaluate(r, self.cfg, now, size)
             if not ql.startswith("0x"):
                 blob = f"{r['symbol']} {r['name']} {r['pool']} {r['token']}".lower()
                 if ql not in blob and i not in [d["pool"] for d in found]:
                     continue
             out.append(r)
-        out.sort(key=lambda r: -(r["tvlUsd"] or 0))
+        mark_clones(out)
+        for r in out:
+            r["verdict"] = filters.evaluate(r, self.cfg, now, size)
+        out.sort(key=lambda r: (bool(r.get("clone")), -(r["tvlUsd"] or 0)))
         return out

@@ -11,11 +11,11 @@
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <title>Elysium Terminal</title>
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <header class="top">
-  <div class="brand">◆ ELY <b>TERMINAL</b></div>
+  <div class="brand">◆ ELY <b>TERMINAL</b> <small class="muted" id="ver"></small></div>
   <nav>
     <button class="tab on" data-view="pools">🧭 Pilih pool</button>
     <button class="tab" data-view="tight">🎯 Tight</button>
@@ -101,6 +101,7 @@
       <button class="btn" id="loadWallet">Load</button>
     </div>
     <div class="bar summary" id="pfSummary"></div>
+    <div class="bar leftovers hidden" id="pfLeft"></div>
     <div class="tablewrap">
       <table id="positions">
         <thead><tr>
@@ -161,6 +162,6 @@
     }, 8000);
   })();
 </script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

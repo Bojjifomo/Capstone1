@@ -7,14 +7,15 @@ port sendiri, env sendiri.
 | Fitur | Isinya |
 | --- | --- |
 | **Pool dari chain** | Index swap Uniswap **v4** (PoolManager) dan Uniswap **v3** (ElysiumSwap + Uniswap resmi). Fee, volume, jumlah swap per 5m / 1h / 6h / 24h. |
-| **ENTRY CHECK** | `OPEN / CAREFUL / WAIT / SKIP`. Fee 0 / honeypot = SKIP. Pool baru, TVL tipis, fee pelan = WAIT. Pump, dump, seller dominan, pool v4 ber-hook = flag. |
-| **PING, watch, search** | Top pool yang lolos gate. Watchlist di Mac. Search nama / CA / pool id (DexScreener chain `elysium` + yang ada di index). |
+| **ENTRY CHECK** | `OPEN / CAREFUL / WAIT / SKIP` (aturan DLMM Terminal, sama dengan RH Terminal). Fee 0 / honeypot = SKIP. Pool < 1 jam, TVL tipis, **fee 24h ÷ TVL < 2%/hari** (pool < 24 jam dihitung dari umurnya), **harga naik > +5% sejam (tunggu dip)** = WAIT. Pump, dump, seller dominan, pool ber-hook, **pool < 6 jam**, **vol 24h ÷ mcap di luar 0,1–3x**, **🧬 kloningan** = flag. ⚙ → **Preset filter**: `elysium` (default) atau `dlmm` (angka DLMM Solana persis, ketat). |
+| **📡 PING, watch, search** | Top N pool yang lolos gate + band TVL, mcap, umur, fee 1 jam, **volume 24h ≥ $10k**. Satu pool per token **dan per simbol**, kloningan dibuang. Urut `fee1hPct` (default) atau **`volMcapFit`** (DLMM). Telegram: `new` = per pool baru, **`blast`** = kartu top N tiap 30 menit. **Jalan terus di Mac walau browser ditutup.** Watchlist di Mac. Search nama / CA / pool id. |
 | **Zap ladder** | Slice sama lebar di bawah harga, isi 1:2:…:n, quote-only, cap budget, warning size vs TVL. v4 = satu `modifyLiquidities`. v3 = beberapa NFT, di-batch `multicall`. |
 | **Portfolio** | Posisi dibaca dari chain. **Satu baris per pembukaan**: dua posisi di pool yang sama tetap dua baris, masing-masing PnL, tombol, dan rule auto sendiri. v4 dari log Transfer + `ownerOf`. v3 dari `tokenOfOwnerByIndex` (dua NPM). Fee v3 = static-call `collect` (nggak ngirim tx). |
 | **Aksi** | **Close** · **Claim** · **Close+swap** (minOut = harga pool − fee − max loss) · **Re-entry** (range yang sama, quote saja, di harga sekarang) · **Cleanup**. Semua di-`eth_call` dulu, revert = batal. |
 | **Tight** | Range sempit di sekitar harga: swap + mint dalam satu klik, dari tab 🎯 Tight atau tombol 🎯 di detail pool mana pun yang tanpa hook. |
 | **⚙ Auto** | Per posisi: TP, SL, dan aksi kalau harga keluar range (atas / bawah masing-masing: diam, re-entry, atau close + swap). Jalan di proses server, bukan di tab. |
-| **PIN, practice** | `ELYSIUM_PRACTICE_MODE` default **true**. Banner kuning di atas halaman. PIN buat trading dari HP. Key cuma dibaca Node. |
+| **Akses, PIN, practice** | Halaman cuma bisa dibuka dari **Mac ini dan device Tailscale** (Wi-Fi biasa ditolak kecuali `ELYSIUM_WEB_ALLOW_LAN=true`). Tanpa `ELYSIUM_WEB_PIN` semuanya langsung bisa trading; isi PIN kalau mau device Tailscale ditanya. `ELYSIUM_PRACTICE_MODE` default **true**. Key cuma dibaca Node. |
+| **Versi** | Commit yang lagi jalan tampil di kiri atas (hover: tanggal, branch). Launcher **ambil versi terbaru** (fast-forward) dan **ganti server lama** yang masih jalan. |
 | **Index health** | Chip ⛓ nulis jumlah pool v4/v3, jam histori, lag block, dan error kalau ada. Baris di bawah tabel: RPC publik vs Alchemy hari ini. |
 | **Data tambahan** | Umur pool, TVL + mcap dari DexScreener (chain `elysium`, udah dicek), APR dari fee 1 jam, jumlah trader 1 jam, nama hook v4 (sekali, disimpan di disk). Portfolio: nilai dalam $ dan HYPE, fee yang udah di-claim (log Collect v3) masuk PnL. |
 
@@ -80,13 +81,15 @@ Panduan Mac mini + iPhone + MacBook: **[PANDUAN_MAC_HP.md](PANDUAN_MAC_HP.md)**.
 3. Dia bikin `elysium_terminal/.env`. Isi `ELYSIUM_PRIVATE_KEY` (wallet LP **Elysium**, jangan tempel key Robinhood) dan kalau ada `ALCHEMY_API_KEY`. Biarin `ELYSIUM_PRACTICE_MODE=true`.
 4. `python3 -m elysium_terminal doctor` nggak pernah nampilin key.
 
-Dari HP lewat Tailscale: `http://<nama-mac>:8893`. Isi `ELYSIUM_WEB_PIN` kalau mau trading dari situ.
+Dari HP lewat Tailscale: `http://<nama-mac>:8893`. Server sekarang dengerin device Tailscale secara default (`--host 127.0.0.1` = cuma Mac ini). Device Tailscale bisa langsung trading; isi `ELYSIUM_WEB_PIN` kalau mau dikunci PIN.
+
+**Berubah dari versi sebelumnya:** dulu tanpa PIN cuma Mac ini yang boleh trading. Sekarang sama dengan RH Terminal: Mac ini + Tailscale boleh, Wi-Fi rumah tanpa Tailscale ditolak sama sekali.
 
 ## Terminal
 
 ```bash
-python3 -m elysium_terminal web
-python3 -m elysium_terminal web --host 0.0.0.0
+python3 -m elysium_terminal web                    # Mac ini + device Tailscale
+python3 -m elysium_terminal web --host 127.0.0.1   # cuma Mac ini
 python3 -m elysium_terminal screen
 python3 -m elysium_terminal screen --all --top 50
 python3 -m elysium_terminal portfolio --wallet 0x…
@@ -134,7 +137,18 @@ cd elysium_terminal/executor && node tests/test_live_sim.mjs
 
 ## Data
 
-`elysium_terminal/data/` (gitignore): `activity.json`, `poolkeys.json`, `ids_<wallet>.json`, `settings.json`, `watchlist.json`, `ui_prefs.json`, `decisions.jsonl`, `closes.jsonl`, `rpc_usage.jsonl`, `groups.json` (NFT mana yang satu posisi), `auto.json` (rule + batas auto), `auto_log.jsonl`, `tight_config.json`, `tight_signals.json`.
+`elysium_terminal/data/` (gitignore): `activity.json`, `poolkeys.json`, `ids_<wallet>.json`, `settings.json`, `watchlist.json`, `ui_prefs.json`, `decisions.jsonl`, `closes.jsonl`, `rpc_usage.jsonl`, `groups.json` (NFT mana yang satu posisi), `auto.json` (rule + batas auto), `auto_log.jsonl`, `leftovers.json` (token yang belum kejual setelah close), `tight_config.json`, `tight_signals.json`.
+
+## Upgrade dari RH Terminal / DLMM Terminal (Nov 2026)
+
+Yang dibawa ke sini dari dua terminal itu:
+
+- **Filter entry** dari review wallet DLMM Nov 2026: WAIT kalau harga sudah naik > +5% sejam (tunggu dip), gate fee pakai fee 24 jam ÷ TVL, flag pool < 6 jam dan vol 24h ÷ mcap di luar band, flag 🧬 kloningan (simbol sama, kontrak beda: yang paling tua dianggap asli).
+- **Band vol/mcap di-set dari data Elysium**, bukan disalin dari RH: sampel pool Elysium (TVL ≥ $2k) punya median vol 24h ÷ mcap ±0,7x, 10% di bawah 0,01x, 10% di atas 3,6x. Default `elysium` = 0,1–3x. Preset `dlmm` = 0,3–3x plus band PING DLMM (mcap $400k–$10M, umur ≤ 250 jam, vol ≥ $50k): pas dicek, PING dengan preset ini **kosong** di Elysium.
+- **PING**: volume 24h minimum, satu pool per simbol, kloningan dibuang, sort `volMcapFit`, Telegram `blast`, dan refresh di background tiap `web.refreshMin` menit walau nggak ada browser.
+- **Jual token setelah close yang tahan banting** (masalah yang pernah bikin token nyangkut di RH): jumlah yang keluar dari close / swap dibaca dari **receipt** (log Transfer, saldo HYPE di block itu), bukan dari saldo node yang bisa ketinggalan satu block. Nonce dicatat per run, jadi dua tx berurutan nggak tabrakan. Simulasi jual dicoba ulang 3x (token baru masuk sedetik lalu). Kalau seluruh jumlah bakal jatuh > max loss di bawah harga pool, **dijual sebagian** (porsi terbesar yang masih di dalam batas).
+- **Token yang belum kejual** setelah close (Close+swap, Re-entry, auto): dicatat di `leftovers.json` dan **dicoba jual lagi tiap cek auto, maksimal 6x**, lalu diserahkan ke Cleanup. Kelihatan di Portfolio (💩) dan Telegram. Re-entry tetap buka posisi baru walau jualnya gagal. Rule auto yang posisinya udah ketutup dianggap selesai, nggak nyangkut di ⚠.
+- **Server**: gzip (`/api/pools` ±370 KB jadi ±64 KB, kerasa di HP lewat Tailscale), browser yang nutup koneksi nggak bikin traceback, sertifikat RPC yang salah (halaman blokir ISP) bikin RPC itu diistirahatin 5 menit.
 
 ## Satu baris per posisi
 

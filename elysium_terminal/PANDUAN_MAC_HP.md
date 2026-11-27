@@ -46,7 +46,7 @@ Dia bikin `elysium_terminal/.env` dan buka TextEdit.
 | `ELYSIUM_PRIVATE_KEY=` | Private key wallet LP **Elysium** (64 hex, boleh `0x`). Jangan isi key Robinhood. |
 | `ALCHEMY_API_KEY=` | Key Alchemy yang chain Elysium-nya nyala. Kosong = RPC publik (gampang ke-limit). |
 | `ELYSIUM_PRACTICE_MODE=` | Biarin **`true`**. Tombol cuma simulasi. |
-| `ELYSIUM_WEB_PIN=` | Wajib kalau iPhone / MacBook mau trading. 6+ angka. |
+| `ELYSIUM_WEB_PIN=` | Opsional. Kosong = Mac ini + device Tailscale langsung bisa trading. Isi (6+ angka) kalau mau iPhone / MacBook ditanya PIN dulu. |
 | `ELYSIUM_WEB_PORT=` | Kosong = **8893**. |
 | `ELYSIUM_BANKROLL_USD=` / `ELYSIUM_SIZE_USD=` | Modal dan size default. |
 
@@ -90,9 +90,9 @@ Kalau udah kepake buat DLMM / RH Terminal, lewatin. Kalau belum: install di Mac 
 2. Safari → `http://<nama-mac>:8893` (atau `http://100.x.y.z:8893`).
 3. iPhone: Share → Add to Home Screen. MacBook: Add to Dock. **Jangan** double-click `.command` di MacBook: satu server aja, di Mac mini.
 
-Pertama kali mau ubah sesuatu dari HP, dia minta PIN.
+Kalau `ELYSIUM_WEB_PIN` diisi, pertama kali mau ubah sesuatu dari HP dia minta PIN.
 
-Di Wi-Fi rumah, `http://<nama>.local:8893` juga bisa. Di luar rumah tetap Tailscale.
+Wi-Fi rumah tanpa Tailscale **ditolak** (halaman "cuma bisa dibuka dari Mac ini atau lewat Tailscale"). Mau dibuka juga: `ELYSIUM_WEB_ALLOW_LAN=true` di `.env` (nggak disaranin).
 
 ---
 
@@ -145,7 +145,7 @@ Double-click lagi. Refresh halaman di HP.
 | Masalah | Coba |
 | --- | --- |
 | HP nggak kebuka | Tailscale nyala di dua-duanya? Jendela Terminal di Mac mini masih kebuka? Coba IP `100.x`. |
-| "trading cuma dari Mac ini" | `ELYSIUM_WEB_PIN` kosong. |
+| "cuma bisa dibuka dari Mac ini atau lewat Tailscale" | Device-nya nggak lewat Tailscale. Nyalain Tailscale, buka pakai nama Mac / IP `100.x`. |
 | 🔒 read-only | Klik chipnya, atau `python3 -m elysium_terminal doctor`. |
 | Port kepake | `ELYSIUM_WEB_PORT=8895`, double-click lagi. |
 | Pool kosong / chip merah | Tunggu index. Error SSL: `python3 -m pip install --user certifi`. |
@@ -157,6 +157,6 @@ Double-click lagi. Refresh halaman di HP.
 ## Keamanan
 
 - Key cuma di Mac mini. Jangan dikirim. Curiga bocor → pindahin dana.
-- Siapa pun di Wi-Fi rumah bisa **lihat** halaman. Transaksi butuh PIN (atau cuma dari Mac itu sendiri kalau PIN kosong).
+- Cuma Mac itu sendiri dan device di Tailscale lu yang bisa buka halaman. Tanpa PIN, mereka semua bisa trading.
 - Jangan share Tailscale / PIN.
 - Semua tx disimulasikan dulu.

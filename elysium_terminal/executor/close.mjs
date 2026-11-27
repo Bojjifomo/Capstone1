@@ -3,7 +3,7 @@
 // --pool picks the manager: 32-byte id = v4 PositionManager, 20-byte = that v3 pool's NPM.
 import { pathToFileURL } from "node:url";
 import { args, done, fail, tradeProvider, loadSigner, describePool, positionInfo, closeCalldataV4, closeCalldataV3,
-  sendTx, deadline, balanceOf, ZERO } from "./lib.mjs";
+  sendTx, deadline, balanceOf, receivedFromLogs, nativeDelta, ZERO } from "./lib.mjs";
 
 export async function closePositions({ pool, ids, claim = false, dry = false, owner }) {
   const signer = dry ? null : loadSigner(tradeProvider());
@@ -20,11 +20,15 @@ export async function closePositions({ pool, ids, claim = false, dry = false, ow
     ps.push(p);
   }
   const cur = [...new Set(ps.flatMap(p => [p.key.currency0, p.key.currency1]))];
-  const before = Object.fromEntries(await Promise.all(cur.map(async c => [c, await balanceOf(pr, c, who)])));
+  const nativeBefore = cur.includes(ZERO) ? await balanceOf(pr, ZERO, who) : 0n;
   const data = desc.dex === "v4" ? closeCalldataV4(ps, who, deadline(), claim) : closeCalldataV3(ps, who, deadline(), claim);
   const r = await sendTx(signer, { to: desc.manager, data, label: `${claim ? "claim" : "close"} ${ps.length}` }, { dryRun: dry, from: who });
-  const received = {};
-  if (!dry) for (const c of cur) received[c] = (await balanceOf(pr, c, who)) - before[c] + (c === ZERO ? (r.fee || 0n) : 0n);
+  let received = {};
+  if (!dry) {
+    // from the receipt: a balance read on a node a block behind once left a token unsold (RH, MAGGIE)
+    received = receivedFromLogs(r.logs, who, cur);
+    if (cur.includes(ZERO)) received[ZERO] = await nativeDelta(pr, who, r, nativeBefore);
+  }
   return { tx: r, positions: ps, received, owner: who, desc };
 }
 

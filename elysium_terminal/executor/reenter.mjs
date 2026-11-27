@@ -60,9 +60,21 @@ try {
   const tokOut = c.received[token] || 0n;
   let quoteBack = c.received[quote] || 0n;
   if (tokOut > 0n) {
-    const s = await sellToken({ signer, owner, pool: String(a.pool), amount: tokOut, maxLossPct: Number(a.maxloss || 5) });
-    out.steps.push({ step: "swap", hash: s.hash, received: s.received });
-    quoteBack += s.received || 0n;
+    // A sale that fails (pool too thin, price moved) does not stop the re-open, as in RH / DLMM:
+    // the token stays in the wallet as a leftover the server retries and Cleanup can sell.
+    try {
+      const s = await sellToken({ signer, owner, pool: String(a.pool), amount: tokOut, maxLossPct: Number(a.maxloss || 5) });
+      out.steps.push({ step: "swap", hash: s.hash, received: s.received, sold: s.sold, left: s.left, note: s.note });
+      quoteBack += s.received || 0n;
+      if (s.left > 0n) out.leftover = { token, pool: String(a.pool).toLowerCase(), amount: s.left };
+    } catch (e) {
+      const msg = String(e.shortMessage || e.message).slice(0, 200);
+      out.steps.push({ step: "swap", failed: msg });
+      out.leftover = { token, pool: String(a.pool).toLowerCase(), amount: tokOut };
+      out.saleError = msg;
+    }
+  } else {
+    out.steps.push({ step: "swap", skipped: "nggak ada token keluar (posisi belum pernah kena harga)" });
   }
   out.quoteBack = quoteBack;
   if (a.reopen) {
@@ -85,7 +97,7 @@ try {
       : await erc20Approval(pr, owner, quote, desc.manager, total, "approve quote → NPM"));
     for (const t of appr) out.steps.push({ step: "approve", ...(await sendTx(signer, t)) });
     const tx = desc.dex === "v4" ? openCalldataV4(key, plan, q === 0, owner, deadline()) : openCalldataV3(key, plan, q === 0, owner, deadline(), native && quote === WHYPE);
-    const r = await sendTx(signer, { ...tx, to: desc.manager, label: `re-open ${plan.slices.length} slices` });
+    const r = await sendTx(signer, { ...tx, to: desc.manager, label: `re-open ${plan.slices.length} slices` }, { retries: 3 });
     out.positions = mintedIds(r.logs, owner, desc.manager);
     out.steps.push({ step: "reopen", hash: r.hash, positions: out.positions });
     out.reopened = total;
@@ -93,7 +105,11 @@ try {
     out.manager = desc.manager.toLowerCase();
     out.venue = desc.venue;
   }
-  out.ok = true;
+  // ok = everything asked for happened. A leftover after a close without re-open is not ok (yet):
+  // the server retries the sale. A re-open that went through is ok, the leftover is reported.
+  out.ok = !out.leftover || !!out.reopened;
+  if (!out.ok) out.error = `closed, tapi token belum kejual: ${out.saleError || "sebagian sisa"}`;
+  out.sent = out.steps.some(x => x.hash);
   delete out.step;
   done(out);
-} catch (e) { fail(e, { step: out.step, steps: out.steps }); }
+} catch (e) { fail(e, { step: out.step, steps: out.steps, leftover: out.leftover, quoteBack: out.quoteBack, sent: out.steps.some(x => x.hash) }); }

@@ -502,20 +502,59 @@ export async function erc20Approval(provider, owner, token, spender, amount, lab
   return [{ label: label || "approve token", to: token, data: erc20.encodeFunctionData("approve", [spender, ethers.MaxUint256]) }];
 }
 
-export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from } = {}) {
+export const sleep = ms => new Promise(r => setTimeout(r, ms));
+const _nextNonce = {};
+
+// retries: the simulation is retried (the token from a close one block ago may not be visible to
+// this node yet). The nonce is the larger of what the node reports pending and what this run
+// already sent, so two transactions in a row never collide on a node that lags.
+export async function sendTx(signer, { to, data, value = 0n, label = "tx" }, { dryRun = false, from, retries = 0 } = {}) {
   const provider = signer ? signer.provider : tradeProvider();
   const sender = from || (signer && signer.address);
-  try {
-    await provider.call({ from: sender, to, data, value });
-  } catch (e) {
-    throw new Error(`${label}: would revert, not sent (${String(e.shortMessage || e.reason || e.message).slice(0, 180)})`);
+  for (let i = 0; ; i++) {
+    try {
+      await provider.call({ from: sender, to, data, value });
+      break;
+    } catch (e) {
+      if (i < retries) { await sleep(3000); continue; }
+      throw new Error(`${label}: would revert, not sent (${String(e.shortMessage || e.reason || e.message).slice(0, 180)})`);
+    }
   }
   if (dryRun) return { label, simulated: true };
   const gas = (await provider.estimateGas({ from: sender, to, data, value })) * 13n / 10n;
-  const tx = await signer.sendTransaction({ to, data, value, gasLimit: gas, chainId: CHAIN_ID });
+  const who = sender.toLowerCase();
+  const pending = await provider.getTransactionCount(sender, "pending");
+  const nonce = Math.max(pending, _nextNonce[who] || 0);
+  const tx = await signer.sendTransaction({ to, data, value, gasLimit: gas, chainId: CHAIN_ID, nonce });
+  _nextNonce[who] = nonce + 1;
   const rc = await tx.wait(1, 180_000);
   if (!rc || rc.status !== 1) throw new Error(`${label}: reverted on chain ${tx.hash}`);
-  return { label, hash: tx.hash, gasUsed: rc.gasUsed, fee: rc.gasUsed * (rc.gasPrice || 0n), logs: rc.logs };
+  return { label, hash: tx.hash, gasUsed: rc.gasUsed, fee: rc.gasUsed * (rc.gasPrice || 0n), logs: rc.logs, block: rc.blockNumber };
+}
+
+// What a transaction moved in or out of `owner`, from its own receipt: never from a balance read
+// on a node that may not have seen the block yet. ERC-20 from Transfer logs.
+const TRANSFER = ethers.id("Transfer(address,address,uint256)");
+export function receivedFromLogs(logs, owner, tokens) {
+  const me = owner.toLowerCase(), out = {};
+  for (const t of tokens) if (t.toLowerCase() !== ZERO) out[t.toLowerCase()] = 0n;
+  for (const l of logs || []) {
+    const t = (l.address || "").toLowerCase();
+    if (!(t in out) || l.topics[0] !== TRANSFER || l.topics.length < 3) continue;
+    const from = ("0x" + l.topics[1].slice(26)).toLowerCase(), to = ("0x" + l.topics[2].slice(26)).toLowerCase();
+    const v = BigInt(l.data);
+    if (to === me) out[t] += v;
+    if (from === me) out[t] -= v;
+  }
+  return out;
+}
+// Native HYPE has no log: balance just before and at the receipt's block, gas added back.
+// `fallbackBefore` is used when the node no longer serves the block before (pruned state).
+export async function nativeDelta(provider, owner, rc, fallbackBefore) {
+  const after = await provider.getBalance(owner, rc.block);
+  let before = fallbackBefore;
+  try { before = await provider.getBalance(owner, rc.block - 1); } catch { /* keep the pre-send read */ }
+  return after - before + (rc.fee || 0n);
 }
 
 export function mintedIds(logs, owner, manager) {
