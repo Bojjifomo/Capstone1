@@ -22,6 +22,7 @@ Sync, scoring and the CLI use only the standard library; the app needs
 """
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -376,9 +377,18 @@ def cmd_app(args, cfg):
     print(f"RH Wallet Finder: http://localhost:{port}  (keep this window open; Ctrl+C stops it)")
     cmd = [sys.executable, "-m", "streamlit", "run", "streamlit_app.py",
            "--server.port", str(port), "--server.address", "127.0.0.1"]
-    if args.no_browser:
-        cmd += ["--server.headless", "true"]
-    sys.exit(subprocess.call(cmd, cwd=here))
+    if not args.no_browser:
+        sys.exit(subprocess.call(cmd, cwd=here))
+    # Headless (launchd): the app only starts its worker when a browser opens the page,
+    # so with nobody watching nothing synced. Run the worker here instead.
+    cmd += ["--server.headless", "true"]
+    from worker import Worker
+    w = Worker()
+    w.start()
+    try:
+        sys.exit(subprocess.call(cmd, cwd=here, env={**os.environ, "RHWF_NO_WORKER": "1"}))
+    finally:
+        w.stop()
 
 
 def cmd_worker(args, cfg):
